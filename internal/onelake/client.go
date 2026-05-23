@@ -424,7 +424,12 @@ func joinItemPath(itemGUID, relPath string) string {
 // (Read on a multi-GiB file) therefore proceed under the caller's
 // context deadline rather than a fixed Client.Timeout.
 func defaultHTTPClient() *http.Client {
-	t := http.DefaultTransport.(*http.Transport).Clone()
+	var t *http.Transport
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		t = base.Clone()
+	} else {
+		t = &http.Transport{}
+	}
 	t.ResponseHeaderTimeout = defaultResponseHeaderTimeout
 	return &http.Client{
 		Transport: t,

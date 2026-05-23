@@ -172,7 +172,12 @@ func (c *Client) GetItem(ctx context.Context, alias, workspaceID, itemID string)
 // but does NOT cap body streaming. Callers control the overall
 // deadline through context.
 func defaultHTTPClient() *http.Client {
-	t := http.DefaultTransport.(*http.Transport).Clone()
+	var t *http.Transport
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		t = base.Clone()
+	} else {
+		t = &http.Transport{}
+	}
 	t.ResponseHeaderTimeout = defaultResponseHeaderTimeout
 	return &http.Client{
 		Transport: t,
