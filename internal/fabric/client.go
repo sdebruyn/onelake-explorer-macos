@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/api"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 )
 
 // defaultBaseURL is the canonical Fabric REST endpoint. Override via
@@ -45,7 +46,7 @@ const maxPaginationPages = 1000
 // defaults; only TokenProvider is required.
 type Options struct {
 	// TokenProvider yields the Bearer token. Required.
-	TokenProvider api.TokenProvider
+	TokenProvider auth.TokenProvider
 	// HTTPClient overrides the underlying *http.Client. The default
 	// caps the response-header wait at 30s but does NOT set
 	// Client.Timeout — body deadlines are under context control.
@@ -59,7 +60,7 @@ type Options struct {
 // Client is the Fabric REST client. Construct with New. All methods
 // are safe for concurrent use.
 type Client struct {
-	tp          api.TokenProvider
+	tp          auth.TokenProvider
 	http        *http.Client
 	baseURL     string
 	maxAttempts int
