@@ -1,6 +1,6 @@
 // Package cli — status subcommand.
 //
-// `ofe status` shows the local OFE configuration and, when the daemon
+// `ofem status` shows the local OFEM configuration and, when the daemon
 // is running, fetches live information over the Unix-domain-socket IPC
 // described in internal/ipc.
 package cli
@@ -23,7 +23,7 @@ import (
 // statusIPCTimeout caps how long the CLI will block on the daemon
 // before falling back to "not running". 2 seconds is enough for any
 // healthy local socket round-trip and short enough that an unresponsive
-// daemon does not make `ofe status` feel broken.
+// daemon does not make `ofem status` feel broken.
 const statusIPCTimeout = 2 * time.Second
 
 func newStatusCmd() *cobra.Command {
@@ -59,12 +59,12 @@ func newStatusCmd() *cobra.Command {
 // printDaemonStatus dials the daemon over IPC and prints what it tells
 // us. If the socket file does not exist (the daemon is not installed)
 // or the call fails (it is installed but crashed/blocked), we print a
-// terse "not running" line — `ofe status` is informational, not a
+// terse "not running" line — `ofem status` is informational, not a
 // health check, so falling back is the right behaviour.
 func printDaemonStatus(out io.Writer, socketPath string) {
 	if _, err := os.Stat(socketPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintln(out, "Daemon:    not running (run `ofe daemon start`)")
+			fmt.Fprintln(out, "Daemon:    not running (run `ofem daemon start`)")
 			return
 		}
 		fmt.Fprintf(out, "Daemon:    socket error: %v\n", err)

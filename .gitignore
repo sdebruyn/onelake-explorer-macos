@@ -65,7 +65,7 @@ DerivedData/
 # Local config / state
 .envrc
 local.toml
-ofe.sock
+ofem.sock
 
 # Goreleaser
 .goreleaser-temp/

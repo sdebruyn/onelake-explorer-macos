@@ -31,7 +31,7 @@ func TestLoginDeviceCodeRejectsNilPrompt(t *testing.T) {
 // cancellation behaviour as LoginInteractive. The full happy path
 // requires a real Entra App Registration and the Microsoft devicecode
 // endpoint, so we only cover the argument-validation and cancel path
-// here; the integration test suite (OFE_INTEGRATION=1) is where the end
+// here; the integration test suite (OFEM_INTEGRATION=1) is where the end
 // to end flow lives.
 func TestLoginDeviceCodeCancelsCleanlyOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

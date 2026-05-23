@@ -1,4 +1,4 @@
-// Package ipc implements the JSON-RPC 2.0 transport that connects the OFE
+// Package ipc implements the JSON-RPC 2.0 transport that connects the OFEM
 // CLI, host app, and File Provider Extension to the background daemon.
 //
 // Transport details:

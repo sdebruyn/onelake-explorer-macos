@@ -165,13 +165,13 @@ func TestAppInsightsSink_Send_PostsExpectedShape(t *testing.T) {
 		t.Errorf("time = %v", env["time"])
 	}
 	tags, _ := env["tags"].(map[string]any)
-	if tags["ai.cloud.role"] != "ofe" {
+	if tags["ai.cloud.role"] != "ofem" {
 		t.Errorf("ai.cloud.role = %v", tags["ai.cloud.role"])
 	}
 	if tags["ai.cloud.roleInstance"] != "install-xyz" {
 		t.Errorf("ai.cloud.roleInstance = %v", tags["ai.cloud.roleInstance"])
 	}
-	if tags["ai.internal.sdkVersion"] != "ofe:2026.05.1" {
+	if tags["ai.internal.sdkVersion"] != "ofem:2026.05.1" {
 		t.Errorf("ai.internal.sdkVersion = %v", tags["ai.internal.sdkVersion"])
 	}
 	data, _ := env["data"].(map[string]any)

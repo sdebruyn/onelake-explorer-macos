@@ -17,7 +17,7 @@ After explicit evaluation of Go vs Rust, we chose **Go**:
 
 Rust was the riskier "learning opportunity" path; Go is the safer "ship the product" path. Both can do FUSE-T integration (relevant only if we ever revisit) and FFI to Swift. Sam confirmed Go.
 
-The macOS `.app` host and the File Provider Extension must be in Swift (or Objective-C). The Go core ships as a static library (`libofecore.a`) plus a generated C header (via cgo's `//export` directives) that Swift imports.
+The macOS `.app` host and the File Provider Extension must be in Swift (or Objective-C). The Go core ships as a static library (`libofemcore.a`) plus a generated C header (via cgo's `//export` directives) that Swift imports.
 
 ## Go libraries
 
@@ -38,7 +38,7 @@ The macOS `.app` host and the File Provider Extension must be in Swift (or Objec
 ### CLI
 
 - [`github.com/spf13/cobra`](https://github.com/spf13/cobra) — standard Go CLI framework. Subcommands, flags, completions, man-page generation.
-- [`github.com/spf13/viper`](https://github.com/spf13/viper) — config-file loading, env-var binding (`OFE_*`).
+- [`github.com/spf13/viper`](https://github.com/spf13/viper) — config-file loading, env-var binding (`OFEM_*`).
 
 ### Config & data
 
@@ -48,7 +48,7 @@ The macOS `.app` host and the File Provider Extension must be in Swift (or Objec
 ### Logging
 
 - `log/slog` from stdlib (Go 1.21+). Structured logging with JSON or text handler. No external dependency.
-- Log files in `~/Library/Logs/dev.debruyn.ofe/ofe.log`, rotated with [`gopkg.in/natefinch/lumberjack.v2`](https://github.com/natefinch/lumberjack).
+- Log files in `~/Library/Logs/dev.debruyn.ofem/ofem.log`, rotated with [`gopkg.in/natefinch/lumberjack.v2`](https://github.com/natefinch/lumberjack).
 
 ### Telemetry
 
@@ -62,14 +62,14 @@ The macOS `.app` host and the File Provider Extension must be in Swift (or Objec
 
 ### LaunchAgent
 
-- We ship a `dev.debruyn.ofe.plist` template. The CLI writes the resolved plist to `~/Library/LaunchAgents/` and runs `launchctl bootstrap gui/$UID …` to register it. No external dependency needed.
+- We ship a `dev.debruyn.ofem.plist` template. The CLI writes the resolved plist to `~/Library/LaunchAgents/` and runs `launchctl bootstrap gui/$UID …` to register it. No external dependency needed.
 
 ### Testing
 
 - `testing` from stdlib.
 - [`github.com/stretchr/testify`](https://github.com/stretchr/testify) for assertions and table-driven test ergonomics.
 - [`github.com/jarcoal/httpmock`](https://github.com/jarcoal/httpmock) for HTTP-level mocking of OneLake responses in unit tests.
-- Integration tests use a real Fabric workspace dedicated to OFE testing, gated behind an env var `OFE_INTEGRATION=1` so they only run when explicitly requested.
+- Integration tests use a real Fabric workspace dedicated to OFEM testing, gated behind an env var `OFEM_INTEGRATION=1` so they only run when explicitly requested.
 
 ### Code quality
 
@@ -91,8 +91,8 @@ The macOS `.app` host and the File Provider Extension must be in Swift (or Objec
 
 ### Bridge to Go
 
-- cgo's `//export Foo` produces `Foo` symbols callable from C. We generate a header `libofecore.h` during `go build -buildmode=c-archive`.
-- Swift imports `libofecore.h` via a bridging header.
+- cgo's `//export Foo` produces `Foo` symbols callable from C. We generate a header `libofemcore.h` during `go build -buildmode=c-archive`.
+- Swift imports `libofemcore.h` via a bridging header.
 - All callbacks across the boundary use C primitives (`char*`, `int64_t`, opaque pointers) — no Go strings or Swift `String` directly.
 
 ## Build & release
@@ -102,7 +102,7 @@ The macOS `.app` host and the File Provider Extension must be in Swift (or Objec
 - `codesign --force --options runtime --sign "Developer ID Application: …"`.
 - `xcrun notarytool submit … --wait` and `xcrun stapler staple`.
 - DMG via `create-dmg` (Homebrew formula `create-dmg`).
-- GoReleaser uploads the DMG to GitHub Releases and bumps the cask in the `homebrew-ofe` tap repo.
+- GoReleaser uploads the DMG to GitHub Releases and bumps the cask in the `homebrew-ofem` tap repo.
 
 See [docs/packaging-homebrew.md](packaging-homebrew.md) for the full pipeline.
 
@@ -111,7 +111,7 @@ See [docs/packaging-homebrew.md](packaging-homebrew.md) for the full pipeline.
 ```
 onelake-explorer-macos/
 ├── cmd/
-│   └── ofe/                 # CLI entrypoint (main package)
+│   └── ofem/                 # CLI entrypoint (main package)
 ├── internal/
 │   ├── auth/                # MSAL wrapper, Keychain cache, account registry
 │   ├── onelake/             # DFS API client, retries, pagination
@@ -131,7 +131,7 @@ onelake-explorer-macos/
 │   └── OneLakeFileProvider/ # extension (.appex, Swift)
 ├── docs/
 ├── homebrew/
-│   └── ofe.rb               # cask template, updated by GoReleaser
+│   └── ofem.rb               # cask template, updated by GoReleaser
 ├── .github/
 ├── .goreleaser.yaml
 ├── go.mod

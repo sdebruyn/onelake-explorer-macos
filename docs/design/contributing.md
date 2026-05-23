@@ -42,7 +42,7 @@ See [Prerequisites](../prerequisites.md) for the full split between local-dev an
 ## Tests
 
 - **Unit tests** run on every PR and merge to `main`. Should not require network — use `httpmock` for OneLake/Fabric responses.
-- **Integration tests** run weekly on `main` and on PRs with a `/integration` comment from the maintainer. They hit a real Fabric workspace and are gated behind `OFE_INTEGRATION=1`.
+- **Integration tests** run weekly on `main` and on PRs with a `/integration` comment from the maintainer. They hit a real Fabric workspace and are gated behind `OFEM_INTEGRATION=1`.
 - Aim for **>80% line coverage** on `internal/*`.
 
 ## Documentation
@@ -62,4 +62,4 @@ git tag v2026.05.1
 git push origin v2026.05.1
 ```
 
-GitHub Actions does the rest: build, sign, notarize, DMG, GoReleaser, cask bump in the `homebrew-ofe` tap. Full pipeline: [Packaging](../packaging-homebrew.md).
+GitHub Actions does the rest: build, sign, notarize, DMG, GoReleaser, cask bump in the `homebrew-ofem` tap. Full pipeline: [Packaging](../packaging-homebrew.md).

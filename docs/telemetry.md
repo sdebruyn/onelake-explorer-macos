@@ -3,11 +3,11 @@
 ## Principles
 
 - **Opt-out**, enabled by default, clearly disclosed on first run and in README.
-- **Disable any time** with `OFE_TELEMETRY=0` env var or `ofe config set telemetry off` (the daemon picks up the change on next start; the menu bar shows the current state).
+- **Disable any time** with `OFEM_TELEMETRY=0` env var or `ofem config set telemetry off` (the daemon picks up the change on next start; the menu bar shows the current state).
 - **No PII**: no UPN, no workspace name, no item name, no file name, no folder path.
 - **Tenant IDs are collected** (Sam confirmed this is acceptable). Tenant IDs are aggregate-level enough to be useful for understanding adoption per tenant without identifying individual users.
 - **Pseudonymous install ID** is generated locally on first run (a random UUIDv4 stored in config) so we can deduplicate events from the same install without identifying the user.
-- **No tracking across re-installs**: removing OFE (`brew uninstall --zap`) removes the install ID; reinstalling generates a new one.
+- **No tracking across re-installs**: removing OFEM (`brew uninstall --zap`) removes the install ID; reinstalling generates a new one.
 
 ## Backend: Azure Application Insights free tier
 
@@ -26,9 +26,9 @@ Every event is sent as an App Insights `customEvent` with a fixed property set:
 | Property | Type | Required | Example | Notes |
 |---|---|---|---|---|
 | `installId` | string (UUIDv4) | Yes | `5b3c…` | Generated locally on first run, persisted in config. |
-| `appVersion` | string | Yes | `2026.05.1` | The OFE version. |
-| `platform` | string | Yes | `darwin` | Always `darwin` for OFE. |
-| `arch` | string | Yes | `arm64` | Always `arm64` for OFE. |
+| `appVersion` | string | Yes | `2026.05.1` | The OFEM version. |
+| `platform` | string | Yes | `darwin` | Always `darwin` for OFEM. |
+| `arch` | string | Yes | `arm64` | Always `arm64` for OFEM. |
 | `osVersion` | string | Yes | `14.5.1` | macOS version reported by `sw_vers`. |
 | `event` | string | Yes | `file_download` | The event name. |
 | `tenantId` | string (GUID) | Conditional | `8d3b…` | When the event is associated with a specific OneLake operation; null for app lifecycle events. |
@@ -43,8 +43,8 @@ Every event is sent as an App Insights `customEvent` with a fixed property set:
 |---|---|---|
 | `app_start` | Daemon process starts | — |
 | `app_stop` | Daemon process exits cleanly | — |
-| `account_added` | After successful `ofe login` | `tenantId`, `accountAliasHash` |
-| `account_removed` | After successful `ofe account remove` | `tenantId`, `accountAliasHash` |
+| `account_added` | After successful `ofem login` | `tenantId`, `accountAliasHash` |
+| `account_removed` | After successful `ofem account remove` | `tenantId`, `accountAliasHash` |
 | `workspace_list` | Fabric REST list-workspaces call completes | `tenantId`, `accountAliasHash`, `durationMs`, `success` |
 | `item_list` | Fabric REST list-items call completes | `tenantId`, `accountAliasHash`, `durationMs`, `success` |
 | `folder_list` | OneLake DFS folder list completes | `tenantId`, `accountAliasHash`, `durationMs`, `success` |
@@ -65,19 +65,19 @@ The Application Insights connection string is embedded into the official binary 
 
 ```yaml
 ldflags:
-  - -X main.appInsightsConnString={{.Env.OFE_APPINSIGHTS_CONNSTRING}}
+  - -X main.appInsightsConnString={{.Env.OFEM_APPINSIGHTS_CONNSTRING}}
 ```
 
-`OFE_APPINSIGHTS_CONNSTRING` is a GitHub Actions secret only available to the official release workflow.
+`OFEM_APPINSIGHTS_CONNSTRING` is a GitHub Actions secret only available to the official release workflow.
 
 Source builds (someone clones the repo and runs `go build`) get an empty string → the telemetry client silently no-ops. This means contributors and forks **do not send data to our telemetry endpoint** unless they configure their own.
 
 ### Threat model of an embedded ingest key
 
-An attacker can extract the connection string from the official binary (e.g. via `strings OFE.app/Contents/Resources/bin/ofe`). They could then send spam events. Mitigations:
+An attacker can extract the connection string from the official binary (e.g. via `strings OFEM.app/Contents/Resources/bin/ofem`). They could then send spam events. Mitigations:
 
 - App Insights has built-in sampling and DAILY_CAP we can lower in the portal if we see abuse.
-- Connection strings can be rotated by re-issuing one for the App Insights resource. A new OFE release picks up the new key; old binaries silently stop reporting.
+- Connection strings can be rotated by re-issuing one for the App Insights resource. A new OFEM release picks up the new key; old binaries silently stop reporting.
 - Event volume is in the noise level (millions/month worst case) — App Insights tier costs become an issue only at much higher volumes.
 - The data collected is by design non-sensitive — even if an attacker spams events with bogus tenant IDs, our analysis just gets noisier.
 
@@ -86,17 +86,17 @@ This trade-off is documented in the README disclosure.
 ## First-run disclosure (in CLI and host app)
 
 ```
-OFE collects anonymous usage events plus tenant IDs to help understand adoption
+OFEM collects anonymous usage events plus tenant IDs to help understand adoption
 and improve the tool. We never collect workspace names, file names, or your UPN.
 
-Disable any time:  ofe config set telemetry off
-                or set OFE_TELEMETRY=0 in your environment
+Disable any time:  ofem config set telemetry off
+                or set OFEM_TELEMETRY=0 in your environment
 
 Learn more:        https://github.com/sdebruyn/onelake-explorer-macos/blob/main/docs/telemetry.md
 ```
 
 Shown:
-- On first `ofe login` in the CLI.
+- On first `ofem login` in the CLI.
 - On first launch of `OneLake.app` (Phase 2+) as a small banner in the host app.
 
 ## Local buffering and offline
@@ -128,7 +128,7 @@ customEvents
 | summarize dcount(tostring(customDimensions.installId)) by bin(timestamp, 1d)
 | render timechart
 
-// Tenants using OFE
+// Tenants using OFEM
 customEvents
 | where isnotempty(tostring(customDimensions.tenantId))
 | summarize events = count(), installs = dcount(tostring(customDimensions.installId))

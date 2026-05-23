@@ -10,7 +10,7 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/daemon"
 )
 
-// TestDaemonInstallWritesPlist exercises the `ofe daemon install` CLI
+// TestDaemonInstallWritesPlist exercises the `ofem daemon install` CLI
 // path under a sandboxed $HOME so the real ~/Library/LaunchAgents/ is
 // never touched. launchctl invocations are stubbed at the package level
 // via daemon.LaunchctlForTest (see launchagent_test.go) so this test

@@ -15,7 +15,7 @@ func newVersionCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "ofe %s\n", buildinfo.Version)
+			fmt.Fprintf(out, "ofem %s\n", buildinfo.Version)
 			if buildinfo.Commit != "" {
 				fmt.Fprintf(out, "commit: %s\n", buildinfo.Commit)
 			}

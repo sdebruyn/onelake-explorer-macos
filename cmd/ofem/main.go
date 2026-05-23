@@ -1,4 +1,4 @@
-// Command ofe is the OneLake File Explorer command-line tool. It handles
+// Command ofem is the OneLake File Explorer command-line tool. It handles
 // account setup, the local daemon lifecycle, and (during development) a
 // handful of debug subcommands that exercise the Go core without going
 // through the File Provider Extension.
@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/sdebruyn/onelake-explorer-macos/cmd/ofe/cli"
+	"github.com/sdebruyn/onelake-explorer-macos/cmd/ofem/cli"
 )
 
 func main() {

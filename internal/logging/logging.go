@@ -1,6 +1,6 @@
 // Package logging configures slog for the CLI and daemon. The CLI logs to
 // stderr with a human-readable format; the daemon logs JSON to a rotating
-// file in ~/Library/Logs/dev.debruyn.ofe/.
+// file in ~/Library/Logs/dev.debruyn.ofem/.
 package logging
 
 import (

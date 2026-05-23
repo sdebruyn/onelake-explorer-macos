@@ -1,11 +1,11 @@
-// Package telemetry implements OFE's opt-out usage telemetry. It buffers
+// Package telemetry implements OFEM's opt-out usage telemetry. It buffers
 // custom events in memory and forwards them to an Azure Application
 // Insights resource via the v2/track ingestion endpoint.
 //
 // The package is wired so that telemetry stays a silent no-op in three
 // situations:
 //
-//   - the OFE_TELEMETRY environment variable is set to "0",
+//   - the OFEM_TELEMETRY environment variable is set to "0",
 //   - the user disabled telemetry via the config flag, or
 //   - the binary was built without baking an Application Insights
 //     connection string into buildinfo.AppInsightsConnString (i.e. a

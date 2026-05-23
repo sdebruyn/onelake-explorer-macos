@@ -1,4 +1,4 @@
-# Contributing to OFE
+# Contributing to OFEM
 
 Thanks for considering a contribution! This is a small, focused open-source project. We welcome bug reports, feature ideas, code, docs, and design feedback.
 
@@ -29,8 +29,8 @@ brew install go golangci-lint commitlint
 go mod download
 
 # build the CLI
-go build -o bin/ofe ./cmd/ofe
-./bin/ofe --version
+go build -o bin/ofem ./cmd/ofem
+./bin/ofem --version
 
 # shortcut — fmt + vet + lint + test + build + smoke test (matches CI)
 make ci
@@ -42,7 +42,7 @@ make lint
 make fmt
 
 # run integration tests (requires a Fabric workspace you can sign in to)
-OFE_INTEGRATION=1 go test ./...
+OFEM_INTEGRATION=1 go test ./...
 ```
 
 You only need Xcode if you are working on the Swift host app or File Provider Extension (Phase 1+). For pure Go work on `internal/*` you can stay in your shell of choice.
@@ -91,7 +91,7 @@ GoReleaser uses these to auto-generate the CHANGELOG, so please keep them clean.
 - Use table-driven tests for anything with multiple input shapes.
 - No `panic()` outside `main()`'s early-init unless a programmer error genuinely cannot happen; return errors instead.
 - Use `slog` from stdlib for logging; never `fmt.Println` from non-CLI code.
-- Public APIs go in `core/` (cgo-exported) or `cmd/ofe/` (CLI surface); internal stuff in `internal/*` (Go's compiler enforces this).
+- Public APIs go in `core/` (cgo-exported) or `cmd/ofem/` (CLI surface); internal stuff in `internal/*` (Go's compiler enforces this).
 
 ### Swift (Phase 1+)
 
@@ -102,7 +102,7 @@ GoReleaser uses these to auto-generate the CHANGELOG, so please keep them clean.
 ## Testing
 
 - **Unit tests**: run on every PR and merge to main. Should not require network. Use `httpmock` for OneLake/Fabric responses.
-- **Integration tests**: run weekly on `main` and on PRs with a `/integration` comment from the maintainer. Hit real Fabric. Gated behind `OFE_INTEGRATION=1`.
+- **Integration tests**: run weekly on `main` and on PRs with a `/integration` comment from the maintainer. Hit real Fabric. Gated behind `OFEM_INTEGRATION=1`.
 - Aim for >80% line coverage on `internal/*`.
 
 ## Documentation

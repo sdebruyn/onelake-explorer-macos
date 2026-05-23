@@ -4,7 +4,7 @@
 // API for enumerate / open / put / delete / mkdir / list-workspaces /
 // list-items operations on OneLake content.
 //
-// One Engine is intended per OFE process; it serves every signed-in
+// One Engine is intended per OFEM process; it serves every signed-in
 // account and every Fabric item the user navigates through. All public
 // methods are safe for concurrent use because the underlying clients
 // and cache.Cache are.

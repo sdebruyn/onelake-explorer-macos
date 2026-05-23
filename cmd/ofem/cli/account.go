@@ -35,7 +35,7 @@ func newAccountListCmd() *cobra.Command {
 			}
 			f := store.Snapshot()
 			if len(f.Accounts) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "No accounts. Run `ofe login` to add one.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No accounts. Run `ofem login` to add one.")
 				return nil
 			}
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
@@ -70,7 +70,7 @@ func newAccountRemoveCmd() *cobra.Command {
 			registry := auth.NewRegistry(store, auth.NewKeychain(), auth.PlaceholderClientID, nil)
 			if err := registry.Remove(alias); err != nil {
 				if errors.Is(err, os.ErrNotExist) {
-					return fmt.Errorf("no account with alias %q (try `ofe account list`)", alias)
+					return fmt.Errorf("no account with alias %q (try `ofem account list`)", alias)
 				}
 				return err
 			}
@@ -93,7 +93,7 @@ func newAccountDefaultCmd() *cobra.Command {
 			}
 			snap := store.Snapshot()
 			if _, ok := snap.Accounts[alias]; !ok {
-				return fmt.Errorf("no account with alias %q (try `ofe account list`)", alias)
+				return fmt.Errorf("no account with alias %q (try `ofem account list`)", alias)
 			}
 			store.Update(func(f *config.File) {
 				f.DefaultAccount = alias

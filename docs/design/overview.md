@@ -41,13 +41,13 @@ Settled during product discovery and unchanged since:
 └──────────┬─────────────────────┘
            │ cgo / C-ABI
 ┌──────────┴─────────────────────┐
-│  libofecore (Go)               │  ← auth + OneLake API + cache + sync
+│  libofemcore (Go)               │  ← auth + OneLake API + cache + sync
 └──────────┬─────────────────────┘
            │ JSON-RPC over Unix socket
 ┌──────────┴─────────────────────┐
-│  ofe daemon (Go)               │  ← long-running: telemetry, polling, IPC
+│  ofem daemon (Go)               │  ← long-running: telemetry, polling, IPC
 │  +                             │
-│  ofe CLI (Go)                  │  ← setup, account mgmt, debug
+│  ofem CLI (Go)                  │  ← setup, account mgmt, debug
 └────────────────────────────────┘
 ```
 
@@ -57,13 +57,13 @@ Why three processes:
 - The **File Provider Extension** is sandboxed and short-lived — macOS launches it on demand for each Finder request. It cannot hold network sockets or run scheduled work.
 - The **daemon** handles everything the sandbox blocks: telemetry batching, adaptive polling, the Unix socket the CLI talks to, scheduled cache eviction.
 
-All three share state through a macOS App Group (`group.dev.debruyn.ofe`): config TOML, the SQLite metadata cache, the cached blob shards, and the per-account Keychain entries.
+All three share state through a macOS App Group (`group.dev.debruyn.ofem`): config TOML, the SQLite metadata cache, the cached blob shards, and the per-account Keychain entries.
 
 ## Source layout
 
 ```
 onelake-explorer-macos/
-├── cmd/ofe/                    # CLI entrypoint and subcommand wiring
+├── cmd/ofem/                    # CLI entrypoint and subcommand wiring
 ├── internal/
 │   ├── auth/                   # MSAL, Keychain cache, Account registry
 │   ├── api/                    # shared HTTP plumbing (retry, errors, token interface)
@@ -74,13 +74,13 @@ onelake-explorer-macos/
 │   ├── telemetry/              # Application Insights client + redaction
 │   ├── ipc/                    # JSON-RPC 2.0 over Unix socket
 │   ├── daemon/                 # background process + LaunchAgent management
-│   ├── config/                 # TOML on-disk config under ~/Library/Application Support/dev.debruyn.ofe/
+│   ├── config/                 # TOML on-disk config under ~/Library/Application Support/dev.debruyn.ofem/
 │   ├── logging/                # slog setup (CLI text vs daemon JSON-to-file)
 │   └── buildinfo/              # link-time version/commit/date/conn-string
 ├── apple/                      # Xcode project, host app, File Provider Extension (Phase 1+)
 ├── docs/                       # this site's source
 ├── scripts/                    # check-prereqs, seed-labels
-├── homebrew/                   # cask template (also lives in homebrew-ofe tap)
+├── homebrew/                   # cask template (also lives in homebrew-ofem tap)
 └── .github/                    # workflows, issue templates, FUNDING.yml
 ```
 

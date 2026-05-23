@@ -4,7 +4,7 @@ Project context for Claude Code sessions on this repo.
 
 ## What this project is
 
-OFE — OneLake File Explorer for macOS. Native Finder integration with Microsoft Fabric OneLake, distributed via Homebrew cask, written in Go (core + CLI) and Swift (host app + File Provider Extension). MIT licensed, open source from day one.
+OFEM — OneLake File Explorer for macOS. Native Finder integration with Microsoft Fabric OneLake, distributed via Homebrew cask, written in Go (core + CLI) and Swift (host app + File Provider Extension). MIT licensed, open source from day one.
 
 ## Hard constraints (do not violate)
 
@@ -35,36 +35,36 @@ OFE — OneLake File Explorer for macOS. Native Finder integration with Microsof
 - Trunk-based development; `main` protected; PR + passing CI required.
 - `gofmt` + `goimports` + `golangci-lint` mandatory.
 - TOML for config files; SQLite for the metadata cache.
-- Bundle ID and config namespace: `dev.debruyn.ofe`. Display name in Finder: `OneLake`.
+- Bundle ID and config namespace: `dev.debruyn.ofem`. Display name in Finder: `OneLake`.
 - Mount path: `~/OneLake/<alias>/<workspace>/<folder>?/<item>/...`.
 
 ## Where things live
 
-- `cmd/ofe/` — CLI entrypoint.
+- `cmd/ofem/` — CLI entrypoint.
 - `internal/auth/`, `internal/onelake/`, `internal/fabric/`, `internal/cache/`, `internal/sync/`, `internal/ipc/`, `internal/telemetry/`, `internal/config/`, `internal/log/` — Go core packages.
 - `core/` — cgo-exported façade for Swift.
 - `apple/` — Xcode project, host app, File Provider Extension.
 - `docs/` — all design docs.
-- `homebrew/` — cask template (also lives in separate `homebrew-ofe` tap repo for release publishing).
+- `homebrew/` — cask template (also lives in separate `homebrew-ofem` tap repo for release publishing).
 - `.github/` — workflows, issue templates, FUNDING.yml.
 
 ## Useful commands
 
 ```bash
 # Build CLI
-go build -o bin/ofe ./cmd/ofe
+go build -o bin/ofem ./cmd/ofem
 
 # Run unit tests
 go test ./...
 
 # Run integration tests (needs a real Fabric workspace)
-OFE_INTEGRATION=1 go test ./...
+OFEM_INTEGRATION=1 go test ./...
 
 # Lint
 golangci-lint run
 
 # Generate cgo header for the Swift bridge
-go build -buildmode=c-archive -o build/libofecore.a ./core
+go build -buildmode=c-archive -o build/libofemcore.a ./core
 ```
 
 ## Things to avoid

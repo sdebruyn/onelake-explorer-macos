@@ -1,13 +1,13 @@
 package auth
 
 // PlaceholderClientID is the Microsoft Entra App Registration client ID
-// embedded into source builds. It MUST be replaced with the real OFE
+// embedded into source builds. It MUST be replaced with the real OFEM
 // App Registration GUID before the first signed/notarized release.
 // Tracked at https://github.com/sdebruyn/onelake-explorer-macos/issues
 // (label: area:auth).
 const PlaceholderClientID = "00000000-0000-0000-0000-000000000000"
 
-// Scopes is the set of OAuth scopes OFE requests. The single scope
+// Scopes is the set of OAuth scopes OFEM requests. The single scope
 // covers both Fabric REST and OneLake DFS (audience storage.azure.com).
 var Scopes = []string{"https://storage.azure.com/user_impersonation"}
 

@@ -39,7 +39,7 @@ We use the **replication model**, which is what Apple recommends for cloud stora
        │                                                       │
        ▼                                                       ▼
 ┌────────────────────────────┐               ┌────────────────────────────┐
-│  OneLakeFileProvider.appex │               │  ofe daemon (Go)           │
+│  OneLakeFileProvider.appex │               │  ofem daemon (Go)           │
 │  (Swift, sandboxed)        │               │  - LaunchAgent             │
 │  - NSFileProvider*         │               │  - Periodic remote refresh │
 │  - Calls Go core via FFI   │               │  - Telemetry sender        │
@@ -48,7 +48,7 @@ We use the **replication model**, which is what Apple recommends for cloud stora
              │ cgo/C-ABI                                  │
              ▼                                            │
 ┌────────────────────────────┐                            │
-│  libofecore.a (Go)         │ ◄──────────────────────────┘
+│  libofemcore.a (Go)         │ ◄──────────────────────────┘
 │  - Auth (MSAL)             │   shared as static archive
 │  - OneLake DFS client      │
 │  - Cache (SQLite)          │
@@ -67,28 +67,28 @@ The host app and daemon are different processes because:
 
 ## Shared state via App Group
 
-All three processes share one App Group identifier `group.dev.debruyn.ofe`. That gives them:
-- A shared container at `~/Library/Group Containers/group.dev.debruyn.ofe/`.
-- A shared Keychain access group `group.dev.debruyn.ofe`.
+All three processes share one App Group identifier `group.dev.debruyn.ofem`. That gives them:
+- A shared container at `~/Library/Group Containers/group.dev.debruyn.ofem/`.
+- A shared Keychain access group `group.dev.debruyn.ofem`.
 
 What lives in the shared container:
 - `config.toml` — accounts, settings.
 - `cache.sqlite` — file metadata cache (paths, etags, mtimes, sync state).
 - `cache/<sha256>` — actual cached file blobs, sharded by hash prefix.
-- `log/ofe.log` — daemon log, rotated.
+- `log/ofem.log` — daemon log, rotated.
 
 What lives in the shared Keychain:
 - One item per account containing the MSAL serialized token cache.
 
 ## Domain model
 
-OFE registers **one File Provider domain per account-alias**:
-- `NSFileProviderDomain(identifier: "ofe.work", displayName: "OneLake — work", pathRelativeToDocumentStorage: "work")`.
-- `NSFileProviderDomain(identifier: "ofe.client-a", displayName: "OneLake — client-a", pathRelativeToDocumentStorage: "client-a")`.
+OFEM registers **one File Provider domain per account-alias**:
+- `NSFileProviderDomain(identifier: "ofem.work", displayName: "OneLake — work", pathRelativeToDocumentStorage: "work")`.
+- `NSFileProviderDomain(identifier: "ofem.client-a", displayName: "OneLake — client-a", pathRelativeToDocumentStorage: "client-a")`.
 
 Each domain shows up as a separate Finder sidebar entry. macOS handles the per-domain mount paths automatically; we don't control where in `~/Library/CloudStorage` they materialize. But we can also call `replicatedKnownFolder` API to surface them grouped under a single `~/OneLake/` parent if Apple's API allows — TODO during MVP design spike.
 
-Alternative considered: one global `ofe.main` domain with all accounts as top-level items inside. Rejected: per-domain sync state, per-domain sign-out, per-domain icon ("OneLake — work" tells you what you're looking at) are all easier with per-account domains.
+Alternative considered: one global `ofem.main` domain with all accounts as top-level items inside. Rejected: per-domain sync state, per-domain sign-out, per-domain icon ("OneLake — work" tells you what you're looking at) are all easier with per-account domains.
 
 ## Item identifiers
 
@@ -123,7 +123,7 @@ For change-detection on folders the user has visited recently, the daemon (not t
 The daemon and extension communicate over **XPC**, wrapped around the
 same JSON-RPC 2.0 protocol the CLI uses on its Unix-domain socket (see
 [`internal/ipc`](../internal/ipc)). The CLI ↔ daemon socket lives at
-`~/Library/Application Support/dev.debruyn.ofe/ofe.sock`, owner-only
+`~/Library/Application Support/dev.debruyn.ofem/ofem.sock`, owner-only
 (0600). The extension cannot reach that socket directly because of its
 sandbox, so its inbound RPCs come over a dedicated XPC service the
 host app registers on the App Group; the daemon brokers between the
@@ -166,7 +166,7 @@ Read path: we never read these from OneLake (they would never be there in the fi
 
 ## Sign-out / domain removal
 
-`ofe account remove <alias>`:
+`ofem account remove <alias>`:
 1. CLI sends RPC to daemon.
 2. Daemon calls `NSFileProviderManager.remove(domain)` to ask macOS to tear down the mount.
 3. macOS asks the user for confirmation if there are local-only changes (we cooperate).

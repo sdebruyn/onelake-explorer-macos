@@ -34,7 +34,7 @@ func shortSocketPath(t *testing.T) string {
 	if _, err := rand.Read(b[:]); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
-	dir := filepath.Join(os.TempDir(), "ofe-ipc-"+hex.EncodeToString(b[:]))
+	dir := filepath.Join(os.TempDir(), "ofem-ipc-"+hex.EncodeToString(b[:]))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

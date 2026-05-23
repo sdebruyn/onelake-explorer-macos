@@ -8,45 +8,45 @@ A phased roadmap from empty repo to a polished, signed, notarized `OneLake.app` 
 
 | Milestone | Deliverable |
 |---|---|
-| 0.1 | Repo scaffolding: `go.mod`, `cmd/ofe`, `internal/{auth,onelake,fabric,cache,sync,ipc,telemetry,config,log}`, basic `cobra` CLI with `ofe version`, `ofe help` |
-| 0.2 | `internal/auth`: MSAL Go integration, `ofe login` interactive browser flow, device-code fallback, Keychain-backed token cache, multi-account registry |
+| 0.1 | Repo scaffolding: `go.mod`, `cmd/ofem`, `internal/{auth,onelake,fabric,cache,sync,ipc,telemetry,config,log}`, basic `cobra` CLI with `ofem version`, `ofem help` |
+| 0.2 | `internal/auth`: MSAL Go integration, `ofem login` interactive browser flow, device-code fallback, Keychain-backed token cache, multi-account registry |
 | 0.3 | `internal/fabric`: typed client for `GET /workspaces`, `GET /workspaces/{id}/items`, `GET /workspaces/{id}/folders`; pagination |
 | 0.4 | `internal/onelake`: typed client for ADLS Gen2 path operations on the OneLake DFS endpoint; retries; `Retry-After`-aware throttling |
 | 0.5 | `internal/cache`: SQLite (`modernc.org/sqlite`) schema for file metadata; LRU blob cache with size cap |
-| 0.6 | Debug CLI: `ofe debug ls <alias:/workspace/item/path>`, `ofe debug cat`, `ofe debug stat` |
+| 0.6 | Debug CLI: `ofem debug ls <alias:/workspace/item/path>`, `ofem debug cat`, `ofem debug stat` |
 | 0.7 | `internal/telemetry`: App Insights client, opt-out behavior, schema, event emission helpers |
-| 0.8 | Unit tests for all internal packages; integration tests gated by `OFE_INTEGRATION=1` against a real Fabric workspace |
+| 0.8 | Unit tests for all internal packages; integration tests gated by `OFEM_INTEGRATION=1` against a real Fabric workspace |
 | 0.9 | CI: lint (`golangci-lint`), test (`go test`), commitlint, build verify |
 
-**Exit criteria**: I can run `ofe login work`, `ofe login client-a`, `ofe debug ls work:/`, and see all workspaces and items as plain text. All telemetry events fire and are queryable in App Insights. >80% coverage on `internal/*` packages.
+**Exit criteria**: I can run `ofem login work`, `ofem login client-a`, `ofem debug ls work:/`, and see all workspaces and items as plain text. All telemetry events fire and are queryable in App Insights. >80% coverage on `internal/*` packages.
 
 **Estimate**: 3–5 weeks of focused part-time work.
 
 ## Phase 1 — MVP: signed `.app` with File Provider Extension
 
-**Goal**: first public release. Users do `brew install --cask ofe`, run `ofe login`, and see their OneLake in Finder.
+**Goal**: first public release. Users do `brew install --cask ofem`, run `ofem login`, and see their OneLake in Finder.
 
 | Milestone | Deliverable |
 |---|---|
 | 1.1 | `core/`: cgo-exported façade with C-ABI symbols and generated header for Swift |
 | 1.2 | `apple/OneLake.xcodeproj`: Swift host app skeleton; entitlements (App Sandbox, App Group, network client, Keychain access group) |
 | 1.3 | `apple/OneLakeFileProvider.appex`: extension skeleton, manifest, entitlements; minimal `NSFileProviderReplicatedExtension` returning an empty root |
-| 1.4 | Bridge `OneLakeFileProvider` → `libofecore`: account list and root container enumeration via Go core |
+| 1.4 | Bridge `OneLakeFileProvider` → `libofemcore`: account list and root container enumeration via Go core |
 | 1.5 | Workspace and item enumeration; folder enumeration; file metadata |
 | 1.6 | File content fetching (`fetchContents`) with streaming and range support |
 | 1.7 | File upload / modify / delete; folder create / delete |
 | 1.8 | macOS metadata filtering (`.DS_Store` etc) in upload path |
 | 1.9 | Adaptive-polling refresh driven by the daemon → `NSFileProviderManager.signalEnumerator` |
 | 1.10 | Per-account domain registration; multi-account end-to-end |
-| 1.11 | `ofe daemon` subcommands (`install`, `uninstall`, `start`, `stop`, `status`); LaunchAgent plist |
+| 1.11 | `ofem daemon` subcommands (`install`, `uninstall`, `start`, `stop`, `status`); LaunchAgent plist |
 | 1.12 | Apple Developer Program enrollment; Developer ID Application cert; App Store Connect API key |
 | 1.13 | Signing + notarization in GitHub Actions; DMG via `create-dmg` |
-| 1.14 | `homebrew-ofe` tap; cask formula; GoReleaser hookup |
-| 1.15 | First-run disclosure; `ofe config set telemetry off` works |
+| 1.14 | `homebrew-ofem` tap; cask formula; GoReleaser hookup |
+| 1.15 | First-run disclosure; `ofem config set telemetry off` works |
 | 1.16 | Beta testing on Sam's own Macs + 2-3 willing volunteers |
 | 1.17 | Tag `v2026.MM.1`; first public release; README badges go green |
 
-**Exit criteria**: `brew install --cask ofe` on a clean Mac succeeds; `ofe login`; OneLake appears in Finder with all configured accounts; opening, editing, creating, deleting files all work and round-trip to OneLake. App Insights shows events from external installs.
+**Exit criteria**: `brew install --cask ofem` on a clean Mac succeeds; `ofem login`; OneLake appears in Finder with all configured accounts; opening, editing, creating, deleting files all work and round-trip to OneLake. App Insights shows events from external installs.
 
 **Estimate**: 6–10 weeks after Phase 0 is done.
 
@@ -62,7 +62,7 @@ A phased roadmap from empty repo to a polished, signed, notarized `OneLake.app` 
 | 2.4 | Settings screen: telemetry toggle, cache max size, parallelism, log level |
 | 2.5 | macOS notification on certain error classes (configurable; default off per Sam's preference) |
 
-**Exit criteria**: a non-technical user can install OFE, sign in, and use OneLake in Finder without ever touching Terminal.
+**Exit criteria**: a non-technical user can install OFEM, sign in, and use OneLake in Finder without ever touching Terminal.
 
 **Estimate**: 4–6 weeks after Phase 1.
 
@@ -76,7 +76,7 @@ A phased roadmap from empty repo to a polished, signed, notarized `OneLake.app` 
 | 3.4 | Bandwidth throttling controls (max up/down KBps, schedule) |
 | 3.5 | Performance audit; reduce memory footprint of the daemon to <50 MB at idle |
 | 3.6 | Accessibility audit: VoiceOver, keyboard navigation in host app and menu bar |
-| 3.7 | Documentation site on Zensical at `https://ofe.debruyn.dev` or similar |
+| 3.7 | Documentation site on Zensical at `https://ofem.debruyn.dev` or similar |
 
 **Estimate**: ongoing; no fixed end.
 

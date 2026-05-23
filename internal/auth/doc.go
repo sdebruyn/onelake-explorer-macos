@@ -1,4 +1,4 @@
-// Package auth manages Microsoft Entra ID authentication for OFE.
+// Package auth manages Microsoft Entra ID authentication for OFEM.
 //
 // Surface area:
 //   - The [TokenProvider] interface, the contract that the rest of the
@@ -9,7 +9,7 @@
 //     macOS, with [MemoryKeychain] for tests.
 //   - A Keychain-backed MSAL token cache via [KeychainCache], which
 //     adapts our [Keychain] to MSAL Go's cache.ExportReplace.
-//   - The [Registry], which persists accounts to the OFE TOML config and
+//   - The [Registry], which persists accounts to the OFEM TOML config and
 //     per-account opaque secrets to the keychain, and implements
 //     [TokenProvider] via MSAL silent acquisition.
 //   - The interactive-browser and device-code login flows

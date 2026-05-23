@@ -1,4 +1,4 @@
-# Issue and PR labels for OFE. Seed via scripts/seed-labels.sh which uses gh.
+# Issue and PR labels for OFEM. Seed via scripts/seed-labels.sh which uses gh.
 # Keep this list small and meaningful — labels that are never used add noise.
 
 # Type — what kind of issue/PR is this.
@@ -33,7 +33,7 @@
   description: "Swift File Provider Extension and host app"
 - name: "area:cli"
   color: "fbca04"
-  description: "cmd/ofe — the command-line tool"
+  description: "cmd/ofem — the command-line tool"
 - name: "area:daemon"
   color: "fbca04"
   description: "Background daemon, LaunchAgent, IPC"

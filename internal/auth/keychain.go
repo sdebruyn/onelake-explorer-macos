@@ -13,7 +13,7 @@ import (
 )
 
 // Keychain stores small per-account secrets in the macOS Keychain under
-// the service name "dev.debruyn.ofe" (taken from [config.BundleID]).
+// the service name "dev.debruyn.ofem" (taken from [config.BundleID]).
 //
 // The byte payload is treated as opaque: the auth/MSAL layer (added in a
 // follow-up change) serialises its token cache into the value, but the
@@ -39,9 +39,9 @@ type Keychain interface {
 	Delete(account string) error
 }
 
-// keychainService is the Keychain service name shared by all OFE
+// keychainService is the Keychain service name shared by all OFEM
 // processes. It matches the reverse-DNS bundle identifier so that
-// Keychain Access.app groups OFE items together.
+// Keychain Access.app groups OFEM items together.
 const keychainService = config.BundleID
 
 // NewKeychain returns a [Keychain] backed by the macOS Keychain via

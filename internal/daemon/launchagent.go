@@ -14,7 +14,7 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
 )
 
-// LaunchAgentLabel is the launchd label for the OFE daemon. macOS uses
+// LaunchAgentLabel is the launchd label for the OFEM daemon. macOS uses
 // it to uniquely identify the LaunchAgent across bootstrap/bootout
 // commands; it must match the CFBundleIdentifier-style key inside the
 // plist.
@@ -30,9 +30,9 @@ const LaunchAgentFileName = LaunchAgentLabel + ".plist"
 type LaunchAgentParams struct {
 	// Label is the launchd Label key. Always [LaunchAgentLabel].
 	Label string
-	// ExecutablePath is the absolute path to the ofe binary the agent
+	// ExecutablePath is the absolute path to the ofem binary the agent
 	// should run. Normally the binary's own resolved path so an
-	// `ofe daemon install` from /usr/local/bin survives a `brew
+	// `ofem daemon install` from /usr/local/bin survives a `brew
 	// upgrade` that replaces the underlying file.
 	ExecutablePath string
 	// StdoutPath is where launchd redirects the daemon's stdout.
@@ -70,7 +70,7 @@ const launchAgentTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-// ResolveLaunchAgentParams builds a [LaunchAgentParams] from the OFE
+// ResolveLaunchAgentParams builds a [LaunchAgentParams] from the OFEM
 // paths and the currently-running executable's absolute location.
 //
 // execPath, when non-empty, overrides os.Executable; used in tests.
@@ -180,7 +180,7 @@ func realLaunchctl(args []string) error {
 
 // SetLaunchctlForTest swaps the launchctl invoker for the duration of
 // the test and restores the previous one on cleanup. It is exposed for
-// cross-package tests (cmd/ofe/cli/daemon_test.go) that exercise the
+// cross-package tests (cmd/ofem/cli/daemon_test.go) that exercise the
 // install/uninstall/start/stop CLI commands without touching the real
 // launchd. Production code must never call it; the parameter `t`
 // guarantees that.
@@ -265,7 +265,7 @@ func UninstallLaunchAgent(home string) error {
 }
 
 // StartLaunchAgent kickstarts the agent, restarting it if already
-// running. Useful after `ofe daemon install` to launch the daemon
+// running. Useful after `ofem daemon install` to launch the daemon
 // without waiting for the next login.
 func StartLaunchAgent() error {
 	target := launchctlTarget() + "/" + LaunchAgentLabel

@@ -156,7 +156,7 @@ type spillFile struct {
 
 // newSpillFile creates an empty temp file with permissions 0o600.
 func newSpillFile() (*spillFile, error) {
-	f, err := os.CreateTemp("", "ofe-sync-spill-*")
+	f, err := os.CreateTemp("", "ofem-sync-spill-*")
 	if err != nil {
 		return nil, fmt.Errorf("sync: create spill: %w", err)
 	}

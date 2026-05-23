@@ -2,7 +2,7 @@
 
 ## Phase 0 (developer-only)
 
-No distribution. `go build ./cmd/ofe` produces a local binary for development. No Apple Developer artifacts required.
+No distribution. `go build ./cmd/ofem` produces a local binary for development. No Apple Developer artifacts required.
 
 ## Phase 1+ — Homebrew cask of the macOS `.app`
 
@@ -11,7 +11,7 @@ No distribution. `go build ./cmd/ofe` produces a local binary for development. N
 A single signed and notarized DMG containing `OneLake.app`. The `.app` bundles:
 - The Swift host app (`OneLake`).
 - The Swift File Provider Extension (`OneLakeFileProvider.appex`).
-- The Go CLI binary (`ofe`), embedded at `OneLake.app/Contents/Resources/bin/ofe`.
+- The Go CLI binary (`ofem`), embedded at `OneLake.app/Contents/Resources/bin/ofem`.
 - The Go core library is statically linked into the Swift binaries; not shipped separately.
 
 ### Build pipeline
@@ -23,8 +23,8 @@ A single signed and notarized DMG containing `OneLake.app`. The `.app` bundles:
 2. setup-go (1.26.x)
 3. setup-xcode (latest 26.x)
 4. cache go build, xcodebuild derived data
-5. go build -buildmode=c-archive -o build/libofecore.a ./core
-6. go build -o build/ofe ./cmd/ofe
+5. go build -buildmode=c-archive -o build/libofemcore.a ./core
+6. go build -o build/ofem ./cmd/ofem
 7. xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
 8. xcodebuild -exportArchive ... -exportPath build/Export
 9. codesign --force --options runtime --sign "$DEVELOPER_ID_APPLICATION" \
@@ -35,15 +35,15 @@ A single signed and notarized DMG containing `OneLake.app`. The `.app` bundles:
         --issuer "$NOTARY_ISSUER_ID"
 12. xcrun stapler staple build/OneLake-$VERSION.dmg
 13. goreleaser release (uploads DMG + checksums to GH Releases)
-14. goreleaser bumps homebrew-ofe tap repo with new cask version
+14. goreleaser bumps homebrew-ofem tap repo with new cask version
 ```
 
 ### Homebrew cask
 
-We maintain a separate tap repository `homebrew-ofe`. The cask:
+We maintain a separate tap repository `homebrew-ofem`. The cask:
 
 ```ruby
-cask "ofe" do
+cask "ofem" do
   arch arm: "arm64"
   version "2026.05.1"
   sha256 "abc123..."
@@ -57,33 +57,33 @@ cask "ofe" do
   depends_on arch: :arm64
 
   app "OneLake.app"
-  binary "#{appdir}/OneLake.app/Contents/Resources/bin/ofe"
+  binary "#{appdir}/OneLake.app/Contents/Resources/bin/ofem"
 
   postflight do
     # Trigger launchd registration on first install
-    system_command "#{appdir}/OneLake.app/Contents/Resources/bin/ofe",
+    system_command "#{appdir}/OneLake.app/Contents/Resources/bin/ofem",
                    args: ["daemon", "install"],
                    sudo: false
   end
 
-  uninstall launchctl: "dev.debruyn.ofe.daemon",
-            quit:      "dev.debruyn.ofe.app",
+  uninstall launchctl: "dev.debruyn.ofem.daemon",
+            quit:      "dev.debruyn.ofem.app",
             delete:    [
-              "~/Library/LaunchAgents/dev.debruyn.ofe.daemon.plist",
+              "~/Library/LaunchAgents/dev.debruyn.ofem.daemon.plist",
             ]
 
   zap trash: [
-    "~/Library/Application Support/dev.debruyn.ofe",
-    "~/Library/Caches/dev.debruyn.ofe",
-    "~/Library/Logs/dev.debruyn.ofe",
-    "~/Library/Preferences/dev.debruyn.ofe.plist",
-    "~/Library/Group Containers/group.dev.debruyn.ofe",
+    "~/Library/Application Support/dev.debruyn.ofem",
+    "~/Library/Caches/dev.debruyn.ofem",
+    "~/Library/Logs/dev.debruyn.ofem",
+    "~/Library/Preferences/dev.debruyn.ofem.plist",
+    "~/Library/Group Containers/group.dev.debruyn.ofem",
     "~/Library/CloudStorage/OneLake-*",
   ]
 end
 ```
 
-`zap` runs on `brew uninstall --zap ofe` and wipes user data; default `brew uninstall` preserves it.
+`zap` runs on `brew uninstall --zap ofem` and wipes user data; default `brew uninstall` preserves it.
 
 ### Versioning
 
@@ -104,10 +104,10 @@ We need:
 
 `apple/OneLake.entitlements`:
 - `com.apple.security.app-sandbox` = true.
-- `com.apple.security.application-groups` = `[group.dev.debruyn.ofe]`.
+- `com.apple.security.application-groups` = `[group.dev.debruyn.ofem]`.
 - `com.apple.security.network.client` = true.
 - `com.apple.security.files.user-selected.read-write` = true.
-- `com.apple.security.keychain-access-groups` = `[$(AppIdentifierPrefix)group.dev.debruyn.ofe]`.
+- `com.apple.security.keychain-access-groups` = `[$(AppIdentifierPrefix)group.dev.debruyn.ofem]`.
 
 `apple/OneLakeFileProvider.entitlements` adds:
 - `com.apple.developer.file-provider.testing-mode` = true (in dev builds only).
@@ -115,17 +115,17 @@ We need:
 
 ### GoReleaser config (`.goreleaser.yaml`)
 
-GoReleaser handles the Go binary part (`ofe` CLI) and Release upload. The Xcode part is a separate workflow step that produces the DMG which GoReleaser then attaches as a release artifact.
+GoReleaser handles the Go binary part (`ofem` CLI) and Release upload. The Xcode part is a separate workflow step that produces the DMG which GoReleaser then attaches as a release artifact.
 
 ```yaml
-project_name: ofe
+project_name: ofem
 before:
   hooks:
     - go mod tidy
 builds:
-  - id: ofe-cli
-    main: ./cmd/ofe
-    binary: ofe
+  - id: ofem-cli
+    main: ./cmd/ofem
+    binary: ofem
     env:
       - CGO_ENABLED=1
     goos: [darwin]
@@ -133,7 +133,7 @@ builds:
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
-      - -X main.appInsightsConnString={{.Env.OFE_APPINSIGHTS_CONNSTRING}}
+      - -X main.appInsightsConnString={{.Env.OFEM_APPINSIGHTS_CONNSTRING}}
 release:
   github:
     owner: sdebruyn
@@ -144,14 +144,14 @@ release:
 brews:
   - repository:
       owner: sdebruyn
-      name: homebrew-ofe
+      name: homebrew-ofem
     homepage: https://github.com/sdebruyn/onelake-explorer-macos
     description: OneLake File Explorer for macOS CLI
     test: |
-      system "#{bin}/ofe", "--version"
+      system "#{bin}/ofem", "--version"
 ```
 
-Note: the `brews` block is for the **CLI-only** formula in `homebrew-ofe` (for users who want just the CLI without the full `.app`). The `.app` is shipped via the **cask** which is updated by a separate workflow step.
+Note: the `brews` block is for the **CLI-only** formula in `homebrew-ofem` (for users who want just the CLI without the full `.app`). The `.app` is shipped via the **cask** which is updated by a separate workflow step.
 
 ### Pre-release / beta channel
 
@@ -159,13 +159,13 @@ No formal beta tap. Pre-release versions are tagged like `v2026.05.0-rc.1` and G
 
 ### Update mechanism
 
-`brew upgrade --cask ofe`. No in-app update check; no Sparkle. The daemon logs the running version on startup so users can compare against `brew info ofe` output.
+`brew upgrade --cask ofem`. No in-app update check; no Sparkle. The daemon logs the running version on startup so users can compare against `brew info ofem` output.
 
 ### Uninstall
 
 ```bash
-brew uninstall --cask ofe          # removes app, keeps data
-brew uninstall --cask --zap ofe    # removes app + all user data
+brew uninstall --cask ofem          # removes app, keeps data
+brew uninstall --cask --zap ofem    # removes app + all user data
 ```
 
 The `uninstall launchctl:` directive in the cask stops the daemon. The `app` directive removes `OneLake.app`. `zap` removes everything else.
