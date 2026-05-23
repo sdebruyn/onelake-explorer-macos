@@ -30,6 +30,10 @@ const (
 	// well under Azure's per-append limit (100 MiB) and lines up neatly
 	// with typical filesystem block sizes.
 	chunkSize = 4 * 1024 * 1024
+	// maxPaginationPages caps how many pages ListPath will walk before
+	// giving up. Cheap insurance against a misbehaving server that keeps
+	// returning the same continuation header forever.
+	maxPaginationPages = 1000
 )
 
 // Options configures Client construction. Only TokenProvider is required.
@@ -89,12 +93,11 @@ type rawEntry struct {
 	LastModified  string `json:"lastModified,omitempty"`
 }
 
-// ListResult is one page of ListPath. If Continuation is non-empty,
-// pass it back to ListPath to fetch the next page; the helper here
-// already follows pagination, so end-users rarely see it directly.
+// ListResult is the full set of entries returned by ListPath. ListPath
+// fully resolves pagination internally, so callers never need a
+// continuation cursor.
 type ListResult struct {
-	Entries      []PathEntry
-	Continuation string
+	Entries []PathEntry
 }
 
 // PathProperties is the parsed HEAD response on a file or directory.
@@ -123,7 +126,11 @@ func (c *Client) ListPath(ctx context.Context, alias, workspaceGUID, itemGUID, d
 
 	out := &ListResult{}
 	cont := ""
-	for {
+	for page := 0; ; page++ {
+		if page >= maxPaginationPages {
+			return nil, fmt.Errorf("onelake: pagination exceeded %d pages for %s", maxPaginationPages, dir)
+		}
+
 		q := url.Values{}
 		q.Set("resource", "filesystem")
 		q.Set("recursive", strconv.FormatBool(recursive))
@@ -139,27 +146,30 @@ func (c *Client) ListPath(ctx context.Context, alias, workspaceGUID, itemGUID, d
 			return nil, err
 		}
 
-		var page struct {
+		var pageBody struct {
 			Paths []rawEntry `json:"paths"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		if err := json.NewDecoder(resp.Body).Decode(&pageBody); err != nil {
 			_ = resp.Body.Close()
 			return nil, fmt.Errorf("onelake: decode list: %w", err)
 		}
 		nextCont := resp.Header.Get("x-ms-continuation")
 		_ = resp.Body.Close()
 
-		for _, p := range page.Paths {
+		for _, p := range pageBody.Paths {
 			out.Entries = append(out.Entries, convertEntry(p))
 		}
 		if nextCont == "" {
-			out.Continuation = ""
 			return out, nil
+		}
+		if nextCont == cont {
+			return nil, fmt.Errorf("onelake: server returned identical continuation token twice for %s", dir)
 		}
 		cont = nextCont
 		slog.Debug("onelake: list pagination",
 			"workspace", workspaceGUID, "item", itemGUID, "dir", directory,
 			"received", len(out.Entries),
+			"page", page+1,
 		)
 	}
 }

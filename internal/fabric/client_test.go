@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -223,6 +224,124 @@ func TestListWorkspaces_429RetriedThenSucceeds(t *testing.T) {
 	}
 	if count != 3 {
 		t.Errorf("call count = %d, want 3 (2x 429 + 1x 200)", count)
+	}
+}
+
+// TestListWorkspaces_FollowsContinuationURI exercises the
+// continuationUri branch — admin/search endpoints return a full URL
+// instead of a token, and the client must follow it.
+func TestListWorkspaces_FollowsContinuationURI(t *testing.T) {
+	c := newTestClient(t)
+
+	page := 0
+	httpmock.RegisterResponder("GET", `=~^`+testBase+`/v1/workspaces(\?.*)?$`,
+		func(req *http.Request) (*http.Response, error) {
+			page++
+			switch page {
+			case 1:
+				if req.URL.RawQuery != "" {
+					t.Errorf("first page got query=%q, want empty", req.URL.RawQuery)
+				}
+				return httpmock.NewJsonResponse(200, map[string]any{
+					"value": []map[string]any{
+						{"id": "ws1", "displayName": "Alpha", "type": "Workspace"},
+					},
+					"continuationUri": testBase + "/v1/workspaces?cursor=abc",
+				})
+			case 2:
+				if got := req.URL.Query().Get("cursor"); got != "abc" {
+					t.Errorf("second page cursor = %q, want abc", got)
+				}
+				return httpmock.NewJsonResponse(200, map[string]any{
+					"value": []map[string]any{
+						{"id": "ws2", "displayName": "Beta", "type": "Workspace"},
+					},
+				})
+			default:
+				t.Fatalf("unexpected page %d", page)
+				return nil, nil
+			}
+		})
+
+	got, err := c.ListWorkspaces(context.Background(), "work")
+	if err != nil {
+		t.Fatalf("ListWorkspaces: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "ws1" || got[1].ID != "ws2" {
+		t.Errorf("paged result wrong: %+v", got)
+	}
+}
+
+// TestListWorkspaces_ContinuationURIDifferentHost makes sure we refuse
+// to chase a URI off the configured Fabric host.
+func TestListWorkspaces_ContinuationURIDifferentHost(t *testing.T) {
+	c := newTestClient(t)
+
+	httpmock.RegisterResponder("GET", testBase+"/v1/workspaces",
+		httpmock.NewJsonResponderOrPanic(200, map[string]any{
+			"value":           []map[string]any{{"id": "ws1"}},
+			"continuationUri": "https://evil.example.com/v1/workspaces?cursor=x",
+		}))
+
+	_, err := c.ListWorkspaces(context.Background(), "work")
+	if err == nil {
+		t.Fatal("expected error for cross-host continuationUri")
+	}
+	if !strings.Contains(err.Error(), "does not match base") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestListWorkspaces_RepeatedContinuationToken protects against a
+// runaway server: identical token twice in a row → loud error.
+func TestListWorkspaces_RepeatedContinuationToken(t *testing.T) {
+	c := newTestClient(t)
+
+	httpmock.RegisterResponder("GET", `=~^`+testBase+`/v1/workspaces(\?.*)?$`,
+		httpmock.NewJsonResponderOrPanic(200, map[string]any{
+			"value":             []map[string]any{{"id": "ws1"}},
+			"continuationToken": "STUCK",
+		}))
+
+	_, err := c.ListWorkspaces(context.Background(), "work")
+	if err == nil {
+		t.Fatal("expected error for repeated continuation token")
+	}
+	if !strings.Contains(err.Error(), "identical continuationToken") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestRelativeToBase covers the URI-rewriting helper directly.
+func TestRelativeToBase(t *testing.T) {
+	base := "https://api.fabric.microsoft.com"
+	cases := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{"absolute same host", base + "/v1/workspaces?cursor=abc", "/v1/workspaces?cursor=abc", false},
+		{"relative path", "/v1/workspaces?cursor=abc", "/v1/workspaces?cursor=abc", false},
+		{"different host", "https://other.example.com/v1/workspaces", "", true},
+		{"path-only", "/v1/items", "/v1/items", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := relativeToBase(base, c.raw)
+			if c.wantErr {
+				if err == nil {
+					t.Errorf("want error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 

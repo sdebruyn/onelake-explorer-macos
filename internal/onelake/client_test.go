@@ -513,6 +513,27 @@ func TestRead_EscapesPathWithSpaces(t *testing.T) {
 	}
 }
 
+// TestListPath_RepeatedContinuationToken guards against a runaway
+// server: if the same continuation token comes back twice in a row the
+// client must break out with a clear error instead of looping forever.
+func TestListPath_RepeatedContinuationToken(t *testing.T) {
+	c := newTestClient(t)
+	httpmock.RegisterResponder("GET", "=~^"+testBase+"/"+wsGUID+`\?.*$`,
+		func(req *http.Request) (*http.Response, error) {
+			resp := httpmock.NewBytesResponse(200, []byte(`{"paths":[{"name":"`+itemGUID+`/Files/a"}]}`))
+			resp.Header.Set("x-ms-continuation", "STUCK")
+			return resp, nil
+		})
+
+	_, err := c.ListPath(context.Background(), "work", wsGUID, itemGUID, "Files", false)
+	if err == nil {
+		t.Fatal("expected error on repeated continuation token, got nil")
+	}
+	if !strings.Contains(err.Error(), "identical continuation token") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
 func TestValidationErrors(t *testing.T) {
 	c := newTestClient(t)
 	ctx := context.Background()
