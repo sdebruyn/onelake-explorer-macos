@@ -73,3 +73,6 @@ ofe.sock
 # Test artifacts
 testdata/tmp/
 .claude/
+
+# Zensical docs build output
+docs_build/site/
