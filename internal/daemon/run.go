@@ -167,8 +167,14 @@ func Run(ctx context.Context, opts RunOptions) error {
 		})
 	}
 	defer func() {
+		// Bound both the final app_stop emission and the sink drain by a
+		// single 2-second deadline so a misbehaving network never blocks
+		// daemon shutdown. Track is non-blocking (it just enqueues), but
+		// Close performs the actual flush — sharing the context ensures
+		// the flush picks up the app_stop event we just queued.
 		closeCtx, cancel := context.WithTimeout(context.Background(), telemetryShutdownTimeout)
 		defer cancel()
+		tel.Track(telemetry.Event{Name: "app_stop"})
 		if err := tel.Close(closeCtx); err != nil {
 			logger.Warn("telemetry close error", slog.Any("err", err))
 		}
@@ -232,7 +238,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	pollerDone := make(chan struct{})
 	go func() {
 		defer close(pollerDone)
-		runAdaptivePoller(runCtx, c, engine, tel, logger, engine.RecentFolderTTL(), pollerHotWindow)
+		runAdaptivePoller(runCtx, c, engine, tel, registry, logger, engine.RecentFolderTTL(), pollerHotWindow)
 	}()
 
 	// Block until either signal cancellation or the listener exits
