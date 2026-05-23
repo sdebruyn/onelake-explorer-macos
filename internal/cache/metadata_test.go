@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -382,6 +383,133 @@ func TestHotItems_EmptyWhenNothingFresh(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("HotItems = %+v, want empty", got)
+	}
+}
+
+// TestHotItems_UsesIndex guards the adaptive-poller hot-path against
+// regressing into a full-table scan over path_metadata. We assert that
+// the SQLite query planner picks idx_pm_last_accessed (added in schema
+// v2) for the HotItems query.
+//
+// The existing idx_pm_blob_lru is partial (WHERE blob_sha256 != '') and
+// cannot serve a predicate that does not also constrain blob_sha256.
+// Without the non-partial index added in v2, the planner falls back to
+// scanning either path_metadata directly or the idx_pm_children covering
+// index — both of which require evaluating the WHERE predicate on every
+// row. The new index lets the planner do a range seek on last_accessed_ns.
+//
+// We use EXPLAIN QUERY PLAN rather than a timing-based test because
+// SQLite handles even 100k rows comfortably under 100ms on modern
+// hardware, which would let a regression slip through silently.
+func TestHotItems_UsesIndex(t *testing.T) {
+	t.Parallel()
+	c := newCache(t)
+	ctx := context.Background()
+
+	// Seed and ANALYZE so the planner has stats to base its choice on.
+	mustPut(t, c, ctx, Entry{
+		Key: Key{
+			AccountAlias: "work",
+			WorkspaceID:  "ws-1",
+			ItemID:       "item-A",
+			Path:         "Files/a.csv",
+		},
+		ParentPath:   "Files",
+		Name:         "a.csv",
+		LastAccessed: time.Now().UTC(),
+		SyncedAt:     time.Now().UTC(),
+	})
+	if _, err := c.db.ExecContext(ctx, `ANALYZE`); err != nil {
+		t.Fatalf("ANALYZE: %v", err)
+	}
+
+	rows, err := c.db.QueryContext(ctx, `EXPLAIN QUERY PLAN
+SELECT DISTINCT account_alias, workspace_id, item_id
+FROM path_metadata
+INDEXED BY idx_pm_last_accessed
+WHERE last_accessed_ns >= ? AND last_accessed_ns > 0
+ORDER BY account_alias, workspace_id, item_id`, timeToNs(time.Now().UTC().Add(-time.Hour)))
+	if err != nil {
+		// INDEXED BY raises an error if the index is missing or cannot
+		// satisfy the query — that's exactly the regression we want to
+		// surface. The corresponding query in metadata.go does not pin
+		// the index, but we use INDEXED BY here as the assertion vehicle.
+		t.Fatalf("HotItems cannot use idx_pm_last_accessed: %v", err)
+	}
+	_ = rows.Close()
+}
+
+// TestHotItems_FastOnLargeTable is a smoke check that the production
+// HotItems query (without INDEXED BY) completes well under the poller
+// cadence on a populated database. The 1-second ceiling is intentionally
+// generous; the real assertion that the right index exists lives in
+// TestHotItems_UsesIndex.
+func TestHotItems_FastOnLargeTable(t *testing.T) {
+	t.Parallel()
+	c := newCache(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	old := now.Add(-24 * time.Hour)
+
+	// Seed cold rows in a single transaction for speed.
+	const coldRows = 20_000
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO path_metadata (
+    account_alias, workspace_id, item_id, path,
+    parent_path, name, is_dir,
+    content_length, etag, last_modified_ns, content_type,
+    blob_sha256, blob_size,
+    last_accessed_ns, synced_at_ns
+) VALUES (?, ?, ?, ?, '', ?, 0, 0, '', 0, '', '', 0, ?, ?)
+`)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	for i := 0; i < coldRows; i++ {
+		path := "p/" + strconv.Itoa(i)
+		if _, err := stmt.ExecContext(ctx,
+			"work", "ws-cold", "item-cold-"+strconv.Itoa(i%50), path,
+			path, timeToNs(old), timeToNs(old),
+		); err != nil {
+			t.Fatalf("insert cold %d: %v", i, err)
+		}
+	}
+	_ = stmt.Close()
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		mustPut(t, c, ctx, Entry{
+			Key: Key{
+				AccountAlias: "work",
+				WorkspaceID:  "ws-hot",
+				ItemID:       "item-hot-" + strconv.Itoa(i),
+				Path:         "f.csv",
+			},
+			Name:         "f.csv",
+			LastAccessed: now,
+			SyncedAt:     now,
+		})
+	}
+
+	cutoff := now.Add(-30 * time.Minute)
+	start := time.Now()
+	got, err := c.HotItems(ctx, cutoff)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("HotItems: %v", err)
+	}
+	if len(got) != 5 {
+		t.Errorf("HotItems len = %d, want 5", len(got))
+	}
+	if elapsed > time.Second {
+		t.Errorf("HotItems on %d cold rows took %v; want <1s", coldRows, elapsed)
 	}
 }
 
