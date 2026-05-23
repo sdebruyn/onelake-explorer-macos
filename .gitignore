@@ -72,3 +72,4 @@ ofe.sock
 
 # Test artifacts
 testdata/tmp/
+.claude/
