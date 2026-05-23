@@ -1,0 +1,207 @@
+package auth
+
+import (
+	"bytes"
+	"errors"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
+)
+
+// newTestStore returns a fresh, empty config.Store rooted at a temp HOME
+// so that each test gets its own isolated config file.
+func newTestStore(t *testing.T) *config.Store {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	store, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	return store
+}
+
+func sampleAccount(alias string) Account {
+	return Account{
+		Alias:         alias,
+		HomeAccountID: "object-id." + alias,
+		Username:      alias + "@example.com",
+		TenantID:      "11111111-2222-3333-4444-555555555555",
+		TenantName:    "Example Org",
+		AddedAt:       time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
+	}
+}
+
+func TestRegistryLifecycle(t *testing.T) {
+	store := newTestStore(t)
+	kc := NewMemoryKeychain()
+	reg := NewRegistry(store, kc)
+
+	// Initially empty.
+	if got := reg.List(); len(got) != 0 {
+		t.Fatalf("List on empty registry = %v, want empty", got)
+	}
+	if alias, ok := reg.Default(); ok || alias != "" {
+		t.Fatalf("Default on empty = (%q, %v), want (\"\", false)", alias, ok)
+	}
+
+	// Add two accounts in non-alpha order.
+	work := sampleAccount("work")
+	client := sampleAccount("client-a")
+	if err := reg.Add(work, []byte("work-secret")); err != nil {
+		t.Fatalf("Add work: %v", err)
+	}
+	if err := reg.Add(client, []byte("client-secret")); err != nil {
+		t.Fatalf("Add client-a: %v", err)
+	}
+
+	// List is alphabetically sorted.
+	list := reg.List()
+	if len(list) != 2 {
+		t.Fatalf("List len = %d, want 2", len(list))
+	}
+	if list[0].Alias != "client-a" || list[1].Alias != "work" {
+		t.Errorf("List order = [%q, %q], want [client-a, work]", list[0].Alias, list[1].Alias)
+	}
+
+	// Get round-trips the account and its secret.
+	gotAcc, gotSecret, err := reg.Get("work")
+	if err != nil {
+		t.Fatalf("Get work: %v", err)
+	}
+	if gotAcc.Username != work.Username || gotAcc.TenantID != work.TenantID {
+		t.Errorf("Get work account = %+v, want %+v", gotAcc, work)
+	}
+	if !gotAcc.AddedAt.Equal(work.AddedAt) {
+		t.Errorf("AddedAt = %v, want %v", gotAcc.AddedAt, work.AddedAt)
+	}
+	if !bytes.Equal(gotSecret, []byte("work-secret")) {
+		t.Errorf("Get work secret = %q, want %q", gotSecret, "work-secret")
+	}
+
+	// SetDefault + Default.
+	if err := reg.SetDefault("work"); err != nil {
+		t.Fatalf("SetDefault: %v", err)
+	}
+	if alias, ok := reg.Default(); !ok || alias != "work" {
+		t.Errorf("Default = (%q, %v), want (work, true)", alias, ok)
+	}
+
+	// SetDefault on unknown alias is rejected.
+	err = reg.SetDefault("nope")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("SetDefault unknown err = %v, want errors.Is os.ErrNotExist", err)
+	}
+
+	// Removing the default clears it.
+	if err := reg.Remove("work"); err != nil {
+		t.Fatalf("Remove work: %v", err)
+	}
+	if alias, ok := reg.Default(); ok {
+		t.Errorf("Default after removing default = (%q, %v), want (\"\", false)", alias, ok)
+	}
+	if _, err := kc.Get("work"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("keychain still has entry after Remove: %v", err)
+	}
+
+	// Remove the remaining account, list is empty again.
+	if err := reg.Remove("client-a"); err != nil {
+		t.Fatalf("Remove client-a: %v", err)
+	}
+	if got := reg.List(); len(got) != 0 {
+		t.Errorf("List after all removes = %v, want empty", got)
+	}
+}
+
+func TestRegistryAddRejectsDuplicate(t *testing.T) {
+	reg := NewRegistry(newTestStore(t), NewMemoryKeychain())
+
+	if err := reg.Add(sampleAccount("work"), []byte("s")); err != nil {
+		t.Fatalf("Add first: %v", err)
+	}
+	err := reg.Add(sampleAccount("work"), []byte("s"))
+	if err == nil {
+		t.Fatal("Add duplicate alias accepted, want error")
+	}
+}
+
+func TestRegistryAddValidatesAlias(t *testing.T) {
+	reg := NewRegistry(newTestStore(t), NewMemoryKeychain())
+
+	err := reg.Add(sampleAccount("not valid"), []byte("s"))
+	if err == nil {
+		t.Fatal("Add with invalid alias accepted, want error")
+	}
+}
+
+func TestRegistryGetUnknownIsNotExist(t *testing.T) {
+	reg := NewRegistry(newTestStore(t), NewMemoryKeychain())
+
+	_, _, err := reg.Get("ghost")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Get unknown err = %v, want errors.Is os.ErrNotExist", err)
+	}
+}
+
+func TestRegistryRemoveUnknownIsNotExist(t *testing.T) {
+	reg := NewRegistry(newTestStore(t), NewMemoryKeychain())
+
+	err := reg.Remove("ghost")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Remove unknown err = %v, want errors.Is os.ErrNotExist", err)
+	}
+}
+
+func TestRegistryGetToleratesMissingSecret(t *testing.T) {
+	store := newTestStore(t)
+	kc := NewMemoryKeychain()
+	reg := NewRegistry(store, kc)
+
+	if err := reg.Add(sampleAccount("work"), []byte("secret")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// Simulate someone deleting the keychain entry behind our back.
+	if err := kc.Delete("work"); err != nil {
+		t.Fatalf("kc.Delete: %v", err)
+	}
+
+	acc, secret, err := reg.Get("work")
+	if err != nil {
+		t.Fatalf("Get after kc delete: %v", err)
+	}
+	if acc.Alias != "work" {
+		t.Errorf("acc.Alias = %q, want work", acc.Alias)
+	}
+	if secret != nil {
+		t.Errorf("secret = %q, want nil", secret)
+	}
+}
+
+func TestRegistryPersistsAcrossReload(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	store, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	reg := NewRegistry(store, NewMemoryKeychain())
+	if err := reg.Add(sampleAccount("work"), []byte("secret")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := reg.SetDefault("work"); err != nil {
+		t.Fatalf("SetDefault: %v", err)
+	}
+
+	// Re-Load from the same HOME to make sure config was persisted.
+	store2, err := config.Load()
+	if err != nil {
+		t.Fatalf("re-Load: %v", err)
+	}
+	snap := store2.Snapshot()
+	if _, ok := snap.Accounts["work"]; !ok {
+		t.Errorf("account not persisted: %+v", snap.Accounts)
+	}
+	if snap.DefaultAccount != "work" {
+		t.Errorf("DefaultAccount = %q, want work", snap.DefaultAccount)
+	}
+}
