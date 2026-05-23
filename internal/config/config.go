@@ -211,11 +211,12 @@ func (s *Store) Save() error {
 		return fmt.Errorf("create temp config: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // best-effort cleanup if rename fails
+	// best-effort cleanup if rename fails; the rename below makes it moot otherwise.
+	defer func() { _ = os.Remove(tmpName) }()
 
 	enc := toml.NewEncoder(tmp)
 	if err := enc.Encode(s.file); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("encode config: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

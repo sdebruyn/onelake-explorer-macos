@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: GoReleaser
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Sanity-check lint before releasing
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --config .golangci.yml --timeout 5m
+
+      # TODO: build, sign, and notarize OneLake.app + create-dmg here, once
+      # the Xcode project lands. The output DMG goes to ./dist-app/ which
+      # GoReleaser picks up via `release.extra_files`. See
+      # docs/packaging-homebrew.md for the full pipeline and the secrets
+      # the codesign + notarytool steps need (DEVELOPER_ID_APPLICATION_P12_*,
+      # NOTARY_KEY_ID/ISSUER_ID/API_KEY_P8).
+
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GH_TOKEN }}
+          OFE_APPINSIGHTS_CONNSTRING: ${{ secrets.OFE_APPINSIGHTS_CONNSTRING }}
