@@ -1,7 +1,7 @@
-// Package config holds the on-disk OFE configuration and the per-account
+// Package config holds the on-disk OFEM configuration and the per-account
 // registry. The shape mirrors the docs/auth.md and docs/telemetry.md
 // designs. All paths live under the macOS Application Support directory
-// at ~/Library/Application Support/dev.debruyn.ofe/.
+// at ~/Library/Application Support/dev.debruyn.ofem/.
 package config
 
 import (
@@ -13,20 +13,20 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// BundleID is the reverse-DNS identifier shared by every OFE process
+// BundleID is the reverse-DNS identifier shared by every OFEM process
 // (CLI, daemon, host app, File Provider Extension). It anchors the macOS
 // paths and the LaunchAgent label.
-const BundleID = "dev.debruyn.ofe"
+const BundleID = "dev.debruyn.ofem"
 
 // File is the TOML config schema. New fields must be backwards-compatible:
 // add with sensible zero-value defaults rather than removing or renaming.
 type File struct {
 	// InstallID is a locally generated UUIDv4 that pseudonymously identifies
-	// this OFE installation in telemetry. Removed when the user runs
-	// `brew uninstall --zap ofe`.
+	// this OFEM installation in telemetry. Removed when the user runs
+	// `brew uninstall --zap ofem`.
 	InstallID string `toml:"install_id"`
 
-	// Telemetry toggles opt-out telemetry. Default true. `OFE_TELEMETRY=0`
+	// Telemetry toggles opt-out telemetry. Default true. `OFEM_TELEMETRY=0`
 	// in the environment overrides this at runtime.
 	Telemetry bool `toml:"telemetry"`
 
@@ -90,7 +90,7 @@ type Account struct {
 	AddedAt string `toml:"added_at"`
 }
 
-// Default returns the zero-but-sensible config used the first time OFE
+// Default returns the zero-but-sensible config used the first time OFEM
 // starts on a machine. Callers persist this via Save once they have
 // populated InstallID.
 func Default() File {
@@ -109,17 +109,17 @@ func Default() File {
 	}
 }
 
-// Paths resolves the canonical OFE locations on macOS. They are derived
+// Paths resolves the canonical OFEM locations on macOS. They are derived
 // from $HOME and BundleID. Callers should treat them as read-only.
 type Paths struct {
-	ConfigDir  string // ~/Library/Application Support/dev.debruyn.ofe
+	ConfigDir  string // ~/Library/Application Support/dev.debruyn.ofem
 	ConfigFile string // <ConfigDir>/config.toml
-	CacheDir   string // ~/Library/Caches/dev.debruyn.ofe
-	LogDir     string // ~/Library/Logs/dev.debruyn.ofe
-	SocketPath string // <ConfigDir>/ofe.sock
+	CacheDir   string // ~/Library/Caches/dev.debruyn.ofem
+	LogDir     string // ~/Library/Logs/dev.debruyn.ofem
+	SocketPath string // <ConfigDir>/ofem.sock
 }
 
-// ResolvePaths returns the OFE paths for the current user. It does not
+// ResolvePaths returns the OFEM paths for the current user. It does not
 // create the directories; Save and the daemon do that on demand.
 func ResolvePaths() (Paths, error) {
 	home, err := os.UserHomeDir()
@@ -132,7 +132,7 @@ func ResolvePaths() (Paths, error) {
 		ConfigFile: filepath.Join(cfgDir, "config.toml"),
 		CacheDir:   filepath.Join(home, "Library", "Caches", BundleID),
 		LogDir:     filepath.Join(home, "Library", "Logs", BundleID),
-		SocketPath: filepath.Join(cfgDir, "ofe.sock"),
+		SocketPath: filepath.Join(cfgDir, "ofem.sock"),
 	}, nil
 }
 
@@ -193,7 +193,7 @@ func (s *Store) Update(mutator func(*File)) {
 	mutator(&s.file)
 }
 
-// Paths returns the resolved OFE paths.
+// Paths returns the resolved OFEM paths.
 func (s *Store) Paths() Paths { return s.paths }
 
 // Save writes the current config to disk atomically (write-temp + rename).

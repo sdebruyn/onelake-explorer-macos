@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Validate the local environment for OFE development.
+# Validate the local environment for OFEM development.
 #
 # Run this before your first build to see what is installed and what is
 # missing. Distinguishes "needed for local dev" from "needed only when
@@ -72,14 +72,14 @@ hdr "macOS environment"
 
 os_name=$(uname -s)
 if [ "$os_name" != "Darwin" ]; then
-    miss "OFE targets macOS; you are running $os_name"
+    miss "OFEM targets macOS; you are running $os_name"
 else
     ok "Running macOS"
 fi
 
 arch=$(uname -m)
 if [ "$arch" != "arm64" ]; then
-    warn "Architecture is $arch; OFE ships arm64-only binaries but you can still build for development on Intel"
+    warn "Architecture is $arch; OFEM ships arm64-only binaries but you can still build for development on Intel"
 else
     ok "Apple Silicon (arm64)"
 fi
@@ -205,6 +205,6 @@ if [ "$fail_count" -gt 0 ]; then
     exit 1
 fi
 if [ "$warn_count" -gt 0 ]; then
-    echo "You can build and test OFE locally. Warnings cover optional or release-only tools."
+    echo "You can build and test OFEM locally. Warnings cover optional or release-only tools."
 fi
 exit 0

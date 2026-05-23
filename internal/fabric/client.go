@@ -1,5 +1,5 @@
 // Package fabric is the HTTP client for the Microsoft Fabric REST API
-// (https://api.fabric.microsoft.com). OFE uses it for discovery only —
+// (https://api.fabric.microsoft.com). OFEM uses it for discovery only —
 // listing workspaces, items, and Fabric workspace-folders, plus
 // fetching a single item's metadata. File I/O happens through
 // internal/onelake against the DFS endpoint.

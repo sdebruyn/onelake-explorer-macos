@@ -2,7 +2,7 @@
 
 This document distinguishes between:
 
-- **Local development** — what you need to clone the repo, build, run tests, and dogfood OFE on your own machine (no signing, no notarization, no release).
+- **Local development** — what you need to clone the repo, build, run tests, and dogfood OFEM on your own machine (no signing, no notarization, no release).
 - **Publishing & signing** — what additionally is needed to produce the official signed/notarized `.app` and ship it via Homebrew cask.
 
 If you only want to contribute code, you only need the **Local development** section. The publishing requirements are only relevant to the maintainer (Sam) and to release CI.
@@ -23,7 +23,7 @@ If you only want to contribute code, you only need the **Local development** sec
 | `commitlint` | 18 | latest | `brew install commitlint` (or `npm i -g @commitlint/cli @commitlint/config-conventional`) |
 | `make` (optional) | any | any | comes with Xcode CLT |
 
-Plus a configured **Microsoft Entra tenant** with at least one workspace you can read, so you can sign in with `ofe login` during development and have something to browse.
+Plus a configured **Microsoft Entra tenant** with at least one workspace you can read, so you can sign in with `ofem login` during development and have something to browse.
 
 ### Optional but useful
 
@@ -38,7 +38,7 @@ Plus a configured **Microsoft Entra tenant** with at least one workspace you can
 - Apple Developer Program membership.
 - Any signing certificates.
 
-You can `go build ./cmd/ofe` and use the unsigned binary locally as much as you want during Phase 0.
+You can `go build ./cmd/ofem` and use the unsigned binary locally as much as you want during Phase 0.
 
 ### Phase 1+ (File Provider Extension) adds
 
@@ -55,7 +55,7 @@ For local dogfooding of the `.app`:
 | Apple Developer Program enrollment | $99/year | https://developer.apple.com/programs/ |
 | Developer ID Application certificate | included in Developer Program | Xcode → Settings → Accounts → Manage Certificates → "+" → Developer ID Application |
 | App Store Connect API key (for notarytool) | included in Developer Program | https://appstoreconnect.apple.com/access/integrations/api → "+" → "Developer" or "Admin" role |
-| App Group identifier `group.dev.debruyn.ofe` | included | https://developer.apple.com/account/resources/identifiers → "+" → App Groups |
+| App Group identifier `group.dev.debruyn.ofem` | included | https://developer.apple.com/account/resources/identifiers → "+" → App Groups |
 | File Provider entitlement | included | configured per-extension in the `.entitlements` file |
 | Microsoft Entra App Registration | free | https://entra.microsoft.com → App registrations → "+" — see [docs/auth.md](auth.md) for exact settings |
 | Azure Application Insights resource (Free tier) | free up to 5 GB/month | https://portal.azure.com → "Application Insights" → "+" → choose Pay-As-You-Go subscription, Free pricing tier |
@@ -81,12 +81,12 @@ For local dogfooding of the `.app`:
 | `NOTARY_KEY_ID` | App Store Connect API key id (10 chars) | notarytool auth |
 | `NOTARY_ISSUER_ID` | App Store Connect issuer id (UUID) | notarytool auth |
 | `NOTARY_API_KEY_P8` | contents of the `.p8` file from App Store Connect | notarytool auth |
-| `OFE_APPINSIGHTS_CONNSTRING` | App Insights resource → Properties → Connection String | Embedded in release binary |
-| `HOMEBREW_TAP_GH_TOKEN` | a fine-grained PAT with `contents: write` on `homebrew-ofe` | GoReleaser updates the cask |
+| `OFEM_APPINSIGHTS_CONNSTRING` | App Insights resource → Properties → Connection String | Embedded in release binary |
+| `HOMEBREW_TAP_GH_TOKEN` | a fine-grained PAT with `contents: write` on `homebrew-ofem` | GoReleaser updates the cask |
 
 ### Domain ownership
 
-The bundle identifier `dev.debruyn.ofe` implies ownership of `debruyn.dev`. Sam owns this. Not strictly required for code signing but expected by Apple's reverse-DNS convention.
+The bundle identifier `dev.debruyn.ofem` implies ownership of `debruyn.dev`. Sam owns this. Not strictly required for code signing but expected by Apple's reverse-DNS convention.
 
 ### Initial bootstrap order
 
@@ -95,10 +95,10 @@ The first time the release pipeline runs end-to-end, this is the order:
 1. Enroll in Apple Developer Program.
 2. Create Developer ID Application certificate in Xcode.
 3. Create App Store Connect API key.
-4. Create App Group `group.dev.debruyn.ofe` in Apple Developer portal.
+4. Create App Group `group.dev.debruyn.ofem` in Apple Developer portal.
 5. Create Entra App Registration; copy client ID into source.
 6. Create Application Insights resource in Azure; copy connection string into GH secret.
-7. Create `homebrew-ofe` empty repo + add `HOMEBREW_TAP_GH_TOKEN` to OFE repo secrets.
+7. Create `homebrew-ofem` empty repo + add `HOMEBREW_TAP_GH_TOKEN` to OFEM repo secrets.
 8. Tag `v2026.05.0-rc.1`; let CI run; iterate on signing issues.
 9. Tag `v2026.05.1` for the first stable release.
 

@@ -32,7 +32,7 @@ type syncRefresher interface {
 }
 
 // Handlers bundles the dependencies every IPC handler needs and exposes
-// a Register method that binds all of OFE's methods on a [ipc.Server].
+// a Register method that binds all of OFEM's methods on a [ipc.Server].
 //
 // Handlers is constructed by [Run] (or by tests via [NewHandlers]) and
 // has no public mutator methods — its state is read-only after wiring.

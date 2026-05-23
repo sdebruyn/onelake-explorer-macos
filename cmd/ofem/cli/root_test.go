@@ -34,7 +34,7 @@ func TestVersionCommand(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute version: %v", err)
 	}
-	if !strings.HasPrefix(buf.String(), "ofe ") {
-		t.Errorf("expected version output to start with 'ofe ', got: %s", buf.String())
+	if !strings.HasPrefix(buf.String(), "ofem ") {
+		t.Errorf("expected version output to start with 'ofem ', got: %s", buf.String())
 	}
 }

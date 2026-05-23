@@ -1,7 +1,7 @@
-# Convenience targets for OFE development.
+# Convenience targets for OFEM development.
 #
 # Day-to-day:
-#   make build       — build the ofe CLI into ./bin/ofe
+#   make build       — build the ofem CLI into ./bin/ofem
 #   make test        — run unit tests with the race detector
 #   make lint        — run golangci-lint with the repo config
 #   make fmt         — gofmt + goimports (mutates files in place)
@@ -16,7 +16,7 @@
 #   make release-snapshot  — run goreleaser locally to validate the config
 
 BIN_DIR := bin
-BIN     := $(BIN_DIR)/ofe
+BIN     := $(BIN_DIR)/ofem
 
 GO_FILES := $(shell find . -name '*.go' -not -path './.claude/*')
 
@@ -35,7 +35,7 @@ all: ci
 
 $(BIN): $(GO_FILES) go.mod go.sum
 	@mkdir -p $(BIN_DIR)
-	go build -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/ofe
+	go build -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/ofem
 
 build: $(BIN)
 

@@ -39,9 +39,9 @@ A few things are managed entirely by Microsoft Fabric and aren't exposed through
 - **Manage permissions** — go to the Fabric portal.
 - **Change the schema of a Delta table inside `Tables/`** — OneLake rejects writes that would corrupt the Delta log; safe but you'll see "operation not permitted" if you try.
 
-## Files OFE doesn't upload
+## Files OFEM doesn't upload
 
-macOS scatters small metadata files everywhere (`.DS_Store`, `._foo`, `.Spotlight-V100`, `.Trashes`, `.fseventsd`). OFE silently filters them on upload so they never reach your lake. You won't see them in OneLake even though they exist locally.
+macOS scatters small metadata files everywhere (`.DS_Store`, `._foo`, `.Spotlight-V100`, `.Trashes`, `.fseventsd`). OFEM silently filters them on upload so they never reach your lake. You won't see them in OneLake even though they exist locally.
 
 ## Multiple Macs
 

@@ -21,9 +21,9 @@ const defaultIngestionTimeout = 30 * time.Second
 type AppInsightsSink struct {
 	endpoint string // e.g. https://westeurope-5.in.applicationinsights.azure.com/
 	iKey     string // instrumentation key GUID
-	role     string // ai.cloud.role tag (e.g. "ofe")
+	role     string // ai.cloud.role tag (e.g. "ofem")
 	instance string // ai.cloud.roleInstance tag (the install ID)
-	sdkTag   string // ai.internal.sdkVersion (e.g. "ofe:2026.05.1")
+	sdkTag   string // ai.internal.sdkVersion (e.g. "ofem:2026.05.1")
 	client   *http.Client
 }
 
@@ -54,15 +54,15 @@ func NewAppInsightsSink(opts AppInsightsOptions) (*AppInsightsSink, error) {
 		client = &http.Client{Timeout: timeout}
 	}
 
-	sdkTag := "ofe"
+	sdkTag := "ofem"
 	if opts.AppVersion != "" {
-		sdkTag = "ofe:" + opts.AppVersion
+		sdkTag = "ofem:" + opts.AppVersion
 	}
 
 	return &AppInsightsSink{
 		endpoint: endpoint,
 		iKey:     iKey,
-		role:     "ofe",
+		role:     "ofem",
 		instance: opts.InstallID,
 		sdkTag:   sdkTag,
 		client:   client,
@@ -106,7 +106,7 @@ func ParseConnectionString(s string) (endpoint, iKey string, err error) {
 		// are region-bound and always include an IngestionEndpoint in
 		// the connection string, so this fallback only fires for a
 		// hand-written `InstrumentationKey=…` (e.g. a contributor
-		// experimenting locally). Official OFE builds bake the full
+		// experimenting locally). Official OFEM builds bake the full
 		// connection string at release time. EndpointSuffix /
 		// sovereign-cloud forms are explicitly not handled here — we
 		// rely on the IngestionEndpoint key being present, which it

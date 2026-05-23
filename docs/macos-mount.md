@@ -79,14 +79,14 @@ The File Provider Extension is sandboxed and short-lived — macOS
 launches it on demand for each Finder request and tears it down again.
 It cannot hold long-lived network sockets, run scheduled polling, or
 perform interactive auth flows. To bridge that gap we run a separate
-**daemon** process (`ofe daemon run`, started by the LaunchAgent
-installed via `ofe daemon install`) that handles those long-running
+**daemon** process (`ofem daemon run`, started by the LaunchAgent
+installed via `ofem daemon install`) that handles those long-running
 concerns and signals the extension when it has news.
 
 The wire protocol the CLI, host app, and (eventually) the extension
 use to talk to the daemon is the local-only JSON-RPC 2.0 socket
 described in [`internal/ipc`](../internal/ipc). It binds at
-`~/Library/Application Support/dev.debruyn.ofe/ofe.sock`, owner-only
+`~/Library/Application Support/dev.debruyn.ofem/ofem.sock`, owner-only
 0600 permissions, length-prefixed frames capped at 1 MiB.
 
 For Phase 1, the daemon → extension direction will be wrapped over an

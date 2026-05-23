@@ -25,9 +25,9 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/telemetry"
 )
 
-// LogFileName is the file under the OFE log directory that the daemon
+// LogFileName is the file under the OFEM log directory that the daemon
 // writes its JSON slog stream to.
-const LogFileName = "ofe.log"
+const LogFileName = "ofem.log"
 
 // telemetryShutdownTimeout bounds the final telemetry flush at process
 // exit. Two seconds is plenty for App Insights' v2/track endpoint under
@@ -59,7 +59,7 @@ type RunOptions struct {
 	// Store overrides config.Load. When nil, Run loads from disk.
 	Store *config.Store
 	// LogWriter overrides the default file-rotating writer. When nil,
-	// Run constructs a lumberjack writer at <LogDir>/ofe.log.
+	// Run constructs a lumberjack writer at <LogDir>/ofem.log.
 	LogWriter func(paths config.Paths) (logSink, error)
 	// SocketPath overrides config.Paths.SocketPath. Used in tests.
 	SocketPath string
@@ -75,7 +75,7 @@ type logSink interface {
 	Close() error
 }
 
-// Run is the foreground entry point invoked by `ofe daemon run` (which
+// Run is the foreground entry point invoked by `ofem daemon run` (which
 // the LaunchAgent calls under launchd). It wires up logging, cache, and
 // the IPC server, then blocks until SIGINT or SIGTERM. It returns the
 // first fatal setup error, or nil on a clean shutdown.

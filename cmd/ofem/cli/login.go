@@ -27,7 +27,7 @@ func newLoginCmd() *cobra.Command {
 		Short: "Sign in to OneLake (interactive browser by default)",
 		Long: `Sign in to a OneLake / Microsoft Fabric tenant.
 
-By default ofe opens the system browser for an interactive sign-in. Use
+By default ofem opens the system browser for an interactive sign-in. Use
 --device-code on machines without a browser (SSH sessions, headless CI).
 After authentication you are prompted for a short alias for the account
 (e.g. "work", "client-a"); pick something memorable because you will use

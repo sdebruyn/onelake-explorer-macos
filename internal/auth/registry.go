@@ -16,7 +16,7 @@ import (
 )
 
 // Registry holds the set of signed-in accounts. The list of accounts is
-// persisted in the OFE TOML config (via [config.Store]); the per-account
+// persisted in the OFEM TOML config (via [config.Store]); the per-account
 // opaque secret material is persisted in the [Keychain].
 //
 // Registry exposes the full Add/Remove/Get/List/Default/SetDefault
@@ -161,7 +161,7 @@ func (r *Registry) Get(alias string) (Account, []byte, error) {
 }
 
 // List returns all known accounts sorted by alias for deterministic
-// output (helpful for tests and for `ofe account list`).
+// output (helpful for tests and for `ofem account list`).
 func (r *Registry) List() []Account {
 	snap := r.store.Snapshot()
 	out := make([]Account, 0, len(snap.Accounts))

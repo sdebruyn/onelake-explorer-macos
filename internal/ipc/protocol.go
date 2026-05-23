@@ -23,7 +23,7 @@ const MaxFrameSize = 1 << 20
 // declared length exceeds [MaxFrameSize].
 var ErrFrameTooLarge = errors.New("ipc: frame exceeds maximum size")
 
-// Standard JSON-RPC 2.0 error codes plus OFE-specific extensions in the
+// Standard JSON-RPC 2.0 error codes plus OFEM-specific extensions in the
 // implementation-defined range (-32000 to -32099, per the spec).
 const (
 	// CodeParseError indicates the server received invalid JSON.

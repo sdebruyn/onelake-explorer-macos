@@ -13,7 +13,7 @@ import (
 func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Inspect and modify OFE configuration",
+		Short: "Inspect and modify OFEM configuration",
 	}
 	cmd.AddCommand(newConfigGetCmd())
 	cmd.AddCommand(newConfigSetCmd())
@@ -117,7 +117,7 @@ func applyConfig(f *config.File, key, value string) error {
 	case "default_account":
 		if value != "" {
 			if _, ok := f.Accounts[value]; !ok {
-				return fmt.Errorf("no account with alias %q (run `ofe account list`)", value)
+				return fmt.Errorf("no account with alias %q (run `ofem account list`)", value)
 			}
 		}
 		f.DefaultAccount = value

@@ -1,6 +1,6 @@
 // Package cli — daemon subcommands.
 //
-// `ofe daemon` is the user-facing surface for the background process
+// `ofem daemon` is the user-facing surface for the background process
 // described in docs/file-provider.md. `install`/`uninstall` manage the
 // LaunchAgent in ~/Library/LaunchAgents/, `start`/`stop` poke launchd
 // at runtime, and `run` is the foreground entry point launchd itself
@@ -21,8 +21,8 @@ import (
 func newDaemonCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "daemon",
-		Short: "Manage the OFE background daemon (LaunchAgent)",
-		Long: `Manage the OFE background daemon.
+		Short: "Manage the OFEM background daemon (LaunchAgent)",
+		Long: `Manage the OFEM background daemon.
 
 The daemon owns the SQLite metadata cache, refreshes Microsoft Entra
 tokens silently, drives the File Provider Extension via XPC, and serves
@@ -41,10 +41,10 @@ launchd via the per-user LaunchAgent installed under
 func newDaemonInstallCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "install",
-		Short: "Install the LaunchAgent so OFE starts at login",
-		Long: `Write the OFE LaunchAgent plist to ~/Library/LaunchAgents/ and
+		Short: "Install the LaunchAgent so OFEM starts at login",
+		Long: `Write the OFEM LaunchAgent plist to ~/Library/LaunchAgents/ and
 bootstrap it under launchd. The plist points at the currently-running
-ofe binary, so re-run this command after any move or upgrade that
+ofem binary, so re-run this command after any move or upgrade that
 relocates the executable.
 
 Idempotent: re-running install when the agent is already loaded with

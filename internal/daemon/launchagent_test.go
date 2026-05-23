@@ -33,10 +33,10 @@ func TestRenderLaunchAgentPlistContainsExpectedFields(t *testing.T) {
 	t.Parallel()
 
 	params := LaunchAgentParams{
-		Label:          "dev.debruyn.ofe.daemon",
-		ExecutablePath: "/usr/local/bin/ofe",
-		StdoutPath:     "/Users/x/Library/Logs/dev.debruyn.ofe/daemon.stdout.log",
-		StderrPath:     "/Users/x/Library/Logs/dev.debruyn.ofe/daemon.stderr.log",
+		Label:          "dev.debruyn.ofem.daemon",
+		ExecutablePath: "/usr/local/bin/ofem",
+		StdoutPath:     "/Users/x/Library/Logs/dev.debruyn.ofem/daemon.stdout.log",
+		StderrPath:     "/Users/x/Library/Logs/dev.debruyn.ofem/daemon.stderr.log",
 	}
 	got, err := RenderLaunchAgentPlist(params)
 	if err != nil {
@@ -45,16 +45,16 @@ func TestRenderLaunchAgentPlistContainsExpectedFields(t *testing.T) {
 	s := string(got)
 	wants := []string{
 		"<key>Label</key>",
-		"<string>dev.debruyn.ofe.daemon</string>",
-		"<string>/usr/local/bin/ofe</string>",
+		"<string>dev.debruyn.ofem.daemon</string>",
+		"<string>/usr/local/bin/ofem</string>",
 		"<string>daemon</string>",
 		"<string>run</string>",
 		"<key>RunAtLoad</key>",
 		"<key>KeepAlive</key>",
 		"<key>StandardOutPath</key>",
-		"<string>/Users/x/Library/Logs/dev.debruyn.ofe/daemon.stdout.log</string>",
+		"<string>/Users/x/Library/Logs/dev.debruyn.ofem/daemon.stdout.log</string>",
 		"<key>StandardErrorPath</key>",
-		"<string>/Users/x/Library/Logs/dev.debruyn.ofe/daemon.stderr.log</string>",
+		"<string>/Users/x/Library/Logs/dev.debruyn.ofem/daemon.stderr.log</string>",
 	}
 	for _, w := range wants {
 		if !strings.Contains(s, w) {
@@ -69,13 +69,13 @@ func TestInstallLaunchAgentWritesPlistAndBootstraps(t *testing.T) {
 
 	home := t.TempDir()
 	paths := config.Paths{
-		ConfigDir:  filepath.Join(home, "Library", "Application Support", "dev.debruyn.ofe"),
-		ConfigFile: filepath.Join(home, "Library", "Application Support", "dev.debruyn.ofe", "config.toml"),
-		CacheDir:   filepath.Join(home, "Library", "Caches", "dev.debruyn.ofe"),
-		LogDir:     filepath.Join(home, "Library", "Logs", "dev.debruyn.ofe"),
-		SocketPath: filepath.Join(home, "Library", "Application Support", "dev.debruyn.ofe", "ofe.sock"),
+		ConfigDir:  filepath.Join(home, "Library", "Application Support", "dev.debruyn.ofem"),
+		ConfigFile: filepath.Join(home, "Library", "Application Support", "dev.debruyn.ofem", "config.toml"),
+		CacheDir:   filepath.Join(home, "Library", "Caches", "dev.debruyn.ofem"),
+		LogDir:     filepath.Join(home, "Library", "Logs", "dev.debruyn.ofem"),
+		SocketPath: filepath.Join(home, "Library", "Application Support", "dev.debruyn.ofem", "ofem.sock"),
 	}
-	execPath := "/fake/bin/ofe"
+	execPath := "/fake/bin/ofem"
 	calls := stubLaunchctl(t, nil)
 
 	if err := InstallLaunchAgent(home, paths, execPath); err != nil {
@@ -88,10 +88,10 @@ func TestInstallLaunchAgentWritesPlistAndBootstraps(t *testing.T) {
 		t.Fatalf("read plist: %v", err)
 	}
 	for _, want := range []string{
-		"<string>/fake/bin/ofe</string>",
+		"<string>/fake/bin/ofem</string>",
 		"<string>" + filepath.Join(paths.LogDir, "daemon.stdout.log") + "</string>",
 		"<string>" + filepath.Join(paths.LogDir, "daemon.stderr.log") + "</string>",
-		"<string>dev.debruyn.ofe.daemon</string>",
+		"<string>dev.debruyn.ofem.daemon</string>",
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("plist missing %q\n--- plist ---\n%s", want, body)
@@ -123,7 +123,7 @@ func TestInstallLaunchAgentIdempotentWhenAlreadyBootstrapped(t *testing.T) {
 		ConfigDir:  filepath.Join(home, "cfg"),
 		ConfigFile: filepath.Join(home, "cfg", "config.toml"),
 		CacheDir:   filepath.Join(home, "cache"),
-		SocketPath: filepath.Join(home, "cfg", "ofe.sock"),
+		SocketPath: filepath.Join(home, "cfg", "ofem.sock"),
 	}
 	stubLaunchctl(t, func(args []string) error {
 		if len(args) > 0 && args[0] == "bootstrap" {
@@ -132,7 +132,7 @@ func TestInstallLaunchAgentIdempotentWhenAlreadyBootstrapped(t *testing.T) {
 		return nil
 	})
 
-	if err := InstallLaunchAgent(home, paths, "/fake/bin/ofe"); err != nil {
+	if err := InstallLaunchAgent(home, paths, "/fake/bin/ofem"); err != nil {
 		t.Fatalf("install should swallow already-bootstrapped: %v", err)
 	}
 }
@@ -153,7 +153,7 @@ func TestInstallLaunchAgentIdempotentWithRealisticLaunchctlError(t *testing.T) {
 		ConfigDir:  filepath.Join(home, "cfg"),
 		ConfigFile: filepath.Join(home, "cfg", "config.toml"),
 		CacheDir:   filepath.Join(home, "cache"),
-		SocketPath: filepath.Join(home, "cfg", "ofe.sock"),
+		SocketPath: filepath.Join(home, "cfg", "ofem.sock"),
 	}
 	stubLaunchctl(t, func(args []string) error {
 		if len(args) > 0 && args[0] == "bootstrap" {
@@ -167,7 +167,7 @@ func TestInstallLaunchAgentIdempotentWithRealisticLaunchctlError(t *testing.T) {
 		return nil
 	})
 
-	if err := InstallLaunchAgent(home, paths, "/fake/bin/ofe"); err != nil {
+	if err := InstallLaunchAgent(home, paths, "/fake/bin/ofem"); err != nil {
 		t.Fatalf("install should swallow already-bootstrapped launchctlError: %v", err)
 	}
 }
@@ -210,7 +210,7 @@ func TestInstallLaunchAgentSurfacesUnknownBootstrapError(t *testing.T) {
 		return nil
 	})
 
-	err := InstallLaunchAgent(home, paths, "/fake/bin/ofe")
+	err := InstallLaunchAgent(home, paths, "/fake/bin/ofem")
 	if err == nil {
 		t.Fatalf("expected install to surface unknown bootstrap error")
 	}

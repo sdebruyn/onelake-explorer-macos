@@ -1,8 +1,8 @@
-# Telemetry Backend Research for OFE (OneLake File Explorer)
+# Telemetry Backend Research for OFEM (OneLake File Explorer)
 
 ## Context
 
-OFE is an open-source macOS app shipping opt-out telemetry with the schema
+OFEM is an open-source macOS app shipping opt-out telemetry with the schema
 `{ ts, installId, appVersion, platform, osVersion, tenantId, event, durationMs, success, errorCode }`
 (~300 B per event). Projected volume: **< 100k events/month** in year one, possibly
 growing toward 1M/month. Data must end up queryable in Microsoft Fabric, but does
@@ -119,7 +119,7 @@ calculator before committing.
 
 ```
 +----------------+      HTTPS POST        +-------------------------+
-|  OFE (macOS)   |  /v1/events  + key     |  Azure Function (Cons.) |
+|  OFEM (macOS)   |  /v1/events  + key     |  Azure Function (Cons.) |
 |  opt-out       | ---------------------> |  Node/.NET, validates,  |
 |  telemetry SDK |                        |  appends NDJSON line    |
 +----------------+                        +------------+------------+

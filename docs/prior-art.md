@@ -4,7 +4,7 @@ Research done before starting implementation, to verify that no comparable proje
 
 ## What exists
 
-| Project | Description | Overlap with OFE |
+| Project | Description | Overlap with OFEM |
 |---|---|---|
 | [Microsoft OneLake File Explorer](https://learn.microsoft.com/fabric/onelake/onelake-file-explorer) | Official integration with Windows File Explorer. Windows 10/11 only. | Same goal, different platform — this is the project we are porting/replacing for macOS. |
 | [Azure Storage Explorer](https://azure.microsoft.com/products/storage/storage-explorer) | Microsoft's cross-platform Electron app for Azure Storage. Works on Mac with manual OneLake URL pasting. | Workaround tool, not Finder integration. No mount. No multi-account hierarchy. |
@@ -20,12 +20,12 @@ Research done before starting implementation, to verify that no comparable proje
 - A Homebrew formula or cask for OneLake tooling beyond Azure-CLI-style data tools.
 - A multi-tenant / multi-account OneLake browser of any shape.
 
-## Implications for OFE
+## Implications for OFEM
 
 - The niche is empty. We are first.
 - Market demand is validated by Microsoft's own community thread.
 - We do not need to match-or-beat an existing competitor — our reference is the Windows file explorer behavior, with the multi-account / multi-tenant limitations explicitly improved.
-- Risk: Microsoft could ship an official Mac version. Their public stance is "no announcements". If they do, OFE either stays as an open-source / multi-account alternative or sunsets gracefully.
+- Risk: Microsoft could ship an official Mac version. Their public stance is "no announcements". If they do, OFEM either stays as an open-source / multi-account alternative or sunsets gracefully.
 
 ## How this research was done
 

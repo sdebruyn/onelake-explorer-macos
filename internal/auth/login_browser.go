@@ -100,7 +100,7 @@ func resolveTenantHint(hint string) string {
 	return hint
 }
 
-// accountFromAuthResult extracts the OFE [Account] fields from an MSAL
+// accountFromAuthResult extracts the OFEM [Account] fields from an MSAL
 // AuthResult. AddedAt is set to the current time so the caller can
 // persist a fresh "first signed in" timestamp; subsequent logins under
 // the same alias should preserve the original via Registry semantics.
@@ -125,5 +125,5 @@ func temporaryLoginAlias() string {
 	// it ever does, we degrade to a timestamp-only alias which is still
 	// unique enough for the loopback case.
 	_, _ = rand.Read(b[:])
-	return fmt.Sprintf(".ofe-login-tmp-%d-%x", time.Now().UnixNano(), b)
+	return fmt.Sprintf(".ofem-login-tmp-%d-%x", time.Now().UnixNano(), b)
 }

@@ -19,7 +19,7 @@ Build the Go core library and CLI plumbing so the File Provider Extension can si
 | Wire sync engine + telemetry into daemon | 🔄 in flight |
 | Adaptive poller for recently-touched folders | 🔄 in flight |
 
-Exit criteria: `ofe login → ofe daemon start → ofe debug ls work:/myws/lh.lakehouse/Files` works end-to-end with telemetry events flowing.
+Exit criteria: `ofem login → ofem daemon start → ofem debug ls work:/myws/lh.lakehouse/Files` works end-to-end with telemetry events flowing.
 
 ## Phase 1 — MVP (first public release)
 
@@ -32,12 +32,12 @@ Apple Developer Program enrolment, Xcode project, signed and notarized `OneLake.
 | Swift host app | ⏳ |
 | File Provider Extension implementation | ⏳ |
 | Code-sign + notarytool + create-dmg in CI | ⏳ |
-| `homebrew-ofe` tap with the cask | ⏳ |
+| `homebrew-ofem` tap with the cask | ⏳ |
 | First-run disclosure for opt-out telemetry | ⏳ |
 | Beta test with 2–3 willing volunteers | ⏳ |
 | Tag `v2026.MM.1` — first public release | ⏳ |
 
-Exit criteria: `brew install --cask ofe` on a clean Mac succeeds, `ofe login` and Finder show OneLake end-to-end.
+Exit criteria: `brew install --cask ofem` on a clean Mac succeeds, `ofem login` and Finder show OneLake end-to-end.
 
 ## Phase 2 — host app GUI
 

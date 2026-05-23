@@ -10,7 +10,7 @@ import (
 )
 
 // Init returns a configured *Client. When telemetry is disabled — by env
-// var OFE_TELEMETRY=0, by the config flag, or by an empty
+// var OFEM_TELEMETRY=0, by the config flag, or by an empty
 // buildinfo.AppInsightsConnString — the returned client uses NoopSink
 // and Track becomes a silent no-op.
 //
@@ -21,7 +21,7 @@ func Init(ctx context.Context, store *config.Store, logger *slog.Logger) (*Clien
 		logger = slog.Default()
 	}
 
-	disabled := os.Getenv("OFE_TELEMETRY") == "0"
+	disabled := os.Getenv("OFEM_TELEMETRY") == "0"
 	if !disabled && store != nil {
 		if !store.Snapshot().Telemetry {
 			disabled = true

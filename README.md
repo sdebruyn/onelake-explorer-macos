@@ -1,4 +1,4 @@
-# OneLake File Explorer for macOS (OFE)
+# OneLake File Explorer for macOS (OFEM)
 
 Open-source, native macOS integration for Microsoft Fabric **OneLake**. Browse your workspaces, items, and files directly from Finder — the same way OneDrive and Google Drive integrate — without a Windows VM or Azure Storage Explorer workarounds.
 
@@ -6,7 +6,7 @@ Open-source, native macOS integration for Microsoft Fabric **OneLake**. Browse y
 
 ## What this is
 
-Microsoft ships a [OneLake File Explorer](https://learn.microsoft.com/fabric/onelake/onelake-file-explorer) for Windows only. There is currently no native macOS option. OFE fills that gap as an open-source project, with these explicit improvements over the Windows version:
+Microsoft ships a [OneLake File Explorer](https://learn.microsoft.com/fabric/onelake/onelake-file-explorer) for Windows only. There is currently no native macOS option. OFEM fills that gap as an open-source project, with these explicit improvements over the Windows version:
 
 - **Multi-account, multi-tenant** simultaneously visible side by side (Windows app supports one account at a time).
 - **macOS-native UX** through a File Provider Extension — Finder sidebar, online-only placeholders, on-demand download, Spotlight integration.
@@ -16,7 +16,7 @@ Microsoft ships a [OneLake File Explorer](https://learn.microsoft.com/fabric/one
 ## Project name
 
 - Product / display name in Finder and the macOS app: **OneLake**.
-- Project / binary / config / bundle ID: **OFE** / `ofe` / `dev.debruyn.ofe`.
+- Project / binary / config / bundle ID: **OFEM** / `ofem` / `dev.debruyn.ofem`.
 
 ## Hard constraints
 
@@ -31,7 +31,7 @@ Microsoft ships a [OneLake File Explorer](https://learn.microsoft.com/fabric/one
 
 | Phase | Deliverable | Audience |
 |---|---|---|
-| **0** | Core Go library + debug CLI (`ofe debug ls`, `ofe debug cat`) | Internal validation only, not released |
+| **0** | Core Go library + debug CLI (`ofem debug ls`, `ofem debug cat`) | Internal validation only, not released |
 | **1 — MVP** | Signed/notarized `OneLake.app` with File Provider Extension + setup CLI + Homebrew cask | First public release |
 | **2** | SwiftUI account-management GUI inside the host app + menu bar status icon | Non-CLI users |
 | **3** | Polish: Spotlight metadata, Quick Look extensions, sync UX refinements, performance tuning | Mass-market readiness |
@@ -57,11 +57,11 @@ Full plan with milestones in [PLAN.md](PLAN.md).
 └──────────┬─────────────────────┘
            │ cgo / C-ABI
 ┌──────────┴─────────────────────┐
-│  libofecore (Go)               │  ← Auth + OneLake API + cache + sync
+│  libofemcore (Go)               │  ← Auth + OneLake API + cache + sync
 └──────────┬─────────────────────┘
            │ Unix domain socket
 ┌──────────┴─────────────────────┐
-│  ofe CLI (Go)                  │  ← setup, account mgmt, debug
+│  ofem CLI (Go)                  │  ← setup, account mgmt, debug
 └────────────────────────────────┘
 ```
 
@@ -83,7 +83,7 @@ Full plan with milestones in [PLAN.md](PLAN.md).
 
 ## Telemetry
 
-OFE collects opt-out anonymous usage events plus tenant IDs (never workspace, item, file names, or UPNs) via Azure Application Insights. Disable any time with `OFE_TELEMETRY=0` or `ofe config set telemetry off`. See [docs/telemetry.md](docs/telemetry.md) for the full schema and disclosure.
+OFEM collects opt-out anonymous usage events plus tenant IDs (never workspace, item, file names, or UPNs) via Azure Application Insights. Disable any time with `OFEM_TELEMETRY=0` or `ofem config set telemetry off`. See [docs/telemetry.md](docs/telemetry.md) for the full schema and disclosure.
 
 ## License
 
@@ -99,4 +99,4 @@ Report security issues via GitHub Private Security Advisories — see [SECURITY.
 
 ## Funding
 
-If OFE helps you, consider [sponsoring the project](https://github.com/sponsors/sdebruyn). Sponsorships help cover the Apple Developer Program membership and Azure costs.
+If OFEM helps you, consider [sponsoring the project](https://github.com/sponsors/sdebruyn). Sponsorships help cover the Apple Developer Program membership and Azure costs.

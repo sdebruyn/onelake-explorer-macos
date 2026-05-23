@@ -19,7 +19,7 @@ const (
 // into every event as common properties. Sink must be non-nil; pass
 // NoopSink{} for the disabled state.
 type Options struct {
-	// AppVersion is the OFE release version (typically buildinfo.Version).
+	// AppVersion is the OFEM release version (typically buildinfo.Version).
 	AppVersion string
 
 	// InstallID is the per-install UUID (from EnsureInstallID).

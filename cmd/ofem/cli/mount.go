@@ -13,7 +13,7 @@ func newMountCmd() *cobra.Command {
 		Long: `Ensure each signed-in OneLake account is mounted as a File Provider
 domain so its workspaces appear in Finder under ~/OneLake/<alias>/.
 
-The daemon installed by 'ofe daemon install' mounts on login; this command
+The daemon installed by 'ofem daemon install' mounts on login; this command
 forces a re-registration if Finder is stuck.`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {

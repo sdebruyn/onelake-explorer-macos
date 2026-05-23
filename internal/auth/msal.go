@@ -20,7 +20,7 @@ import (
 // "click to re-auth" indicator rather than blocking — see docs/auth.md.
 var ErrInteractionRequired = errors.New("auth: interaction required")
 
-// MSALClient is the subset of *public.Client that OFE depends on. It is
+// MSALClient is the subset of *public.Client that OFEM depends on. It is
 // declared here, rather than imported in callers, so tests can substitute
 // a stub without depending on the real MSAL transport. The real
 // implementation is satisfied by *publicClientAdapter wrapping
@@ -79,7 +79,7 @@ func DefaultClientFactory(clientID, tenantID string, kc Keychain, accountAlias s
 }
 
 // publicClientAdapter wires the concrete public.Client API to the
-// trimmed MSALClient interface used inside OFE.
+// trimmed MSALClient interface used inside OFEM.
 type publicClientAdapter struct {
 	inner public.Client
 }

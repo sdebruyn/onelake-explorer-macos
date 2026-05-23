@@ -1,4 +1,4 @@
-// Package cli wires together the cobra command tree for the ofe binary.
+// Package cli wires together the cobra command tree for the ofem binary.
 // Each command lives in its own file (account.go, mount.go, ...).
 package cli
 
@@ -12,7 +12,7 @@ import (
 // the CLI testable; cobra is otherwise happy to share state.
 func NewRoot() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "ofe",
+		Use:           "ofem",
 		Short:         "OneLake File Explorer for macOS",
 		Long:          longDescription,
 		Version:       versionString(),
@@ -40,7 +40,7 @@ func versionString() string {
 	return v
 }
 
-const longDescription = `ofe is the command-line tool for the open-source OneLake File Explorer
+const longDescription = `ofem is the command-line tool for the open-source OneLake File Explorer
 for macOS. It manages accounts, controls the local sync daemon, and ships
 a handful of debug commands for development.
 

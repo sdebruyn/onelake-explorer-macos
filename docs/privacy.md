@@ -1,6 +1,6 @@
 # Privacy & telemetry
 
-OFE collects a small amount of opt-out telemetry to understand adoption, catch crashes early, and prioritise fixes. This page describes exactly what is and isn't sent, and how to turn it off.
+OFEM collects a small amount of opt-out telemetry to understand adoption, catch crashes early, and prioritise fixes. This page describes exactly what is and isn't sent, and how to turn it off.
 
 ## What is collected
 
@@ -8,7 +8,7 @@ Each event is a small JSON record with these fields:
 
 | Field | Example | Notes |
 |---|---|---|
-| `installId` | UUIDv4 generated locally on first run | Pseudonymous; removed when you `brew uninstall --zap ofe` |
+| `installId` | UUIDv4 generated locally on first run | Pseudonymous; removed when you `brew uninstall --zap ofem` |
 | `appVersion` | `2026.05.1` | |
 | `platform` | `darwin` | |
 | `arch` | `arm64` | |
@@ -27,7 +27,7 @@ Each event is a small JSON record with these fields:
 - Workspace names, item names, file names, or folder paths.
 - File contents.
 - IP addresses (Application Insights logs these by default in some plans — we have it turned off).
-- Anything outside the OFE process boundary.
+- Anything outside the OFEM process boundary.
 
 ## Event catalogue
 
@@ -36,7 +36,7 @@ Currently emitted:
 | Event | When |
 |---|---|
 | `app_start` / `app_stop` | Daemon lifecycle |
-| `account_added` / `account_removed` | After `ofe login` / `ofe account remove` |
+| `account_added` / `account_removed` | After `ofem login` / `ofem account remove` |
 | `workspace_list` / `item_list` / `folder_list` | After a discovery API call |
 | `file_download` / `file_upload` / `file_delete` | After file I/O |
 | `folder_create` / `folder_delete` | After folder operations |
@@ -53,7 +53,7 @@ To an Azure Application Insights resource in the maintainer's Azure subscription
 Either of these disables telemetry instantly; the daemon picks up the change on its next start.
 
 ```bash
-ofe config set telemetry off
+ofem config set telemetry off
 ```
 
 or set the env var before launching the daemon:
@@ -62,20 +62,18 @@ or set the env var before launching the daemon:
 export OFEM_TELEMETRY=0
 ```
 
-(`OFE_TELEMETRY=0` also works during the rename transition.)
-
-You can verify with `ofe config get telemetry`.
+You can verify with `ofem config get telemetry`.
 
 ## Source-built binaries
 
-If you build OFE yourself (clone the repo and `go build`), the Application Insights connection string is empty by default. That means **telemetry is silently off for source builds** — only the official Homebrew release ships with the embedded connection string. Contributors and forks do not send data to the maintainer's telemetry endpoint.
+If you build OFEM yourself (clone the repo and `go build`), the Application Insights connection string is empty by default. That means **telemetry is silently off for source builds** — only the official Homebrew release ships with the embedded connection string. Contributors and forks do not send data to the maintainer's telemetry endpoint.
 
 ## How to inspect what's sent
 
-OFE logs every telemetry event at debug level. Tail the daemon log to see exactly what's being sent:
+OFEM logs every telemetry event at debug level. Tail the daemon log to see exactly what's being sent:
 
 ```bash
-tail -f ~/Library/Logs/dev.debruyn.ofe/ofe.log | grep telemetry
+tail -f ~/Library/Logs/dev.debruyn.ofem/ofem.log | grep telemetry
 ```
 
 ## Questions or concerns

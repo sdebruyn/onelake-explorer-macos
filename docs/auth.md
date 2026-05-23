@@ -67,8 +67,8 @@ A shared in-process **account registry** keeps the list of accounts and dispatch
 
 MSAL Go uses an in-memory `cache.ExportReplace` interface by default. We implement it backed by the macOS **Keychain**:
 
-- One Keychain item per account, labeled `dev.debruyn.ofe — <alias> (<UPN>)`.
-- Service: `dev.debruyn.ofe`.
+- One Keychain item per account, labeled `dev.debruyn.ofem — <alias> (<UPN>)`.
+- Service: `dev.debruyn.ofem`.
 - Account name: `<HomeAccountID>`.
 - Data: MSAL's serialized JSON token cache for that account.
 
@@ -84,7 +84,7 @@ On every OneLake request:
 2. If present and not within 5 minutes of expiry → use it.
 3. Otherwise call MSAL `AcquireTokenSilent` to refresh.
 4. If silent refresh fails with `interaction_required` (e.g. Conditional Access challenge, MFA expired) → mark account as `needs_reauth`, queue a menu-bar error indicator. No system notification.
-5. The next time the user opens the menu bar app (or runs `ofe status`), the indicator shows them which account needs re-auth. They re-run `ofe login --account <alias>` to interactively unblock.
+5. The next time the user opens the menu bar app (or runs `ofem status`), the indicator shows them which account needs re-auth. They re-run `ofem login --account <alias>` to interactively unblock.
 
 ## Conditional Access / MFA challenges
 
@@ -94,7 +94,7 @@ Rationale: data engineers are used to seeing the "click to re-auth" pattern in m
 
 ## Logout / account removal
 
-`ofe account remove <alias>`:
+`ofem account remove <alias>`:
 
 1. Removes the Keychain item.
 2. Removes the account from the registry config.
@@ -112,5 +112,5 @@ Out of scope for MVP. Architecturally we keep the authority host configurable pe
 - **State parameter** is generated per flow and validated.
 - **Random port** for localhost redirect avoids collisions and reduces attack surface vs. a fixed well-known port.
 - **Refresh tokens** are stored in Keychain, scoped per account; they cannot be exported via the CLI.
-- **No token printing**: even `ofe debug` commands never echo tokens.
+- **No token printing**: even `ofem debug` commands never echo tokens.
 - The Entra App Registration is owned by Sam; users only consent to delegated permissions and can revoke at any time via [https://myapplications.microsoft.com](https://myapplications.microsoft.com).

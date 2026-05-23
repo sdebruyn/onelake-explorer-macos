@@ -73,10 +73,10 @@ jobs:
           retention-days: 14
 
       - name: Build CLI
-        run: go build -o bin/ofe ./cmd/ofe
+        run: go build -o bin/ofem ./cmd/ofem
 
       - name: Smoke test
-        run: ./bin/ofe --version
+        run: ./bin/ofem --version
 
   commitlint:
     name: Commitlint

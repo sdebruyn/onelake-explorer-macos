@@ -3,14 +3,14 @@
 ## Homebrew (recommended)
 
 ```bash
-brew install --cask sdebruyn/ofe/ofe
+brew install --cask sdebruyn/ofem/ofem
 ```
 
 That single command:
 
 - Downloads the signed, notarized `OneLake.app`.
 - Registers a per-user LaunchAgent so the background daemon starts at login.
-- Puts the `ofe` CLI on your `$PATH`.
+- Puts the `ofem` CLI on your `$PATH`.
 
 No extra dependencies, no system-level changes, no admin password.
 
@@ -23,31 +23,31 @@ No extra dependencies, no system-level changes, no admin password.
 ## Verify
 
 ```bash
-ofe --version
-ofe status
+ofem --version
+ofem status
 ```
 
-`ofe status` should print the daemon as not running yet (we haven't signed in). The next step is [Sign in](sign-in.md).
+`ofem status` should print the daemon as not running yet (we haven't signed in). The next step is [Sign in](sign-in.md).
 
 ## Updates
 
 ```bash
-brew upgrade --cask ofe
+brew upgrade --cask ofem
 ```
 
 Your sign-in state and your local cache survive an upgrade.
 
 ## Where things live
 
-After install, OFE writes to three locations under your home directory:
+After install, OFEM writes to three locations under your home directory:
 
 | Path | Purpose |
 |---|---|
 | `~/Applications/OneLake.app` (or `/Applications/`) | The host app |
-| `~/Library/Application Support/dev.debruyn.ofe/` | Config (`config.toml`), daemon socket |
-| `~/Library/Caches/dev.debruyn.ofe/` | Local blob cache + SQLite metadata |
-| `~/Library/Logs/dev.debruyn.ofe/` | Daemon logs (rotated) |
-| `~/Library/LaunchAgents/dev.debruyn.ofe.daemon.plist` | Autostart for the daemon |
+| `~/Library/Application Support/dev.debruyn.ofem/` | Config (`config.toml`), daemon socket |
+| `~/Library/Caches/dev.debruyn.ofem/` | Local blob cache + SQLite metadata |
+| `~/Library/Logs/dev.debruyn.ofem/` | Daemon logs (rotated) |
+| `~/Library/LaunchAgents/dev.debruyn.ofem.daemon.plist` | Autostart for the daemon |
 | `~/OneLake/` | The mount the File Provider Extension exposes in Finder |
 
 See [Uninstall](uninstall.md) for how to remove everything.

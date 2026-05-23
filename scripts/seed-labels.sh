@@ -7,7 +7,7 @@
 #
 # WARNING about --prune: GitHub seeds new repos with default labels
 # (`bug`, `enhancement`, `documentation`, `question`, `invalid`). Those are
-# intentionally absent from .github/labels.yml because OFE uses the
+# intentionally absent from .github/labels.yml because OFEM uses the
 # `type:*` taxonomy instead, so --prune will delete them on a fresh repo.
 # That is by design but worth knowing before you run it.
 #
@@ -17,7 +17,7 @@
 
 set -eo pipefail
 
-repo="${OFE_REPO:-sdebruyn/onelake-explorer-macos}"
+repo="${OFEM_REPO:-sdebruyn/onelake-explorer-macos}"
 labels_file=".github/labels.yml"
 prune=false
 
