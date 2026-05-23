@@ -247,8 +247,8 @@ func TestHandleSyncRefreshNilEngineErrors(t *testing.T) {
 	_, err := h.handleSyncRefresh(context.Background(), mustJSON(t, SyncRefreshRequest{
 		Alias: "work", WorkspaceID: "w", ItemID: "i",
 	}))
-	if err == nil {
-		t.Fatalf("expected error when engine is nil")
+	if !errors.Is(err, ErrEngineNotWired) {
+		t.Fatalf("err = %v, want ErrEngineNotWired", err)
 	}
 }
 

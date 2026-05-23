@@ -17,6 +17,12 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/sync"
 )
 
+// ErrEngineNotWired is returned by sync.refresh when the daemon was
+// constructed without a sync engine (for example in unit tests). Callers
+// can use [errors.Is] to detect it rather than string-matching the
+// formatted error.
+var ErrEngineNotWired = errors.New("sync engine not wired")
+
 // syncRefresher is the subset of [sync.Engine] the IPC handlers need.
 // Defining it as an interface lets the handler tests inject a stub that
 // records calls without spinning up a real engine + token provider +
@@ -289,7 +295,7 @@ func (h *Handlers) handleSyncRefresh(ctx context.Context, params json.RawMessage
 		return nil, errors.New("alias, workspaceId and itemId are required")
 	}
 	if h.engine == nil {
-		return nil, errors.New("sync engine not wired")
+		return nil, ErrEngineNotWired
 	}
 	diff, err := h.engine.RefreshFolder(ctx, cache.Key{
 		AccountAlias: req.Alias,
