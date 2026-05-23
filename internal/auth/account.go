@@ -43,6 +43,17 @@ const MaxAliasLength = 32
 // dash, underscore, and dot; the length must be between 1 and
 // [MaxAliasLength] inclusive.
 //
+// On top of the character whitelist, the following names are rejected
+// because they are unsafe as path segments under ~/OneLake/<alias>/ or
+// as CLI arguments:
+//
+//   - aliases consisting only of dots (".", "..", "..." …): they collapse
+//     or escape the parent directory when joined into a path;
+//   - aliases starting with "-": they would be parsed as a flag by most
+//     CLI argument parsers;
+//   - aliases starting with ".": they create files/folders that are
+//     hidden by default in Finder and most shells, which is confusing.
+//
 // The rules are intentionally strict because the alias becomes part of
 // the mount path (~/OneLake/<alias>/...) and the keychain account name,
 // so anything that could be misinterpreted by macOS, a shell, or a URL
@@ -53,6 +64,12 @@ func ValidateAlias(alias string) error {
 	}
 	if len(alias) > MaxAliasLength {
 		return fmt.Errorf("alias %q is longer than %d characters", alias, MaxAliasLength)
+	}
+	if alias[0] == '-' {
+		return fmt.Errorf("alias %q must not start with '-' (would be parsed as a CLI flag)", alias)
+	}
+	if alias[0] == '.' {
+		return fmt.Errorf("alias %q must not start with '.' (would be hidden in Finder and most shells)", alias)
 	}
 	for i, r := range alias {
 		if r > unicode.MaxASCII {
@@ -70,5 +87,21 @@ func ValidateAlias(alias string) error {
 			return fmt.Errorf("alias %q contains disallowed character %q at position %d (allowed: letters, digits, '-', '_', '.')", alias, r, i)
 		}
 	}
+	if isAllDots(alias) {
+		return fmt.Errorf("alias %q must not consist only of dots (path traversal risk)", alias)
+	}
 	return nil
+}
+
+// isAllDots reports whether s is non-empty and consists exclusively of
+// '.' characters. Used to reject ".", "..", "..." and so on as aliases
+// because they collapse or escape the parent directory when joined into
+// a filesystem path.
+func isAllDots(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '.' {
+			return false
+		}
+	}
+	return s != ""
 }

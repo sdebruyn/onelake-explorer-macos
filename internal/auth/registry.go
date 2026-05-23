@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"time"
@@ -58,11 +59,22 @@ func (r *Registry) Add(account Account, secret []byte) error {
 	})
 
 	if err := r.store.Save(); err != nil {
-		// roll back the keychain so we do not leak orphan secrets
+		// Roll back the keychain so we do not leak orphan secrets, then
+		// revert the in-memory config and persist the reverted state so
+		// disk and memory stay in sync. The rollback Save is
+		// best-effort: if it also fails there is nothing more we can do
+		// from this layer, so we log it and return the original error.
 		_ = r.kc.Delete(account.Alias)
 		r.store.Update(func(f *config.File) {
 			delete(f.Accounts, account.Alias)
 		})
+		if rerr := r.store.Save(); rerr != nil {
+			slog.Warn("auth: rollback save after failed Add also failed; in-memory and disk state may diverge",
+				"alias", account.Alias,
+				"original_err", err,
+				"rollback_err", rerr,
+			)
+		}
 		return fmt.Errorf("auth: save config: %w", err)
 	}
 	return nil
@@ -111,7 +123,17 @@ func (r *Registry) Get(alias string) (Account, []byte, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Account{}, nil, fmt.Errorf("auth: load secret for %q: %w", alias, err)
 	}
-	// errors.Is(err, os.ErrNotExist) → fall through with secret == nil
+	if errors.Is(err, os.ErrNotExist) {
+		// The account is in the config but its keychain entry is gone.
+		// This typically means a user deleted the item via
+		// Keychain Access.app or a system reset wiped it. We tolerate
+		// it and return a nil secret so the caller can force re-auth,
+		// but log a warning so the situation is debuggable rather than
+		// silent.
+		slog.Warn("auth: account present in config but no secret in keychain; re-auth required",
+			"alias", alias,
+		)
+	}
 
 	return fromConfigAccount(cfg), secret, nil
 }

@@ -33,8 +33,14 @@ func TestValidateAlias(t *testing.T) {
 		{name: "emoji", alias: "work\xf0\x9f\x98\x80", wantErr: true},
 		{name: "colon", alias: "work:dev", wantErr: true},
 		{name: "at sign", alias: "user@host", wantErr: true},
-		{name: "dot dot", alias: "..", wantErr: false}, // explicitly allowed by charset rules; path traversal isn't this layer's concern
-		{name: "leading dash", alias: "-work", wantErr: false},
+		{name: "single dot", alias: ".", wantErr: true},
+		{name: "dot dot", alias: "..", wantErr: true},
+		{name: "many dots", alias: "....", wantErr: true},
+		{name: "leading dash", alias: "-work", wantErr: true},
+		{name: "leading dot", alias: ".work", wantErr: true},
+		{name: "trailing dot ok", alias: "work.", wantErr: false},
+		{name: "trailing dash ok", alias: "work-", wantErr: false},
+		{name: "internal dots ok", alias: "a..b", wantErr: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
