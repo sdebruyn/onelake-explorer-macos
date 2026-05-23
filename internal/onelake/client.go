@@ -220,33 +220,20 @@ func (c *Client) GetProperties(ctx context.Context, alias, workspaceGUID, itemGU
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-
-	pp := &PathProperties{
-		ETag:        resp.Header.Get("ETag"),
-		ContentType: resp.Header.Get("Content-Type"),
-	}
-	if v := resp.Header.Get("x-ms-resource-type"); v == "directory" {
-		pp.IsDirectory = true
-	}
-	if v := resp.Header.Get("Content-Length"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			pp.ContentLength = n
-		}
-	}
-	if v := resp.Header.Get("Last-Modified"); v != "" {
-		if t, err := http.ParseTime(v); err == nil {
-			pp.LastModified = t
-		}
-	}
-	return pp, nil
+	return propertiesFromHeader(resp.Header), nil
 }
 
 // Read returns the file body, optionally restricted by a byte Range.
 // Use rangeStart=0, rangeEnd=-1 to skip Range and read the whole file.
 // The caller MUST close the returned ReadCloser.
-func (c *Client) Read(ctx context.Context, alias, workspaceGUID, itemGUID, path string, rangeStart, rangeEnd int64) (io.ReadCloser, error) {
+//
+// The second return value carries the response-header metadata (etag,
+// content length, last-modified, content-type) DFS returned alongside
+// the body. Callers that want to skip a follow-up HEAD can persist
+// these values straight away. The struct is always non-nil on success.
+func (c *Client) Read(ctx context.Context, alias, workspaceGUID, itemGUID, path string, rangeStart, rangeEnd int64) (io.ReadCloser, *PathProperties, error) {
 	if workspaceGUID == "" || itemGUID == "" {
-		return nil, fmt.Errorf("onelake: workspaceGUID and itemGUID required")
+		return nil, nil, fmt.Errorf("onelake: workspaceGUID and itemGUID required")
 	}
 	u := pathURL(workspaceGUID, itemGUID, path, nil)
 	var extra http.Header
@@ -262,9 +249,34 @@ func (c *Client) Read(ctx context.Context, alias, workspaceGUID, itemGUID, path 
 	}
 	resp, err := c.doRequest(ctx, alias, http.MethodGet, u, nil, extra)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return resp.Body, nil
+	return resp.Body, propertiesFromHeader(resp.Header), nil
+}
+
+// propertiesFromHeader extracts the same PathProperties fields that
+// GetProperties populates from a HEAD response. DFS returns the etag,
+// content length, last-modified and content-type on every GET too, so
+// callers that already issue a GET (Read) can avoid an extra HEAD.
+func propertiesFromHeader(h http.Header) *PathProperties {
+	pp := &PathProperties{
+		ETag:        h.Get("ETag"),
+		ContentType: h.Get("Content-Type"),
+	}
+	if v := h.Get("x-ms-resource-type"); v == "directory" {
+		pp.IsDirectory = true
+	}
+	if v := h.Get("Content-Length"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			pp.ContentLength = n
+		}
+	}
+	if v := h.Get("Last-Modified"); v != "" {
+		if t, err := http.ParseTime(v); err == nil {
+			pp.LastModified = t
+		}
+	}
+	return pp
 }
 
 // Write uploads content to path using the create + append + flush
