@@ -5,8 +5,14 @@
 # not in the YAML are left alone (we do not destructively prune by default).
 # Pass --prune to also delete labels that are not in the YAML.
 #
+# WARNING about --prune: GitHub seeds new repos with default labels
+# (`bug`, `enhancement`, `documentation`, `question`, `invalid`). Those are
+# intentionally absent from .github/labels.yml because OFE uses the
+# `type:*` taxonomy instead, so --prune will delete them on a fresh repo.
+# That is by design but worth knowing before you run it.
+#
 # Usage:
-#   ./scripts/seed-labels.sh            # create + update
+#   ./scripts/seed-labels.sh            # create + update only
 #   ./scripts/seed-labels.sh --prune    # also delete labels not in YAML
 
 set -eo pipefail
@@ -64,12 +70,15 @@ done
 if [ "$prune" = true ]; then
     echo
     echo "Pruning labels not present in $labels_file..."
-    for name in $existing_names; do
-        if ! echo "$desired_names" | grep -Fxq "$name"; then
-            gh label delete "$name" --repo "$repo" --confirm >/dev/null
+    # Read line-by-line so multi-word labels like "good first issue" are
+    # iterated as a single name instead of word-split on spaces.
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        if ! printf '%s\n' "$desired_names" | grep -Fxq "$name"; then
+            gh label delete "$name" --repo "$repo" --yes >/dev/null
             printf '  deleted  %s\n' "$name"
         fi
-    done
+    done <<< "$existing_names"
 fi
 
 echo

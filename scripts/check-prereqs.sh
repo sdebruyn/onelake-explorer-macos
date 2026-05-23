@@ -126,8 +126,15 @@ hdr "Lint and CI parity (recommended)"
 
 check_command golangci-lint "1.55" "brew install golangci-lint"
 if command -v commitlint >/dev/null 2>&1; then
-    cl_ver=$(commitlint --version 2>&1 | head -1)
-    ok "commitlint $cl_ver"
+    cl_ver=$(commitlint --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+    if [ -n "$cl_ver" ] && version_ge "$cl_ver" "18.0"; then
+        ok "commitlint $cl_ver (need 18.0+)"
+    elif [ -n "$cl_ver" ]; then
+        warn "commitlint $cl_ver is older than the 18.0+ documented in docs/prerequisites.md"
+        hint "brew upgrade commitlint (or: npm i -g @commitlint/cli@latest)"
+    else
+        ok "commitlint installed (version detection failed; assuming OK)"
+    fi
 else
     warn "commitlint not installed (only needed if you want CI parity for commit-message validation)"
     hint "brew install commitlint (or: npm i -g @commitlint/cli @commitlint/config-conventional)"
