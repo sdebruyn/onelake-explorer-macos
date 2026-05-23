@@ -68,9 +68,18 @@ func newFakeClock(start time.Time) *fakeClock {
 func (f *fakeClock) Now() time.Time      { return f.t }
 func (f *fakeClock) Add(d time.Duration) { f.t = f.t.Add(d).UTC() }
 
+// stubTenants implements [TenantResolver] from a static map. Used in
+// tests that assert sync_pulled carries tenantId.
+type stubTenants map[string]string
+
+func (s stubTenants) TenantID(alias string) (string, bool) {
+	v, ok := s[alias]
+	return v, ok
+}
+
 // newEngine builds an engine plumbed through httpmock against both the
 // Fabric REST and OneLake DFS endpoints.
-func newEngine(t *testing.T) *engineFixture {
+func newEngine(t *testing.T, opts ...func(*Options)) *engineFixture {
 	t.Helper()
 
 	httpmock.Activate()
@@ -109,7 +118,7 @@ func newEngine(t *testing.T) *engineFixture {
 
 	clock := newFakeClock(time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC))
 
-	eng, err := New(Options{
+	o := Options{
 		Cache:           c,
 		Fabric:          fc,
 		OneLake:         oc,
@@ -117,7 +126,11 @@ func newEngine(t *testing.T) *engineFixture {
 		OpenFolderTTL:   30 * time.Second,
 		RecentFolderTTL: 5 * time.Minute,
 		Now:             clock.Now,
-	})
+	}
+	for _, mut := range opts {
+		mut(&o)
+	}
+	eng, err := New(o)
 	if err != nil {
 		t.Fatalf("sync.New: %v", err)
 	}

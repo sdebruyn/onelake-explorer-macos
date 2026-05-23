@@ -192,6 +192,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 		Fabric:    fabricClient,
 		OneLake:   onelakeClient,
 		Telemetry: tel,
+		Tenants:   registry,
 		Logger:    logger,
 	})
 	if err != nil {
@@ -238,7 +239,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	pollerDone := make(chan struct{})
 	go func() {
 		defer close(pollerDone)
-		runAdaptivePoller(runCtx, c, engine, tel, registry, logger, engine.RecentFolderTTL(), pollerHotWindow)
+		runAdaptivePoller(runCtx, c, engine, logger, engine.RecentFolderTTL(), pollerHotWindow)
 	}()
 
 	// Block until either signal cancellation or the listener exits
@@ -253,6 +254,13 @@ func Run(ctx context.Context, opts RunOptions) error {
 			exitErr = fmt.Errorf("daemon: listen exited: %w", err)
 		}
 	}
+
+	// Cancel runCtx so the poller goroutine — which only returns on
+	// runCtx.Done — unwinds in both shutdown paths (signal AND
+	// unexpected listener exit). Without this, the listener-error path
+	// would hang at <-pollerDone forever waiting on a goroutine whose
+	// loop has no other reason to return.
+	stop()
 
 	// Wait for the poller to unwind so its in-flight work doesn't race
 	// the cache.Close defer.

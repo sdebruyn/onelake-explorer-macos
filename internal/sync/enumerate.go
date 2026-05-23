@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/onelake"
@@ -226,13 +227,27 @@ func (e *Engine) RefreshFolder(ctx context.Context, k cache.Key) (Diff, error) {
 	// Stamp the parent row so freshness checks see a current SyncedAt.
 	// We upsert (rather than only Touch) so a missing-parent case from
 	// the very first Enumerate gets a row in place.
+	//
+	// Preserve the parent's existing LastAccessed when it has one. A
+	// system-initiated refresh (e.g. the adaptive poller) should NOT
+	// look like a user access — otherwise polled items stay perpetually
+	// "hot" and HotItems re-selects them every sweep, defeating the
+	// inactivity window. The user-facing read path (Enumerate) bumps
+	// LastAccessed via cache.Touch separately.
+	parentLastAccessed := time.Time{}
+	if existing, gerr := e.cache.Get(ctx, k); gerr == nil {
+		parentLastAccessed = existing.LastAccessed
+	}
+	if parentLastAccessed.IsZero() {
+		parentLastAccessed = now
+	}
 	parent := cache.Entry{
 		Key:          k,
 		ParentPath:   parentPath(k.Path),
 		Name:         baseName(k.Path),
 		IsDir:        true,
 		SyncedAt:     now,
-		LastAccessed: now,
+		LastAccessed: parentLastAccessed,
 	}
 	if err := e.cache.Put(ctx, parent); err != nil {
 		return Diff{}, fmt.Errorf("sync.RefreshFolder: stamp parent: %w", err)
@@ -241,6 +256,7 @@ func (e *Engine) RefreshFolder(ctx context.Context, k cache.Key) (Diff, error) {
 	if diff.Total() > 0 {
 		e.track(telemetry.Event{
 			Name:             "sync_pulled",
+			TenantID:         e.tenantFor(k.AccountAlias),
 			AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
 			ItemsChanged:     diff.Total(),
 		})

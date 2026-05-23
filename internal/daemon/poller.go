@@ -7,7 +7,6 @@ import (
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/sync"
-	"github.com/sdebruyn/onelake-explorer-macos/internal/telemetry"
 )
 
 // pollerCache is the subset of [cache.Cache] the adaptive poller needs.
@@ -22,19 +21,6 @@ type pollerEngine interface {
 	RefreshFolder(ctx context.Context, k cache.Key) (sync.Diff, error)
 }
 
-// telemetryTracker is the subset of [telemetry.Client] the poller uses.
-// Accepting an interface keeps the runOnce helper trivially mockable.
-type telemetryTracker interface {
-	Track(ev telemetry.Event)
-}
-
-// tenantResolver maps an account alias to its Entra tenant GUID. It is
-// the subset of [auth.Registry] the poller uses for telemetry tagging.
-// docs/telemetry.md lists tenantId as a property of sync_pulled events.
-type tenantResolver interface {
-	TenantID(alias string) (string, bool)
-}
-
 // runAdaptivePoller refreshes the root of every recently-accessed item
 // on a ticker. The blocking loop honors ctx for shutdown.
 //
@@ -42,12 +28,15 @@ type tenantResolver interface {
 // 5 minutes. The full notion of "recent" requires interaction with the
 // File Provider Extension (Phase 1); until then we approximate it from
 // the cache's LastAccessed timestamps via [cache.Cache.HotItems].
+//
+// Telemetry: sync_pulled events are emitted by [sync.Engine.RefreshFolder]
+// itself (the engine is the single source of truth and already tags them
+// with the resolved tenantId). The poller deliberately does NOT emit a
+// second event per refresh — that would double-count every sweep.
 func runAdaptivePoller(
 	ctx context.Context,
 	c pollerCache,
 	engine pollerEngine,
-	tel telemetryTracker,
-	tenants tenantResolver,
 	logger *slog.Logger,
 	period time.Duration,
 	hotWindow time.Duration,
@@ -65,27 +54,19 @@ func runAdaptivePoller(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pollOnce(ctx, c, engine, tel, tenants, logger, hotWindow)
+			pollOnce(ctx, c, engine, logger, hotWindow)
 		}
 	}
 }
 
-// pollOnce performs a single sweep: load hot items, refresh each one's
-// root, and emit a sync_pulled event per touched item that had at least
-// one change. Errors from individual refreshes are logged and swallowed
+// pollOnce performs a single sweep: load hot items and refresh each
+// one's root. Errors from individual refreshes are logged and swallowed
 // so a transient failure on one item does not stall the rest of the
 // sweep.
-//
-// Tenant IDs are resolved per-alias via tenants and memoised inside this
-// call so a sweep that revisits the same alias only pays the lookup cost
-// once. The map lifetime is one sweep; aliases removed between sweeps
-// drop out naturally.
 func pollOnce(
 	ctx context.Context,
 	c pollerCache,
 	engine pollerEngine,
-	tel telemetryTracker,
-	tenants tenantResolver,
 	logger *slog.Logger,
 	hotWindow time.Duration,
 ) {
@@ -100,7 +81,6 @@ func pollOnce(
 	}
 
 	logger.Debug("adaptive poller: sweep", slog.Int("items", len(items)))
-	tenantCache := make(map[string]string, len(items))
 	for _, k := range items {
 		// Sweep the item root; descendants get refreshed by the
 		// existing Enumerate path the next time Finder touches them.
@@ -130,35 +110,5 @@ func pollOnce(
 			slog.Int("updated", diff.Updated),
 			slog.Int("removed", diff.Removed),
 		)
-		if diff.Total() == 0 {
-			continue
-		}
-		tel.Track(telemetry.Event{
-			Name:             "sync_pulled",
-			TenantID:         resolveTenant(tenants, tenantCache, k.AccountAlias),
-			AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
-			ItemsChanged:     diff.Total(),
-		})
 	}
-}
-
-// resolveTenant returns the tenant GUID for alias, consulting the
-// per-sweep cache before falling back to tenants. Unknown aliases yield
-// an empty string, which the telemetry layer drops as "not applicable".
-// A nil tenants is tolerated to keep tests trivial.
-func resolveTenant(tenants tenantResolver, cache map[string]string, alias string) string {
-	if alias == "" {
-		return ""
-	}
-	if v, ok := cache[alias]; ok {
-		return v
-	}
-	var tid string
-	if tenants != nil {
-		if v, ok := tenants.TenantID(alias); ok {
-			tid = v
-		}
-	}
-	cache[alias] = tid
-	return tid
 }
