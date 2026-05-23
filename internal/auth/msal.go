@@ -130,6 +130,11 @@ func NewKeychainCache(kc Keychain, accountAlias string) *KeychainCache {
 // to the supplied Unmarshaler. If no entry exists yet it is a no-op (the
 // in-memory cache stays empty), which is the documented behaviour for
 // first-run login.
+//
+// The cache.ReplaceHints argument is intentionally ignored: this instance
+// is bound to one alias (one keychain entry, one tenant), so there is no
+// partition keyed by hint to consult — the keychain key is fixed at
+// construction.
 func (c *KeychainCache) Replace(ctx context.Context, marshaler cache.Unmarshaler, _ cache.ReplaceHints) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -158,6 +163,10 @@ func (c *KeychainCache) Replace(ctx context.Context, marshaler cache.Unmarshaler
 // Export serialises the in-memory MSAL cache and writes it to the
 // keychain. An empty payload is treated as "delete" by the keychain
 // layer, which is appropriate when MSAL clears the cache on logout.
+//
+// The cache.ExportHints argument is intentionally ignored for the same
+// reason Replace ignores ReplaceHints: this instance owns exactly one
+// keychain entry for one account alias.
 func (c *KeychainCache) Export(ctx context.Context, marshaler cache.Marshaler, _ cache.ExportHints) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -216,15 +225,23 @@ func isInteractionRequired(err error) bool {
 		"login_required",
 		"consent_required",
 		"invalid_grant",
+		"mfa_required",
+		"password_change_required",
 		// AAD STS codes that map to "you must re-auth in the browser":
-		// AADSTS50076 — MFA required.
-		// AADSTS50079 — strong auth (MFA) registration required.
-		// AADSTS65001 — user or admin has not consented.
-		// AADSTS70043 — refresh token expired due to inactivity.
+		// AADSTS50076  — MFA required.
+		// AADSTS50079  — strong auth (MFA) registration required.
+		// AADSTS50158  — external MFA required.
+		// AADSTS50173  — fresh token required after password change.
+		// AADSTS65001  — user or admin has not consented.
+		// AADSTS70043  — refresh token expired due to inactivity.
+		// AADSTS700082 — refresh token expired due to inactivity (90 d).
 		"aadsts50076",
 		"aadsts50079",
+		"aadsts50158",
+		"aadsts50173",
 		"aadsts65001",
 		"aadsts70043",
+		"aadsts700082",
 	}
 	for _, s := range signals {
 		if strings.Contains(msg, s) {

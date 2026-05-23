@@ -219,7 +219,7 @@ func (r *Registry) Token(ctx context.Context, alias string) (string, error) {
 		return "", err
 	}
 
-	msalAccount, err := r.findMSALAccount(ctx, client, cfg.HomeAccountID)
+	msalAccount, err := r.findMSALAccount(ctx, client, alias, cfg.HomeAccountID)
 	if err != nil {
 		return "", fmt.Errorf("auth: locate MSAL account for %q: %w", alias, err)
 	}
@@ -247,7 +247,10 @@ func (r *Registry) clientFor(alias, tenantID string) (MSALClient, error) {
 // findMSALAccount looks up the public.Account whose HomeAccountID
 // matches homeAccountID. The MSAL cache may hold zero or more accounts;
 // we match by ID rather than position because the order is unspecified.
-func (r *Registry) findMSALAccount(ctx context.Context, client MSALClient, homeAccountID string) (public.Account, error) {
+// On miss, only the user-chosen alias is logged — HomeAccountID embeds
+// the user's per-tenant objectId which docs/telemetry.md keeps out of
+// any log destination the user can't easily inspect.
+func (r *Registry) findMSALAccount(ctx context.Context, client MSALClient, alias, homeAccountID string) (public.Account, error) {
 	accounts, err := client.Accounts(ctx)
 	if err != nil {
 		return public.Account{}, err
@@ -261,8 +264,8 @@ func (r *Registry) findMSALAccount(ctx context.Context, client MSALClient, homeA
 	// typically because the Keychain entry was wiped (re-installed OS,
 	// manual deletion). Treat this as interaction-required so the menu
 	// bar prompts the user to re-auth.
-	slog.Warn("auth: home account id not present in MSAL cache; re-auth required",
-		"home_account_id", homeAccountID,
+	slog.Warn("auth: account not present in MSAL cache; re-auth required",
+		"alias", alias,
 	)
 	return public.Account{}, ErrInteractionRequired
 }

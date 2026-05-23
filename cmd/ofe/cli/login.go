@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/public"
 	"github.com/spf13/cobra"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
@@ -75,25 +74,26 @@ func runLogin(cmd *cobra.Command, opts loginOptions) error {
 	stdout := cmd.OutOrStdout()
 	stdin := cmd.InOrStdin()
 
+	// The login flows return the public.Account too, but Registry.Add
+	// only needs the cacheBytes — the MSAL token cache already holds the
+	// data needed for silent refresh under the alias's keychain entry.
 	var (
-		account     auth.Account
-		msalAccount public.Account
-		cacheBytes  []byte
+		account    auth.Account
+		cacheBytes []byte
 	)
 	if opts.deviceCode {
-		account, msalAccount, cacheBytes, err = auth.LoginDeviceCode(ctx, auth.PlaceholderClientID, opts.tenantHint, kc,
+		account, _, cacheBytes, err = auth.LoginDeviceCode(ctx, auth.PlaceholderClientID, opts.tenantHint, kc,
 			func(verificationURL, userCode string, _ time.Time) {
 				fmt.Fprintf(stdout, "To sign in, visit %s and enter the code: %s\n", verificationURL, userCode)
 			},
 		)
 	} else {
 		fmt.Fprintln(stdout, "Opening browser to sign in...")
-		account, msalAccount, cacheBytes, err = auth.LoginInteractive(ctx, auth.PlaceholderClientID, opts.tenantHint, kc)
+		account, _, cacheBytes, err = auth.LoginInteractive(ctx, auth.PlaceholderClientID, opts.tenantHint, kc)
 	}
 	if err != nil {
 		return fmt.Errorf("sign in: %w", err)
 	}
-	_ = msalAccount // The MSAL cache holds everything we need for refresh.
 
 	finalAlias, err := resolveAlias(stdin, stdout, opts.alias, account)
 	if err != nil {

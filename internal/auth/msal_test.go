@@ -14,12 +14,12 @@ import (
 // of MSAL's real *storage.Manager keeps the test independent of MSAL
 // internals.
 type stubMarshaler struct {
-	marshalData    []byte
-	marshalErr     error
-	unmarshaledIn  []byte
-	unmarshalErr   error
-	marshalCalled  int
-	unmarshaCalled int
+	marshalData     []byte
+	marshalErr      error
+	unmarshaledIn   []byte
+	unmarshalErr    error
+	marshalCalled   int
+	unmarshalCalled int
 }
 
 func (s *stubMarshaler) Marshal() ([]byte, error) {
@@ -31,7 +31,7 @@ func (s *stubMarshaler) Marshal() ([]byte, error) {
 }
 
 func (s *stubMarshaler) Unmarshal(b []byte) error {
-	s.unmarshaCalled++
+	s.unmarshalCalled++
 	s.unmarshaledIn = append([]byte(nil), b...)
 	return s.unmarshalErr
 }
@@ -70,8 +70,8 @@ func TestKeychainCacheReplaceMissingIsNoop(t *testing.T) {
 	if err := cc.Replace(context.Background(), target, cache.ReplaceHints{}); err != nil {
 		t.Fatalf("Replace empty: %v", err)
 	}
-	if target.unmarshaCalled != 0 {
-		t.Errorf("Unmarshal called %d times for missing entry, want 0", target.unmarshaCalled)
+	if target.unmarshalCalled != 0 {
+		t.Errorf("Unmarshal called %d times for missing entry, want 0", target.unmarshalCalled)
 	}
 }
 
@@ -88,8 +88,8 @@ func TestKeychainCacheReplaceEmptyBytesIsNoop(t *testing.T) {
 	if err := cc.Replace(context.Background(), target, cache.ReplaceHints{}); err != nil {
 		t.Fatalf("Replace: %v", err)
 	}
-	if target.unmarshaCalled != 0 {
-		t.Errorf("Unmarshal called %d times, want 0", target.unmarshaCalled)
+	if target.unmarshalCalled != 0 {
+		t.Errorf("Unmarshal called %d times, want 0", target.unmarshalCalled)
 	}
 }
 
