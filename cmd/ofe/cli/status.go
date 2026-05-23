@@ -71,10 +71,13 @@ func printDaemonStatus(out io.Writer, socketPath string) {
 		return
 	}
 
+	// Build the timeout context before dialing so a stuck connect
+	// also surrenders within statusIPCTimeout (the Call below shares
+	// the same ctx so the whole round-trip is bounded).
 	ctx, cancel := context.WithTimeout(context.Background(), statusIPCTimeout)
 	defer cancel()
 
-	client, err := ipc.Dial(socketPath)
+	client, err := ipc.DialContext(ctx, socketPath)
 	if err != nil {
 		fmt.Fprintf(out, "Daemon:    socket present but dial failed: %v\n", err)
 		return

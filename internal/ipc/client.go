@@ -27,11 +27,29 @@ type Client struct {
 // Dial connects to the daemon's Unix domain socket at path and returns a
 // ready-to-use [Client]. The caller is responsible for invoking
 // [Client.Close] when done.
+//
+// Dial has no built-in timeout; it blocks for as long as the kernel
+// will wait on a Unix-socket connect, which on macOS is effectively
+// instant for a live socket and immediate-fail for a missing one. Use
+// [DialContext] when you need to bound the connect by your own
+// deadline (for example, when an unresponsive daemon must not stall a
+// short-lived CLI command).
 func Dial(path string) (*Client, error) {
+	return DialContext(context.Background(), path)
+}
+
+// DialContext is like [Dial] but honours ctx's deadline for the
+// underlying socket connect. A cancelled or expired ctx returns
+// promptly with the ctx error wrapped.
+//
+// The returned client does NOT capture ctx; per-call cancellation
+// should be passed through [Client.Call] via its own ctx argument.
+func DialContext(ctx context.Context, path string) (*Client, error) {
 	if path == "" {
 		return nil, errors.New("ipc.Dial: socket path is required")
 	}
-	conn, err := net.Dial("unix", path)
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", path)
 	if err != nil {
 		return nil, fmt.Errorf("ipc.Dial %q: %w", path, err)
 	}

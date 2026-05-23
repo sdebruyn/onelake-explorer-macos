@@ -116,7 +116,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if kc == nil {
 		kc = auth.NewKeychain()
 	}
-	registry := auth.NewRegistry(store, kc)
+	registry := auth.NewRegistry(store, kc, auth.PlaceholderClientID, nil)
 
 	// IPC server.
 	srv := ipc.NewServer(logger)
@@ -168,9 +168,16 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if err := srv.Close(); err != nil {
 		logger.Warn("ipc server close error", slog.Any("err", err))
 	}
-	// Drain listenErr if it hasn't fired yet.
+	// Drain listenErr if it hasn't fired yet. Anything that arrives
+	// here is expected (Listener.Close races acceptLoop and the
+	// listener returns a "use of closed network connection" error
+	// that is not actionable), but we log at debug so it isn't
+	// invisible during diagnosis.
 	select {
-	case <-listenErr:
+	case err := <-listenErr:
+		if err != nil {
+			logger.Debug("ipc listener drained post-close", slog.Any("err", err))
+		}
 	default:
 	}
 	return exitErr

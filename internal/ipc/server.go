@@ -101,38 +101,45 @@ func (s *Server) Listen(ctx context.Context, path string) error {
 }
 
 func (s *Server) listen(ctx context.Context, path string) error {
-	// Ensure callers blocked on Ready() always unblock, even when bind
-	// fails. They are expected to check SocketPath() != "" to confirm
-	// success.
-	defer s.markReady()
+	// We must unblock Ready() on every exit path — bind success AND
+	// bind failure — so callers blocked on Ready() don't hang. A
+	// deferred markReady at the top would cover all paths in one
+	// line, but it would only fire when listen returns, which on the
+	// happy path is at shutdown. So instead we mark ready explicitly:
+	// once on the bind-success path below, and once via failedBind on
+	// each early-return error path. markReady itself is idempotent.
+	failedBind := func(err error) error {
+		s.markReady()
+		return err
+	}
 
 	if path == "" {
-		return errors.New("ipc.Server.Listen: socket path is required")
+		return failedBind(errors.New("ipc.Server.Listen: socket path is required"))
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("ipc: create socket parent dir: %w", err)
+		return failedBind(fmt.Errorf("ipc: create socket parent dir: %w", err))
 	}
 	// Best-effort removal of a stale socket from a crashed previous run.
 	// We deliberately ignore "not exist" errors and surface anything
 	// else so a misconfigured permission problem is visible.
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("ipc: remove stale socket: %w", err)
+		return failedBind(fmt.Errorf("ipc: remove stale socket: %w", err))
 	}
 
 	ln, err := net.Listen("unix", path)
 	if err != nil {
-		return fmt.Errorf("ipc: listen unix %q: %w", path, err)
+		return failedBind(fmt.Errorf("ipc: listen unix %q: %w", path, err))
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		_ = ln.Close()
-		return fmt.Errorf("ipc: chmod socket: %w", err)
+		return failedBind(fmt.Errorf("ipc: chmod socket: %w", err))
 	}
 
 	s.stateMu.Lock()
 	if s.closed {
 		s.stateMu.Unlock()
 		_ = ln.Close()
-		return errors.New("ipc.Server.Listen: server closed during bind")
+		return failedBind(errors.New("ipc.Server.Listen: server closed during bind"))
 	}
 	s.listener = ln
 	s.socketPath = path
@@ -143,6 +150,8 @@ func (s *Server) listen(ctx context.Context, path string) error {
 	s.acceptWG.Add(1)
 	s.stateMu.Unlock()
 
+	// Bind succeeded; unblock Ready() so callers don't have to wait
+	// for acceptLoop to return (which only happens at shutdown).
 	s.markReady()
 	s.logger.Info("ipc server listening", slog.String("socket", path))
 

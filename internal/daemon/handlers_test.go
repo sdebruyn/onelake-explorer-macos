@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
@@ -31,7 +32,7 @@ func newTestHandlers(t *testing.T) *Handlers {
 	}
 
 	kc := auth.NewMemoryKeychain()
-	reg := auth.NewRegistry(store, kc)
+	reg := auth.NewRegistry(store, kc, auth.PlaceholderClientID, nil)
 
 	cacheRoot := filepath.Join(dir, "cache")
 	c, err := cache.Open(cache.Options{Root: cacheRoot, MaxBlobBytes: 1024})
@@ -155,7 +156,7 @@ func TestHandleConfigSnapshotOmitsInstallID(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 	out, _ := json.Marshal(res)
-	if got := string(out); contains(got, "should-not-appear") || contains(got, "install_id") {
+	if got := string(out); strings.Contains(got, "should-not-appear") || strings.Contains(got, "install_id") {
 		t.Errorf("config.snapshot leaked InstallID: %s", got)
 	}
 }
@@ -194,8 +195,4 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 		t.Fatalf("marshal: %v", err)
 	}
 	return b
-}
-
-func contains(haystack, needle string) bool {
-	return indexOf(haystack, needle) >= 0
 }
