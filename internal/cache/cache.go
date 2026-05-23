@@ -101,6 +101,13 @@ func (c *Cache) Close() error {
 // daemon that needs to report disk usage to the host app.
 func (c *Cache) Root() string { return c.opts.Root }
 
+// BlobRoot returns the directory under [Cache.Root] that holds the
+// sharded blob files. The SQLite metadata (cache.sqlite and its WAL
+// sidecars) sit alongside it under Root but are not blobs; callers that
+// want to compare against [Options.MaxBlobBytes] should walk BlobRoot
+// instead of Root so the metadata DB doesn't inflate the measurement.
+func (c *Cache) BlobRoot() string { return c.blobRoot }
+
 // migrate applies the schema and pins the current schemaVersion in the
 // schema_version table. The function is safe to run repeatedly: existing
 // objects use IF NOT EXISTS, and the version row is INSERT OR REPLACE.

@@ -72,3 +72,26 @@ Rejected for the same reasons FUSE-T was rejected, plus the additional cost of b
 | FUSE-T as stepping stone | Rejected. Mount-layer code is throwaway. |
 | macFUSE | Rejected. Violates "no system changes" constraint. |
 | Plain NFS/SMB loopback | Rejected. Strictly inferior to File Provider Extension. |
+
+## Daemon ↔ Extension boundary
+
+The File Provider Extension is sandboxed and short-lived — macOS
+launches it on demand for each Finder request and tears it down again.
+It cannot hold long-lived network sockets, run scheduled polling, or
+perform interactive auth flows. To bridge that gap we run a separate
+**daemon** process (`ofe daemon run`, started by the LaunchAgent
+installed via `ofe daemon install`) that handles those long-running
+concerns and signals the extension when it has news.
+
+The wire protocol the CLI, host app, and (eventually) the extension
+use to talk to the daemon is the local-only JSON-RPC 2.0 socket
+described in [`internal/ipc`](../internal/ipc). It binds at
+`~/Library/Application Support/dev.debruyn.ofe/ofe.sock`, owner-only
+0600 permissions, length-prefixed frames capped at 1 MiB.
+
+For Phase 1, the daemon → extension direction will be wrapped over an
+XPC service (the extension's only Apple-blessed inbound API) and call
+`NSFileProviderManager.signalEnumerator(for:)` to nudge re-enumeration
+when Fabric's adaptive polling spots a change. For now the IPC layer
+only connects CLI ↔ daemon; the extension and XPC bridge land
+alongside the host app in Phase 1.
