@@ -1,0 +1,23 @@
+{# Umami analytics — endpoint and website-id are placeholders.
+   Sam will fill them in once the Umami instance for ofem.debruyn.dev
+   is provisioned (see https://github.com/sdebruyn/onelake-explorer-macos
+   issue tracker — search label "area:docs"). Until then this block
+   silently no-ops (the script tag still loads but website-id is empty,
+   so Umami's loader skips reporting). #}
+<script defer
+  src="/t.js"
+  data-website-id="REPLACE_WITH_UMAMI_WEBSITE_ID"
+  data-host-url="https://umami.debruyn.dev"
+  data-do-not-track="true">
+</script>
+<script type="text/javascript">
+  (() => {
+    const name = 'outbound-link-click';
+    document.querySelectorAll('a').forEach(a => {
+      if (a.host !== window.location.host && !a.getAttribute('data-umami-event')) {
+        a.setAttribute('data-umami-event', name);
+        a.setAttribute('data-umami-event-url', a.href);
+      }
+    });
+  })();
+</script>

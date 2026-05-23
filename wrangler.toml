@@ -1,0 +1,20 @@
+# Cloudflare Pages config for ofem.debruyn.dev.
+#
+# This file lets maintainers deploy the docs site from the CLI:
+#
+#   bash docs_build/cloudflare_pages.sh
+#   npx wrangler pages deploy docs_build/site
+#
+# The Cloudflare-managed build (triggered by GitHub pushes) does not
+# read wrangler.toml — that is configured in the Cloudflare dashboard
+# under Pages → ofem → Settings. The values below match those settings
+# so a local deploy lands at the same place.
+
+name = "ofem"
+pages_build_output_dir = "docs_build/site"
+compatibility_date = "2026-05-23"
+
+# No environment variables, secrets, or KV bindings yet. Umami's
+# script-id is committed in the analytics partial (see overrides/) and
+# is a public identifier, so no secrets are needed at build or deploy
+# time.
