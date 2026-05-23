@@ -112,6 +112,17 @@ func (e *Engine) enumerateFromCache(ctx context.Context, k cache.Key) (bool, []c
 // to blobs). The directory row itself is also upserted so subsequent
 // freshness checks (Enumerate) see a current SyncedAt.
 //
+// Note: the cache update is intentionally non-atomic. We upsert and
+// delete row-by-row and stamp the parent only at the end, so a mid-loop
+// failure (e.g. disk full, SQLite transient error) leaves the cache in
+// a partially refreshed state — some children carry the new SyncedAt,
+// others still carry the previous one, and the parent's SyncedAt has
+// not advanced. That is intentional: the parent row remains "stale",
+// so the very next Enumerate triggers another RefreshFolder which is
+// idempotent and converges the cache. Wrapping the whole loop in a
+// single SQLite transaction would defeat the LRU bookkeeping the
+// individual cache.Put / cache.Delete calls perform.
+//
 // Telemetry: emits sync_pulled with itemsChanged when the diff is
 // non-zero. Callers (Enumerate) emit folder_list themselves.
 func (e *Engine) RefreshFolder(ctx context.Context, k cache.Key) (Diff, error) {
@@ -125,9 +136,10 @@ func (e *Engine) RefreshFolder(ctx context.Context, k cache.Key) (Diff, error) {
 	// Build a set of remote child paths so we can detect deletions.
 	remoteChildren := make(map[string]onelake.PathEntry, len(result.Entries))
 	for _, entry := range result.Entries {
-		rel := stripItemPrefix(entry.Name, k.ItemID)
-		if rel == "" {
-			// Defensive: skip the directory itself if the server echoes it.
+		rel, ok := stripItemPrefix(entry.Name, k.ItemID)
+		if !ok || rel == "" {
+			// Either the server echoed the directory itself or a row that
+			// does not belong to this item — skip defensively.
 			continue
 		}
 		// Ensure the entry is a direct child of k.Path (the DFS recursive
@@ -248,16 +260,26 @@ func (e *Engine) RefreshFolder(ctx context.Context, k cache.Key) (Diff, error) {
 
 // stripItemPrefix removes the leading "<itemGUID>/" so the cache stores
 // item-relative paths exactly as the OneLake client expects them as
-// inputs.
-func stripItemPrefix(name, itemGUID string) string {
+// inputs. Trailing slashes that DFS occasionally returns on directory
+// rows are trimmed too so downstream callers (isDirectChild,
+// path.Base, …) see a canonical "Files/sub" form rather than
+// "Files/sub/", which would otherwise look like an indirect child.
+//
+// The second return value is false when name does not belong to the
+// given itemGUID — a defensive guard against the server echoing a
+// cross-item row. Callers should drop such entries silently.
+func stripItemPrefix(name, itemGUID string) (string, bool) {
 	name = strings.TrimPrefix(name, "/")
-	if name == itemGUID {
-		return ""
+	switch {
+	case name == itemGUID, name == itemGUID+"/":
+		// The directory itself.
+		return "", true
+	case strings.HasPrefix(name, itemGUID+"/"):
+		rel := strings.TrimPrefix(name, itemGUID+"/")
+		return strings.TrimRight(rel, "/"), true
+	default:
+		return "", false
 	}
-	if strings.HasPrefix(name, itemGUID+"/") {
-		return strings.TrimPrefix(name, itemGUID+"/")
-	}
-	return name
 }
 
 // isDirectChild reports whether child is exactly one segment deeper than

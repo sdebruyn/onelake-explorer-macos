@@ -223,3 +223,97 @@ func TestEnumerate_TelemetryEmitted(t *testing.T) {
 		t.Error("AccountAliasHash empty")
 	}
 }
+
+// TestRefreshFolder_DirectoryWithTrailingSlash regresses a bug where a
+// DFS row reported as "<itemGUID>/Files/sub/" (note the trailing slash)
+// was silently dropped because the post-strip relative path retained
+// the trailing slash and failed isDirectChild's "no further '/'" check.
+// Both the file and the folder must land in the cache.
+func TestRefreshFolder_DirectoryWithTrailingSlash(t *testing.T) {
+
+	f := newEngine(t)
+	ctx := context.Background()
+
+	httpmock.RegisterResponder("GET", "=~^"+testOneLakeBase+"/"+testWorkspaceID+`\?.*$`,
+		func(req *http.Request) (*http.Response, error) {
+			return httpmock.NewJsonResponse(200, map[string]any{
+				"paths": []map[string]any{
+					{"name": testItemID + "/Files/foo.csv", "contentLength": "10", "etag": "e1"},
+					{"name": testItemID + "/Files/sub/", "isDirectory": "true"},
+				},
+			})
+		})
+
+	parent := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files"}
+	if _, err := f.engine.RefreshFolder(ctx, parent); err != nil {
+		t.Fatalf("RefreshFolder: %v", err)
+	}
+
+	kids, err := f.cache.Children(ctx, parent)
+	if err != nil {
+		t.Fatalf("Children: %v", err)
+	}
+	if len(kids) != 2 {
+		t.Fatalf("cached children = %d (%+v), want 2", len(kids), kids)
+	}
+
+	var sawFile, sawDir bool
+	for _, k := range kids {
+		switch k.Path {
+		case "Files/foo.csv":
+			sawFile = true
+			if k.IsDir {
+				t.Errorf("foo.csv flagged as directory")
+			}
+		case "Files/sub":
+			sawDir = true
+			if !k.IsDir {
+				t.Errorf("sub not flagged as directory")
+			}
+		default:
+			t.Errorf("unexpected cached child: %q", k.Path)
+		}
+	}
+	if !sawFile || !sawDir {
+		t.Errorf("missing children: file=%v dir=%v", sawFile, sawDir)
+	}
+}
+
+// TestStripItemPrefix covers the directory-trailing-slash bug, the root
+// case, and the cross-item defensive guard.
+func TestStripItemPrefix(t *testing.T) {
+
+	const itemGUID = "22222222-2222-2222-2222-222222222222"
+
+	cases := []struct {
+		name    string
+		in      string
+		guid    string
+		wantRel string
+		wantOK  bool
+	}{
+		{name: "file under item", in: itemGUID + "/Files/foo", guid: itemGUID, wantRel: "Files/foo", wantOK: true},
+		{name: "directory with trailing slash", in: itemGUID + "/Files/sub/", guid: itemGUID, wantRel: "Files/sub", wantOK: true},
+		{name: "root with trailing slash", in: itemGUID + "/", guid: itemGUID, wantRel: "", wantOK: true},
+		{name: "root without trailing slash", in: itemGUID, guid: itemGUID, wantRel: "", wantOK: true},
+		{name: "leading slash is tolerated", in: "/" + itemGUID + "/Files/foo", guid: itemGUID, wantRel: "Files/foo", wantOK: true},
+		{name: "unrelated GUID is rejected", in: "33333333-3333-3333-3333-333333333333/foo", guid: itemGUID, wantRel: "", wantOK: false},
+		{
+			name:    "shared GUID prefix does not bleed",
+			in:      itemGUID + "abcd/Files/foo",
+			guid:    itemGUID,
+			wantRel: "",
+			wantOK:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rel, ok := stripItemPrefix(tc.in, tc.guid)
+			if rel != tc.wantRel || ok != tc.wantOK {
+				t.Errorf("stripItemPrefix(%q, %q) = (%q, %v), want (%q, %v)",
+					tc.in, tc.guid, rel, ok, tc.wantRel, tc.wantOK)
+			}
+		})
+	}
+}
