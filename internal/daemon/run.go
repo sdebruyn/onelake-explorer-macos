@@ -13,7 +13,6 @@ import (
 
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 
-	"github.com/sdebruyn/onelake-explorer-macos/internal/api"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
@@ -43,20 +42,6 @@ const telemetryShutdownTimeout = 2 * time.Second
 // 30 minutes. That window matches what Finder typically holds open and
 // keeps the poller's work bounded.
 const pollerHotWindow = 30 * time.Minute
-
-// tokenProviderAdapter satisfies [api.TokenProvider] by delegating to
-// [auth.TokenProvider]. Both interfaces have the same shape; this
-// adapter exists because the api and auth packages declare them as
-// distinct Go types. Issue #9 tracks the full unification — see
-// internal/api/token.go's doc comment for the migration plan.
-type tokenProviderAdapter struct {
-	inner auth.TokenProvider
-}
-
-// Token implements [api.TokenProvider].
-func (a tokenProviderAdapter) Token(ctx context.Context, alias string) (string, error) {
-	return a.inner.Token(ctx, alias)
-}
 
 // Defaults for the rotating log writer. Picked to be small enough that
 // the daemon never fills a user's disk and large enough that a few days
@@ -142,15 +127,13 @@ func Run(ctx context.Context, opts RunOptions) error {
 
 	// Auth registry. We pass it the same store so the daemon and CLI
 	// stay in sync — both read and mutate config.toml under the same
-	// lock. The registry also implements [auth.TokenProvider]; we wrap
-	// it in a tiny adapter below so the Fabric and OneLake clients can
-	// consume it through their [api.TokenProvider] interface.
+	// lock. The registry implements [auth.TokenProvider] directly, so
+	// the Fabric and OneLake clients can consume it without an adapter.
 	kc := opts.KeychainOverride
 	if kc == nil {
 		kc = auth.NewKeychain()
 	}
 	registry := auth.NewRegistry(store, kc, auth.PlaceholderClientID, nil)
-	tp := tokenProviderAdapter{inner: registry}
 
 	// Telemetry. Init returns a no-op client whenever telemetry is
 	// disabled (env, config flag, or unset connection string) so the
@@ -185,8 +168,8 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// the same token provider and feed both into the engine alongside
 	// the cache and telemetry client. New only errors when a required
 	// dependency is missing, which would be a programmer error here.
-	fabricClient := fabric.New(fabric.Options{TokenProvider: api.TokenProvider(tp)})
-	onelakeClient := onelake.New(onelake.Options{TokenProvider: api.TokenProvider(tp)})
+	fabricClient := fabric.New(fabric.Options{TokenProvider: registry})
+	onelakeClient := onelake.New(onelake.Options{TokenProvider: registry})
 	engine, err := sync.New(sync.Options{
 		Cache:     c,
 		Fabric:    fabricClient,
