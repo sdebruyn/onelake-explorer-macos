@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"text/template"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
@@ -124,14 +125,57 @@ func LaunchAgentPlistPath(home string) string {
 // runs the real binary.
 var launchctlRunner = realLaunchctl
 
+// launchctlError is the error type returned by [realLaunchctl] when the
+// launchctl binary exits non-zero. It carries the captured stderr output
+// alongside the raw exit code so callers like [isAlreadyBootstrapped]
+// can pattern-match the descriptive message that launchctl prints
+// (which would otherwise be lost — *exec.ExitError.Error() is just
+// "exit status N").
+type launchctlError struct {
+	Args     []string
+	ExitCode int
+	Stderr   string
+	Err      error
+}
+
+func (e *launchctlError) Error() string {
+	if e.Stderr != "" {
+		return fmt.Sprintf("launchctl %v: %s: %s", e.Args, e.Err, strings.TrimSpace(e.Stderr))
+	}
+	return fmt.Sprintf("launchctl %v: %s", e.Args, e.Err)
+}
+
+func (e *launchctlError) Unwrap() error { return e.Err }
+
+// realLaunchctl invokes launchctl and captures stderr so the
+// descriptive failure text ("Bootstrap failed: 37: service already
+// loaded", etc.) is available to [isAlreadyBootstrapped] and friends.
+// Without this capture launchctl's stderr would go straight to the
+// process's stderr and the returned *exec.ExitError would only carry
+// "exit status N", which is not enough to distinguish the "already
+// loaded" case from a real failure.
 func realLaunchctl(args []string) error {
 	cmd := exec.Command("launchctl", args...)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("launchctl %v: %w", args, err)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	// stdout is captured separately so launchctl status output, when
+	// asked for, doesn't get interleaved into our error message.
+	cmd.Stdout = &bytes.Buffer{}
+	err := cmd.Run()
+	if err == nil {
+		return nil
 	}
-	return nil
+	exitCode := -1
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		exitCode = exitErr.ExitCode()
+	}
+	return &launchctlError{
+		Args:     args,
+		ExitCode: exitCode,
+		Stderr:   stderr.String(),
+		Err:      err,
+	}
 }
 
 // SetLaunchctlForTest swaps the launchctl invoker for the duration of
@@ -242,11 +286,17 @@ func launchctlTarget() string {
 	return "gui/" + strconv.Itoa(os.Getuid())
 }
 
-// isAlreadyBootstrapped recognises the launchctl exit code for "service
-// is already loaded" (Input/output error 5 historically, "Service is
-// already loaded" textually on modern macOS). We pattern-match on
-// substrings because launchctl does not expose a stable code.
+// isAlreadyBootstrapped recognises the launchctl outcome for "service
+// is already loaded". On modern macOS launchctl exits with code 37 and
+// prints "Bootstrap failed: 37: Service is already loaded" to stderr;
+// we match on both the canonical exit code (when available via
+// [launchctlError]) and the descriptive substrings so we stay robust
+// across launchctl tweaks.
 func isAlreadyBootstrapped(err error) bool {
+	var le *launchctlError
+	if errors.As(err, &le) && le.ExitCode == 37 {
+		return true
+	}
 	msg := err.Error()
 	return containsAny(msg, []string{
 		"service already loaded",
@@ -256,9 +306,16 @@ func isAlreadyBootstrapped(err error) bool {
 	})
 }
 
-// isNotBootstrapped recognises the launchctl exit for "no such
+// isNotBootstrapped recognises the launchctl outcome for "no such
 // service". Treated as a successful no-op by UninstallLaunchAgent.
+// Exit code 113 is the canonical "could not find specified service"
+// from `launchctl bootout` on modern macOS; we still substring-match
+// the descriptive text for older releases.
 func isNotBootstrapped(err error) bool {
+	var le *launchctlError
+	if errors.As(err, &le) && le.ExitCode == 113 {
+		return true
+	}
 	msg := err.Error()
 	return containsAny(msg, []string{
 		"Could not find specified service",
@@ -270,29 +327,11 @@ func isNotBootstrapped(err error) bool {
 
 func containsAny(s string, needles []string) bool {
 	for _, n := range needles {
-		if n != "" && indexOf(s, n) >= 0 {
+		if n != "" && strings.Contains(s, n) {
 			return true
 		}
 	}
 	return false
-}
-
-// indexOf is the simplest possible substring search; we don't bring in
-// strings because the package doesn't otherwise need it and this keeps
-// the import block small.
-func indexOf(s, sub string) int {
-	if len(sub) == 0 {
-		return 0
-	}
-	if len(sub) > len(s) {
-		return -1
-	}
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
 
 // writeFileAtomic writes data to path via write-temp + rename so a

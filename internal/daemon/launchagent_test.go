@@ -137,6 +137,66 @@ func TestInstallLaunchAgentIdempotentWhenAlreadyBootstrapped(t *testing.T) {
 	}
 }
 
+// TestInstallLaunchAgentIdempotentWithRealisticLaunchctlError exercises
+// the production code path: realLaunchctl wraps exec.ExitError into a
+// *launchctlError carrying the captured stderr ("Bootstrap failed: 37:
+// Service is already loaded\n"). This regression test guards against
+// the bug where isAlreadyBootstrapped only matched the test stub's
+// hand-crafted string but never the real exec error, whose .Error()
+// would have been just "exit status 37".
+func TestInstallLaunchAgentIdempotentWithRealisticLaunchctlError(t *testing.T) {
+	// No t.Parallel(): launchctlRunner is process-wide global.
+
+	home := t.TempDir()
+	paths := config.Paths{
+		LogDir:     filepath.Join(home, "logs"),
+		ConfigDir:  filepath.Join(home, "cfg"),
+		ConfigFile: filepath.Join(home, "cfg", "config.toml"),
+		CacheDir:   filepath.Join(home, "cache"),
+		SocketPath: filepath.Join(home, "cfg", "ofe.sock"),
+	}
+	stubLaunchctl(t, func(args []string) error {
+		if len(args) > 0 && args[0] == "bootstrap" {
+			return &launchctlError{
+				Args:     args,
+				ExitCode: 37,
+				Stderr:   "Bootstrap failed: 37: Service is already loaded\n",
+				Err:      errors.New("exit status 37"),
+			}
+		}
+		return nil
+	})
+
+	if err := InstallLaunchAgent(home, paths, "/fake/bin/ofe"); err != nil {
+		t.Fatalf("install should swallow already-bootstrapped launchctlError: %v", err)
+	}
+}
+
+// TestIsAlreadyBootstrappedRecognisesLaunchctlError verifies the
+// exit-code fast path on a *launchctlError even when the stderr text
+// is empty (some launchctl invocations only set the code).
+func TestIsAlreadyBootstrappedRecognisesLaunchctlError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"exit code 37 only", &launchctlError{ExitCode: 37, Err: errors.New("exit status 37")}, true},
+		{"stderr text", &launchctlError{ExitCode: 1, Stderr: "Bootstrap failed: 37: Service is already loaded", Err: errors.New("exit status 1")}, true},
+		{"unrelated error", errors.New("permission denied"), false},
+		{"unrelated launchctl exit", &launchctlError{ExitCode: 1, Stderr: "kaboom", Err: errors.New("exit status 1")}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isAlreadyBootstrapped(tc.err); got != tc.want {
+				t.Errorf("isAlreadyBootstrapped(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestInstallLaunchAgentSurfacesUnknownBootstrapError(t *testing.T) {
 	// No t.Parallel(): launchctlRunner is a process-wide global that
 	// these tests swap. Running them in parallel races on that global.
