@@ -6,7 +6,7 @@ Open-source, native macOS integration for Microsoft Fabric **OneLake**. Browse y
 
 ## What this is
 
-Microsoft ships an [OneLake File Explorer](https://learn.microsoft.com/fabric/onelake/onelake-file-explorer) for Windows only. There is currently no native macOS option. OFE fills that gap as an open-source project, with these explicit improvements over the Windows version:
+Microsoft ships a [OneLake File Explorer](https://learn.microsoft.com/fabric/onelake/onelake-file-explorer) for Windows only. There is currently no native macOS option. OFE fills that gap as an open-source project, with these explicit improvements over the Windows version:
 
 - **Multi-account, multi-tenant** simultaneously visible side by side (Windows app supports one account at a time).
 - **macOS-native UX** through a File Provider Extension — Finder sidebar, online-only placeholders, on-demand download, Spotlight integration.
