@@ -1,29 +1,31 @@
 // Package auth manages Microsoft Entra ID authentication for OFE.
 //
-// Scope today (foundation layer):
-//   - The [TokenProvider] interface, which the rest of the codebase depends
-//     on to obtain OneLake-audience access tokens.
+// Surface area:
+//   - The [TokenProvider] interface, the contract that the rest of the
+//     codebase uses to obtain OneLake-audience access tokens.
 //   - The [Account] value type plus [ValidateAlias], the canonical
 //     representation of a signed-in OneLake account.
 //   - A [Keychain] abstraction backed by github.com/zalando/go-keyring on
 //     macOS, with [MemoryKeychain] for tests.
+//   - A Keychain-backed MSAL token cache via [KeychainCache], which
+//     adapts our [Keychain] to MSAL Go's cache.ExportReplace.
 //   - The [Registry], which persists accounts to the OFE TOML config and
-//     per-account opaque secrets to the keychain. It exposes the full
-//     Add/Remove/Get/List/Default/SetDefault lifecycle but does NOT yet
-//     implement [TokenProvider].
-//
-// Out of scope (lands in a follow-up PR):
-//   - MSAL Go integration via
-//     github.com/AzureAD/microsoft-authentication-library-for-go and its
-//     PublicClientApplication.
+//     per-account opaque secrets to the keychain, and implements
+//     [TokenProvider] via MSAL silent acquisition.
 //   - The interactive-browser and device-code login flows
-//     (LoginInteractive, LoginDeviceCode) plus the localhost redirect HTTP
-//     server.
-//   - Wiring of the `ofe login` and `ofe account remove` CLI commands,
-//     which currently remain stubbed.
-//   - Making [Registry] implement [TokenProvider]; that step needs MSAL
-//     to acquire and silently refresh tokens against the cache material
-//     held in the keychain.
+//     ([LoginInteractive], [LoginDeviceCode]).
+//
+// Sentinel errors:
+//   - [ErrInteractionRequired] — silent refresh failed because the user
+//     must complete an interactive sign-in (Conditional Access challenge,
+//     MFA re-prompt, expired refresh token).
+//
+// Out of scope:
+//   - The daemon-side background loop that silently refreshes tokens and
+//     surfaces re-auth indicators in the menu bar; that lives in the
+//     daemon package.
+//   - Sovereign clouds (US Gov, China, Germany); MVP is public cloud
+//     only, see docs/auth.md.
 //
 // See docs/auth.md for the full design.
 package auth
