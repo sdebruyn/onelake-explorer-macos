@@ -35,7 +35,7 @@ Every event is sent as an App Insights `customEvent` with a fixed property set:
 | `accountAliasHash` | string | Conditional | `sha256(<alias>):8` | First 8 hex chars of the SHA256 of the user-chosen alias, to correlate events from the same account-context without revealing the alias text. |
 | `durationMs` | int64 | When relevant | `423` | For events that complete an operation. |
 | `success` | bool | When relevant | `true` | For events that complete an operation. |
-| `errorCode` | string | When `success=false` | `AADSTS50079` | Backend or library-defined error code. Free text up to 32 chars; **must not contain PII** (we redact any string longer than 64 chars or containing `@`). |
+| `errorCode` | string | When `success=false` | `AADSTS50079` | Backend or library-defined error code. Free text up to 32 chars; **must not contain PII** (we redact any string longer than 32 chars or containing `@`). |
 
 ## Event catalog (initial)
 

@@ -148,16 +148,20 @@ func (c *Client) Track(event Event) {
 	if event.Time.IsZero() {
 		event.Time = time.Now().UTC()
 	}
-	// Copy common props into the event so the sink ships them.
-	if event.CommonProps == nil {
-		event.CommonProps = make(map[string]string, len(c.commonProps))
+	// Clone the caller-supplied CommonProps before merging so we never
+	// mutate a map the caller still holds a reference to.
+	src := event.CommonProps
+	merged := make(map[string]string, len(src)+len(c.commonProps))
+	for k, v := range src {
+		merged[k] = v
 	}
 	for k, v := range c.commonProps {
-		if _, ok := event.CommonProps[k]; ok {
+		if _, ok := merged[k]; ok {
 			continue // caller-supplied value wins
 		}
-		event.CommonProps[k] = v
+		merged[k] = v
 	}
+	event.CommonProps = merged
 
 	c.mu.Lock()
 	if c.closed {
@@ -165,9 +169,11 @@ func (c *Client) Track(event Event) {
 		return
 	}
 	if len(c.buffer) >= c.maxBuffer {
-		// Drop the oldest event to make room.
+		// Drop the oldest event to make room. Re-slicing rather than
+		// copying keeps Track O(1) under load; the buffer eventually
+		// compacts when Flush reassigns it to nil.
 		dropped := c.buffer[0]
-		c.buffer = append(c.buffer[:0], c.buffer[1:]...)
+		c.buffer = c.buffer[1:]
 		c.logger.Debug("telemetry buffer overflow; dropped oldest event",
 			"dropped_event", dropped.Name,
 			"max_buffer", c.maxBuffer,
@@ -198,8 +204,12 @@ func (c *Client) TrackError(err error, op string) {
 }
 
 // Flush ships any buffered events to the Sink synchronously. It returns
-// the Sink's error verbatim. Safe to call after Close (always returns nil
-// after Close).
+// the Sink's error verbatim. On Send failure the in-flight batch is put
+// back at the front of the buffer (so the next Flush retries it),
+// capped by the same overflow policy as Track — oldest events are
+// dropped when the buffer would exceed maxBuffer. Safe to call after
+// Close; subsequent calls will still attempt to drain whatever was
+// re-queued by an earlier failed Send.
 func (c *Client) Flush(ctx context.Context) error {
 	if c == nil {
 		return nil
@@ -212,6 +222,25 @@ func (c *Client) Flush(ctx context.Context) error {
 		return nil
 	}
 	if err := c.sink.Send(ctx, batch); err != nil {
+		c.mu.Lock()
+		// Re-queue the failed batch in front of anything Track added
+		// while Send was in flight, then trim to cap from the oldest end.
+		// This matches the docs/telemetry.md promise that events
+		// accumulate up to maxBuffer and only get dropped on overflow.
+		// We re-queue even during shutdown: Close cancels the loop ctx
+		// first (which can fail an in-flight Send with ctx.Cancelled)
+		// and then issues a final Flush with the shutdown deadline that
+		// will pick up the re-queued batch. Track is already a no-op
+		// once closed=true, so nothing new gets in front.
+		c.buffer = append(batch, c.buffer...)
+		if over := len(c.buffer) - c.maxBuffer; over > 0 {
+			c.buffer = c.buffer[over:]
+			c.logger.Debug("telemetry buffer overflow after failed flush; dropped oldest events",
+				"dropped", over,
+				"max_buffer", c.maxBuffer,
+			)
+		}
+		c.mu.Unlock()
 		c.logger.Warn("telemetry flush failed", "err", err, "events", len(batch))
 		return err
 	}
@@ -250,6 +279,12 @@ func (c *Client) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// Intentional: do NOT flush here. Both shutdown paths run
+			// their own final drain — Close cancels this ctx and then
+			// calls Flush with the shutdown deadline; if the parent ctx
+			// is cancelled directly (e.g. SIGTERM), Close still calls
+			// Flush after wg.Wait. Flushing here with an already-dead
+			// ctx would just fail the Send and re-queue.
 			return
 		case <-ticker.C:
 			if err := c.Flush(ctx); err != nil {

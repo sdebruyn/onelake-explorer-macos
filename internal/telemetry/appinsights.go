@@ -102,9 +102,15 @@ func ParseConnectionString(s string) (endpoint, iKey string, err error) {
 		return "", "", fmt.Errorf("telemetry: connection string missing InstrumentationKey")
 	}
 	if endpoint == "" {
-		// The official default when only the InstrumentationKey is
-		// provided. Documented in the App Insights connection-string
-		// spec.
+		// Legacy classic global endpoint. New App Insights resources
+		// are region-bound and always include an IngestionEndpoint in
+		// the connection string, so this fallback only fires for a
+		// hand-written `InstrumentationKey=…` (e.g. a contributor
+		// experimenting locally). Official OFE builds bake the full
+		// connection string at release time. EndpointSuffix /
+		// sovereign-cloud forms are explicitly not handled here — we
+		// rely on the IngestionEndpoint key being present, which it
+		// always is for resources created in the last few years.
 		endpoint = "https://dc.services.visualstudio.com/"
 	}
 	if !strings.HasSuffix(endpoint, "/") {
@@ -175,7 +181,14 @@ func (s *AppInsightsSink) Send(ctx context.Context, events []Event) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if readErr != nil {
+		// The response body was truncated mid-read. We still try to
+		// honor whatever status / partial bytes we got; if the JSON
+		// can't be parsed below we fall back to the "best-effort
+		// accepted" branch, same as the official SDK.
+		return fmt.Errorf("telemetry: read response body (status %d): %w", resp.StatusCode, readErr)
+	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("telemetry: ingestion HTTP %d: %s", resp.StatusCode, string(respBody))

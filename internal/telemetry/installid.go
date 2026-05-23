@@ -21,8 +21,12 @@ func EnsureInstallID(store *config.Store) (string, error) {
 
 	newID := uuid.NewString()
 	store.Update(func(f *config.File) {
-		// Re-check inside the lock to avoid clobbering a value written
-		// by a concurrent EnsureInstallID call.
+		// In-process re-check only: store.Update serializes against
+		// other goroutines in this process. Two separate OFE processes
+		// (e.g. CLI + daemon) racing on first run can each generate a
+		// UUID and one will win the Save() file rename; events emitted
+		// before that rename carry the losing ID, everything after
+		// carries the winner. That is acceptable per docs/telemetry.md.
 		if f.InstallID == "" {
 			f.InstallID = newID
 		}
