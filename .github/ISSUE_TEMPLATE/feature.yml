@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest a new feature or enhancement
+title: "feat: "
+labels: ["type:feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the user need, not the solution. We can iterate on solutions together.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed solution (optional)
+      description: If you already have an idea, share it. If not, leave blank.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered (optional)
+      description: Other ways to solve the same problem you thought about.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: I checked the README and PLAN.md and this is not already covered or explicitly out-of-scope.
+          required: true
+        - label: I searched existing issues for similar requests.
+          required: true

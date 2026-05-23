@@ -1,0 +1,74 @@
+# Binaries and build output
+bin/
+build/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Go coverage
+coverage.out
+coverage.html
+profile.out
+
+# Go vendor (we don't vendor)
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Code signing / secrets
+*.p12
+*.p8
+*.cer
+*.mobileprovision
+.env
+.env.*
+!.env.example
+
+# Local config / state
+.envrc
+local.toml
+ofe.sock
+
+# Goreleaser
+.goreleaser-temp/
+
+# Test artifacts
+testdata/tmp/

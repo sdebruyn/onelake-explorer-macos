@@ -1,0 +1,64 @@
+name: Bug report
+description: Something is not working the way it should
+title: "bug: "
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! Please fill in as much as you can. The more context, the faster we can fix it.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: When I run `ofe login`, ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `ofe ...`
+        2. Click ...
+        3. See error ...
+    validations:
+      required: true
+  - type: input
+    id: ofe-version
+    attributes:
+      label: OFE version
+      description: Output of `ofe --version`
+      placeholder: "2026.05.1"
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: Output of `sw_vers`
+      placeholder: "14.5.1 (23F79)"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: From `~/Library/Logs/dev.debruyn.ofe/ofe.log`. Please redact any sensitive content (workspace names, file paths, tokens).
+      render: shell
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I am running the latest version available via Homebrew (`brew upgrade --cask ofe`).
+          required: true
