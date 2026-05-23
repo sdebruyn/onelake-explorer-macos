@@ -20,6 +20,15 @@ set -ex
 python -m pip install --upgrade pip
 python -m pip install -r docs_build/requirements.txt
 
+# pip installs console scripts to sysconfig's "scripts" path. On CF
+# Pages' buildhome that resolves to ~/.local/bin (PEP 668 enforces
+# --user installs into the user site), which is not on PATH by default.
+# Resolve it and prepend so `zensical` is found regardless of how the
+# build image initialises its shell.
+SCRIPTS_DIR=$(python -c "import sysconfig; print(sysconfig.get_paths()['scripts'])")
+USER_SCRIPTS_DIR=$(python -c "import site, os; print(os.path.join(site.getuserbase(), 'bin'))")
+export PATH="${SCRIPTS_DIR}:${USER_SCRIPTS_DIR}:${PATH}"
+
 zensical build
 
 curl -sLo ./docs_build/site/t.js "https://cloud.umami.is/script.js"
