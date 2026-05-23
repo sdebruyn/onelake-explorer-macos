@@ -16,13 +16,16 @@ import (
 // Open returns a reader for a file's bytes. The data comes from the
 // local cache whenever the cache holds a blob whose linked metadata row
 // matches the remote's etag; otherwise the file is fetched from
-// OneLake, stored in the cache, linked to the metadata row, and the
-// freshly cached blob is returned to the caller.
+// OneLake, stored in the cache, linked to the metadata row (including
+// the etag DFS returned on the GET response), and the freshly cached
+// blob is returned to the caller.
 //
 // Open issues a HEAD to OneLake to validate freshness before serving a
 // cached blob. The adaptive-poll schedule covers folders, not individual
 // files, so we revalidate per Open rather than trusting the SyncedAt
-// timestamp alone.
+// timestamp alone. On a cache miss we skip the HEAD and read the etag
+// straight off the GET response, so the row is fully populated and a
+// follow-up Open hits the cache-fresh fast path.
 //
 // Telemetry: emits file_download with durationMs, success, and
 // bytesTransferred. Pure cache-hit emits the event with
@@ -75,8 +78,11 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 		}
 	}
 
-	// Cache miss or staleness: stream from OneLake.
-	body, err := e.onelake.Read(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, 0, -1)
+	// Cache miss or staleness: stream from OneLake. Read returns the
+	// response-header metadata (etag, content-length, last-modified,
+	// content-type) alongside the body so we can populate the cache row
+	// without a follow-up HEAD.
+	body, props, err := e.onelake.Read(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, 0, -1)
 	if err != nil {
 		e.track(telemetry.Event{
 			Name:             "file_download",
@@ -102,7 +108,9 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 	}
 
 	// Upsert the metadata row, preserving any existing remote attributes
-	// we already learned via HEAD or a previous list.
+	// we already learned via HEAD or a previous list and folding in the
+	// fresh response-header metadata. Reading the etag here is what makes
+	// the next Open hit the cache-fresh fast path instead of re-downloading.
 	row := cached
 	row.Key = k
 	if row.Name == "" {
@@ -113,6 +121,20 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 	}
 	row.BlobSHA256 = sha
 	row.BlobSize = size
+	if props != nil {
+		if props.ETag != "" {
+			row.Etag = props.ETag
+		}
+		if props.ContentLength != 0 {
+			row.ContentLength = props.ContentLength
+		}
+		if !props.LastModified.IsZero() {
+			row.LastModified = props.LastModified
+		}
+		if props.ContentType != "" {
+			row.ContentType = props.ContentType
+		}
+	}
 	if row.ContentLength == 0 {
 		row.ContentLength = size
 	}

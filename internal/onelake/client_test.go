@@ -185,7 +185,7 @@ func TestRead_NoRange(t *testing.T) {
 			return httpmock.NewStringResponse(200, "hello"), nil
 		})
 
-	rc, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/a.csv", 0, -1)
+	rc, _, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/a.csv", 0, -1)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestRead_WithRange(t *testing.T) {
 			return httpmock.NewStringResponse(206, "partial"), nil
 		})
 
-	rc, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/a.csv", 10, 20)
+	rc, _, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/a.csv", 10, 20)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestRead_429RetriedThenSucceeds(t *testing.T) {
 			}
 			return httpmock.NewStringResponse(200, "hello"), nil
 		})
-	rc, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/a.csv", 0, -1)
+	rc, _, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/a.csv", 0, -1)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestRead_EscapesPathWithSpaces(t *testing.T) {
 			return httpmock.NewStringResponse(200, "ok"), nil
 		})
 
-	rc, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/My Report.csv", 0, -1)
+	rc, _, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/My Report.csv", 0, -1)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}

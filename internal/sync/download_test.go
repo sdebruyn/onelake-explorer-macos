@@ -43,7 +43,9 @@ func TestOpen_CacheMissDownloads(t *testing.T) {
 // TestOpen_CacheHitNoNetwork verifies a second Open re-uses the cached
 // blob without re-downloading. We accept a single HEAD to verify
 // freshness because that's how Open implements last-write-wins-aware
-// caching.
+// caching. Crucially, the etag must be captured from the initial GET
+// response so the second Open hits the HEAD-only fast path without us
+// having to manually back-fill the row.
 func TestOpen_CacheHitNoNetwork(t *testing.T) {
 
 	f := newEngine(t)
@@ -69,16 +71,16 @@ func TestOpen_CacheHitNoNetwork(t *testing.T) {
 	}
 	_, _ = io.ReadAll(rc)
 	_ = rc.Close()
-	// Now the cache row exists but has no etag (we couldn't learn it
-	// from a 200 GET without a HEAD). Force a HEAD-only fast path by
-	// manually setting the etag.
+
+	// After the cache-miss path, the row MUST carry the etag harvested
+	// from the GET response. Without it the next Open would fall back to
+	// the re-download branch every single time.
 	entry, err := f.cache.Get(ctx, k)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	entry.Etag = "e1"
-	if err := f.cache.Put(ctx, entry); err != nil {
-		t.Fatalf("Put: %v", err)
+	if entry.Etag != "e1" {
+		t.Fatalf("cache row etag = %q after cache-miss download, want %q", entry.Etag, "e1")
 	}
 
 	getCalls := httpmock.GetCallCountInfo()["GET "+testOneLakeBase+"/"+testWorkspaceID+"/"+testItemID+"/Files/a.csv"]
@@ -93,6 +95,131 @@ func TestOpen_CacheHitNoNetwork(t *testing.T) {
 		t.Errorf("GET calls jumped from %d to %d on cache hit (no re-download expected)", getCalls, getCalls2)
 	}
 }
+
+// TestOpen_CacheMissCapturesEtag is the focused regression for the bug
+// where cache-miss never learnt the etag, causing every subsequent Open
+// to re-download. The two-Open shape mirrors the user's read pattern in
+// Finder: open file once, open again moments later.
+func TestOpen_CacheMissCapturesEtag(t *testing.T) {
+
+	f := newEngine(t)
+	ctx := context.Background()
+
+	getCount := 0
+	httpmock.RegisterResponder("GET", testOneLakeBase+"/"+testWorkspaceID+"/"+testItemID+"/Files/a.csv",
+		func(req *http.Request) (*http.Response, error) {
+			getCount++
+			resp := httpmock.NewStringResponse(200, "blob")
+			resp.Header.Set("ETag", "etag-1")
+			resp.Header.Set("Content-Type", "text/csv")
+			return resp, nil
+		})
+	httpmock.RegisterResponder("HEAD", testOneLakeBase+"/"+testWorkspaceID+"/"+testItemID+"/Files/a.csv",
+		func(req *http.Request) (*http.Response, error) {
+			resp := httpmock.NewStringResponse(200, "")
+			resp.Header.Set("ETag", "etag-1")
+			return resp, nil
+		})
+
+	k := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/a.csv"}
+
+	rc, err := f.engine.Open(ctx, k)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	_, _ = io.ReadAll(rc)
+	_ = rc.Close()
+	if getCount != 1 {
+		t.Fatalf("first Open GETs = %d, want 1", getCount)
+	}
+
+	entry, err := f.cache.Get(ctx, k)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if entry.Etag != "etag-1" {
+		t.Errorf("etag captured on cache miss = %q, want etag-1", entry.Etag)
+	}
+	if entry.ContentType != "text/csv" {
+		t.Errorf("content-type captured = %q, want text/csv", entry.ContentType)
+	}
+
+	rc2, err := f.engine.Open(ctx, k)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	_, _ = io.ReadAll(rc2)
+	_ = rc2.Close()
+	if getCount != 1 {
+		t.Errorf("second Open re-downloaded; GETs = %d, want still 1", getCount)
+	}
+}
+
+// TestOpen_RemoteReadError tags the failure path so the telemetry event
+// is emitted and the cache stays clean.
+func TestOpen_RemoteReadError(t *testing.T) {
+
+	f := newEngine(t)
+	ctx := context.Background()
+
+	httpmock.RegisterResponder("GET", testOneLakeBase+"/"+testWorkspaceID+"/"+testItemID+"/Files/oops.csv",
+		httpmock.NewStringResponder(403, "forbidden"))
+
+	k := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/oops.csv"}
+	if _, err := f.engine.Open(ctx, k); err == nil {
+		t.Fatal("expected error from forbidden response")
+	}
+	if _, err := f.cache.Get(ctx, k); err == nil {
+		t.Error("cache row should not exist after a failed Open")
+	}
+
+	ev := findEvent(t, f.drainEvents(t), "file_download")
+	if ev.Success == nil || *ev.Success {
+		t.Errorf("Success = %v, want false", ev.Success)
+	}
+	if ev.ErrorCode == "" {
+		t.Error("ErrorCode empty on failure")
+	}
+}
+
+// TestOpen_StoreBlobError simulates a body that fails partway through so
+// StoreBlob bubbles an error out of Open. We arrange this via a
+// responder whose ReadCloser errors on the first Read call.
+func TestOpen_StoreBlobError(t *testing.T) {
+
+	f := newEngine(t)
+	ctx := context.Background()
+
+	httpmock.RegisterResponder("GET", testOneLakeBase+"/"+testWorkspaceID+"/"+testItemID+"/Files/broken.csv",
+		func(req *http.Request) (*http.Response, error) {
+			resp := &http.Response{
+				StatusCode:    200,
+				Body:          io.NopCloser(&erroringReader{err: io.ErrUnexpectedEOF}),
+				Header:        http.Header{"ETag": []string{"e1"}},
+				ContentLength: -1,
+			}
+			return resp, nil
+		})
+
+	k := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/broken.csv"}
+	if _, err := f.engine.Open(ctx, k); err == nil {
+		t.Fatal("expected error from StoreBlob")
+	}
+
+	ev := findEvent(t, f.drainEvents(t), "file_download")
+	if ev.Success == nil || *ev.Success {
+		t.Errorf("Success = %v, want false", ev.Success)
+	}
+	if ev.ErrorCode == "" {
+		t.Error("ErrorCode empty on failure")
+	}
+}
+
+// erroringReader always returns the configured error on Read; used to
+// force a StoreBlob failure in Open's tests.
+type erroringReader struct{ err error }
+
+func (e *erroringReader) Read([]byte) (int, error) { return 0, e.err }
 
 // TestOpen_StaleEtagRedownloads ensures that when the remote etag has
 // moved we drop the cached blob and refetch.
