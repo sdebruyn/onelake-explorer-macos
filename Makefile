@@ -4,9 +4,13 @@
 #   make build       — build the ofe CLI into ./bin/ofe
 #   make test        — run unit tests with the race detector
 #   make lint        — run golangci-lint with the repo config
-#   make fmt         — gofmt + goimports (the same checks CI runs)
-#   make ci          — fmt + lint + test + build (run before pushing)
+#   make fmt         — gofmt + goimports (mutates files in place)
+#   make fmt-check   — read-only gofmt check (fails on unformatted files)
+#   make ci          — fmt-check + lint + test + build (run before pushing)
 #   make clean       — remove build artifacts
+#
+# Note: `make ci` deliberately uses fmt-check (read-only) so it matches
+# what GitHub Actions does. Use `make fmt` to actually rewrite files.
 #
 # Release maintainer:
 #   make release-snapshot  — run goreleaser locally to validate the config
@@ -25,7 +29,7 @@ LDFLAGS := -s -w \
 	-X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Commit=$(COMMIT) \
 	-X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test lint fmt vet tidy ci clean smoke release-snapshot help
+.PHONY: all build test lint fmt fmt-check vet tidy ci clean smoke release-snapshot help
 
 all: ci
 
@@ -49,6 +53,14 @@ fmt:
 		echo "goimports not installed; run 'go install golang.org/x/tools/cmd/goimports@latest'"; \
 	fi
 
+fmt-check:
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "The following files need gofmt (run 'make fmt'):"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
+
 vet:
 	go vet ./...
 
@@ -59,10 +71,10 @@ smoke: build
 	@$(BIN) --version
 	@$(BIN) status
 
-ci: tidy fmt vet lint test build smoke
+ci: tidy fmt-check vet lint test build smoke
 
 clean:
-	rm -rf $(BIN_DIR) build dist coverage.out
+	rm -rf $(BIN_DIR) build dist dist-app coverage.out
 
 release-snapshot:
 	goreleaser release --snapshot --clean

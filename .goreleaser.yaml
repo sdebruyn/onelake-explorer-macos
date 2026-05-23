@@ -40,8 +40,6 @@ archives:
       - LICENSE
       - README.md
       - CHANGELOG.md
-      - src: docs/**
-        dst: docs
 
 checksum:
   name_template: checksums.txt
