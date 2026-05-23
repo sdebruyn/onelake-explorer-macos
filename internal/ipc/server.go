@@ -142,9 +142,9 @@ func (s *Server) listen(ctx context.Context, path string) error {
 	}
 	// If a file (socket or otherwise) already exists at path, decide
 	// whether it is a stale leftover that we can safely unlink or a
-	// live peer that we must not stomp on. probeSocket handles both:
-	// a successful Dial means a peer is accepting and we refuse to
-	// start; any other outcome (including "not a socket") lets us
+	// live peer that we must not stomp on. reclaimSocketPath handles
+	// both: a successful Dial means a peer is accepting and we refuse
+	// to start; any other outcome (including "not a socket") lets us
 	// unlink and continue.
 	if err := s.reclaimSocketPath(path); err != nil {
 		return failedBind(err)
@@ -203,6 +203,11 @@ func (s *Server) listen(ctx context.Context, path string) error {
 // listener accepts almost immediately; anything else (ECONNREFUSED on
 // a leftover socket file, ENOENT race, file-but-not-a-socket, timeout)
 // means we can take the path over.
+//
+// There is a benign race between the dial-probe and the unlink: a peer
+// could bind the path in that window. This is harmless because the
+// subsequent net.Listen will then fail with EADDRINUSE and the caller
+// surfaces that error normally.
 func (s *Server) reclaimSocketPath(path string) error {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
