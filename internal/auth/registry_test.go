@@ -2,10 +2,13 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/public"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
 )
@@ -36,7 +39,7 @@ func sampleAccount(alias string) Account {
 func TestRegistryLifecycle(t *testing.T) {
 	store := newTestStore(t)
 	kc := NewMemoryKeychain()
-	reg := NewRegistry(store, kc)
+	reg := NewRegistry(store, kc, PlaceholderClientID, nil)
 
 	// Initially empty.
 	if got := reg.List(); len(got) != 0 {
@@ -115,7 +118,7 @@ func TestRegistryLifecycle(t *testing.T) {
 }
 
 func TestRegistryAddRejectsDuplicate(t *testing.T) {
-	reg := NewRegistry(newTestStore(t), NewMemoryKeychain())
+	reg := NewRegistry(newTestStore(t), NewMemoryKeychain(), PlaceholderClientID, nil)
 
 	if err := reg.Add(sampleAccount("work"), []byte("s")); err != nil {
 		t.Fatalf("Add first: %v", err)
@@ -127,7 +130,7 @@ func TestRegistryAddRejectsDuplicate(t *testing.T) {
 }
 
 func TestRegistryAddValidatesAlias(t *testing.T) {
-	reg := NewRegistry(newTestStore(t), NewMemoryKeychain())
+	reg := NewRegistry(newTestStore(t), NewMemoryKeychain(), PlaceholderClientID, nil)
 
 	err := reg.Add(sampleAccount("not valid"), []byte("s"))
 	if err == nil {
@@ -136,7 +139,7 @@ func TestRegistryAddValidatesAlias(t *testing.T) {
 }
 
 func TestRegistryGetUnknownIsNotExist(t *testing.T) {
-	reg := NewRegistry(newTestStore(t), NewMemoryKeychain())
+	reg := NewRegistry(newTestStore(t), NewMemoryKeychain(), PlaceholderClientID, nil)
 
 	_, _, err := reg.Get("ghost")
 	if !errors.Is(err, os.ErrNotExist) {
@@ -145,7 +148,7 @@ func TestRegistryGetUnknownIsNotExist(t *testing.T) {
 }
 
 func TestRegistryRemoveUnknownIsNotExist(t *testing.T) {
-	reg := NewRegistry(newTestStore(t), NewMemoryKeychain())
+	reg := NewRegistry(newTestStore(t), NewMemoryKeychain(), PlaceholderClientID, nil)
 
 	err := reg.Remove("ghost")
 	if !errors.Is(err, os.ErrNotExist) {
@@ -156,7 +159,7 @@ func TestRegistryRemoveUnknownIsNotExist(t *testing.T) {
 func TestRegistryGetToleratesMissingSecret(t *testing.T) {
 	store := newTestStore(t)
 	kc := NewMemoryKeychain()
-	reg := NewRegistry(store, kc)
+	reg := NewRegistry(store, kc, PlaceholderClientID, nil)
 
 	if err := reg.Add(sampleAccount("work"), []byte("secret")); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -178,13 +181,111 @@ func TestRegistryGetToleratesMissingSecret(t *testing.T) {
 	}
 }
 
+func TestRegistryTokenSilentSuccess(t *testing.T) {
+	store := newTestStore(t)
+	stub := &stubMSALClient{
+		silentResult: public.AuthResult{AccessToken: "tok-xyz"},
+		accounts:     []public.Account{{HomeAccountID: "object-id.work"}},
+	}
+	factory := func(clientID, tenantID string, kc Keychain, alias string) (MSALClient, error) {
+		if clientID != PlaceholderClientID {
+			t.Errorf("clientID = %q, want %q", clientID, PlaceholderClientID)
+		}
+		if tenantID == "" {
+			t.Errorf("empty tenantID passed to factory")
+		}
+		if alias != "work" {
+			t.Errorf("alias = %q, want work", alias)
+		}
+		if kc == nil {
+			t.Errorf("nil keychain passed to factory")
+		}
+		return stub, nil
+	}
+	reg := NewRegistry(store, NewMemoryKeychain(), PlaceholderClientID, factory)
+	if err := reg.Add(sampleAccount("work"), []byte("cache")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	token, err := reg.Token(context.Background(), "work")
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	if token != "tok-xyz" {
+		t.Errorf("token = %q, want tok-xyz", token)
+	}
+	if stub.silentCalls != 1 {
+		t.Errorf("silentCalls = %d, want 1", stub.silentCalls)
+	}
+
+	// Second call must reuse the cached client (factory called once).
+	calls := 0
+	countingFactory := func(string, string, Keychain, string) (MSALClient, error) {
+		calls++
+		return stub, nil
+	}
+	reg2 := NewRegistry(store, NewMemoryKeychain(), PlaceholderClientID, countingFactory)
+	if _, err := reg2.Token(context.Background(), "work"); err != nil {
+		t.Fatalf("Token first: %v", err)
+	}
+	if _, err := reg2.Token(context.Background(), "work"); err != nil {
+		t.Fatalf("Token second: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("factory called %d times, want 1 (client should be cached)", calls)
+	}
+}
+
+func TestRegistryTokenUnknownAlias(t *testing.T) {
+	reg := NewRegistry(newTestStore(t), NewMemoryKeychain(), PlaceholderClientID, func(string, string, Keychain, string) (MSALClient, error) {
+		return &stubMSALClient{}, nil
+	})
+	_, err := reg.Token(context.Background(), "ghost")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("err = %v, want errors.Is os.ErrNotExist", err)
+	}
+}
+
+func TestRegistryTokenInteractionRequiredFromMSAL(t *testing.T) {
+	store := newTestStore(t)
+	stub := &stubMSALClient{
+		accounts:  []public.Account{{HomeAccountID: "object-id.work"}},
+		silentErr: errors.New("interaction_required: AADSTS50076 MFA"),
+	}
+	reg := NewRegistry(store, NewMemoryKeychain(), PlaceholderClientID, func(string, string, Keychain, string) (MSALClient, error) {
+		return stub, nil
+	})
+	if err := reg.Add(sampleAccount("work"), []byte("cache")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	_, err := reg.Token(context.Background(), "work")
+	if !errors.Is(err, ErrInteractionRequired) {
+		t.Errorf("err = %v, want errors.Is ErrInteractionRequired", err)
+	}
+}
+
+func TestRegistryTokenInteractionRequiredWhenNoMSALAccount(t *testing.T) {
+	store := newTestStore(t)
+	stub := &stubMSALClient{accounts: nil}
+	reg := NewRegistry(store, NewMemoryKeychain(), PlaceholderClientID, func(string, string, Keychain, string) (MSALClient, error) {
+		return stub, nil
+	})
+	if err := reg.Add(sampleAccount("work"), []byte("cache")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	_, err := reg.Token(context.Background(), "work")
+	if !errors.Is(err, ErrInteractionRequired) {
+		t.Errorf("err = %v, want errors.Is ErrInteractionRequired", err)
+	}
+}
+
 func TestRegistryPersistsAcrossReload(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	store, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	reg := NewRegistry(store, NewMemoryKeychain())
+	reg := NewRegistry(store, NewMemoryKeychain(), PlaceholderClientID, nil)
 	if err := reg.Add(sampleAccount("work"), []byte("secret")); err != nil {
 		t.Fatalf("Add: %v", err)
 	}

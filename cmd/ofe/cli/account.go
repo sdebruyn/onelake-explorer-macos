@@ -3,10 +3,12 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
+	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
 )
 
@@ -59,9 +61,21 @@ func newAccountRemoveCmd() *cobra.Command {
 		Use:   "remove <alias>",
 		Short: "Remove a signed-in account (token, cache, mount)",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, _ []string) error {
-			// Implementation lands once internal/auth and the daemon are in.
-			return errors.New("not implemented yet — pending auth module")
+		RunE: func(cmd *cobra.Command, args []string) error {
+			alias := args[0]
+			store, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			registry := auth.NewRegistry(store, auth.NewKeychain(), auth.PlaceholderClientID, nil)
+			if err := registry.Remove(alias); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("no account with alias %q (try `ofe account list`)", alias)
+				}
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Account %q removed\n", alias)
+			return nil
 		},
 	}
 }

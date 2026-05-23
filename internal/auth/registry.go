@@ -1,12 +1,16 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"sort"
+	"sync"
 	"time"
+
+	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/public"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
 )
@@ -16,18 +20,36 @@ import (
 // opaque secret material is persisted in the [Keychain].
 //
 // Registry exposes the full Add/Remove/Get/List/Default/SetDefault
-// lifecycle but does NOT implement [TokenProvider] yet — token
-// acquisition requires MSAL, which lands in a follow-up change.
+// lifecycle and implements [TokenProvider] via MSAL silent acquisition.
 type Registry struct {
-	store *config.Store
-	kc    Keychain
+	store    *config.Store
+	kc       Keychain
+	clientID string
+	factory  ClientFactory
+
+	clientsMu sync.Mutex
+	clients   map[string]MSALClient // keyed by tenantID|alias
 }
 
 // NewRegistry returns a Registry that reads and writes accounts to the
 // given [config.Store] and per-account secrets to the given [Keychain].
-// Both arguments must be non-nil.
-func NewRegistry(store *config.Store, kc Keychain) *Registry {
-	return &Registry{store: store, kc: kc}
+// store and kc must be non-nil. clientID is the Microsoft Entra App
+// Registration GUID; pass [PlaceholderClientID] until a real registration
+// exists. factory builds MSAL clients on demand; pass
+// [DefaultClientFactory] in production code and a stub in tests.
+//
+// If factory is nil, [DefaultClientFactory] is used.
+func NewRegistry(store *config.Store, kc Keychain, clientID string, factory ClientFactory) *Registry {
+	if factory == nil {
+		factory = DefaultClientFactory
+	}
+	return &Registry{
+		store:    store,
+		kc:       kc,
+		clientID: clientID,
+		factory:  factory,
+		clients:  make(map[string]MSALClient),
+	}
 }
 
 // Add persists account in the config and stores secret in the keychain,
@@ -174,6 +196,78 @@ func (r *Registry) SetDefault(alias string) error {
 		return fmt.Errorf("auth: save config: %w", err)
 	}
 	return nil
+}
+
+// Token implements [TokenProvider]. It acquires an access token silently
+// from MSAL for the named account, using the per-account Keychain-backed
+// MSAL cache. If silent acquisition needs user interaction (for example
+// after a Conditional Access challenge, an MFA re-prompt, or a refresh
+// token that expired due to inactivity), Token returns an error wrapping
+// [ErrInteractionRequired] so callers can surface a "click to
+// re-authenticate" indicator rather than blocking.
+//
+// Unknown aliases return an error wrapping os.ErrNotExist.
+func (r *Registry) Token(ctx context.Context, alias string) (string, error) {
+	snap := r.store.Snapshot()
+	cfg, ok := snap.Accounts[alias]
+	if !ok {
+		return "", fmt.Errorf("auth: account %q: %w", alias, os.ErrNotExist)
+	}
+
+	client, err := r.clientFor(alias, cfg.TenantID)
+	if err != nil {
+		return "", err
+	}
+
+	msalAccount, err := r.findMSALAccount(ctx, client, alias, cfg.HomeAccountID)
+	if err != nil {
+		return "", fmt.Errorf("auth: locate MSAL account for %q: %w", alias, err)
+	}
+
+	return SilentToken(ctx, client, alias, msalAccount)
+}
+
+// clientFor returns the cached MSAL client for the (alias, tenant)
+// pair, building it lazily via the registry's factory on first use.
+func (r *Registry) clientFor(alias, tenantID string) (MSALClient, error) {
+	key := tenantID + "|" + alias
+	r.clientsMu.Lock()
+	defer r.clientsMu.Unlock()
+	if c, ok := r.clients[key]; ok {
+		return c, nil
+	}
+	c, err := r.factory(r.clientID, tenantID, r.kc, alias)
+	if err != nil {
+		return nil, fmt.Errorf("auth: build MSAL client for %q: %w", alias, err)
+	}
+	r.clients[key] = c
+	return c, nil
+}
+
+// findMSALAccount looks up the public.Account whose HomeAccountID
+// matches homeAccountID. The MSAL cache may hold zero or more accounts;
+// we match by ID rather than position because the order is unspecified.
+// On miss, only the user-chosen alias is logged — HomeAccountID embeds
+// the user's per-tenant objectId which docs/telemetry.md keeps out of
+// any log destination the user can't easily inspect.
+func (r *Registry) findMSALAccount(ctx context.Context, client MSALClient, alias, homeAccountID string) (public.Account, error) {
+	accounts, err := client.Accounts(ctx)
+	if err != nil {
+		return public.Account{}, err
+	}
+	for _, a := range accounts {
+		if a.HomeAccountID == homeAccountID {
+			return a, nil
+		}
+	}
+	// The config has an account whose tokens are not in the MSAL cache,
+	// typically because the Keychain entry was wiped (re-installed OS,
+	// manual deletion). Treat this as interaction-required so the menu
+	// bar prompts the user to re-auth.
+	slog.Warn("auth: account not present in MSAL cache; re-auth required",
+		"alias", alias,
+	)
+	return public.Account{}, ErrInteractionRequired
 }
 
 // toConfigAccount converts the in-memory [Account] to the TOML-shaped
