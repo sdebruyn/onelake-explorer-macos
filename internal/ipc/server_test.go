@@ -8,8 +8,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -282,6 +284,132 @@ func TestServerListenTwiceFails(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("second Listen blocked instead of returning an already-started error")
 	}
+}
+
+// TestListen_ReplacesStaleFile verifies that a pre-existing non-socket
+// file at the bind path (the typical signature of a crashed daemon
+// leaving a stale Unix socket behind) is unlinked and replaced. We use
+// a regular file rather than a real stale socket because a regular file
+// is guaranteed to fail the dial probe with a non-timeout error, which
+// exercises the unlink-and-listen branch deterministically.
+func TestListen_ReplacesStaleFile(t *testing.T) {
+	t.Parallel()
+
+	sockPath := shortSocketPath(t)
+	if err := os.WriteFile(sockPath, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("pre-create stale file: %v", err)
+	}
+
+	srv := NewServer(quietLogger())
+	listenErr := make(chan error, 1)
+	go func() { listenErr <- srv.Listen(context.Background(), sockPath) }()
+
+	select {
+	case <-srv.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatalf("server did not bind socket in time")
+	}
+	if srv.SocketPath() == "" {
+		t.Fatalf("server marked ready but SocketPath is empty: stale file was not replaced")
+	}
+	t.Cleanup(func() {
+		_ = srv.Close()
+		select {
+		case <-listenErr:
+		case <-time.After(2 * time.Second):
+			t.Errorf("server did not stop on close")
+		}
+	})
+
+	// Round-trip a call to prove the listener actually answers.
+	srv.Register("ping", func(_ context.Context, _ json.RawMessage) (any, error) {
+		return "pong", nil
+	})
+	c, err := Dial(sockPath)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var out string
+	if err := c.Call(ctx, "ping", nil, &out); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	if out != "pong" {
+		t.Fatalf("ping result: got %q want pong", out)
+	}
+}
+
+// TestListen_RefusesLivePeer verifies that a second Listen against a
+// socket already serviced by a healthy peer fails with ErrPeerListening
+// instead of silently unlinking the live socket (which would split-brain
+// two daemons over shared on-disk state).
+func TestListen_RefusesLivePeer(t *testing.T) {
+	t.Parallel()
+
+	sockPath := shortSocketPath(t)
+
+	// Spin up a vanilla Unix listener that accepts and immediately
+	// closes connections — enough to make Dial succeed, which is all
+	// the probe checks.
+	peer, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("pre-listen: %v", err)
+	}
+	defer func() { _ = peer.Close() }()
+
+	peerDone := make(chan struct{})
+	go func() {
+		defer close(peerDone)
+		for {
+			c, err := peer.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	srv := NewServer(quietLogger())
+	bindErr := make(chan error, 1)
+	go func() { bindErr <- srv.Listen(context.Background(), sockPath) }()
+
+	select {
+	case err := <-bindErr:
+		if err == nil {
+			t.Fatalf("expected Listen to fail with ErrPeerListening, got nil")
+		}
+		if !errors.Is(err, ErrPeerListening) {
+			t.Fatalf("expected ErrPeerListening, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "already") {
+			t.Errorf("error message should mention 'already': %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Listen blocked instead of refusing live peer")
+	}
+
+	// The bind failure must NOT have removed the live peer's socket
+	// file: dial it again and confirm the peer still answers.
+	c, err := net.DialTimeout("unix", sockPath, 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("live peer's socket disappeared after refused bind: %v", err)
+	}
+	_ = c.Close()
+
+	// Ready must still be signalled so the caller's wait does not hang.
+	select {
+	case <-srv.Ready():
+	case <-time.After(time.Second):
+		t.Errorf("Ready channel was not closed on failed bind")
+	}
+	if srv.SocketPath() != "" {
+		t.Errorf("SocketPath populated after failed bind: %q", srv.SocketPath())
+	}
+
+	_ = peer.Close()
+	<-peerDone
 }
 
 func TestClientCallOnClosed(t *testing.T) {

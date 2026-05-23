@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/api"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 )
 
 const (
@@ -49,7 +50,7 @@ const (
 // NOT set Client.Timeout, so large Range reads are not killed mid-body.
 // Callers control the overall deadline through context.
 type Options struct {
-	TokenProvider api.TokenProvider
+	TokenProvider auth.TokenProvider
 	HTTPClient    *http.Client
 	BaseURL       string
 	MaxAttempts   int
@@ -58,7 +59,7 @@ type Options struct {
 // Client is the OneLake DFS client. Construct with New. Methods are
 // safe for concurrent use.
 type Client struct {
-	tp          api.TokenProvider
+	tp          auth.TokenProvider
 	http        *http.Client
 	baseURL     string
 	maxAttempts int

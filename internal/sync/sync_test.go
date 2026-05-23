@@ -26,7 +26,7 @@ const (
 )
 
 // countingTokenProvider records every Token() call so tests can assert
-// "zero HTTP roundtrips" on cache-hit paths. Implements api.TokenProvider.
+// "zero HTTP roundtrips" on cache-hit paths. Implements auth.TokenProvider.
 type countingTokenProvider struct {
 	calls int64
 	tok   string

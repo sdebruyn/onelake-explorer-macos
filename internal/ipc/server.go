@@ -11,7 +11,22 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
+
+// peerProbeTimeout caps how long the bind path waits for a Dial against
+// an existing socket file to either connect or be refused. 250 ms is
+// generous on a loopback Unix socket: a healthy peer returns within
+// micros, and stale-file paths fail with ECONNREFUSED essentially
+// instantly. The timeout exists so a half-dead peer (process alive but
+// not accepting) does not freeze startup forever.
+const peerProbeTimeout = 250 * time.Millisecond
+
+// ErrPeerListening is returned by [Server.Listen] when the configured
+// socket path already has a live peer accepting connections. The caller
+// should NOT retry by unlinking the file: that would split-brain two
+// daemons against shared on-disk state. Surface the error and exit.
+var ErrPeerListening = errors.New("ipc: another listener is already serving the socket")
 
 // Handler is the signature every registered IPC method exposes. ctx is
 // cancelled when the server shuts down or the client disconnects, and
@@ -74,9 +89,15 @@ func (s *Server) Register(method string, handler Handler) {
 
 // Listen binds the server to a Unix domain socket at path, then accepts
 // connections until ctx is cancelled or [Server.Close] is called. The
-// socket file is created with mode 0600 (owner-only) and any pre-existing
-// file at the same path is removed first so a stale socket from a crashed
-// previous daemon does not block startup.
+// socket file is created with mode 0600 (owner-only).
+//
+// If a file already exists at path, Listen probes it with a short Dial
+// (capped at [peerProbeTimeout]). If the Dial succeeds, another daemon
+// is already serving the socket and Listen refuses to start, returning
+// [ErrPeerListening] — unlinking the live socket would orphan the
+// running peer and create split-brain access to shared on-disk state.
+// If the Dial fails (ECONNREFUSED, timeout, or any other error), the
+// file is considered stale and is unlinked before binding.
 //
 // Listen returns when the listener stops accepting; in-flight handlers
 // continue running and Listen does not wait for them. Use [Server.Close]
@@ -119,11 +140,14 @@ func (s *Server) listen(ctx context.Context, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return failedBind(fmt.Errorf("ipc: create socket parent dir: %w", err))
 	}
-	// Best-effort removal of a stale socket from a crashed previous run.
-	// We deliberately ignore "not exist" errors and surface anything
-	// else so a misconfigured permission problem is visible.
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return failedBind(fmt.Errorf("ipc: remove stale socket: %w", err))
+	// If a file (socket or otherwise) already exists at path, decide
+	// whether it is a stale leftover that we can safely unlink or a
+	// live peer that we must not stomp on. reclaimSocketPath handles
+	// both: a successful Dial means a peer is accepting and we refuse
+	// to start; any other outcome (including "not a socket") lets us
+	// unlink and continue.
+	if err := s.reclaimSocketPath(path); err != nil {
+		return failedBind(err)
 	}
 
 	ln, err := net.Listen("unix", path)
@@ -167,6 +191,46 @@ func (s *Server) listen(ctx context.Context, path string) error {
 
 	s.acceptLoop(ctx, ln)
 	s.acceptWG.Done()
+	return nil
+}
+
+// reclaimSocketPath inspects an existing file at path and either
+// unlinks it (stale) or returns [ErrPeerListening] (live). It returns
+// nil if no file exists at path; in that case the bind path falls
+// straight through to net.Listen.
+//
+// The "live peer" check is a Dial with [peerProbeTimeout]: a healthy
+// listener accepts almost immediately; anything else (ECONNREFUSED on
+// a leftover socket file, ENOENT race, file-but-not-a-socket, timeout)
+// means we can take the path over.
+//
+// There is a benign race between the dial-probe and the unlink: a peer
+// could bind the path in that window. This is harmless because the
+// subsequent net.Listen will then fail with EADDRINUSE and the caller
+// surfaces that error normally.
+func (s *Server) reclaimSocketPath(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		// Surface other Stat errors (e.g. permission denied on the
+		// parent dir) so a misconfiguration is visible instead of
+		// silently retried.
+		return fmt.Errorf("ipc: stat socket path: %w", err)
+	}
+
+	conn, dialErr := net.DialTimeout("unix", path, peerProbeTimeout)
+	if dialErr == nil {
+		_ = conn.Close()
+		return fmt.Errorf("%w: %s", ErrPeerListening, path)
+	}
+
+	// Dial failed: file is either a stale socket (typical case after
+	// a daemon crash → ECONNREFUSED) or not a socket at all
+	// (regular file the user pre-created). Either way, unlink it.
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("ipc: remove stale socket: %w", err)
+	}
 	return nil
 }
 
