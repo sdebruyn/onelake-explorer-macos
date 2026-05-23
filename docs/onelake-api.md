@@ -135,6 +135,7 @@ Iceberg REST Catalog and Delta protocols for table metadata. Not needed for file
 - DFS endpoints support parallel reads via `Range` headers — good for large files.
 - For uploads of large files: chunked write through `append` + `flush` is more efficient than a single big `PUT`.
 - Listings are paginated through the `continuation` parameter — implement pagination correctly or you will miss files in large folders.
+- The HTTP client deliberately does NOT set a top-level `Client.Timeout`. A `Read` on a multi-GiB file at modest bandwidth would otherwise be killed mid-stream. We instead cap the response-header wait via `http.Transport.ResponseHeaderTimeout` (default 30 s) and leave the body-streaming budget to the caller's `context`. Callers that want to bound a download should use `context.WithTimeout` or `context.WithDeadline`.
 
 ## Error handling we must cover explicitly
 

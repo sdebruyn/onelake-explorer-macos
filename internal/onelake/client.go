@@ -23,9 +23,15 @@ import (
 )
 
 const (
-	defaultBaseURL     = "https://onelake.dfs.fabric.microsoft.com"
-	defaultHTTPTimeout = 30 * time.Second
-	defaultMaxAttempts = 4
+	defaultBaseURL = "https://onelake.dfs.fabric.microsoft.com"
+	// defaultResponseHeaderTimeout caps the time we wait for response
+	// headers (status line + headers) to come back after the request is
+	// written. The overall body-streaming time is intentionally NOT
+	// bounded by the client: a multi-GiB Read at modest bandwidth
+	// must not be killed by a Client.Timeout. Callers control the
+	// overall deadline through context.WithTimeout / WithDeadline.
+	defaultResponseHeaderTimeout = 30 * time.Second
+	defaultMaxAttempts           = 4
 	// chunkSize is the body size of one append call in Write. 4 MiB is
 	// well under Azure's per-append limit (100 MiB) and lines up neatly
 	// with typical filesystem block sizes.
@@ -37,6 +43,11 @@ const (
 )
 
 // Options configures Client construction. Only TokenProvider is required.
+//
+// HTTPClient, when nil, is built by defaultHTTPClient: it caps response-
+// header wait at 30s via http.Transport.ResponseHeaderTimeout but does
+// NOT set Client.Timeout, so large Range reads are not killed mid-body.
+// Callers control the overall deadline through context.
 type Options struct {
 	TokenProvider api.TokenProvider
 	HTTPClient    *http.Client
@@ -62,7 +73,7 @@ func New(opts Options) *Client {
 		maxAttempts: opts.MaxAttempts,
 	}
 	if c.http == nil {
-		c.http = &http.Client{Timeout: defaultHTTPTimeout}
+		c.http = defaultHTTPClient()
 	}
 	if c.baseURL == "" {
 		c.baseURL = defaultBaseURL
@@ -401,6 +412,21 @@ func joinItemPath(itemGUID, relPath string) string {
 		escaped = append(escaped, url.PathEscape(s))
 	}
 	return strings.Join(escaped, "/")
+}
+
+// defaultHTTPClient builds the *http.Client used when the caller does
+// not supply one. The transport bounds DNS / connect / TLS handshake
+// and waits up to defaultResponseHeaderTimeout for the response
+// headers, but does NOT cap the body-streaming phase. Long downloads
+// (Read on a multi-GiB file) therefore proceed under the caller's
+// context deadline rather than a fixed Client.Timeout.
+func defaultHTTPClient() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = defaultResponseHeaderTimeout
+	return &http.Client{
+		Transport: t,
+		// Intentionally no Timeout: see defaultResponseHeaderTimeout.
+	}
 }
 
 // doRequest builds a request against the DFS base, injects the token,

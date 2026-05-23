@@ -25,9 +25,13 @@ import (
 // Options.BaseURL only for tests.
 const defaultBaseURL = "https://api.fabric.microsoft.com"
 
-// defaultHTTPTimeout is the per-request timeout when the caller does
-// not supply a custom *http.Client.
-const defaultHTTPTimeout = 30 * time.Second
+// defaultResponseHeaderTimeout caps the time we wait for the response
+// headers after the request is written. We deliberately do NOT set
+// Client.Timeout — the Fabric REST endpoints we use today all return
+// small JSON bodies, but keeping the semantics aligned with the
+// OneLake client means body deadlines are always under context
+// control, never a fixed wall-clock budget.
+const defaultResponseHeaderTimeout = 30 * time.Second
 
 // defaultMaxAttempts is how many times api.Do retries a single request.
 const defaultMaxAttempts = 4
@@ -42,7 +46,9 @@ const maxPaginationPages = 1000
 type Options struct {
 	// TokenProvider yields the Bearer token. Required.
 	TokenProvider api.TokenProvider
-	// HTTPClient overrides the underlying *http.Client. Default has a 30s timeout.
+	// HTTPClient overrides the underlying *http.Client. The default
+	// caps the response-header wait at 30s but does NOT set
+	// Client.Timeout — body deadlines are under context control.
 	HTTPClient *http.Client
 	// BaseURL overrides the Fabric REST endpoint. Default https://api.fabric.microsoft.com.
 	BaseURL string
@@ -68,7 +74,7 @@ func New(opts Options) *Client {
 		maxAttempts: opts.MaxAttempts,
 	}
 	if c.http == nil {
-		c.http = &http.Client{Timeout: defaultHTTPTimeout}
+		c.http = defaultHTTPClient()
 	}
 	if c.baseURL == "" {
 		c.baseURL = defaultBaseURL
@@ -158,6 +164,20 @@ func (c *Client) GetItem(ctx context.Context, alias, workspaceID, itemID string)
 		return Item{}, fmt.Errorf("fabric: decode item: %w", err)
 	}
 	return item, nil
+}
+
+// defaultHTTPClient builds the *http.Client used when the caller does
+// not supply one. The transport bounds DNS / connect / TLS handshake
+// and waits up to defaultResponseHeaderTimeout for response headers,
+// but does NOT cap body streaming. Callers control the overall
+// deadline through context.
+func defaultHTTPClient() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = defaultResponseHeaderTimeout
+	return &http.Client{
+		Transport: t,
+		// Intentionally no Timeout: see defaultResponseHeaderTimeout.
+	}
 }
 
 // listAllPages walks paginated Fabric collections, honoring either
