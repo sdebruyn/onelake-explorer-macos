@@ -21,6 +21,15 @@ import (
 // Telemetry: emits file_delete or folder_delete depending on whether
 // the cached row says it is a directory. When the cache has never seen
 // the entry we default to file_delete (the common case).
+//
+// The recursive flag sent to OneLake also defaults to true on a cache
+// miss. The cached IsDir hint is the only way we know whether the
+// path is a folder before issuing the call, and a stale or absent
+// cache row would otherwise produce a non-recursive DELETE that fails
+// with 409 on a populated directory (a folder created out-of-band, or
+// a row evicted/rebuilt since the last visit). DFS treats a recursive
+// flag on a file delete as a no-op, so always-recursive on a miss is
+// safe.
 func (e *Engine) Delete(ctx context.Context, k cache.Key) error {
 	start := e.now()
 
@@ -28,7 +37,8 @@ func (e *Engine) Delete(ctx context.Context, k cache.Key) error {
 	if cachedErr != nil && !errors.Is(cachedErr, os.ErrNotExist) {
 		return fmt.Errorf("sync.Delete: cache get: %w", cachedErr)
 	}
-	isDir := cachedErr == nil && cached.IsDir
+	cacheHit := cachedErr == nil
+	isDir := cacheHit && cached.IsDir
 	eventName := "file_delete"
 	if isDir {
 		eventName = "folder_delete"
@@ -44,7 +54,11 @@ func (e *Engine) Delete(ctx context.Context, k cache.Key) error {
 		return nil
 	}
 
-	if err := e.onelake.Delete(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, isDir); err != nil {
+	// On a cache miss we cannot tell file from directory; ask DFS to
+	// recurse so a stale/missing cache does not produce a 409 on
+	// populated directories.
+	recursive := isDir || !cacheHit
+	if err := e.onelake.Delete(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, recursive); err != nil {
 		e.track(telemetry.Event{
 			Name:             eventName,
 			AccountAliasHash: telemetry.HashAlias(k.AccountAlias),

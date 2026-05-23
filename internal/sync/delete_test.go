@@ -81,6 +81,36 @@ func TestDelete_DirectoryIsRecursive(t *testing.T) {
 	}
 }
 
+// TestDelete_UncachedDefaultsToRecursive guards against the
+// uncached-directory-delete regression: when the cache has no row for
+// k, we cannot tell whether the remote path is a directory, so the
+// safe default is recursive=true. A non-recursive delete on a
+// populated directory would yield a 409 and contradict Delete's
+// Finder-style contract.
+func TestDelete_UncachedDefaultsToRecursive(t *testing.T) {
+
+	f := newEngine(t)
+	ctx := context.Background()
+
+	called := false
+	httpmock.RegisterResponder("DELETE", "=~^"+testOneLakeBase+"/"+testWorkspaceID+"/"+testItemID+`/Files/maybe-dir(\?.*)?$`,
+		func(req *http.Request) (*http.Response, error) {
+			called = true
+			if req.URL.Query().Get("recursive") != "true" {
+				t.Errorf("uncached delete should default to recursive=true; query = %q", req.URL.RawQuery)
+			}
+			return httpmock.NewStringResponse(200, ""), nil
+		})
+
+	k := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/maybe-dir"}
+	if err := f.engine.Delete(ctx, k); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if !called {
+		t.Error("remote DELETE not called")
+	}
+}
+
 // TestDelete_MacOSMetadataLocalOnly verifies that .DS_Store and friends
 // never reach OneLake on the delete path either.
 func TestDelete_MacOSMetadataLocalOnly(t *testing.T) {
