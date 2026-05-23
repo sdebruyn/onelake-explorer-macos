@@ -36,6 +36,14 @@ const LogFileName = "ofe.log"
 // blocks daemon shutdown.
 const telemetryShutdownTimeout = 2 * time.Second
 
+// pollerHotWindow is the look-back window the adaptive poller uses to
+// decide which items are "recent". Per docs/auth.md the daemon refreshes
+// recently-visited folders every RecentFolderTTL (5 min); we consider
+// an item recent if any of its rows was accessed within the last
+// 30 minutes. That window matches what Finder typically holds open and
+// keeps the poller's work bounded.
+const pollerHotWindow = 30 * time.Minute
+
 // tokenProviderAdapter satisfies [api.TokenProvider] by delegating to
 // [auth.TokenProvider]. Both interfaces have the same shape; this
 // adapter exists because the api and auth packages declare them as
@@ -218,6 +226,15 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return fmt.Errorf("daemon: listen: %w", err)
 	}
 
+	// Adaptive poller: refresh recently-touched items at the
+	// RecentFolderTTL cadence. The goroutine respects runCtx so it
+	// unwinds on shutdown.
+	pollerDone := make(chan struct{})
+	go func() {
+		defer close(pollerDone)
+		runAdaptivePoller(runCtx, c, engine, tel, logger, engine.RecentFolderTTL(), pollerHotWindow)
+	}()
+
 	// Block until either signal cancellation or the listener exits
 	// unexpectedly. We Close() the server explicitly so the deferred
 	// cache and log closers run in the right order.
@@ -230,6 +247,10 @@ func Run(ctx context.Context, opts RunOptions) error {
 			exitErr = fmt.Errorf("daemon: listen exited: %w", err)
 		}
 	}
+
+	// Wait for the poller to unwind so its in-flight work doesn't race
+	// the cache.Close defer.
+	<-pollerDone
 
 	if err := srv.Close(); err != nil {
 		logger.Warn("ipc server close error", slog.Any("err", err))
