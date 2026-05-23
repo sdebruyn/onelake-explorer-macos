@@ -32,8 +32,14 @@ go mod download
 go build -o bin/ofe ./cmd/ofe
 ./bin/ofe --version
 
-# run tests
-go test ./...
+# shortcut — fmt + vet + lint + test + build + smoke test (matches CI)
+make ci
+
+# individual targets
+make build
+make test
+make lint
+make fmt
 
 # run integration tests (requires a Fabric workspace you can sign in to)
 OFE_INTEGRATION=1 go test ./...

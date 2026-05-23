@@ -8,6 +8,14 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GO_VERSION: "1.26.x"
 
 jobs:
   lint:
@@ -21,10 +29,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.x"
+          go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: gofmt
+      - name: gofmt check
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -33,11 +41,14 @@ jobs:
             exit 1
           fi
 
+      - name: go vet
+        run: go vet ./...
+
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
-          args: --timeout 5m
+          args: --config .golangci.yml --timeout 5m
 
   test:
     name: Test
@@ -48,11 +59,18 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.x"
+          go-version: ${{ env.GO_VERSION }}
           cache: true
 
       - name: Unit tests
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage.out
+          retention-days: 14
 
       - name: Build CLI
         run: go build -o bin/ofe ./cmd/ofe

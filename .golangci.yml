@@ -1,0 +1,89 @@
+version: "2"
+
+run:
+  timeout: 5m
+  go: "1.22"
+
+output:
+  formats:
+    text:
+      path: stdout
+      print-issued-lines: true
+      print-linter-name: true
+
+linters:
+  enable:
+    - bodyclose
+    - errcheck
+    - errorlint
+    - gosec
+    - govet
+    - ineffassign
+    - nilerr
+    - prealloc
+    - revive
+    - staticcheck
+    - unused
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Print
+        - fmt.Printf
+        - fmt.Println
+    gosec:
+      excludes:
+        # G104: errors unhandled. errcheck already covers this with more nuance.
+        - G104
+    revive:
+      severity: warning
+      rules:
+        - name: exported
+          arguments:
+            - "disableStutteringCheck"
+        - name: package-comments
+        - name: var-naming
+        - name: indent-error-flow
+        - name: errorf
+        - name: error-naming
+        - name: error-return
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+          severity: warning
+          disabled: true
+  exclusions:
+    generated: strict
+    presets:
+      - common-false-positives
+    rules:
+      # Tests can be looser.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - bodyclose
+      # Generated cgo headers and similar.
+      - path: \.pb\.go$
+        linters:
+          - all
+      - path: \.gen\.go$
+        linters:
+          - all
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/sdebruyn/onelake-explorer-macos
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
