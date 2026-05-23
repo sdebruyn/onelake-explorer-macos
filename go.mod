@@ -11,6 +11,7 @@ require (
 	github.com/jarcoal/httpmock v1.4.1
 	github.com/spf13/cobra v1.10.2
 	github.com/zalando/go-keyring v0.2.8
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	modernc.org/sqlite v1.34.5
 )
 

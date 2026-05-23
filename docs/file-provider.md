@@ -120,6 +120,20 @@ Results are cached in SQLite with a TTL appropriate for the level (30 seconds fo
 
 For change-detection on folders the user has visited recently, the daemon (not the extension) polls Fabric on the adaptive schedule. When it finds changes, it calls `NSFileProviderManager.signalEnumerator(for:)` to tell macOS "the X container has changes, please re-enumerate". The extension's enumerator then re-fetches and produces a delta.
 
+The daemon and extension communicate over **XPC**, wrapped around the
+same JSON-RPC 2.0 protocol the CLI uses on its Unix-domain socket (see
+[`internal/ipc`](../internal/ipc)). The CLI ↔ daemon socket lives at
+`~/Library/Application Support/dev.debruyn.ofe/ofe.sock`, owner-only
+(0600). The extension cannot reach that socket directly because of its
+sandbox, so its inbound RPCs come over a dedicated XPC service the
+host app registers on the App Group; the daemon brokers between the
+two. The XPC bridge is a Phase 1 deliverable. As of this writing the
+IPC layer wires only the CLI side; the daemon already serves the
+`status`, `account.*`, `config.snapshot` methods that the CLI uses
+today, plus stubs (`sync.refresh`, `mount.list`) for the sync engine
+and File Provider domain enumeration that the next two PRs will fill
+in.
+
 ## Fetching content
 
 When the user opens a placeholder, macOS calls `fetchContents(for: itemIdentifier, version:, request:)`. Our extension:
