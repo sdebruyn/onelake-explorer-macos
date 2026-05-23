@@ -391,8 +391,9 @@ func TestHotItems_EmptyWhenNothingFresh(t *testing.T) {
 // the SQLite query planner picks idx_pm_last_accessed (added in schema
 // v2) for the HotItems query.
 //
-// The existing idx_pm_blob_lru is partial (WHERE blob_sha256 != '') and
-// cannot serve a predicate that does not also constrain blob_sha256.
+// The existing idx_pm_blob_lru is partial (WHERE blob_sha256 is
+// non-empty) and cannot serve a predicate that does not also constrain
+// blob_sha256.
 // Without the non-partial index added in v2, the planner falls back to
 // scanning either path_metadata directly or the idx_pm_children covering
 // index — both of which require evaluating the WHERE predicate on every
