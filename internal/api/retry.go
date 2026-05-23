@@ -81,8 +81,17 @@ func Do(ctx context.Context, client *http.Client, req *http.Request, maxAttempts
 		}
 
 		// Success: hand the response straight back; the caller owns the body.
-		if resp.StatusCode < 400 {
+		if resp.StatusCode < 300 {
 			return resp, nil
+		}
+
+		// 3xx is not retried and not treated as success. For GET the
+		// stdlib client already follows redirects, so 3xx here is rare
+		// — typically PATCH/PUT/DELETE redirected by a misconfigured
+		// proxy. Surface it as an error so the caller is not handed a
+		// confusing 304/307 disguised as a 2xx.
+		if resp.StatusCode < 400 {
+			return nil, FromResponse(resp)
 		}
 
 		// Non-retriable 4xx (anything except 429): convert and return.
@@ -98,15 +107,13 @@ func Do(ctx context.Context, client *http.Client, req *http.Request, maxAttempts
 			break
 		}
 
+		// Honor Retry-After when the server provided one (set for both
+		// 429 and 5xx by FromResponse). Otherwise fall back to the
+		// exponential backoff schedule.
 		wait := backoff
 		var ae *APIError
-		if errors.As(apiErr, &ae) {
-			if errors.Is(ae, ErrThrottled) && ae.RetryAfter > 0 {
-				wait = ae.RetryAfter
-			} else if errors.Is(ae, ErrServerError) && ae.RetryAfter > 0 {
-				// 5xx may also carry Retry-After; honor when present.
-				wait = ae.RetryAfter
-			}
+		if errors.As(apiErr, &ae) && ae.RetryAfter > 0 {
+			wait = ae.RetryAfter
 		}
 		if wait > maxBackoff {
 			wait = maxBackoff

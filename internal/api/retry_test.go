@@ -121,6 +121,38 @@ func TestDo_BodyReplayedOnRetry(t *testing.T) {
 	}
 }
 
+// TestDo_3xxNotSuccess makes sure a raw 3xx (which the stdlib does not
+// auto-follow for PATCH/PUT/DELETE) is surfaced as an error instead of
+// being handed to the caller as if it were a successful response.
+func TestDo_3xxNotSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "https://elsewhere.example.com/")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+
+	// Use a client that does NOT follow redirects, mimicking what
+	// happens for PATCH/PUT/DELETE in stdlib.
+	client := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL, strings.NewReader(""))
+	_, err := Do(context.Background(), client, req, 3)
+	if err == nil {
+		t.Fatal("expected error for 3xx response, got nil")
+	}
+	var ae *APIError
+	if !errors.As(err, &ae) {
+		t.Fatalf("expected *APIError, got %T: %v", err, err)
+	}
+	if ae.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("StatusCode = %d, want 307", ae.StatusCode)
+	}
+}
+
 func TestDo_ContextCanceledBetweenRetries(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "60") // long wait so the cancel beats it

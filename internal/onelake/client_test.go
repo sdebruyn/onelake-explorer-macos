@@ -433,6 +433,48 @@ func TestRead_429RetriedThenSucceeds(t *testing.T) {
 	}
 }
 
+// TestWrite_NoManualContentLength verifies that Write does not pass an
+// explicit Content-Length header (the stdlib sets one automatically
+// from *bytes.Reader's Len()), and that the auto-set value matches
+// the chunk size.
+func TestWrite_NoManualContentLength(t *testing.T) {
+	c := newTestClient(t)
+
+	const total = 1024
+	body := bytes.Repeat([]byte("x"), total)
+
+	type req struct {
+		method        string
+		action        string
+		contentLength int64
+	}
+	var observed []req
+
+	httpmock.RegisterResponder("PUT", "=~^"+testBase+`.*$`,
+		func(r *http.Request) (*http.Response, error) {
+			observed = append(observed, req{method: "PUT", action: r.URL.Query().Get("action"), contentLength: r.ContentLength})
+			return httpmock.NewStringResponse(201, ""), nil
+		})
+	httpmock.RegisterResponder("PATCH", "=~^"+testBase+`.*$`,
+		func(r *http.Request) (*http.Response, error) {
+			observed = append(observed, req{method: "PATCH", action: r.URL.Query().Get("action"), contentLength: r.ContentLength})
+			return httpmock.NewStringResponse(202, ""), nil
+		})
+
+	if err := c.Write(context.Background(), "work", wsGUID, itemGUID, "Files/x.bin",
+		bytes.NewReader(body), int64(total)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Expect: PUT create, PATCH append (1024 bytes), PATCH flush.
+	if len(observed) != 3 {
+		t.Fatalf("got %d calls, want 3: %+v", len(observed), observed)
+	}
+	if observed[1].action != "append" || observed[1].contentLength != int64(total) {
+		t.Errorf("append: %+v, want action=append contentLength=%d", observed[1], total)
+	}
+}
+
 // TestPathURL_EscapesReservedCharacters covers reserved characters
 // (spaces, '#', '?', '%', '+') in legitimate OneLake file/folder names.
 // Each path segment must be individually escaped while '/' separators

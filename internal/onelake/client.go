@@ -271,9 +271,10 @@ func (c *Client) Read(ctx context.Context, alias, workspaceGUID, itemGUID, path 
 // pattern. The body is consumed in chunks of chunkSize so memory use
 // stays bounded regardless of file size.
 //
-// size must equal the total bytes provided by content. If content
-// supplies fewer bytes the call returns io.ErrUnexpectedEOF; more
-// bytes are ignored once size is reached.
+// size must equal the number of bytes the caller intends to upload.
+// If content supplies fewer bytes the call returns io.ErrUnexpectedEOF.
+// Any bytes past size are not read from content — they remain
+// available on the reader for the caller to handle.
 func (c *Client) Write(ctx context.Context, alias, workspaceGUID, itemGUID, path string, content io.Reader, size int64) error {
 	if workspaceGUID == "" || itemGUID == "" {
 		return fmt.Errorf("onelake: workspaceGUID and itemGUID required")
@@ -315,9 +316,11 @@ func (c *Client) Write(ctx context.Context, alias, workspaceGUID, itemGUID, path
 			"position": []string{strconv.FormatInt(pos, 10)},
 		}
 		appendURL := pathURL(workspaceGUID, itemGUID, path, appendQ)
+		// net/http sets Content-Length automatically for *bytes.Reader
+		// (it implements Len()), so passing it explicitly is redundant
+		// and will be overwritten by the transport.
 		body := bytes.NewReader(buf[:n])
-		extra := http.Header{"Content-Length": []string{strconv.Itoa(n)}}
-		resp, err := c.doRequest(ctx, alias, http.MethodPatch, appendURL, body, extra)
+		resp, err := c.doRequest(ctx, alias, http.MethodPatch, appendURL, body, nil)
 		if err != nil {
 			return fmt.Errorf("onelake: append at %d: %w", pos, err)
 		}
