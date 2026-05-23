@@ -14,7 +14,16 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/ipc"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/sync"
 )
+
+// syncRefresher is the subset of [sync.Engine] the IPC handlers need.
+// Defining it as an interface lets the handler tests inject a stub that
+// records calls without spinning up a real engine + token provider +
+// HTTP mock stack.
+type syncRefresher interface {
+	RefreshFolder(ctx context.Context, k cache.Key) (sync.Diff, error)
+}
 
 // Handlers bundles the dependencies every IPC handler needs and exposes
 // a Register method that binds all of OFE's methods on a [ipc.Server].
@@ -25,19 +34,21 @@ type Handlers struct {
 	store     *config.Store
 	registry  *auth.Registry
 	cache     *cache.Cache
+	engine    syncRefresher
 	startedAt time.Time
 	version   string
 }
 
-// NewHandlers builds a Handlers wired to the given dependencies. All
-// arguments are required; passing nil for store, registry, or cache is
-// a programmer error and the resulting handlers will panic on the
-// first call that needs them.
-func NewHandlers(store *config.Store, registry *auth.Registry, cache *cache.Cache) *Handlers {
+// NewHandlers builds a Handlers wired to the given dependencies. All of
+// store, registry and cache are required; engine may be nil for tests
+// that don't exercise sync.refresh, in which case the method returns an
+// error indicating the engine is not wired.
+func NewHandlers(store *config.Store, registry *auth.Registry, cache *cache.Cache, engine syncRefresher) *Handlers {
 	return &Handlers{
 		store:     store,
 		registry:  registry,
 		cache:     cache,
+		engine:    engine,
 		startedAt: time.Now().UTC(),
 		version:   buildinfo.Version,
 	}
@@ -251,7 +262,8 @@ func (h *Handlers) handleConfigSnapshot(_ context.Context, _ json.RawMessage) (a
 	}, nil
 }
 
-// SyncRefreshRequest is the payload accepted by "sync.refresh".
+// SyncRefreshRequest is the payload accepted by "sync.refresh". Path
+// may be empty to refresh the item root.
 type SyncRefreshRequest struct {
 	Alias       string `json:"alias"`
 	WorkspaceID string `json:"workspaceId"`
@@ -259,23 +271,40 @@ type SyncRefreshRequest struct {
 	Path        string `json:"path"`
 }
 
-// SyncRefreshResponse is the stub reply until the sync engine lands.
+// SyncRefreshResponse mirrors [sync.Diff] for the wire.
 type SyncRefreshResponse struct {
-	Queued bool `json:"queued"`
+	Added   int `json:"added"`
+	Updated int `json:"updated"`
+	Removed int `json:"removed"`
 }
 
-func (h *Handlers) handleSyncRefresh(_ context.Context, params json.RawMessage) (any, error) {
-	// Decode purely to validate shape; the actual queueing lands in the
-	// sync-engine PR. We accept zero-value payloads for forwards
-	// compatibility with CLI callers that omit individual fields.
+func (h *Handlers) handleSyncRefresh(ctx context.Context, params json.RawMessage) (any, error) {
 	var req SyncRefreshRequest
 	if len(params) > 0 {
 		if err := json.Unmarshal(params, &req); err != nil {
 			return nil, fmt.Errorf("decode params: %w", err)
 		}
 	}
-	_ = req
-	return SyncRefreshResponse{Queued: true}, nil
+	if req.Alias == "" || req.WorkspaceID == "" || req.ItemID == "" {
+		return nil, errors.New("alias, workspaceId and itemId are required")
+	}
+	if h.engine == nil {
+		return nil, errors.New("sync engine not wired")
+	}
+	diff, err := h.engine.RefreshFolder(ctx, cache.Key{
+		AccountAlias: req.Alias,
+		WorkspaceID:  req.WorkspaceID,
+		ItemID:       req.ItemID,
+		Path:         req.Path,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return SyncRefreshResponse{
+		Added:   diff.Added,
+		Updated: diff.Updated,
+		Removed: diff.Removed,
+	}, nil
 }
 
 // MountListResponse is the payload returned by "mount.list".

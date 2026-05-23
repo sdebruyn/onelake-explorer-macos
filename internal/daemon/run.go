@@ -9,20 +9,46 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 
+	"github.com/sdebruyn/onelake-explorer-macos/internal/api"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/fabric"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/ipc"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/logging"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/onelake"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/sync"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/telemetry"
 )
 
 // LogFileName is the file under the OFE log directory that the daemon
 // writes its JSON slog stream to.
 const LogFileName = "ofe.log"
+
+// telemetryShutdownTimeout bounds the final telemetry flush at process
+// exit. Two seconds is plenty for App Insights' v2/track endpoint under
+// normal conditions and short enough that a misbehaving network never
+// blocks daemon shutdown.
+const telemetryShutdownTimeout = 2 * time.Second
+
+// tokenProviderAdapter satisfies [api.TokenProvider] by delegating to
+// [auth.TokenProvider]. Both interfaces have the same shape; this
+// adapter exists because the api and auth packages declare them as
+// distinct Go types. Issue #9 tracks the full unification — see
+// internal/api/token.go's doc comment for the migration plan.
+type tokenProviderAdapter struct {
+	inner auth.TokenProvider
+}
+
+// Token implements [api.TokenProvider].
+func (a tokenProviderAdapter) Token(ctx context.Context, alias string) (string, error) {
+	return a.inner.Token(ctx, alias)
+}
 
 // Defaults for the rotating log writer. Picked to be small enough that
 // the daemon never fills a user's disk and large enough that a few days
@@ -108,19 +134,59 @@ func Run(ctx context.Context, opts RunOptions) error {
 
 	// Auth registry. We pass it the same store so the daemon and CLI
 	// stay in sync — both read and mutate config.toml under the same
-	// lock. Token acquisition (Registry.Token) is intentionally NOT
-	// used here; the MSAL silent-refresh wiring lands in a follow-up
-	// PR and the daemon only needs the account-management surface for
-	// now.
+	// lock. The registry also implements [auth.TokenProvider]; we wrap
+	// it in a tiny adapter below so the Fabric and OneLake clients can
+	// consume it through their [api.TokenProvider] interface.
 	kc := opts.KeychainOverride
 	if kc == nil {
 		kc = auth.NewKeychain()
 	}
 	registry := auth.NewRegistry(store, kc, auth.PlaceholderClientID, nil)
+	tp := tokenProviderAdapter{inner: registry}
+
+	// Telemetry. Init returns a no-op client whenever telemetry is
+	// disabled (env, config flag, or unset connection string) so the
+	// rest of the wiring can call Track unconditionally. On unexpected
+	// failure we keep the daemon up with a no-op fallback so a broken
+	// telemetry pipeline never blocks file access.
+	tel, terr := telemetry.Init(ctx, store, logger)
+	if terr != nil {
+		logger.Warn("telemetry init failed; continuing without it", slog.Any("err", terr))
+		tel = telemetry.New(telemetry.Options{
+			AppVersion: buildinfo.Version,
+			Sink:       telemetry.NoopSink{},
+			Logger:     logger,
+		})
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), telemetryShutdownTimeout)
+		defer cancel()
+		if err := tel.Close(closeCtx); err != nil {
+			logger.Warn("telemetry close error", slog.Any("err", err))
+		}
+	}()
+	tel.Track(telemetry.Event{Name: "app_start"})
+
+	// Sync engine. Stitch the Fabric REST and OneLake DFS clients to
+	// the same token provider and feed both into the engine alongside
+	// the cache and telemetry client. New only errors when a required
+	// dependency is missing, which would be a programmer error here.
+	fabricClient := fabric.New(fabric.Options{TokenProvider: api.TokenProvider(tp)})
+	onelakeClient := onelake.New(onelake.Options{TokenProvider: api.TokenProvider(tp)})
+	engine, err := sync.New(sync.Options{
+		Cache:     c,
+		Fabric:    fabricClient,
+		OneLake:   onelakeClient,
+		Telemetry: tel,
+		Logger:    logger,
+	})
+	if err != nil {
+		return fmt.Errorf("daemon: build sync engine: %w", err)
+	}
 
 	// IPC server.
 	srv := ipc.NewServer(logger)
-	NewHandlers(store, registry, c).Register(srv)
+	NewHandlers(store, registry, c, engine).Register(srv)
 
 	sockPath := opts.SocketPath
 	if sockPath == "" {
