@@ -58,6 +58,14 @@ const (
 	DefaultRecentFolderTTL = 5 * time.Minute
 )
 
+// TenantResolver maps an account alias to its Entra tenant GUID. The
+// engine consults it when stamping telemetry events that docs/telemetry.md
+// requires to carry tenantId. Implementations must be safe for concurrent
+// use; [auth.Registry] satisfies the contract.
+type TenantResolver interface {
+	TenantID(alias string) (string, bool)
+}
+
 // Options configures a new Engine. Cache, Fabric, and OneLake are
 // required; everything else has a sensible default.
 type Options struct {
@@ -76,6 +84,11 @@ type Options struct {
 	// runs without emitting telemetry (the underlying Client.Track
 	// already no-ops on nil).
 	Telemetry *telemetry.Client
+
+	// Tenants resolves an account alias to its Entra tenant GUID for
+	// telemetry tagging. Optional; when nil, sync_pulled and similar
+	// events that include tenantId carry an empty tenant string.
+	Tenants TenantResolver
 
 	// Logger receives structured logs. Defaults to slog.Default with a
 	// "component=sync" attribute when nil.
@@ -100,6 +113,7 @@ type Engine struct {
 	fabric          *fabric.Client
 	onelake         *onelake.Client
 	telemetry       *telemetry.Client
+	tenants         TenantResolver
 	logger          *slog.Logger
 	openFolderTTL   time.Duration
 	recentFolderTTL time.Duration
@@ -144,11 +158,25 @@ func New(opts Options) (*Engine, error) {
 		fabric:          opts.Fabric,
 		onelake:         opts.OneLake,
 		telemetry:       opts.Telemetry,
+		tenants:         opts.Tenants,
 		logger:          logger,
 		openFolderTTL:   openTTL,
 		recentFolderTTL: recentTTL,
 		now:             now,
 	}, nil
+}
+
+// tenantFor returns the tenant GUID for alias, or "" if no resolver is
+// wired or the alias is unknown. Cheap to call (the Registry-backed
+// resolver only reads a config snapshot).
+func (e *Engine) tenantFor(alias string) string {
+	if e.tenants == nil || alias == "" {
+		return ""
+	}
+	if tid, ok := e.tenants.TenantID(alias); ok {
+		return tid
+	}
+	return ""
 }
 
 // OpenFolderTTL returns the configured open-folder freshness window.

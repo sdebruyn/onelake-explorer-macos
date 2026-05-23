@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 
@@ -16,13 +17,31 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/fabric"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/ipc"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/logging"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/onelake"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/sync"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/telemetry"
 )
 
 // LogFileName is the file under the OFE log directory that the daemon
 // writes its JSON slog stream to.
 const LogFileName = "ofe.log"
+
+// telemetryShutdownTimeout bounds the final telemetry flush at process
+// exit. Two seconds is plenty for App Insights' v2/track endpoint under
+// normal conditions and short enough that a misbehaving network never
+// blocks daemon shutdown.
+const telemetryShutdownTimeout = 2 * time.Second
+
+// pollerHotWindow is the look-back window the adaptive poller uses to
+// decide which items are "recent". Per docs/auth.md the daemon refreshes
+// recently-visited folders every RecentFolderTTL (5 min); we consider
+// an item recent if any of its rows was accessed within the last
+// 30 minutes. That window matches what Finder typically holds open and
+// keeps the poller's work bounded.
+const pollerHotWindow = 30 * time.Minute
 
 // Defaults for the rotating log writer. Picked to be small enough that
 // the daemon never fills a user's disk and large enough that a few days
@@ -108,19 +127,64 @@ func Run(ctx context.Context, opts RunOptions) error {
 
 	// Auth registry. We pass it the same store so the daemon and CLI
 	// stay in sync — both read and mutate config.toml under the same
-	// lock. Token acquisition (Registry.Token) is intentionally NOT
-	// used here; the MSAL silent-refresh wiring lands in a follow-up
-	// PR and the daemon only needs the account-management surface for
-	// now.
+	// lock. The registry implements [auth.TokenProvider] directly, so
+	// the Fabric and OneLake clients can consume it without an adapter.
 	kc := opts.KeychainOverride
 	if kc == nil {
 		kc = auth.NewKeychain()
 	}
 	registry := auth.NewRegistry(store, kc, auth.PlaceholderClientID, nil)
 
+	// Telemetry. Init returns a no-op client whenever telemetry is
+	// disabled (env, config flag, or unset connection string) so the
+	// rest of the wiring can call Track unconditionally. On unexpected
+	// failure we keep the daemon up with a no-op fallback so a broken
+	// telemetry pipeline never blocks file access.
+	tel, terr := telemetry.Init(ctx, store, logger)
+	if terr != nil {
+		logger.Warn("telemetry init failed; continuing without it", slog.Any("err", terr))
+		tel = telemetry.New(telemetry.Options{
+			AppVersion: buildinfo.Version,
+			Sink:       telemetry.NoopSink{},
+			Logger:     logger,
+		})
+	}
+	defer func() {
+		// Bound both the final app_stop emission and the sink drain by a
+		// single 2-second deadline so a misbehaving network never blocks
+		// daemon shutdown. Track is non-blocking (it just enqueues), but
+		// Close performs the actual flush — sharing the context ensures
+		// the flush picks up the app_stop event we just queued.
+		closeCtx, cancel := context.WithTimeout(context.Background(), telemetryShutdownTimeout)
+		defer cancel()
+		tel.Track(telemetry.Event{Name: "app_stop"})
+		if err := tel.Close(closeCtx); err != nil {
+			logger.Warn("telemetry close error", slog.Any("err", err))
+		}
+	}()
+	tel.Track(telemetry.Event{Name: "app_start"})
+
+	// Sync engine. Stitch the Fabric REST and OneLake DFS clients to
+	// the same token provider and feed both into the engine alongside
+	// the cache and telemetry client. New only errors when a required
+	// dependency is missing, which would be a programmer error here.
+	fabricClient := fabric.New(fabric.Options{TokenProvider: registry})
+	onelakeClient := onelake.New(onelake.Options{TokenProvider: registry})
+	engine, err := sync.New(sync.Options{
+		Cache:     c,
+		Fabric:    fabricClient,
+		OneLake:   onelakeClient,
+		Telemetry: tel,
+		Tenants:   registry,
+		Logger:    logger,
+	})
+	if err != nil {
+		return fmt.Errorf("daemon: build sync engine: %w", err)
+	}
+
 	// IPC server.
 	srv := ipc.NewServer(logger)
-	NewHandlers(store, registry, c).Register(srv)
+	NewHandlers(store, registry, c, engine).Register(srv)
 
 	sockPath := opts.SocketPath
 	if sockPath == "" {
@@ -152,6 +216,15 @@ func Run(ctx context.Context, opts RunOptions) error {
 		return fmt.Errorf("daemon: listen: %w", err)
 	}
 
+	// Adaptive poller: refresh recently-touched items at the
+	// RecentFolderTTL cadence. The goroutine respects runCtx so it
+	// unwinds on shutdown.
+	pollerDone := make(chan struct{})
+	go func() {
+		defer close(pollerDone)
+		runAdaptivePoller(runCtx, c, engine, logger, engine.RecentFolderTTL(), pollerHotWindow)
+	}()
+
 	// Block until either signal cancellation or the listener exits
 	// unexpectedly. We Close() the server explicitly so the deferred
 	// cache and log closers run in the right order.
@@ -164,6 +237,17 @@ func Run(ctx context.Context, opts RunOptions) error {
 			exitErr = fmt.Errorf("daemon: listen exited: %w", err)
 		}
 	}
+
+	// Cancel runCtx so the poller goroutine — which only returns on
+	// runCtx.Done — unwinds in both shutdown paths (signal AND
+	// unexpected listener exit). Without this, the listener-error path
+	// would hang at <-pollerDone forever waiting on a goroutine whose
+	// loop has no other reason to return.
+	stop()
+
+	// Wait for the poller to unwind so its in-flight work doesn't race
+	// the cache.Close defer.
+	<-pollerDone
 
 	if err := srv.Close(); err != nil {
 		logger.Warn("ipc server close error", slog.Any("err", err))

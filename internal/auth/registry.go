@@ -182,6 +182,21 @@ func (r *Registry) Default() (string, bool) {
 	return snap.DefaultAccount, true
 }
 
+// TenantID returns the Entra tenant GUID for alias. The second return
+// value is false when alias is unknown; in that case the returned string
+// is empty. This is a cheap accessor that reads from the config snapshot
+// only — it does NOT touch MSAL or the keychain — so callers may invoke
+// it freely on hot paths (for example, telemetry tagging in the adaptive
+// poller).
+func (r *Registry) TenantID(alias string) (string, bool) {
+	snap := r.store.Snapshot()
+	cfg, ok := snap.Accounts[alias]
+	if !ok {
+		return "", false
+	}
+	return cfg.TenantID, true
+}
+
 // SetDefault sets the default account alias. It rejects unknown aliases
 // with an error wrapping os.ErrNotExist.
 func (r *Registry) SetDefault(alias string) error {

@@ -200,6 +200,89 @@ func TestRefreshFolder_DropsLocallyCachedEntriesGoneRemotely(t *testing.T) {
 	}
 }
 
+// TestRefreshFolder_EmitsSyncPulledWithTenantID asserts that the engine
+// stamps sync_pulled events with the tenant GUID resolved via the
+// injected TenantResolver, per docs/telemetry.md.
+func TestRefreshFolder_EmitsSyncPulledWithTenantID(t *testing.T) {
+
+	f := newEngine(t, func(o *Options) {
+		o.Tenants = stubTenants{testAlias: "tenant-guid-work"}
+	})
+	ctx := context.Background()
+
+	httpmock.RegisterResponder("GET", "=~^"+testOneLakeBase+"/"+testWorkspaceID+`\?.*$`,
+		func(req *http.Request) (*http.Response, error) {
+			return httpmock.NewJsonResponse(200, map[string]any{
+				"paths": []map[string]any{
+					{"name": testItemID + "/Files/new.csv", "etag": "e1"},
+				},
+			})
+		})
+
+	parent := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files"}
+	if _, err := f.engine.RefreshFolder(ctx, parent); err != nil {
+		t.Fatalf("RefreshFolder: %v", err)
+	}
+
+	events := f.drainEvents(t)
+	ev := findEvent(t, events, "sync_pulled")
+	if ev.TenantID != "tenant-guid-work" {
+		t.Errorf("sync_pulled.TenantID = %q, want tenant-guid-work", ev.TenantID)
+	}
+	if ev.ItemsChanged <= 0 {
+		t.Errorf("sync_pulled.ItemsChanged = %d, want >0", ev.ItemsChanged)
+	}
+}
+
+// TestRefreshFolder_PreservesParentLastAccessed guards against a
+// previous bug where every RefreshFolder bumped the parent row's
+// LastAccessed to now, which kept system-polled items perpetually "hot"
+// in HotItems and caused endless background refresh traffic.
+//
+// The parent's LastAccessed must reflect the latest user access (via
+// cache.Touch on Enumerate), not the most recent system refresh.
+func TestRefreshFolder_PreservesParentLastAccessed(t *testing.T) {
+
+	f := newEngine(t)
+	ctx := context.Background()
+
+	httpmock.RegisterResponder("GET", "=~^"+testOneLakeBase+"/"+testWorkspaceID+`\?.*$`,
+		httpmock.NewStringResponder(200, `{"paths":[]}`))
+
+	parent := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files"}
+
+	// Seed the parent row with a known-old LastAccessed.
+	oldAccess := f.now.Now().Add(-2 * time.Hour)
+	if err := f.cache.Put(ctx, cache.Entry{
+		Key:          parent,
+		Name:         "Files",
+		IsDir:        true,
+		LastAccessed: oldAccess,
+		SyncedAt:     oldAccess,
+	}); err != nil {
+		t.Fatalf("seed parent: %v", err)
+	}
+
+	// A system-initiated refresh should not bump LastAccessed.
+	if _, err := f.engine.RefreshFolder(ctx, parent); err != nil {
+		t.Fatalf("RefreshFolder: %v", err)
+	}
+
+	got, err := f.cache.Get(ctx, parent)
+	if err != nil {
+		t.Fatalf("Get parent: %v", err)
+	}
+	if !got.LastAccessed.Equal(oldAccess) {
+		t.Errorf("parent.LastAccessed = %v, want preserved %v (system refresh must not bump LRU)",
+			got.LastAccessed, oldAccess)
+	}
+	// SyncedAt, by contrast, must have advanced.
+	if !got.SyncedAt.After(oldAccess) {
+		t.Errorf("parent.SyncedAt = %v, want > %v (refresh did stamp freshness)",
+			got.SyncedAt, oldAccess)
+	}
+}
+
 // TestEnumerate_TelemetryEmitted asserts the folder_list event lands in
 // the sink with the expected properties.
 func TestEnumerate_TelemetryEmitted(t *testing.T) {

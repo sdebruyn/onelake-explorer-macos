@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,12 +12,30 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/sync"
 )
+
+// stubEngine records the last RefreshFolder call and returns a canned
+// diff/error. Implements syncRefresher.
+type stubEngine struct {
+	calls []cache.Key
+	diff  sync.Diff
+	err   error
+}
+
+func (s *stubEngine) RefreshFolder(_ context.Context, k cache.Key) (sync.Diff, error) {
+	s.calls = append(s.calls, k)
+	if s.err != nil {
+		return sync.Diff{}, s.err
+	}
+	return s.diff, nil
+}
 
 // newTestHandlers wires a Handlers instance over an in-memory keychain
 // and a fresh on-disk cache rooted in t.TempDir(). It points HOME at the
 // temp dir so config.Load reads and writes into a sandboxed location and
-// the test never touches the user's real ~/Library.
+// the test never touches the user's real ~/Library. The engine is left
+// nil; tests that exercise sync.refresh set h.engine themselves.
 func newTestHandlers(t *testing.T) *Handlers {
 	t.Helper()
 
@@ -41,7 +60,7 @@ func newTestHandlers(t *testing.T) *Handlers {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 
-	return NewHandlers(store, reg, c)
+	return NewHandlers(store, reg, c, nil)
 }
 
 func TestHandleStatus(t *testing.T) {
@@ -161,15 +180,75 @@ func TestHandleConfigSnapshotOmitsInstallID(t *testing.T) {
 	}
 }
 
-func TestHandleSyncRefreshStub(t *testing.T) {
+func TestHandleSyncRefreshReturnsDiff(t *testing.T) {
 	h := newTestHandlers(t)
-	res, err := h.handleSyncRefresh(context.Background(), mustJSON(t, SyncRefreshRequest{Alias: "work"}))
+	stub := &stubEngine{diff: sync.Diff{Added: 2, Updated: 1, Removed: 3}}
+	h.engine = stub
+
+	res, err := h.handleSyncRefresh(context.Background(), mustJSON(t, SyncRefreshRequest{
+		Alias:       "work",
+		WorkspaceID: "11111111-1111-1111-1111-111111111111",
+		ItemID:      "22222222-2222-2222-2222-222222222222",
+		Path:        "Files",
+	}))
 	if err != nil {
 		t.Fatalf("sync.refresh: %v", err)
 	}
 	r, ok := res.(SyncRefreshResponse)
-	if !ok || !r.Queued {
-		t.Fatalf("expected {queued:true}, got %+v", res)
+	if !ok {
+		t.Fatalf("type: got %T", res)
+	}
+	if r.Added != 2 || r.Updated != 1 || r.Removed != 3 {
+		t.Errorf("diff = %+v, want {2 1 3}", r)
+	}
+	if len(stub.calls) != 1 {
+		t.Fatalf("RefreshFolder calls = %d, want 1", len(stub.calls))
+	}
+	if stub.calls[0].AccountAlias != "work" || stub.calls[0].Path != "Files" {
+		t.Errorf("RefreshFolder called with %+v", stub.calls[0])
+	}
+}
+
+func TestHandleSyncRefreshMissingFieldsErrors(t *testing.T) {
+	h := newTestHandlers(t)
+	h.engine = &stubEngine{}
+
+	cases := []SyncRefreshRequest{
+		{WorkspaceID: "w", ItemID: "i"},
+		{Alias: "a", ItemID: "i"},
+		{Alias: "a", WorkspaceID: "w"},
+		{},
+	}
+	for _, req := range cases {
+		_, err := h.handleSyncRefresh(context.Background(), mustJSON(t, req))
+		if err == nil {
+			t.Errorf("expected error for %+v", req)
+		}
+	}
+}
+
+func TestHandleSyncRefreshEngineErrorPropagates(t *testing.T) {
+	h := newTestHandlers(t)
+	want := errors.New("boom")
+	h.engine = &stubEngine{err: want}
+
+	_, err := h.handleSyncRefresh(context.Background(), mustJSON(t, SyncRefreshRequest{
+		Alias: "work", WorkspaceID: "w", ItemID: "i",
+	}))
+	if !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
+	}
+}
+
+func TestHandleSyncRefreshNilEngineErrors(t *testing.T) {
+	h := newTestHandlers(t)
+	// h.engine deliberately nil.
+
+	_, err := h.handleSyncRefresh(context.Background(), mustJSON(t, SyncRefreshRequest{
+		Alias: "work", WorkspaceID: "w", ItemID: "i",
+	}))
+	if !errors.Is(err, ErrEngineNotWired) {
+		t.Fatalf("err = %v, want ErrEngineNotWired", err)
 	}
 }
 

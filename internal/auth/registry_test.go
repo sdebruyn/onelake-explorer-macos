@@ -279,6 +279,27 @@ func TestRegistryTokenInteractionRequiredWhenNoMSALAccount(t *testing.T) {
 	}
 }
 
+func TestRegistryTenantID(t *testing.T) {
+	store := newTestStore(t)
+	reg := NewRegistry(store, NewMemoryKeychain(), PlaceholderClientID, nil)
+
+	// Unknown alias: ok=false, empty string.
+	if tid, ok := reg.TenantID("nope"); ok || tid != "" {
+		t.Errorf("TenantID(nope) = (%q, %v), want (\"\", false)", tid, ok)
+	}
+
+	if err := reg.Add(sampleAccount("work"), []byte("x")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	tid, ok := reg.TenantID("work")
+	if !ok {
+		t.Fatalf("TenantID(work) ok=false, want true")
+	}
+	if tid != sampleAccount("work").TenantID {
+		t.Errorf("TenantID(work) = %q, want %q", tid, sampleAccount("work").TenantID)
+	}
+}
+
 func TestRegistryPersistsAcrossReload(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	store, err := config.Load()

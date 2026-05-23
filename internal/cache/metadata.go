@@ -232,6 +232,41 @@ func (c *Cache) Children(ctx context.Context, k Key) ([]Entry, error) {
 	return out, nil
 }
 
+// HotItems returns the distinct (AccountAlias, WorkspaceID, ItemID)
+// triples for which at least one metadata row has been accessed at or
+// after since. The returned [Key] values have Path = "" so they identify
+// the item root and can be fed straight into [sync.Engine.RefreshFolder]
+// by the daemon's adaptive poller.
+//
+// Rows whose LastAccessed is zero are excluded — they were never read
+// since being inserted and therefore do not count as "hot". Results are
+// ordered by AccountAlias, WorkspaceID, ItemID for deterministic tests.
+func (c *Cache) HotItems(ctx context.Context, since time.Time) ([]Key, error) {
+	rows, err := c.db.QueryContext(ctx, `
+SELECT DISTINCT account_alias, workspace_id, item_id
+FROM path_metadata
+WHERE last_accessed_ns >= ? AND last_accessed_ns > 0
+ORDER BY account_alias, workspace_id, item_id
+`, timeToNs(since))
+	if err != nil {
+		return nil, fmt.Errorf("cache.HotItems: query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]Key, 0)
+	for rows.Next() {
+		var k Key
+		if err := rows.Scan(&k.AccountAlias, &k.WorkspaceID, &k.ItemID); err != nil {
+			return nil, fmt.Errorf("cache.HotItems: scan: %w", err)
+		}
+		out = append(out, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cache.HotItems: rows: %w", err)
+	}
+	return out, nil
+}
+
 // Touch bumps the LastAccessed timestamp on the row identified by k to
 // the current wall-clock time. Use it on every cache hit to feed the LRU
 // eviction policy.
