@@ -433,6 +433,86 @@ func TestRead_429RetriedThenSucceeds(t *testing.T) {
 	}
 }
 
+// TestPathURL_EscapesReservedCharacters covers reserved characters
+// (spaces, '#', '?', '%', '+') in legitimate OneLake file/folder names.
+// Each path segment must be individually escaped while '/' separators
+// are preserved.
+func TestPathURL_EscapesReservedCharacters(t *testing.T) {
+	cases := []struct {
+		name    string
+		relPath string
+		want    string
+	}{
+		{
+			name:    "space in filename",
+			relPath: "Files/My Report.csv",
+			want:    "/" + wsGUID + "/" + itemGUID + "/Files/My%20Report.csv",
+		},
+		{
+			name:    "hash in filename",
+			relPath: "Files/note#1.txt",
+			want:    "/" + wsGUID + "/" + itemGUID + "/Files/note%231.txt",
+		},
+		{
+			name:    "question mark in filename",
+			relPath: "Files/what?.txt",
+			want:    "/" + wsGUID + "/" + itemGUID + "/Files/what%3F.txt",
+		},
+		{
+			name:    "percent in filename",
+			relPath: "Files/100%done.txt",
+			want:    "/" + wsGUID + "/" + itemGUID + "/Files/100%25done.txt",
+		},
+		{
+			name:    "plus in filename",
+			relPath: "Files/a+b.txt",
+			want:    "/" + wsGUID + "/" + itemGUID + "/Files/a+b.txt",
+		},
+		{
+			name:    "multiple segments with spaces",
+			relPath: "Files/My Folder/Sub Dir/file name.csv",
+			want:    "/" + wsGUID + "/" + itemGUID + "/Files/My%20Folder/Sub%20Dir/file%20name.csv",
+		},
+		{
+			name:    "empty path",
+			relPath: "",
+			want:    "/" + wsGUID + "/" + itemGUID,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := pathURL(wsGUID, itemGUID, c.relPath, nil)
+			if got != c.want {
+				t.Errorf("pathURL(%q) = %q, want %q", c.relPath, got, c.want)
+			}
+		})
+	}
+}
+
+// TestRead_EscapesPathWithSpaces ensures that a file name containing
+// reserved characters is preserved end-to-end through the HTTP layer.
+func TestRead_EscapesPathWithSpaces(t *testing.T) {
+	c := newTestClient(t)
+
+	// httpmock receives the raw URL after Go's transport encodes it.
+	// The space must arrive as %20 in the request path.
+	var seenPath string
+	httpmock.RegisterResponder("GET", testBase+"/"+wsGUID+"/"+itemGUID+"/Files/My%20Report.csv",
+		func(req *http.Request) (*http.Response, error) {
+			seenPath = req.URL.EscapedPath()
+			return httpmock.NewStringResponse(200, "ok"), nil
+		})
+
+	rc, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/My Report.csv", 0, -1)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	defer rc.Close()
+	if seenPath != "/"+wsGUID+"/"+itemGUID+"/Files/My%20Report.csv" {
+		t.Errorf("escaped path = %q, want spaces escaped", seenPath)
+	}
+}
+
 func TestValidationErrors(t *testing.T) {
 	c := newTestClient(t)
 	ctx := context.Background()

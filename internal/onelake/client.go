@@ -133,7 +133,7 @@ func (c *Client) ListPath(ctx context.Context, alias, workspaceGUID, itemGUID, d
 		}
 
 		// DFS list is rooted at the filesystem (= workspace).
-		u := "/" + workspaceGUID + "?" + q.Encode()
+		u := "/" + url.PathEscape(workspaceGUID) + "?" + q.Encode()
 		resp, err := c.doRequest(ctx, alias, http.MethodGet, u, nil, nil)
 		if err != nil {
 			return nil, err
@@ -362,9 +362,13 @@ func (c *Client) Delete(ctx context.Context, alias, workspaceGUID, itemGUID, pat
 
 // pathURL builds a request URL for an item-relative path. workspaceGUID
 // is the filesystem; itemGUID is the first path segment; relPath is
-// joined under it. extra adds query parameters.
+// joined under it. extra adds query parameters. Path segments are
+// individually escaped with url.PathEscape so that reserved characters
+// (spaces, '#', '?', '%', '+', …) in legitimate OneLake names are
+// preserved as literal bytes instead of being interpreted as fragment
+// or query delimiters.
 func pathURL(workspaceGUID, itemGUID, relPath string, extra url.Values) string {
-	p := "/" + workspaceGUID + "/" + joinItemPath(itemGUID, relPath)
+	p := "/" + url.PathEscape(workspaceGUID) + "/" + joinItemPath(itemGUID, relPath)
 	if len(extra) == 0 {
 		return p
 	}
@@ -372,13 +376,21 @@ func pathURL(workspaceGUID, itemGUID, relPath string, extra url.Values) string {
 }
 
 // joinItemPath joins an item-relative path onto the item GUID,
-// normalizing leading and trailing slashes.
+// normalizing leading and trailing slashes. Each path segment is
+// individually URL-escaped so reserved characters do not bleed into
+// the URL syntax; the '/' separators between segments are preserved.
 func joinItemPath(itemGUID, relPath string) string {
 	relPath = strings.Trim(relPath, "/")
 	if relPath == "" {
-		return itemGUID
+		return url.PathEscape(itemGUID)
 	}
-	return itemGUID + "/" + relPath
+	segs := strings.Split(relPath, "/")
+	escaped := make([]string, 0, len(segs)+1)
+	escaped = append(escaped, url.PathEscape(itemGUID))
+	for _, s := range segs {
+		escaped = append(escaped, url.PathEscape(s))
+	}
+	return strings.Join(escaped, "/")
 }
 
 // doRequest builds a request against the DFS base, injects the token,
