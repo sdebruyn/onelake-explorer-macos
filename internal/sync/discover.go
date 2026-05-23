@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/fabric"
@@ -24,6 +25,13 @@ const virtualItemID = "__items__"
 // The result is also written to the cache so offline enumeration of
 // the top-level OneLake folder works.
 //
+// Cached rows whose SyncedAt is older than RecentFolderTTL and that no
+// longer appear in the freshly fetched list are removed — that way a
+// workspace the user has lost access to (or a tenant the user revoked)
+// stops surfacing in the local view once the daemon's next discovery
+// pass runs. The reconciliation is best-effort; cache write errors are
+// logged and do not fail the call.
+//
 // Telemetry: emits workspace_list with durationMs and success.
 func (e *Engine) ListWorkspaces(ctx context.Context, alias string) ([]fabric.Workspace, error) {
 	start := e.now()
@@ -42,13 +50,14 @@ func (e *Engine) ListWorkspaces(ctx context.Context, alias string) ([]fabric.Wor
 
 	// Stamp the virtual parent and one row per workspace.
 	now := e.now()
+	parentKey := cache.Key{
+		AccountAlias: alias,
+		WorkspaceID:  virtualWorkspaceID,
+		ItemID:       virtualWorkspaceID,
+		Path:         "",
+	}
 	root := cache.Entry{
-		Key: cache.Key{
-			AccountAlias: alias,
-			WorkspaceID:  virtualWorkspaceID,
-			ItemID:       virtualWorkspaceID,
-			Path:         "",
-		},
+		Key:          parentKey,
 		IsDir:        true,
 		Name:         alias,
 		SyncedAt:     now,
@@ -57,7 +66,9 @@ func (e *Engine) ListWorkspaces(ctx context.Context, alias string) ([]fabric.Wor
 	if perr := e.cache.Put(ctx, root); perr != nil {
 		e.logger.Warn("workspace_list cache stamp parent failed", "alias", alias, "err", perr)
 	}
+	seen := make(map[string]struct{}, len(ws))
 	for _, w := range ws {
+		seen[w.ID] = struct{}{}
 		row := cache.Entry{
 			Key: cache.Key{
 				AccountAlias: alias,
@@ -76,6 +87,8 @@ func (e *Engine) ListWorkspaces(ctx context.Context, alias string) ([]fabric.Wor
 		}
 	}
 
+	e.expireDiscoveryRows(ctx, parentKey, seen, now)
+
 	e.track(telemetry.Event{
 		Name:             "workspace_list",
 		AccountAliasHash: telemetry.HashAlias(alias),
@@ -87,6 +100,11 @@ func (e *Engine) ListWorkspaces(ctx context.Context, alias string) ([]fabric.Wor
 
 // ListItems returns the items inside a workspace. The result is also
 // written to the cache so offline enumeration works.
+//
+// As with ListWorkspaces, cached item rows whose SyncedAt is older than
+// RecentFolderTTL and that are no longer reported by Fabric are dropped
+// so deleted or access-revoked items eventually disappear from the
+// local view.
 //
 // Telemetry: emits item_list with durationMs and success.
 func (e *Engine) ListItems(ctx context.Context, alias, workspaceID string) ([]fabric.Item, error) {
@@ -105,13 +123,14 @@ func (e *Engine) ListItems(ctx context.Context, alias, workspaceID string) ([]fa
 	}
 
 	now := e.now()
+	parentKey := cache.Key{
+		AccountAlias: alias,
+		WorkspaceID:  workspaceID,
+		ItemID:       virtualItemID,
+		Path:         "",
+	}
 	root := cache.Entry{
-		Key: cache.Key{
-			AccountAlias: alias,
-			WorkspaceID:  workspaceID,
-			ItemID:       virtualItemID,
-			Path:         "",
-		},
+		Key:          parentKey,
 		IsDir:        true,
 		Name:         workspaceID,
 		SyncedAt:     now,
@@ -120,7 +139,9 @@ func (e *Engine) ListItems(ctx context.Context, alias, workspaceID string) ([]fa
 	if perr := e.cache.Put(ctx, root); perr != nil {
 		e.logger.Warn("item_list cache stamp parent failed", "workspace", workspaceID, "err", perr)
 	}
+	seen := make(map[string]struct{}, len(items))
 	for _, it := range items {
+		seen[it.ID] = struct{}{}
 		row := cache.Entry{
 			Key: cache.Key{
 				AccountAlias: alias,
@@ -139,6 +160,8 @@ func (e *Engine) ListItems(ctx context.Context, alias, workspaceID string) ([]fa
 		}
 	}
 
+	e.expireDiscoveryRows(ctx, parentKey, seen, now)
+
 	e.track(telemetry.Event{
 		Name:             "item_list",
 		AccountAliasHash: telemetry.HashAlias(alias),
@@ -146,4 +169,31 @@ func (e *Engine) ListItems(ctx context.Context, alias, workspaceID string) ([]fa
 		Success:          boolPtr(true),
 	})
 	return items, nil
+}
+
+// expireDiscoveryRows removes children of parent whose ID is not in seen
+// and whose SyncedAt is older than RecentFolderTTL. The TTL guard exists
+// so that a workspace which was momentarily missing from a single 200
+// (eventual consistency on the Fabric side) does not get evicted on the
+// very next call — it has to be absent for at least RecentFolderTTL.
+// Errors are logged at warn level; reconciliation never fails the call.
+func (e *Engine) expireDiscoveryRows(ctx context.Context, parent cache.Key, seen map[string]struct{}, now time.Time) {
+	kids, err := e.cache.Children(ctx, parent)
+	if err != nil {
+		e.logger.Warn("discovery cache reconciliation: read children failed",
+			"workspace", parent.WorkspaceID, "err", err)
+		return
+	}
+	for _, k := range kids {
+		if _, ok := seen[k.Path]; ok {
+			continue
+		}
+		if !k.SyncedAt.IsZero() && now.Sub(k.SyncedAt) < e.recentFolderTTL {
+			continue
+		}
+		if err := e.cache.Delete(ctx, k.Key); err != nil {
+			e.logger.Warn("discovery cache reconciliation: delete failed",
+				"path", k.Path, "err", err)
+		}
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/jarcoal/httpmock"
 
@@ -108,5 +109,64 @@ func TestListWorkspaces_ErrorEmitsFailureTelemetry(t *testing.T) {
 	ev := findEvent(t, f.drainEvents(t), "workspace_list")
 	if ev.Success == nil || *ev.Success {
 		t.Errorf("workspace_list success = %v, want false", ev.Success)
+	}
+}
+
+// TestListWorkspaces_ExpiresStaleRows verifies the TTL-based eviction:
+// a workspace cached on the first call but missing from a later call
+// is dropped only once the cached row is older than RecentFolderTTL.
+// Within the TTL we keep it (eventual consistency tolerance).
+func TestListWorkspaces_ExpiresStaleRows(t *testing.T) {
+
+	f := newEngine(t)
+	ctx := context.Background()
+
+	calls := 0
+	httpmock.RegisterResponder("GET", testFabricBase+"/v1/workspaces",
+		func(req *http.Request) (*http.Response, error) {
+			calls++
+			if calls == 1 {
+				return httpmock.NewJsonResponse(200, map[string]any{
+					"value": []map[string]any{
+						{"id": testWorkspaceID, "displayName": "Finance", "type": "Workspace"},
+						{"id": testWorkspaceID2, "displayName": "Marketing", "type": "Workspace"},
+					},
+				})
+			}
+			// Subsequent calls report Marketing only.
+			return httpmock.NewJsonResponse(200, map[string]any{
+				"value": []map[string]any{
+					{"id": testWorkspaceID2, "displayName": "Marketing", "type": "Workspace"},
+				},
+			})
+		})
+
+	if _, err := f.engine.ListWorkspaces(ctx, testAlias); err != nil {
+		t.Fatalf("first ListWorkspaces: %v", err)
+	}
+
+	// Second call within the TTL window: Finance is missing from the
+	// response but the cached row must NOT be evicted yet.
+	if _, err := f.engine.ListWorkspaces(ctx, testAlias); err != nil {
+		t.Fatalf("second ListWorkspaces: %v", err)
+	}
+	financeKey := cache.Key{
+		AccountAlias: testAlias,
+		WorkspaceID:  virtualWorkspaceID,
+		ItemID:       virtualWorkspaceID,
+		Path:         testWorkspaceID,
+	}
+	if _, err := f.cache.Get(ctx, financeKey); err != nil {
+		t.Errorf("Finance row should still be cached within TTL: %v", err)
+	}
+
+	// Advance the clock past RecentFolderTTL and call again; now the
+	// row must be gone.
+	f.now.Add(6 * time.Minute)
+	if _, err := f.engine.ListWorkspaces(ctx, testAlias); err != nil {
+		t.Fatalf("third ListWorkspaces: %v", err)
+	}
+	if _, err := f.cache.Get(ctx, financeKey); err == nil {
+		t.Error("Finance row should be evicted past RecentFolderTTL")
 	}
 }

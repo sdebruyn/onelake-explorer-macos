@@ -317,3 +317,31 @@ func TestStripItemPrefix(t *testing.T) {
 		})
 	}
 }
+
+// TestIsDirectChild covers the predicate at the heart of the listing
+// filter: a remote row must be exactly one segment deeper than the
+// requested parent.
+func TestIsDirectChild(t *testing.T) {
+	cases := []struct {
+		parent, child string
+		want          bool
+	}{
+		{parent: "", child: "Files", want: true},
+		{parent: "", child: "Files/a", want: false},
+		{parent: "", child: "", want: false},
+		{parent: "Files", child: "Files/a.csv", want: true},
+		{parent: "Files", child: "Files/sub", want: true},
+		{parent: "Files", child: "Files/sub/inner.csv", want: false},
+		{parent: "Files", child: "Files", want: false},
+		{parent: "Files", child: "Tables/a.csv", want: false},
+		// Defensive: a child whose path starts with parent's name but is a
+		// sibling, not a descendant, must not match.
+		{parent: "Files", child: "FilesExtra/a.csv", want: false},
+	}
+	for _, tc := range cases {
+		got := isDirectChild(tc.parent, tc.child)
+		if got != tc.want {
+			t.Errorf("isDirectChild(%q, %q) = %v, want %v", tc.parent, tc.child, got, tc.want)
+		}
+	}
+}
