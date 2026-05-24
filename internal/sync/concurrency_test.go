@@ -164,6 +164,57 @@ func TestOpen_DownloadConcurrencyCap(t *testing.T) {
 	}
 }
 
+// TestPut_412StormReleasesAccountSlot covers the per-account / per-
+// host composition concern from MEDIUM-6: a 412 LWW storm on a Put
+// must not lock the per-account upload slot indefinitely. After the
+// LWW cycles exhaust (ErrLastWriteWinsExhausted), the deferred slot
+// release must fire so a subsequent Put on the same account can run.
+//
+// Without this, a long 412 retry loop on one item starves every
+// other write to that account. We assert this by running two Puts
+// in series against cap=1: the first must exhaust LWW and return an
+// error, the second must complete promptly (the slot was released).
+func TestPut_412StormReleasesAccountSlot(t *testing.T) {
+	f := newEngine(t, func(o *Options) { o.MaxConcurrentUploads = 1 })
+	ctx := context.Background()
+
+	var puts atomic.Int32
+	httpmock.RegisterResponder("PUT", "=~^"+testOneLakeBase+`.*`,
+		func(_ *http.Request) (*http.Response, error) {
+			n := puts.Add(1)
+			// First N requests are part of the 412 storm; once exhausted
+			// the second Put's request follows and must succeed.
+			if n <= int32(maxLastWriteWinsCycles+1) {
+				return httpmock.NewStringResponse(412, "etag conflict"), nil
+			}
+			return httpmock.NewStringResponse(201, ""), nil
+		})
+	httpmock.RegisterResponder("PATCH", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(202, ""))
+	httpmock.RegisterResponder("HEAD", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(200, ""))
+
+	k1 := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/storm.txt"}
+	if err := f.engine.Put(ctx, k1, strings.NewReader("x"), 1); err == nil {
+		t.Fatal("Put under 412 storm: want error, got nil")
+	}
+
+	// Slot must already be released by the deferred call inside Put.
+	// A second Put on the SAME account must run; bound the wait so a
+	// regression that holds the slot indefinitely fails the test.
+	k2 := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/storm-after.txt"}
+	done := make(chan error, 1)
+	go func() { done <- f.engine.Put(ctx, k2, strings.NewReader("y"), 1) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("second Put: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Put blocked — per-account slot not released after 412 storm")
+	}
+}
+
 // TestPut_UploadConcurrencyCap mirrors the download cap assertion on
 // the upload path.
 func TestPut_UploadConcurrencyCap(t *testing.T) {
