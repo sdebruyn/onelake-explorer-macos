@@ -85,10 +85,11 @@ help:
 
 # --- Phase 1: macOS app + File Provider Extension ---
 
-XCODE_PROJECT := apple/OneLake.xcodeproj
-APPLE_CONFIG  := apple/Local.xcconfig
+XCODE_PROJECT      := apple/OneLake.xcodeproj
+XCODE_PROJECT_HOST := apple/OneLakeHost.xcodeproj
+APPLE_CONFIG       := apple/Local.xcconfig
 
-.PHONY: apple-bootstrap apple-gen apple-build apple-clean
+.PHONY: apple-bootstrap apple-gen apple-gen-host apple-build apple-build-host apple-clean
 
 # First-time setup: copy the xcconfig sample if it's missing and tell the
 # user to fill in their team ID.
@@ -121,11 +122,31 @@ apple-build: cgo-build apple-gen
 		-allowProvisioningUpdates \
 		build
 
+# Regenerate the host-app-only Xcode project from project-host.yml. The
+# host-only spec omits the OneLakeFileProvider target so contributors on a
+# free Apple ID (Personal Team) can smoke-test the cgo bridge — Personal
+# Teams cannot sign macOS app extensions. Drop this target once every
+# contributor is enrolled in the paid Apple Developer Program.
+apple-gen-host:
+	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: brew install xcodegen"; exit 1; }
+	xcodegen generate --spec apple/project-host.yml --project-root . --project apple
+
+# Build only the OneLake host app (no File Provider Extension). Use this
+# when you don't have a paid Apple Developer Program account yet; see
+# apple/project-host.yml for the why.
+apple-build-host: cgo-build apple-gen-host
+	xcodebuild -project $(XCODE_PROJECT_HOST) \
+		-scheme OneLake \
+		-configuration Debug \
+		-derivedDataPath apple/DerivedData \
+		-allowProvisioningUpdates \
+		build
+
 # Removes only generated/build artefacts. apple/Local.xcconfig is intentionally
 # preserved: it holds the per-developer DEVELOPMENT_TEAM and is not a build
 # output. Use `make apple-bootstrap` to (re)create it from the .sample.
 apple-clean:
-	rm -rf apple/OneLake.xcodeproj apple/OneLake.xcworkspace apple/build apple/DerivedData
+	rm -rf apple/OneLake.xcodeproj apple/OneLakeHost.xcodeproj apple/OneLake.xcworkspace apple/OneLakeHost.xcworkspace apple/build apple/DerivedData
 
 # --- cgo bridge: libofemcore.a + libofemcore.h ---
 #
