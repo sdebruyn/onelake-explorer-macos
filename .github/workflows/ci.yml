@@ -80,6 +80,12 @@ jobs:
 
   docs-cli:
     name: CLI reference up to date
+    # Line-ending reproducibility note: the generator reads zensical.toml
+    # with os.ReadFile and emits the nav block with bare "\n". A Windows
+    # checkout with core.autocrlf=true would mix CRLF with LF and trip
+    # the diff guard below, but OFEM is macOS-only (see CLAUDE.md hard
+    # constraints + README) so Windows is not a supported dev environment.
+    # CI itself runs on Linux/macOS, so LF stays LF end-to-end.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

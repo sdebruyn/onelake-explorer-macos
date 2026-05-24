@@ -88,10 +88,18 @@ release-snapshot:
 # tree by `make docs-cli`. The generated files are committed so the
 # Cloudflare Pages build (which only runs zensical, no Go toolchain)
 # stays simple. CI fails on drift — see .github/workflows/ci.yml.
+#
+# docs/cli/ is exclusively generator-owned: every `ofem*.md` file in
+# there is rewritten on each `make docs-cli` run. Never hand-edit
+# files there — see docs/cli/README.md. The `mkdir -p` keeps a clean
+# checkout working (the find would otherwise error on a missing
+# directory) and the glob is scoped to `ofem*.md` so the generator
+# can never silently nuke a future hand-written `_index.md`, overview
+# page, or sibling doc that lives alongside the generated files.
 
 docs-cli:
 	@mkdir -p docs/cli
-	@find docs/cli -maxdepth 1 -type f -name '*.md' -delete
+	@find docs/cli -maxdepth 1 -type f -name 'ofem*.md' -delete
 	go run ./cmd/ofem-docs docs/cli
 
 docs: docs-cli
