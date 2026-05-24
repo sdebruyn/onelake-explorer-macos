@@ -78,7 +78,7 @@ docs(plan): clarify Phase 1 exit criteria
 refactor(cache): extract SQLite schema into separate file
 ```
 
-GoReleaser uses these to auto-generate the CHANGELOG, so please keep them clean.
+GoReleaser uses these to auto-generate the release notes on each GitHub Release, so please keep them clean.
 
 ## Code style
 
