@@ -261,24 +261,119 @@ func TestUninstallLaunchAgentIdempotent(t *testing.T) {
 	}
 }
 
-func TestStartLaunchAgentInvokesKickstart(t *testing.T) {
-	// No t.Parallel(): launchctlRunner is process-wide global.
-	calls := stubLaunchctl(t, nil)
-	if err := StartLaunchAgent(); err != nil {
-		t.Fatalf("start: %v", err)
+// writeStubPlist drops an empty placeholder plist at the canonical
+// location so the StartLaunchAgent fallback path can stat it.
+func writeStubPlist(t *testing.T, home string) {
+	t.Helper()
+	dir := LaunchAgentPlistDir(home)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir plist dir: %v", err)
 	}
-	if len(*calls) != 1 || (*calls)[0][0] != "kickstart" || (*calls)[0][1] != "-k" {
-		t.Errorf("expected kickstart -k call, got %v", *calls)
+	if err := os.WriteFile(LaunchAgentPlistPath(home), []byte("stub"), 0o644); err != nil {
+		t.Fatalf("write stub plist: %v", err)
 	}
 }
 
-func TestStopLaunchAgentSendsSIGTERM(t *testing.T) {
+func TestStartLaunchAgentInvokesKickstart(t *testing.T) {
+	// No t.Parallel(): launchctlRunner is process-wide global.
+	home := t.TempDir()
+	writeStubPlist(t, home)
+	calls := stubLaunchctl(t, nil)
+	if err := StartLaunchAgent(home); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if len(*calls) != 1 || (*calls)[0][0] != "kickstart" || (*calls)[0][1] != "-k" {
+		t.Errorf("expected single kickstart -k call, got %v", *calls)
+	}
+}
+
+// TestStartLaunchAgentReBootstrapsWhenServiceUnknown covers the
+// fallback path: kickstart fails because launchd has forgotten the
+// service (for example after a previous bootout) but the plist still
+// lives on disk. StartLaunchAgent should then bootstrap + enable.
+func TestStartLaunchAgentReBootstrapsWhenServiceUnknown(t *testing.T) {
+	// No t.Parallel(): launchctlRunner is process-wide global.
+	home := t.TempDir()
+	writeStubPlist(t, home)
+	calls := stubLaunchctl(t, func(args []string) error {
+		if len(args) > 0 && args[0] == "kickstart" {
+			return &launchctlError{
+				Args:     args,
+				ExitCode: 113,
+				Stderr:   "Could not find specified service\n",
+				Err:      errors.New("exit status 113"),
+			}
+		}
+		return nil
+	})
+
+	if err := StartLaunchAgent(home); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 calls (kickstart, bootstrap, enable), got %v", *calls)
+	}
+	if (*calls)[0][0] != "kickstart" {
+		t.Errorf("call 0 should be kickstart, got %v", (*calls)[0])
+	}
+	if (*calls)[1][0] != "bootstrap" {
+		t.Errorf("call 1 should be bootstrap, got %v", (*calls)[1])
+	}
+	if (*calls)[2][0] != "enable" {
+		t.Errorf("call 2 should be enable, got %v", (*calls)[2])
+	}
+}
+
+func TestStartLaunchAgentReturnsErrNotInstalled(t *testing.T) {
+	// No t.Parallel(): launchctlRunner is process-wide global.
+	home := t.TempDir() // plist deliberately not written
+	stubLaunchctl(t, func(args []string) error {
+		if len(args) > 0 && args[0] == "kickstart" {
+			return &launchctlError{
+				Args:     args,
+				ExitCode: 113,
+				Stderr:   "Could not find specified service\n",
+				Err:      errors.New("exit status 113"),
+			}
+		}
+		return nil
+	})
+
+	err := StartLaunchAgent(home)
+	if !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("expected ErrNotInstalled, got %v", err)
+	}
+}
+
+func TestStopLaunchAgentBootsOut(t *testing.T) {
 	// No t.Parallel(): launchctlRunner is process-wide global.
 	calls := stubLaunchctl(t, nil)
 	if err := StopLaunchAgent(); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if len(*calls) != 1 || (*calls)[0][0] != "kill" || (*calls)[0][1] != "SIGTERM" {
-		t.Errorf("expected kill SIGTERM call, got %v", *calls)
+	wantTarget := launchctlTarget() + "/" + LaunchAgentLabel
+	if len(*calls) != 1 || (*calls)[0][0] != "bootout" || (*calls)[0][1] != wantTarget {
+		t.Errorf("expected bootout %q call, got %v", wantTarget, *calls)
+	}
+}
+
+func TestStopLaunchAgentReturnsErrNotInstalled(t *testing.T) {
+	// No t.Parallel(): launchctlRunner is process-wide global.
+	stubLaunchctl(t, func(args []string) error {
+		if len(args) > 0 && args[0] == "bootout" {
+			return &launchctlError{
+				Args:     args,
+				ExitCode: 113,
+				Stderr:   "Could not find specified service\n",
+				Err:      errors.New("exit status 113"),
+			}
+		}
+		return nil
+	})
+
+	err := StopLaunchAgent()
+	if !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("expected ErrNotInstalled, got %v", err)
 	}
 }
