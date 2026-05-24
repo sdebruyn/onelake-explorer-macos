@@ -2,9 +2,11 @@
   <img src="assets/branding/ofem-lockup.svg" alt="OFEM — OneLake File Explorer for macOS" width="420" />
 </p>
 
+<h3 align="center">OneLake File Explorer for macOS</h3>
+
 **Browse Microsoft Fabric OneLake from Finder.** Like OneDrive or Google Drive — but for your data lake. Multiple accounts in multiple tenants, side by side, with a single Homebrew install.
 
-> Pre-release, under active development. Public beta coming soon.
+> Pre-release, under active development.
 
 📖 **Documentation, screenshots and walkthroughs: [ofem.debruyn.dev](https://ofem.debruyn.dev)**
 

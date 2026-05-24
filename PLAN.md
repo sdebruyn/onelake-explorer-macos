@@ -1,105 +1,100 @@
-# Implementation plan
+# Roadmap
 
-A phased roadmap from empty repo to a polished, signed, notarized `OneLake.app` distributed via Homebrew. The Go core library is shared across every phase; only the presentation layer (CLI, `.app`, File Provider Extension, GUI, polish) changes.
+The scope of the product, grouped by component. The Go core library is shared across every component; only the presentation layer (CLI, `.app`, File Provider Extension, GUI, polish) changes.
 
-## Phase 0 — Core library and debug CLI (internal only)
+## Core library
 
-**Goal**: validate auth, OneLake API, cache, and sync logic without any UI. Not shipped publicly.
+The Go core under `internal/` and `core/` is the shared engine for every surface — CLI, daemon, host app, and File Provider Extension.
 
-| Milestone | Deliverable |
-|---|---|
-| 0.1 | Repo scaffolding: `go.mod`, `cmd/ofem`, `internal/{auth,onelake,fabric,cache,sync,ipc,telemetry,config,log}`, basic `cobra` CLI with `ofem version`, `ofem help` |
-| 0.2 | `internal/auth`: MSAL Go integration, `ofem login` interactive browser flow, device-code fallback, Keychain-backed token cache, multi-account registry |
-| 0.3 | `internal/fabric`: typed client for `GET /workspaces`, `GET /workspaces/{id}/items`, `GET /workspaces/{id}/folders`; pagination |
-| 0.4 | `internal/onelake`: typed client for ADLS Gen2 path operations on the OneLake DFS endpoint; retries; `Retry-After`-aware throttling |
-| 0.5 | `internal/cache`: SQLite (`modernc.org/sqlite`) schema for file metadata; LRU blob cache with size cap |
-| 0.6 | Debug CLI: `ofem debug ls <alias:/workspace/item/path>`, `ofem debug cat`, `ofem debug stat` |
-| 0.7 | `internal/telemetry`: App Insights client, opt-out behavior, schema, event emission helpers |
-| 0.8 | Unit tests for all internal packages; integration tests gated by `OFEM_INTEGRATION=1` against a real Fabric workspace |
-| 0.9 | CI: lint (`golangci-lint`), test (`go test`), commitlint, build verify |
+- **Auth (`internal/auth`)**: MSAL Go integration, interactive browser flow, device-code fallback, Keychain-backed token cache, multi-account registry.
+- **Fabric REST (`internal/fabric`)**: typed client for `GET /workspaces`, `GET /workspaces/{id}/items`, `GET /workspaces/{id}/folders`, with pagination.
+- **OneLake DFS (`internal/onelake`)**: typed client for ADLS Gen2 path operations on the OneLake DFS endpoint, with retries and `Retry-After`-aware throttling.
+- **Cache (`internal/cache`)**: SQLite (`modernc.org/sqlite`) schema for file metadata, plus an LRU blob cache with a size cap.
+- **Sync (`internal/sync`)**: reconciliation engine, write queue, last-write-wins conflict resolution.
+- **Telemetry (`internal/telemetry`)**: App Insights client, opt-out behavior, schema, event emission helpers.
+- **IPC (`internal/ipc`)**: JSON-RPC 2.0 over a Unix-domain socket for CLI ↔ daemon and daemon ↔ extension traffic.
+- **cgo façade (`core/`)**: C-ABI exports and generated header so Swift can link `libofemcore.a`.
 
-**Exit criteria**: I can run `ofem login work`, `ofem login client-a`, `ofem debug ls work:/`, and see all workspaces and items as plain text. All telemetry events fire and are queryable in App Insights. >80% coverage on `internal/*` packages.
+Unit tests cover every internal package; integration tests gated by `OFEM_INTEGRATION=1` run against a real Fabric workspace. Coverage target on `internal/*` is >80%. CI runs `golangci-lint`, `go test`, commitlint, and a build verify.
 
-**Estimate**: 3–5 weeks of focused part-time work.
+## CLI
 
-## Phase 1 — MVP: signed `.app` with File Provider Extension
+`ofem` is the developer- and power-user-facing entry point.
 
-**Goal**: first public release. Users do `brew install --cask ofem`, run `ofem login`, and see their OneLake in Finder.
+- `ofem version`, `ofem help`.
+- `ofem login` (per alias) using interactive browser by default, device code on `--device-code`.
+- `ofem account add | remove | list`.
+- `ofem config get | set | snapshot` for TOML config, including the telemetry toggle.
+- `ofem daemon install | uninstall | start | stop | status` to manage the LaunchAgent.
+- `ofem debug ls`, `ofem debug cat`, `ofem debug stat` against `<alias:/workspace/item/path>` URIs for direct inspection.
 
-| Milestone | Deliverable |
-|---|---|
-| 1.1 | `core/`: cgo-exported façade with C-ABI symbols and generated header for Swift |
-| 1.2 | `apple/OneLake.xcodeproj`: Swift host app skeleton; entitlements (App Sandbox, App Group, network client, Keychain access group) |
-| 1.3 | `apple/OneLakeFileProvider.appex`: extension skeleton, manifest, entitlements; minimal `NSFileProviderReplicatedExtension` returning an empty root |
-| 1.4 | Bridge `OneLakeFileProvider` → `libofemcore`: account list and root container enumeration via Go core |
-| 1.5 | Workspace and item enumeration; folder enumeration; file metadata |
-| 1.6 | File content fetching (`fetchContents`) with streaming and range support |
-| 1.7 | File upload / modify / delete; folder create / delete |
-| 1.8 | macOS metadata filtering (`.DS_Store` etc) in upload path |
-| 1.9 | Adaptive-polling refresh driven by the daemon → `NSFileProviderManager.signalEnumerator` |
-| 1.10 | Per-account domain registration; multi-account end-to-end |
-| 1.11 | `ofem daemon` subcommands (`install`, `uninstall`, `start`, `stop`, `status`); LaunchAgent plist |
-| 1.12 | Apple Developer Program enrollment; Developer ID Application cert; App Store Connect API key |
-| 1.13 | Signing + notarization in GitHub Actions; DMG via `create-dmg` |
-| 1.14 | `homebrew-ofem` tap; cask formula; GoReleaser hookup |
-| 1.15 | First-run disclosure; `ofem config set telemetry off` works |
-| 1.16 | Beta testing on the maintainer's own Macs + 2-3 willing volunteers |
-| 1.17 | Tag `v2026.MM.1`; first public release; README badges go green |
+## Native macOS app
 
-**Exit criteria**: `brew install --cask ofem` on a clean Mac succeeds; `ofem login`; OneLake appears in Finder with all configured accounts; opening, editing, creating, deleting files all work and round-trip to OneLake. App Insights shows events from external installs.
+Distributed as `OneLake.app`, signed with a Developer ID Application certificate and notarized via `xcrun notarytool`.
 
-**Estimate**: 6–10 weeks after Phase 0 is done.
+- Swift host app skeleton under `apple/OneLake.xcodeproj`, generated from `apple/project.yml` by XcodeGen.
+- Entitlements: App Sandbox, App Group `group.dev.debruyn.ofem`, network client, Keychain access group.
+- `apple/OneLakeFileProvider.appex` extension bundle with manifest, entitlements, and an `NSFileProviderReplicatedExtension` implementation.
+- Built via `xcodebuild` against the Go static archive, signed with `codesign --options runtime`, notarized and stapled, packaged as a DMG via `create-dmg`.
 
-## Phase 2 — Host app GUI and menu bar
+## File Provider integration
 
-**Goal**: replace the CLI for account management for users who don't live in a terminal.
+The mount surface in Finder, implemented as a sandboxed extension that bridges to the Go core via cgo.
 
-| Milestone | Deliverable |
-|---|---|
-| 2.1 | SwiftUI account-management screen in the host app: list, add, remove, switch default |
-| 2.2 | Menu bar status icon (`NSStatusItem`): sync state, recent activity, pause/resume, open Finder, open settings, quit |
-| 2.3 | First-run guided flow in the host app instead of CLI |
-| 2.4 | Settings screen: telemetry toggle, cache max size, parallelism, log level |
-| 2.5 | macOS notification on certain error classes (configurable; default off per the project's non-intrusive-UX preference) |
+- One File Provider domain per account-alias; multi-account end-to-end.
+- Account-list and root container enumeration via the Go core.
+- Workspace and item enumeration; folder enumeration; file metadata.
+- File content fetching (`fetchContents`) with streaming and `Range` header support.
+- File upload / modify / delete; folder create / delete.
+- macOS-metadata filtering (`.DS_Store`, `._*`, `Spotlight-V100`, `Trashes`, `fseventsd`) in the upload path.
+- Adaptive-polling refresh driven by the daemon → `NSFileProviderManager.signalEnumerator`.
 
-**Exit criteria**: a non-technical user can install OFEM, sign in, and use OneLake in Finder without ever touching Terminal.
+## Host app GUI and menu bar
 
-**Estimate**: 4–6 weeks after Phase 1.
+The graphical front end for users who don't live in a terminal.
 
-## Phase 3 — Polish
+- SwiftUI account-management screen in the host app: list, add, remove, switch default.
+- Menu bar status icon (`NSStatusItem`): sync state, recent activity, pause/resume, open Finder, open settings, quit.
+- First-run guided flow in the host app as an alternative to the CLI.
+- Settings screen: telemetry toggle, cache max size, parallelism, log level.
+- macOS notifications on a curated set of error classes (configurable; default off, in line with the non-intrusive-UX preference).
 
-| Milestone | Deliverable |
-|---|---|
-| 3.1 | Spotlight metadata for OneLake items (file type, modification time, size, source workspace) |
-| 3.2 | Quick Look extension for OneLake-specific files (e.g. preview Parquet schemas inline) |
-| 3.3 | Smart prefetch heuristics (recently-opened folders, opened-with-app patterns) |
-| 3.4 | Bandwidth throttling controls (max up/down KBps, schedule) |
-| 3.5 | Performance audit; reduce memory footprint of the daemon to <50 MB at idle |
-| 3.6 | Accessibility audit: VoiceOver, keyboard navigation in host app and menu bar |
-| 3.7 | Documentation site on Zensical at `https://ofem.debruyn.dev` or similar |
+## Polish
 
-**Estimate**: ongoing; no fixed end.
+Refinements that improve daily use without changing the core proposition.
 
----
+- Spotlight metadata for OneLake items (file type, modification time, size, source workspace).
+- Quick Look extension for OneLake-specific files (e.g. preview Parquet schemas inline).
+- Smart prefetch heuristics (recently-opened folders, opened-with-app patterns).
+- Bandwidth throttling controls (max up/down KBps, schedule).
+- Performance audit; reduce memory footprint of the daemon to <50 MB at idle.
+- Accessibility audit: VoiceOver, keyboard navigation in host app and menu bar.
 
-## Cross-cutting workstreams
+## Distribution
 
-These don't fit neatly into one phase:
+- `homebrew-ofem` tap with a cask formula; GoReleaser updates the cask on tag.
+- Signing + notarization in GitHub Actions; DMG via `create-dmg`.
+- First-run telemetry disclosure; `ofem config set telemetry off` honored at the daemon and extension level.
 
-- **Documentation**: each phase ships with updated `docs/`. Significant behavior changes update README. Docs site is set up in Phase 3 but `docs/` markdown is authoritative throughout.
-- **Telemetry analysis**: review App Insights weekly for top errors, adoption by tenant, version uptake. Inform roadmap prioritization.
-- **Security**: respond to GitHub Private Security Advisories within 72 hours. Quarterly dependency audit (`govulncheck`, `gh dependabot alerts`).
-- **Releases**: tag-based via GitHub Actions. CalVer `YYYY.MM.PATCH`. No fixed cadence; release when meaningful change accumulated.
+## Documentation and telemetry
+
+Cross-cutting concerns that span every component.
+
+- **Documentation**: `docs/` markdown is authoritative; the docs site at `https://ofem.debruyn.dev` is rendered from it. Significant behavior changes update README.
+- **Telemetry analysis**: App Insights reviewed weekly for top errors, adoption by tenant, version uptake. Informs roadmap prioritization.
+- **Security**: GitHub Private Security Advisories triaged within 72 hours. Quarterly dependency audit via `govulncheck` and `gh dependabot alerts`.
+- **Releases**: tag-based via GitHub Actions, CalVer `YYYY.MM.PATCH`, no fixed cadence — released when meaningful change has accumulated.
 - **Issue triage**: weekly. Issues are the public roadmap (chosen over a separate roadmap doc).
+- **Localization**: English-only for code, comments, docs, commits, and PR descriptions, so anyone can contribute.
 
-## What is explicitly **out of scope** for the foreseeable future
+## What is explicitly **out of scope**
 
 - Windows or Linux ports.
 - Sovereign clouds (US Gov, China, Germany).
 - Service principal authentication.
 - Editing of OneLake table metadata (Iceberg/Delta REST APIs).
 - Permission management (read or modify ACLs).
-- Workspace / item creation, rename, or deletion (those go through Fabric portal).
+- Workspace / item creation, rename, or deletion (those go through the Fabric portal).
 - Browser-based version.
 - Mobile apps (iOS, iPadOS).
 
@@ -112,7 +107,7 @@ These may be revisited if there is real user demand expressed in Issues, but the
 | Microsoft ships an official OneLake explorer for Mac | Low | High | Continue as a multi-account / open-source alternative; sunset gracefully if redundant |
 | Apple changes File Provider API in a way that breaks us | Medium | Medium | Pin tested macOS versions in CI; monitor WWDC announcements |
 | OneLake API breaks compatibility | Low | High | Nightly integration tests catch drift; pin Fabric API version explicitly |
-| MSAL Go deprecated or replaced | Low | Medium | We use a thin wrapper, can swap to azidentity |
+| MSAL Go deprecated or replaced | Low | Medium | Thin wrapper around MSAL; swap to azidentity if needed |
 | Maintainer time runs out | Always | High | Build for sustained low-effort maintenance; encourage contributors via clear CONTRIBUTING.md |
-| Code-signing certificate expires mid-release | Medium | Medium | Renew 60 days before expiry; document renewal in `docs/release-runbook.md` (to be written) |
-| App Insights free tier exceeded | Low | Low | Sampling rules; rotate to higher tier with sponsor money if it happens |
+| Code-signing certificate expires mid-release | Medium | Medium | Renew 60 days before expiry; document renewal in the release runbook |
+| App Insights free tier exceeded | Low | Low | Sampling rules; rotate to a higher tier with sponsor money if it happens |

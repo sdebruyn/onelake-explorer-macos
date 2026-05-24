@@ -45,7 +45,7 @@ Plus a configured **Microsoft Entra tenant** with at least one workspace you can
 - Xcode 15+ (you already need it).
 - A free Apple ID and **ad-hoc signing** are enough to install the `.app` on your own Mac. Other people cannot install your build without disabling Gatekeeper.
 
-#### Phase 1 tooling
+#### Xcode project generation
 
 The Xcode project is generated from `apple/project.yml` by XcodeGen, so the
 spec stays human-readable and merge-friendly. The generated `.xcodeproj`
