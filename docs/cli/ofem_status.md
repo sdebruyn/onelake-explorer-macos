@@ -13,7 +13,8 @@ ofem status [flags]
 ### Options
 
 ```
-  -h, --help   help for status
+  -h, --help      help for status
+  -v, --verbose   show extra detail (per-host request-gate state)
 ```
 
 ### SEE ALSO

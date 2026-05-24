@@ -21,6 +21,7 @@ import (
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/api"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
 )
 
 const (
@@ -49,11 +50,17 @@ const (
 // header wait at 30s via http.Transport.ResponseHeaderTimeout but does
 // NOT set Client.Timeout, so large Range reads are not killed mid-body.
 // Callers control the overall deadline through context.
+//
+// Registry, when non-nil, plumbs every round trip (including each retry
+// from internal/api.Do) through the per-host gate for OneLake. Without
+// a registry the client is unrate-limited - acceptable for unit tests
+// but not for the daemon, which should always wire one in.
 type Options struct {
 	TokenProvider auth.TokenProvider
 	HTTPClient    *http.Client
 	BaseURL       string
 	MaxAttempts   int
+	Registry      *httpgate.Registry
 }
 
 // Client is the OneLake DFS client. Construct with New. Methods are
@@ -75,6 +82,12 @@ func New(opts Options) *Client {
 	}
 	if c.http == nil {
 		c.http = defaultHTTPClient()
+	}
+	if opts.Registry != nil {
+		// Wrap the existing http.Client so every retry attempt issued by
+		// internal/api.Do (and any peer goroutine) shares the same
+		// per-host pause window and QPS budget.
+		c.http = httpgate.Wrap(c.http, opts.Registry)
 	}
 	if c.baseURL == "" {
 		c.baseURL = defaultBaseURL

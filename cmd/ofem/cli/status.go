@@ -17,6 +17,7 @@ import (
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/daemon"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/ipc"
 )
 
@@ -27,7 +28,8 @@ import (
 const statusIPCTimeout = 2 * time.Second
 
 func newStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var verbose bool
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show daemon, accounts, and sync status",
 		Args:  cobra.NoArgs,
@@ -50,10 +52,13 @@ func newStatusCmd() *cobra.Command {
 				fmt.Fprintf(out, "Default:   %s\n", f.DefaultAccount)
 			}
 
-			printDaemonStatus(out, paths.SocketPath)
+			printDaemonStatus(out, paths.SocketPath, verbose)
 			return nil
 		},
 	}
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false,
+		"show extra detail (per-host request-gate state)")
+	return cmd
 }
 
 // printDaemonStatus dials the daemon over IPC and prints what it tells
@@ -61,7 +66,10 @@ func newStatusCmd() *cobra.Command {
 // or the call fails (it is installed but crashed/blocked), we print a
 // terse "not running" line — `ofem status` is informational, not a
 // health check, so falling back is the right behaviour.
-func printDaemonStatus(out io.Writer, socketPath string) {
+//
+// When verbose is true the output also includes per-host request-gate
+// state under a "Gates:" heading.
+func printDaemonStatus(out io.Writer, socketPath string, verbose bool) {
 	if _, err := os.Stat(socketPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintln(out, "Daemon:    not running (run `ofem daemon start`)")
@@ -96,6 +104,26 @@ func printDaemonStatus(out io.Writer, socketPath string) {
 	if resp.CacheBytes >= 0 {
 		fmt.Fprintf(out, "Cache use: %s / %s\n",
 			humanBytes(resp.CacheBytes), humanBytes(resp.CacheMaxBytes))
+	}
+	if verbose && len(resp.Gates) > 0 {
+		printGates(out, resp.Gates)
+	}
+}
+
+// printGates renders the per-host gate snapshots returned by the daemon.
+// The Host column is padded to the longest hostname for alignment; the
+// summary text after the host comes from [httpgate.State.Summary] so the
+// format lives in one place (the human-readable Stringer on State).
+func printGates(out io.Writer, gates []httpgate.State) {
+	fmt.Fprintln(out, "Gates:")
+	hostWidth := 0
+	for _, g := range gates {
+		if len(g.Host) > hostWidth {
+			hostWidth = len(g.Host)
+		}
+	}
+	for _, g := range gates {
+		fmt.Fprintf(out, "  %-*s %s\n", hostWidth, g.Host, g.Summary())
 	}
 }
 

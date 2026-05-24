@@ -13,6 +13,7 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/ipc"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/sync"
 )
@@ -41,6 +42,7 @@ type Handlers struct {
 	registry  *auth.Registry
 	cache     *cache.Cache
 	engine    syncRefresher
+	gates     *httpgate.Registry
 	startedAt time.Time
 	version   string
 }
@@ -48,13 +50,15 @@ type Handlers struct {
 // NewHandlers builds a Handlers wired to the given dependencies. All of
 // store, registry and cache are required; engine may be nil for tests
 // that don't exercise sync.refresh, in which case the method returns an
-// error indicating the engine is not wired.
-func NewHandlers(store *config.Store, registry *auth.Registry, cache *cache.Cache, engine syncRefresher) *Handlers {
+// error indicating the engine is not wired. gates may be nil for tests;
+// when nil, status returns an empty Gates list.
+func NewHandlers(store *config.Store, registry *auth.Registry, cache *cache.Cache, engine syncRefresher, gates *httpgate.Registry) *Handlers {
 	return &Handlers{
 		store:     store,
 		registry:  registry,
 		cache:     cache,
 		engine:    engine,
+		gates:     gates,
 		startedAt: time.Now().UTC(),
 		version:   buildinfo.Version,
 	}
@@ -88,6 +92,10 @@ type StatusResponse struct {
 	// CacheMaxBytes is the configured upper bound for cached blob
 	// bytes; zero means "no eviction limit".
 	CacheMaxBytes int64 `json:"cacheMaxBytes"`
+	// Gates is a per-host snapshot of the request-gate state. Empty
+	// when the daemon was built without a gate registry (tests). See
+	// internal/httpgate for the meaning of each field.
+	Gates []httpgate.State `json:"gates"`
 }
 
 func (h *Handlers) handleStatus(_ context.Context, _ json.RawMessage) (any, error) {
@@ -103,12 +111,18 @@ func (h *Handlers) handleStatus(_ context.Context, _ json.RawMessage) (any, erro
 		cacheBytes = du
 	}
 
+	var gates []httpgate.State
+	if h.gates != nil {
+		gates = h.gates.States()
+	}
+
 	return StatusResponse{
 		DaemonVersion: h.version,
 		StartedAt:     h.startedAt,
 		Accounts:      aliases,
 		CacheBytes:    cacheBytes,
 		CacheMaxBytes: snap.Cache.MaxSizeBytes,
+		Gates:         gates,
 	}, nil
 }
 

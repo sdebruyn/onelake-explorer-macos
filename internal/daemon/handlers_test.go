@@ -12,6 +12,7 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/sync"
 )
 
@@ -60,7 +61,7 @@ func newTestHandlers(t *testing.T) *Handlers {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 
-	return NewHandlers(store, reg, c, nil)
+	return NewHandlers(store, reg, c, nil, nil)
 }
 
 func TestHandleStatus(t *testing.T) {
@@ -83,6 +84,45 @@ func TestHandleStatus(t *testing.T) {
 	}
 	if resp.CacheBytes < 0 {
 		t.Errorf("CacheBytes should be measured (>=0), got %d", resp.CacheBytes)
+	}
+}
+
+// TestHandleStatusIncludesGates verifies the IPC status payload carries
+// the per-host gate snapshots when the daemon is wired with a registry.
+func TestHandleStatusIncludesGates(t *testing.T) {
+	h := newTestHandlers(t)
+	h.gates = httpgate.DefaultRegistry()
+
+	got, err := h.handleStatus(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+	resp := got.(StatusResponse)
+	if len(resp.Gates) != 2 {
+		t.Fatalf("Gates = %d entries, want 2", len(resp.Gates))
+	}
+	hosts := map[string]bool{}
+	for _, g := range resp.Gates {
+		hosts[g.Host] = true
+	}
+	for _, want := range []string{httpgate.HostFabric, httpgate.HostOneLake} {
+		if !hosts[want] {
+			t.Errorf("missing host %q in gates output", want)
+		}
+	}
+}
+
+// TestHandleStatusEmptyGatesWhenUnwired confirms the no-registry path
+// returns an empty Gates list (not nil-vs-empty panic, etc).
+func TestHandleStatusEmptyGatesWhenUnwired(t *testing.T) {
+	h := newTestHandlers(t)
+	got, err := h.handleStatus(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+	resp := got.(StatusResponse)
+	if len(resp.Gates) != 0 {
+		t.Errorf("Gates = %d, want 0 (no registry wired)", len(resp.Gates))
 	}
 }
 
