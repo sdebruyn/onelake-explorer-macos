@@ -74,7 +74,7 @@ smoke: build
 ci: tidy fmt-check vet lint test build smoke
 
 clean:
-	rm -rf $(BIN_DIR) build dist dist-app coverage.out
+	rm -rf $(BIN_DIR) build dist dist-app coverage.out $(CGO_OUT)
 
 release-snapshot:
 	goreleaser release --snapshot --clean
@@ -85,10 +85,11 @@ help:
 
 # --- Phase 1: macOS app + File Provider Extension ---
 
-XCODE_PROJECT := apple/OneLake.xcodeproj
-APPLE_CONFIG  := apple/Local.xcconfig
+XCODE_PROJECT      := apple/OneLake.xcodeproj
+XCODE_PROJECT_HOST := apple/OneLakeHost.xcodeproj
+APPLE_CONFIG       := apple/Local.xcconfig
 
-.PHONY: apple-bootstrap apple-gen apple-build apple-clean
+.PHONY: apple-bootstrap apple-gen apple-gen-host apple-build apple-build-host apple-clean
 
 # First-time setup: copy the xcconfig sample if it's missing and tell the
 # user to fill in their team ID.
@@ -109,15 +110,67 @@ apple-gen:
 	xcodegen generate --spec apple/project.yml --project-root . --project apple
 
 # Build the OneLake.app target (Debug, arm64) for local dogfooding.
-apple-build: apple-gen
+# Depends on cgo-build so the Swift targets always link against a
+# fresh libofemcore.a; xcodebuild discovers the archive + header via
+# the LIBRARY_SEARCH_PATHS / HEADER_SEARCH_PATHS settings in
+# apple/project.yml.
+apple-build: cgo-build apple-gen
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLake \
 		-configuration Debug \
 		-derivedDataPath apple/DerivedData \
+		-allowProvisioningUpdates \
+		build
+
+# Regenerate the host-app-only Xcode project from project-host.yml. The
+# host-only spec omits the OneLakeFileProvider target so contributors on a
+# free Apple ID (Personal Team) can smoke-test the cgo bridge — Personal
+# Teams cannot sign macOS app extensions. Drop this target once every
+# contributor is enrolled in the paid Apple Developer Program.
+apple-gen-host:
+	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: brew install xcodegen"; exit 1; }
+	xcodegen generate --spec apple/project-host.yml --project-root . --project apple
+
+# Build only the OneLake host app (no File Provider Extension). Use this
+# when you don't have a paid Apple Developer Program account yet; see
+# apple/project-host.yml for the why.
+apple-build-host: cgo-build apple-gen-host
+	xcodebuild -project $(XCODE_PROJECT_HOST) \
+		-scheme OneLake \
+		-configuration Debug \
+		-derivedDataPath apple/DerivedData \
+		-allowProvisioningUpdates \
 		build
 
 # Removes only generated/build artefacts. apple/Local.xcconfig is intentionally
 # preserved: it holds the per-developer DEVELOPMENT_TEAM and is not a build
 # output. Use `make apple-bootstrap` to (re)create it from the .sample.
 apple-clean:
-	rm -rf apple/OneLake.xcodeproj apple/OneLake.xcworkspace apple/build apple/DerivedData
+	rm -rf apple/OneLake.xcodeproj apple/OneLakeHost.xcodeproj apple/OneLake.xcworkspace apple/OneLakeHost.xcworkspace apple/build apple/DerivedData
+
+# --- cgo bridge: libofemcore.a + libofemcore.h ---
+#
+# Builds the static C archive (and matching header) that the Swift
+# host app and File Provider Extension link against. The output lands
+# under apple/build/cgo/ so the Xcode targets can pick it up via the
+# LIBRARY_SEARCH_PATHS / HEADER_SEARCH_PATHS settings in
+# apple/project.yml.
+
+CGO_OUT     := apple/build/cgo
+CGO_ARCHIVE := $(CGO_OUT)/libofemcore.a
+CGO_HEADER  := $(CGO_OUT)/libofemcore.h
+
+.PHONY: cgo-build cgo-clean
+
+cgo-build: $(CGO_ARCHIVE)
+
+$(CGO_ARCHIVE): $(GO_FILES) go.mod go.sum
+	@mkdir -p $(CGO_OUT)
+	CGO_ENABLED=1 go build -buildmode=c-archive \
+		-trimpath \
+		-ldflags '$(LDFLAGS)' \
+		-o $(CGO_ARCHIVE) ./core
+	@echo "Built $(CGO_ARCHIVE) and $(CGO_HEADER)"
+
+cgo-clean:
+	rm -rf $(CGO_OUT)

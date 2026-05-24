@@ -20,6 +20,13 @@ struct ContentView: View {
         Bundle.main.bundleIdentifier ?? "<unknown>"
     }
 
+    /// The Go core build version, fetched on view construction by
+    /// calling `ofem_core_version()` through the cgo bridge. We copy
+    /// the returned C string into a Swift `String` and immediately
+    /// hand the buffer back to Go via `ofem_core_string_free` so
+    /// nothing leaks across the FFI boundary.
+    private let coreVersion: String = Self.loadCoreVersion()
+
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "cloud.fill")
@@ -41,6 +48,11 @@ struct ContentView: View {
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.tertiary)
 
+            Text("core \(coreVersion)")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .accessibilityLabel("OneLake core version \(coreVersion)")
+
             Button {
                 openFinderMount()
             } label: {
@@ -60,8 +72,29 @@ struct ContentView: View {
     private func openFinderMount() {
         let expanded = NSString(string: "~/OneLake").expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
-        ContentView.log.info("Opening Finder mount at \(url.path, privacy: .public)")
-        NSWorkspace.shared.open(url)
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        } catch {
+            ContentView.log.error("Could not create \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+        ContentView.log.info("Opening Finder at \(url.path, privacy: .public)")
+        let opened = NSWorkspace.shared.open(url)
+        ContentView.log.info("NSWorkspace.shared.open returned \(opened, privacy: .public)")
+        if !opened {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
+
+    /// Calls into the Go core via the cgo bridge to read the linked
+    /// `libofemcore.a` build version. Returns `"<unknown>"` if the
+    /// bridge somehow hands back a NULL pointer (it shouldn't).
+    private static func loadCoreVersion() -> String {
+        guard let cString = ofem_core_version() else {
+            log.error("ofem_core_version returned NULL")
+            return "<unknown>"
+        }
+        defer { ofem_core_string_free(cString) }
+        return String(cString: cString)
     }
 }
 
