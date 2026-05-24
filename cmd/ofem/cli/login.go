@@ -63,7 +63,10 @@ func runLogin(cmd *cobra.Command, opts loginOptions) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	kc := auth.NewKeychain()
+	kc, err := auth.NewKeychain()
+	if err != nil {
+		return fmt.Errorf("open keychain: %w", err)
+	}
 	registry := auth.NewRegistry(store, kc, auth.EntraClientID, nil)
 
 	// Cancellable context so ctrl-C during a device-code wait shuts the

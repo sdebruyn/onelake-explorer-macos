@@ -131,7 +131,11 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// the Fabric and OneLake clients can consume it without an adapter.
 	kc := opts.KeychainOverride
 	if kc == nil {
-		kc = auth.NewKeychain()
+		built, err := auth.NewKeychain()
+		if err != nil {
+			return fmt.Errorf("open keychain: %w", err)
+		}
+		kc = built
 	}
 	registry := auth.NewRegistry(store, kc, auth.EntraClientID, nil)
 
