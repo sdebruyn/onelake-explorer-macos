@@ -29,7 +29,6 @@ builds:
       - -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Version={{.Version}}
       - -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Commit={{.ShortCommit}}
       - -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Date={{.Date}}
-      - -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.AppInsightsConnString={{.Env.OFEM_APPINSIGHTS_CONNSTRING}}
 
 archives:
   - id: ofem-cli

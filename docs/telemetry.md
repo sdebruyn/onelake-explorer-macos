@@ -61,27 +61,21 @@ Every event is sent as an App Insights `customEvent` with a fixed property set:
 
 ## Connection string distribution
 
-The Application Insights connection string is embedded into the official binary at build time via GoReleaser:
+The Application Insights connection string is a **committed source constant** in `internal/buildinfo/buildinfo.go`. Every OFEM build — official release, source build, or fork — reports to the same endpoint.
 
-```yaml
-ldflags:
-  - -X main.appInsightsConnString={{.Env.OFEM_APPINSIGHTS_CONNSTRING}}
-```
+Why a source constant rather than a build-time secret:
 
-`OFEM_APPINSIGHTS_CONNSTRING` is a GitHub Actions secret only available to the official release workflow.
+- An Application Insights connection string is, per Microsoft's design, write-only and meant to be public. The same string ships in every browser-side JS app or mobile binary that uses Application Insights.
+- The string would end up in any compiled binary anyway (`strings ofem` would reveal it from a Homebrew install). Committing it in source code does not change the security posture.
+- This way source-built and forked binaries also participate in the shared opt-out stream, so the maintainer sees a representative signal instead of only the Homebrew users.
 
-Source builds (someone clones the repo and runs `go build`) get an empty string → the telemetry client silently no-ops. This means contributors and forks **do not send data to our telemetry endpoint** unless they configure their own.
+### Threat model
 
-### Threat model of an embedded ingest key
+An attacker can read the constant or extract it from any binary. They could then send spam events. Mitigations:
 
-An attacker can extract the connection string from the official binary (e.g. via `strings OFEM.app/Contents/Resources/bin/ofem`). They could then send spam events. Mitigations:
-
-- App Insights has built-in sampling and DAILY_CAP we can lower in the portal if we see abuse.
-- Connection strings can be rotated by re-issuing one for the App Insights resource. A new OFEM release picks up the new key; old binaries silently stop reporting.
-- Event volume is in the noise level (millions/month worst case) — App Insights tier costs become an issue only at much higher volumes.
-- The data collected is by design non-sensitive — even if an attacker spams events with bogus tenant IDs, our analysis just gets noisier.
-
-This trade-off is documented in the README disclosure.
+- App Insights has built-in sampling and a DAILY_CAP we can lower in the portal if we see abuse.
+- The data collected is by design non-sensitive — even if an attacker spams events with bogus tenant IDs, our analysis just gets noisier, no PII is leaked.
+- The connection string can be rotated by issuing a new one for the resource and bumping `internal/buildinfo/buildinfo.go`; old binaries then silently stop reporting on the next release.
 
 ## First-run disclosure (in CLI and host app)
 

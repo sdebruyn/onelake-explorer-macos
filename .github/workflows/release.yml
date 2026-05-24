@@ -53,4 +53,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GH_TOKEN }}
-          OFEM_APPINSIGHTS_CONNSTRING: ${{ secrets.OFEM_APPINSIGHTS_CONNSTRING }}
