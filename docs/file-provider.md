@@ -201,6 +201,16 @@ The bundled targets are:
 Both share the App Group `group.dev.debruyn.ofem` and the matching
 Keychain access group.
 
+Both targets statically link the Go core as `libofemcore.a` and
+import its symbols through a Swift bridging header that re-exports
+the generated `libofemcore.h`. `make cgo-build` produces the archive
++ header pair under `apple/build/cgo/` (gitignored); `make
+apple-build` runs it as a prerequisite, so the Swift binaries always
+link a fresh archive. The cgo exports are deliberately minimal in
+this PR — a version probe and a string logger that prove the FFI
+round-trip — and grow alongside the File Provider implementation in
+subsequent PRs.
+
 ### Signing for local vs release
 
 A free Apple ID Personal Team is enough for local development. The

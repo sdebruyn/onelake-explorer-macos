@@ -45,6 +45,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         FileProviderExtension.log.info(
             "Initialised extension for domain \(domain.identifier.rawValue, privacy: .public)"
         )
+        // Smoke-test the cgo bridge by handing a small Swift string to
+        // the Go core. If linking is broken this call site is the
+        // first one to fail at launch, so it surfaces the problem
+        // immediately in Console.app rather than waiting for the
+        // first enumeration request.
+        "FileProviderExtension loaded".withCString { cString in
+            ofem_core_log_message(UnsafeMutablePointer(mutating: cString))
+        }
     }
 
     /// Called when macOS is done with this extension instance. The
