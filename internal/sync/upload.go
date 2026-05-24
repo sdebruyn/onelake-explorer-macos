@@ -66,6 +66,14 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 		return nil
 	}
 
+	if err := e.guardPausedWorkspace(ctx, k.AccountAlias, k.WorkspaceID); err != nil {
+		return err
+	}
+	if err := e.uploadSem.acquire(ctx, k.AccountAlias); err != nil {
+		return err
+	}
+	defer e.uploadSem.release(k.AccountAlias)
+
 	start := e.now()
 
 	// Tee the upload bytes into a spill file so we can also store them
@@ -80,6 +88,16 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 
 	tee := io.TeeReader(content, tmp.file)
 	if err := e.onelake.Write(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, tee, size); err != nil {
+		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, err) {
+			e.track(telemetry.Event{
+				Name:             "file_upload",
+				AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
+				DurationMs:       elapsedMs(start, e.now),
+				Success:          boolPtr(false),
+				ErrorCode:        telemetry.SafeErrorCode("capacity_paused"),
+			})
+			return fmt.Errorf("sync.Put: %w", ErrWorkspacePaused)
+		}
 		e.track(telemetry.Event{
 			Name:             "file_upload",
 			AccountAliasHash: telemetry.HashAlias(k.AccountAlias),

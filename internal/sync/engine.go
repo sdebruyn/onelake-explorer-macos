@@ -102,6 +102,19 @@ type Options struct {
 	// visited recently. Defaults to DefaultRecentFolderTTL.
 	RecentFolderTTL time.Duration
 
+	// PausedProbeInterval is the minimum gap between two recovery
+	// probes for the same paused workspace. Defaults to
+	// DefaultPausedProbeInterval.
+	PausedProbeInterval time.Duration
+
+	// MaxConcurrentDownloads caps concurrent Open calls per account.
+	// Defaults to DefaultMaxConcurrentDownloads.
+	MaxConcurrentDownloads int
+
+	// MaxConcurrentUploads caps concurrent Put calls per account.
+	// Defaults to DefaultMaxConcurrentUploads.
+	MaxConcurrentUploads int
+
 	// Now overrides time.Now for tests. Production callers leave it nil.
 	Now func() time.Time
 }
@@ -109,15 +122,19 @@ type Options struct {
 // Engine reconciles a remote OneLake item with the local cache. See the
 // package doc for the contract.
 type Engine struct {
-	cache           *cache.Cache
-	fabric          *fabric.Client
-	onelake         *onelake.Client
-	telemetry       *telemetry.Client
-	tenants         TenantResolver
-	logger          *slog.Logger
-	openFolderTTL   time.Duration
-	recentFolderTTL time.Duration
-	now             func() time.Time
+	cache               *cache.Cache
+	fabric              *fabric.Client
+	onelake             *onelake.Client
+	telemetry           *telemetry.Client
+	tenants             TenantResolver
+	logger              *slog.Logger
+	openFolderTTL       time.Duration
+	recentFolderTTL     time.Duration
+	pausedProbeInterval time.Duration
+	pausedTracker       *pausedTracker
+	downloadSem         *perAccountSemaphore
+	uploadSem           *perAccountSemaphore
+	now                 func() time.Time
 }
 
 // New constructs an Engine from Options. It returns an error if any of
@@ -152,17 +169,33 @@ func New(opts Options) (*Engine, error) {
 	if recentTTL <= 0 {
 		recentTTL = DefaultRecentFolderTTL
 	}
+	probeInterval := opts.PausedProbeInterval
+	if probeInterval <= 0 {
+		probeInterval = DefaultPausedProbeInterval
+	}
+	downloads := opts.MaxConcurrentDownloads
+	if downloads <= 0 {
+		downloads = DefaultMaxConcurrentDownloads
+	}
+	uploads := opts.MaxConcurrentUploads
+	if uploads <= 0 {
+		uploads = DefaultMaxConcurrentUploads
+	}
 
 	return &Engine{
-		cache:           opts.Cache,
-		fabric:          opts.Fabric,
-		onelake:         opts.OneLake,
-		telemetry:       opts.Telemetry,
-		tenants:         opts.Tenants,
-		logger:          logger,
-		openFolderTTL:   openTTL,
-		recentFolderTTL: recentTTL,
-		now:             now,
+		cache:               opts.Cache,
+		fabric:              opts.Fabric,
+		onelake:             opts.OneLake,
+		telemetry:           opts.Telemetry,
+		tenants:             opts.Tenants,
+		logger:              logger,
+		openFolderTTL:       openTTL,
+		recentFolderTTL:     recentTTL,
+		pausedProbeInterval: probeInterval,
+		pausedTracker:       newPausedTracker(),
+		downloadSem:         newPerAccountSemaphore(downloads),
+		uploadSem:           newPerAccountSemaphore(uploads),
+		now:                 now,
 	}, nil
 }
 

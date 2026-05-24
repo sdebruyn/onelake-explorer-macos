@@ -33,6 +33,14 @@ import (
 func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 	start := e.now()
 
+	if err := e.guardPausedWorkspace(ctx, k.AccountAlias, k.WorkspaceID); err != nil {
+		return nil, err
+	}
+	if err := e.downloadSem.acquire(ctx, k.AccountAlias); err != nil {
+		return nil, err
+	}
+	defer e.downloadSem.release(k.AccountAlias)
+
 	cached, cachedErr := e.cache.Get(ctx, k)
 	if cachedErr != nil && !errors.Is(cachedErr, os.ErrNotExist) {
 		return nil, fmt.Errorf("sync.Open: cache get: %w", cachedErr)
@@ -82,8 +90,19 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 	// response-header metadata (etag, content-length, last-modified,
 	// content-type) alongside the body so we can populate the cache row
 	// without a follow-up HEAD.
-	body, props, err := e.onelake.Read(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, 0, -1)
+	rangeStart, partial := e.partialRangeStart(ctx, cached)
+	body, props, err := e.onelake.Read(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, rangeStart, -1)
 	if err != nil {
+		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, err) {
+			e.track(telemetry.Event{
+				Name:             "file_download",
+				AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
+				DurationMs:       elapsedMs(start, e.now),
+				Success:          boolPtr(false),
+				ErrorCode:        telemetry.SafeErrorCode("capacity_paused"),
+			})
+			return nil, fmt.Errorf("sync.Open: %w", ErrWorkspacePaused)
+		}
 		e.track(telemetry.Event{
 			Name:             "file_download",
 			AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
@@ -95,7 +114,23 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 	}
 	defer func() { _ = body.Close() }()
 
-	sha, size, err := e.cache.StoreBlob(ctx, body)
+	// Pick the expected total from the server-side response when
+	// available (most reliable), falling back to the cached value used
+	// to decide on the Range. The expectedTotal is what finalisePartial
+	// verifies the on-disk byte count against before committing.
+	expectedTotal := cached.ContentLength
+	if props != nil && props.ContentLength > 0 {
+		// For a 206 Partial Content response, ContentLength reflects
+		// only the requested range. Reconstruct the full size by adding
+		// the offset we asked to resume from.
+		if partial {
+			expectedTotal = rangeStart + props.ContentLength
+		} else {
+			expectedTotal = props.ContentLength
+		}
+	}
+
+	sha, size, err := e.finalisePartial(ctx, k, body, expectedTotal, rangeStart)
 	if err != nil {
 		e.track(telemetry.Event{
 			Name:             "file_download",
