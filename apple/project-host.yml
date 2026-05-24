@@ -31,8 +31,16 @@ settings:
     ONLY_ACTIVE_ARCH: YES
     SWIFT_VERSION: "5.10"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
-    CODE_SIGN_STYLE: Automatic
-    ENABLE_HARDENED_RUNTIME: YES
+    # Ad-hoc sign locally so contributors without a paid Developer
+    # Program account (and therefore without a usable team / profile
+    # for dev.debruyn.ofem) can still smoke-test the host app.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "YES"
+    DEVELOPMENT_TEAM: ""
+    PROVISIONING_PROFILE_SPECIFIER: ""
+    ENABLE_HARDENED_RUNTIME: NO
     GENERATE_INFOPLIST_FILE: NO
 settingGroups:
   cgoBridge:
@@ -63,6 +71,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem
         PRODUCT_NAME: OneLake
         INFOPLIST_FILE: OneLake/Info.plist
-        CODE_SIGN_ENTITLEMENTS: OneLake/OneLake.entitlements
+        # Entitlements (sandbox, app-groups, keychain-groups) require a
+        # signed team identity; drop them for the ad-hoc local build.
+        CODE_SIGN_ENTITLEMENTS: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_OBJC_BRIDGING_HEADER: OneLake/OneLakeCoreBridge.h
