@@ -118,6 +118,7 @@ apple-build: cgo-build apple-gen
 		-scheme OneLake \
 		-configuration Debug \
 		-derivedDataPath apple/DerivedData \
+		-allowProvisioningUpdates \
 		build
 
 # Removes only generated/build artefacts. apple/Local.xcconfig is intentionally
