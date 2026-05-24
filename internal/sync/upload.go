@@ -76,18 +76,25 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 
 	start := e.now()
 
-	// Tee the upload bytes into a spill file so we can also store them
-	// locally without re-reading from OneLake. The spill lives in the
-	// OS tempdir; on success it is consumed by StoreBlob, on failure it
-	// is cleaned up by the deferred call.
+	// Buffer the upload bytes into a spill file so the last-write-wins
+	// retry loop can replay them on a 412 without re-reading the
+	// (often one-shot) caller-provided reader. The spill lives in the
+	// OS tempdir; on success it is consumed by StoreBlob, on failure
+	// it is cleaned up by the deferred call.
 	tmp, err := newSpillFile()
 	if err != nil {
 		return fmt.Errorf("sync.Put: spill temp: %w", err)
 	}
 	defer tmp.cleanup()
 
-	tee := io.TeeReader(content, tmp.file)
-	if err := e.onelake.Write(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, tee, size); err != nil {
+	if _, err := io.Copy(tmp.file, content); err != nil {
+		return fmt.Errorf("sync.Put: spill copy: %w", err)
+	}
+	if err := tmp.rewind(); err != nil {
+		return fmt.Errorf("sync.Put: spill rewind: %w", err)
+	}
+
+	if err := e.uploadWithLastWriteWins(ctx, k, tmp.file, size, tmp.rewind); err != nil {
 		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, err) {
 			e.track(telemetry.Event{
 				Name:             "file_upload",
@@ -98,12 +105,16 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 			})
 			return fmt.Errorf("sync.Put: %w", ErrWorkspacePaused)
 		}
+		errCode := "write_failed"
+		if errors.Is(err, ErrLastWriteWinsExhausted) {
+			errCode = "lww_exhausted"
+		}
 		e.track(telemetry.Event{
 			Name:             "file_upload",
 			AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
 			DurationMs:       elapsedMs(start, e.now),
 			Success:          boolPtr(false),
-			ErrorCode:        telemetry.SafeErrorCode("write_failed"),
+			ErrorCode:        telemetry.SafeErrorCode(errCode),
 		})
 		return fmt.Errorf("sync.Put: write: %w", err)
 	}
