@@ -81,6 +81,37 @@ end
 
 `zap` runs on `brew uninstall --zap ofem` and wipes user data; default `brew uninstall` preserves it.
 
+### Validating the tap
+
+A dummy `0.0.0` cask lives at [`sdebruyn/homebrew-ofem`](https://github.com/sdebruyn/homebrew-ofem)
+(mirrored in this repo at `homebrew/ofem.rb`). It points at a release asset
+that does not exist yet, so `brew install --cask` will 404 — but the rest of
+the tap pipeline (`brew tap` → `brew info` → `brew audit` → `brew style`) is
+validated end-to-end against the real GitHub-hosted tap.
+
+To re-run the validation after a cask edit:
+
+```bash
+brew tap sdebruyn/ofem
+brew tap | grep sdebruyn/ofem                            # confirms tap is registered
+brew info --cask sdebruyn/ofem/ofem                      # version 0.0.0, arm64, macOS >= 14
+brew audit --cask --strict --online sdebruyn/ofem/ofem   # one expected curl 404 on the DMG, nothing else
+brew style --fix $(brew --repository sdebruyn/ofem)/Casks/ofem.rb
+brew untap sdebruyn/ofem
+```
+
+Expected audit output:
+
+```
+* exception while auditing ofem: Download failed on Cask 'ofem' with message:
+  Download failed: https://github.com/.../v0.0.0/OneLake-0.0.0.dmg
+  curl: (56) The requested URL returned error: 404
+```
+
+The 404 disappears the moment the first real CalVer tag (`v2026.MM.PATCH`)
+is pushed and the release workflow uploads the signed DMG. Until then, the
+livecheck stanza in the cask is set to `skip` to keep `brew audit` honest.
+
 ## Versioning
 
 CalVer: `YYYY.MM.PATCH` (e.g. `2026.05.1`). A git tag `v2026.05.1` triggers the release pipeline.
