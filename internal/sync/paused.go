@@ -267,6 +267,46 @@ func (e *Engine) probePausedWorkspace(ctx context.Context, alias, workspaceID st
 // error message.
 var ErrWorkspacePaused = errors.New("sync: workspace capacity is paused")
 
+// SweepPausedWorkspaces runs one recovery probe per workspace
+// currently flagged paused in the cache. Intended for the daemon's
+// adaptive poller: hot items already get probed implicitly through
+// guardPausedWorkspace on every access, but a workspace that was
+// opened once, then went cold, then got paused would otherwise stay
+// stuck in the IPC status surface forever. Each tick of the cold
+// sweep clears that surface by issuing one cheap HEAD probe per
+// paused row.
+//
+// The function honors the per-workspace pausedProbeInterval just like
+// probePausedWorkspace, so a tight sweep loop does not stampede a
+// paused capacity. Errors loading the status table or running
+// individual probes are logged and swallowed — the sweep is a "best
+// effort, eventual consistency" job.
+func (e *Engine) SweepPausedWorkspaces(ctx context.Context) {
+	if e == nil || e.cache == nil {
+		return
+	}
+	rows, err := e.cache.ListWorkspaceStatuses(ctx)
+	if err != nil {
+		e.logger.Debug("paused sweep: list workspace statuses failed",
+			slog.Any("err", err))
+		return
+	}
+	for _, row := range rows {
+		if ctx.Err() != nil {
+			return
+		}
+		if row.State != cache.WorkspaceStatePaused {
+			continue
+		}
+		// probePausedWorkspace returns true when the workspace is
+		// reachable again (cache row already flipped). We don't act
+		// on the return value here — the next access either rides
+		// the recovered row or surfaces ErrWorkspacePaused exactly as
+		// before. The probe's job is to keep IPC status honest.
+		_ = e.probePausedWorkspace(ctx, row.AccountAlias, row.WorkspaceID)
+	}
+}
+
 // guardPausedWorkspace is the read-path entry point that decides
 // whether to even attempt an outbound call. It returns ErrWorkspacePaused
 // when the workspace is known-paused AND the most recent probe is too

@@ -164,6 +164,99 @@ func TestProbe_ThrottlesByInterval(t *testing.T) {
 	}
 }
 
+// TestProbe_NonSuccessStaysPaused covers the sad path: a non-2xx
+// probe response keeps the workspace flagged paused and refreshes
+// ProbedAt so the next probe respects the minimum interval.
+func TestProbe_NonSuccessStaysPaused(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+
+	f.engine.pausedProbeInterval = 1 * time.Millisecond
+
+	seedTime := f.now.Now().Add(-1 * time.Hour)
+	if err := f.cache.SetWorkspaceStatus(ctx, cache.WorkspaceStatus{
+		AccountAlias: testAlias, WorkspaceID: testWorkspaceID,
+		State: cache.WorkspaceStatePaused, Reason: "capacity_paused",
+		DetectedAt: seedTime,
+		ProbedAt:   seedTime,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	httpmock.RegisterResponder("HEAD", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(403, "still paused"))
+
+	if f.engine.probePausedWorkspace(ctx, testAlias, testWorkspaceID) {
+		t.Fatal("probe on non-2xx must report not-recovered")
+	}
+	st, _ := f.cache.GetWorkspaceStatus(ctx, testAlias, testWorkspaceID)
+	if st.State != cache.WorkspaceStatePaused {
+		t.Errorf("state after non-2xx probe = %q, want paused", st.State)
+	}
+	if !st.ProbedAt.After(seedTime) {
+		t.Errorf("ProbedAt = %v, want > %v (refreshed by probe attempt)", st.ProbedAt, seedTime)
+	}
+	if st.DetectedAt != seedTime {
+		t.Errorf("DetectedAt = %v, want preserved %v", st.DetectedAt, seedTime)
+	}
+}
+
+// TestSweepPausedWorkspaces_ProbesEachPausedRow verifies the cold
+// recovery sweep iterates every paused row and skips active ones.
+// Without the cold sweep, a workspace that was once active and then
+// went paused while nobody was looking at it would stay paused
+// forever in the IPC status surface.
+func TestSweepPausedWorkspaces_ProbesEachPausedRow(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+	f.engine.pausedProbeInterval = 1 * time.Millisecond
+
+	// Three rows: two paused (one will recover, one stays paused), one
+	// active (must not be touched).
+	seedTime := f.now.Now().Add(-1 * time.Hour)
+	_ = f.cache.SetWorkspaceStatus(ctx, cache.WorkspaceStatus{
+		AccountAlias: testAlias, WorkspaceID: "ws-recover",
+		State: cache.WorkspaceStatePaused, Reason: "capacity_paused",
+		DetectedAt: seedTime, ProbedAt: seedTime,
+	})
+	_ = f.cache.SetWorkspaceStatus(ctx, cache.WorkspaceStatus{
+		AccountAlias: testAlias, WorkspaceID: "ws-stuck",
+		State: cache.WorkspaceStatePaused, Reason: "capacity_paused",
+		DetectedAt: seedTime, ProbedAt: seedTime,
+	})
+	_ = f.cache.SetWorkspaceStatus(ctx, cache.WorkspaceStatus{
+		AccountAlias: testAlias, WorkspaceID: "ws-active",
+		State: cache.WorkspaceStateActive,
+		DetectedAt: seedTime,
+	})
+
+	var probes atomic.Int32
+	httpmock.RegisterResponder("HEAD", "=~^"+testOneLakeBase+`.*`,
+		func(req *http.Request) (*http.Response, error) {
+			probes.Add(1)
+			if strings.Contains(req.URL.Path, "ws-recover") {
+				return httpmock.NewStringResponse(200, ""), nil
+			}
+			// 403 is non-retriable so httpretry doesn't multiply our count.
+			return httpmock.NewStringResponse(403, "forbidden"), nil
+		})
+
+	f.engine.SweepPausedWorkspaces(ctx)
+
+	if got := probes.Load(); got != 2 {
+		t.Errorf("HEAD probes = %d, want 2 (one per paused row, active row skipped)", got)
+	}
+	if st, _ := f.cache.GetWorkspaceStatus(ctx, testAlias, "ws-recover"); st.State != cache.WorkspaceStateActive {
+		t.Errorf("ws-recover state = %q, want active", st.State)
+	}
+	if st, _ := f.cache.GetWorkspaceStatus(ctx, testAlias, "ws-stuck"); st.State != cache.WorkspaceStatePaused {
+		t.Errorf("ws-stuck state = %q, want paused", st.State)
+	}
+	if st, _ := f.cache.GetWorkspaceStatus(ctx, testAlias, "ws-active"); st.State != cache.WorkspaceStateActive {
+		t.Errorf("ws-active state = %q, want active", st.State)
+	}
+}
+
 // TestExtractErrorCode covers the JSON helper in isolation.
 func TestExtractErrorCode(t *testing.T) {
 	cases := []struct {

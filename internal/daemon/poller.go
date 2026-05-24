@@ -19,6 +19,7 @@ type pollerCache interface {
 // pollerEngine is the subset of [sync.Engine] the adaptive poller needs.
 type pollerEngine interface {
 	RefreshFolder(ctx context.Context, k cache.Key) (sync.Diff, error)
+	SweepPausedWorkspaces(ctx context.Context)
 }
 
 // runAdaptivePoller refreshes the root of every recently-accessed item
@@ -60,9 +61,10 @@ func runAdaptivePoller(
 }
 
 // pollOnce performs a single sweep: load hot items and refresh each
-// one's root. Errors from individual refreshes are logged and swallowed
-// so a transient failure on one item does not stall the rest of the
-// sweep.
+// one's root, then probe any paused workspaces so the IPC status
+// surface recovers without requiring user interaction. Errors from
+// individual refreshes are logged and swallowed so a transient failure
+// on one item does not stall the rest of the sweep.
 func pollOnce(
 	ctx context.Context,
 	c pollerCache,
@@ -70,6 +72,15 @@ func pollOnce(
 	logger *slog.Logger,
 	hotWindow time.Duration,
 ) {
+	// Cold-paused recovery probe: one cheap HEAD per paused workspace,
+	// regardless of whether the workspace is in HotItems. Without this,
+	// a workspace that goes paused while nobody is looking at it never
+	// flips back to active in the IPC status response until the next
+	// user click. The sweep runs in line with the same ticker so we
+	// don't add a second goroutine; pacing is bounded by the per-
+	// workspace pausedProbeInterval inside the engine.
+	engine.SweepPausedWorkspaces(ctx)
+
 	since := time.Now().Add(-hotWindow)
 	items, err := c.HotItems(ctx, since)
 	if err != nil {
