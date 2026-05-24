@@ -45,7 +45,7 @@ make fmt
 OFEM_INTEGRATION=1 go test ./...
 ```
 
-You only need Xcode if you are working on the Swift host app or File Provider Extension (Phase 1+). For pure Go work on `internal/*` you can stay in your shell of choice.
+You only need Xcode if you are working on the Swift host app or File Provider Extension. For pure Go work on `internal/*` you can stay in your shell of choice.
 
 ## Branching and pull requests
 
@@ -74,7 +74,7 @@ Examples:
 ```
 feat(auth): support device code flow as fallback when no browser available
 fix(onelake): honor Retry-After header on 429 responses
-docs(plan): clarify Phase 1 exit criteria
+docs(plan): clarify exit criteria for signed builds
 refactor(cache): extract SQLite schema into separate file
 ```
 
@@ -93,7 +93,7 @@ GoReleaser uses these to auto-generate the release notes on each GitHub Release,
 - Use `slog` from stdlib for logging; never `fmt.Println` from non-CLI code.
 - Public APIs go in `core/` (cgo-exported) or `cmd/ofem/` (CLI surface); internal stuff in `internal/*` (Go's compiler enforces this).
 
-### Swift (Phase 1+)
+### Swift
 
 - SwiftLint with the included `.swiftlint.yml`.
 - Use `os.log` (unified logging) for everything that should land in Console.app.

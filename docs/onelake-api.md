@@ -66,9 +66,9 @@ GET https://api.fabric.microsoft.com/v1/workspaces/{workspaceId}/lakehouses/{lak
 
 Similar endpoints exist for `eventhouses`, `kqlDatabases`, `warehouses`, `mirroredDatabases`, …
 
-For the MVP the generic Get/List Item is enough — we don't need to special-case every item type.
+OFEM uses the generic Get/List Item endpoints and does not special-case every item type.
 
-### Catalog search (optional, phase 2)
+### Catalog search (optional)
 
 ```http
 POST https://api.fabric.microsoft.com/v1/admin/items/search
@@ -82,7 +82,7 @@ Powerful for "find all items matching X", but not critical for file browsing.
 GET https://api.fabric.microsoft.com/v1/workspaces/{workspaceId}/items/{itemId}/shortcuts
 ```
 
-Returns, per shortcut, the path within the item and the target type (`OneLake`, `ADLS Gen2`, `Amazon S3`, `Google Cloud Storage`, `S3 Compatible`, `Dataverse`, `External Data Share`). For the MVP shortcuts are **transparent**: they appear as a folder in the DFS-API listing without any special handling.
+Returns, per shortcut, the path within the item and the target type (`OneLake`, `ADLS Gen2`, `Amazon S3`, `Google Cloud Storage`, `S3 Compatible`, `Dataverse`, `External Data Share`). Shortcuts are **transparent**: they appear as a folder in the DFS-API listing without any special handling.
 
 ## File I/O — OneLake DFS API (ADLS Gen2–compatible)
 
@@ -122,7 +122,7 @@ Important to know for good error handling:
 - **Page blobs**: not supported (`Put Page`, `Get Page Ranges`).
 - **Cross-tenant operations**: not possible in a single API call; must go through External Data Sharing or via download-and-upload.
 
-### Tables endpoint (separate, not for MVP)
+### Tables endpoint (not used)
 
 ```
 https://onelake.table.fabric.microsoft.com

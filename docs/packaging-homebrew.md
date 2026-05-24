@@ -1,6 +1,6 @@
 # Packaging & distribution
 
-OFEM ships as a Homebrew cask of the macOS `.app`.
+OFEM ships as a signed and notarized Homebrew cask of the macOS `.app`.
 
 ## Output artifact
 

@@ -2,11 +2,9 @@
 
 Browse your Microsoft Fabric **OneLake** data lake from Finder, the same way OneDrive or Google Drive integrate. Multiple accounts in multiple tenants, side by side, with a single Homebrew install.
 
-> **Status**: pre-release, under active development. Public beta coming soon. Track progress in [GitHub Issues](https://github.com/sdebruyn/onelake-explorer-macos/issues).
-
 ## Why this exists
 
-Microsoft ships a [OneLake File Explorer](https://learn.microsoft.com/fabric/onelake/onelake-file-explorer) for Windows only. There is currently no native macOS equivalent. This project fills that gap as an open-source `.app` distributed through Homebrew, with these explicit improvements:
+Microsoft ships a [OneLake File Explorer](https://learn.microsoft.com/fabric/onelake/onelake-file-explorer) for Windows only. There is no native macOS equivalent. This project fills that gap as an open-source `.app` distributed through Homebrew, with these explicit improvements:
 
 - **Multi-account, multi-tenant** simultaneously visible side by side.
 - **macOS-native UX** through a File Provider Extension — Finder sidebar, online-only placeholders, on-demand download, Spotlight integration.

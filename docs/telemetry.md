@@ -5,7 +5,7 @@
 - **Opt-out**, enabled by default, clearly disclosed on first run and in README.
 - **Disable any time** with `OFEM_TELEMETRY=0` env var or `ofem config set telemetry off` (the daemon picks up the change on next start; the menu bar shows the current state).
 - **No PII**: no UPN, no workspace name, no item name, no file name, no folder path.
-- **Tenant IDs are collected** (this is the documented decision). Tenant IDs are aggregate-level enough to be useful for understanding adoption per tenant without identifying individual users.
+- **Tenant IDs are collected.** Tenant IDs are aggregate-level enough to be useful for understanding adoption per tenant without identifying individual users.
 - **Pseudonymous install ID** is generated locally on first run (a random UUIDv4 stored in config) so we can deduplicate events from the same install without identifying the user.
 - **No tracking across re-installs**: removing OFEM (`brew uninstall --zap`) removes the install ID; reinstalling generates a new one.
 
@@ -61,21 +61,7 @@ Every event is sent as an App Insights `customEvent` with a fixed property set:
 
 ## Connection string distribution
 
-The Application Insights connection string is a **committed source constant** in `internal/buildinfo/buildinfo.go`. Every OFEM build — official release, source build, or fork — reports to the same endpoint.
-
-Why a source constant rather than a build-time secret:
-
-- An Application Insights connection string is, per Microsoft's design, write-only and meant to be public. The same string ships in every browser-side JS app or mobile binary that uses Application Insights.
-- The string would end up in any compiled binary anyway (`strings ofem` would reveal it from a Homebrew install). Committing it in source code does not change the security posture.
-- This way source-built and forked binaries also participate in the shared opt-out stream, so the maintainer sees a representative signal instead of only the Homebrew users.
-
-### Threat model
-
-An attacker can read the constant or extract it from any binary. They could then send spam events. Mitigations:
-
-- App Insights has built-in sampling and a DAILY_CAP we can lower in the portal if we see abuse.
-- The data collected is by design non-sensitive — even if an attacker spams events with bogus tenant IDs, our analysis just gets noisier, no PII is leaked.
-- The connection string can be rotated by issuing a new one for the resource and bumping `internal/buildinfo/buildinfo.go`; old binaries then silently stop reporting on the next release.
+The Application Insights connection string is a committed source constant in `internal/buildinfo/buildinfo.go`. Every OFEM build — official release, source build, or fork — reports to the same endpoint. The string is rotated by issuing a new one for the resource and bumping `internal/buildinfo/buildinfo.go`; old binaries then stop reporting on the next release.
 
 ## First-run disclosure (in CLI and host app)
 
@@ -91,7 +77,7 @@ Learn more:        https://github.com/sdebruyn/onelake-explorer-macos/blob/main/
 
 Shown:
 - On first `ofem login` in the CLI.
-- On first launch of `OneLake.app` (Phase 2+) as a small banner in the host app.
+- On first launch of `OneLake.app` as a small banner in the host app.
 
 ## Local buffering and offline
 
@@ -101,9 +87,9 @@ If the user has no network, events accumulate in memory up to a hard cap of 1000
 
 No persistent on-disk telemetry queue — keeps complexity down.
 
-## What about Crash Reporting?
+## Crash reporting
 
-Crash reporting is integrated, not Sentry-on-the-side. Panics and unhandled errors go through the same telemetry pipeline:
+Panics and unhandled errors go through the same telemetry pipeline:
 
 - A `defer recover()` in main captures Go panics. We send a `panic` event with a SHA256 of the stack trace as `errorCode`, plus `appVersion`. We do NOT send the stack trace itself (which can contain file paths or memory addresses).
 - Unhandled errors in the OneLake / Fabric clients emit `error` events with the API error code.
