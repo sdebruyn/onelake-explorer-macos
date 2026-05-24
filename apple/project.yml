@@ -1,0 +1,61 @@
+name: OneLake
+options:
+  bundleIdPrefix: dev.debruyn.ofem
+  deploymentTarget:
+    macOS: "14.0"
+  groupSortPosition: top
+  generateEmptyDirectories: true
+  xcodeVersion: "15.0"
+fileGroups:
+  - apple/Local.xcconfig.sample
+configs:
+  Debug: debug
+  Release: release
+configFiles:
+  Debug: apple/Local.xcconfig
+  Release: apple/Local.xcconfig
+settings:
+  base:
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    SWIFT_VERSION: "5.10"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+    GENERATE_INFOPLIST_FILE: NO
+targets:
+  OneLake:
+    type: application
+    platform: macOS
+    sources:
+      - path: apple/OneLake
+        excludes:
+          - "**/*.xcconfig"
+          - "**/Info.plist"
+          - "**/*.entitlements"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem
+        PRODUCT_NAME: OneLake
+        INFOPLIST_FILE: OneLake/Info.plist
+        CODE_SIGN_ENTITLEMENTS: OneLake/OneLake.entitlements
+    dependencies:
+      - target: OneLakeFileProvider
+        embed: true
+        codeSign: true
+  OneLakeFileProvider:
+    type: app-extension
+    platform: macOS
+    productType: com.apple.product-type.app-extension
+    sources:
+      - path: apple/OneLakeFileProvider
+        excludes:
+          - "**/*.xcconfig"
+          - "**/Info.plist"
+          - "**/*.entitlements"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem.fileprovider
+        PRODUCT_NAME: OneLakeFileProvider
+        INFOPLIST_FILE: OneLakeFileProvider/Info.plist
+        CODE_SIGN_ENTITLEMENTS: OneLakeFileProvider/OneLakeFileProvider.entitlements
