@@ -14,7 +14,7 @@ import (
 
 	"github.com/jarcoal/httpmock"
 
-	"github.com/sdebruyn/onelake-explorer-macos/internal/api"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpretry"
 )
 
 const (
@@ -170,7 +170,7 @@ func TestGetProperties_404(t *testing.T) {
 	httpmock.RegisterResponder("HEAD", testBase+"/"+wsGUID+"/"+itemGUID+"/missing",
 		httpmock.NewStringResponder(404, ""))
 	_, err := c.GetProperties(context.Background(), "work", wsGUID, itemGUID, "missing")
-	if !errors.Is(err, api.ErrNotFound) {
+	if !errors.Is(err, httpretry.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
@@ -260,7 +260,7 @@ func TestDelete_NonRecursiveConflict(t *testing.T) {
 	httpmock.RegisterResponder("DELETE", "=~^"+testBase+"/"+wsGUID+"/"+itemGUID+`/Files/old(\?.*)?$`,
 		httpmock.NewStringResponder(409, "conflict"))
 	err := c.Delete(context.Background(), "work", wsGUID, itemGUID, "Files/old", false)
-	if !errors.Is(err, api.ErrConflict) {
+	if !errors.Is(err, httpretry.ErrConflict) {
 		t.Fatalf("want ErrConflict, got %v", err)
 	}
 }
@@ -404,7 +404,7 @@ func TestListPath_401(t *testing.T) {
 	httpmock.RegisterResponder("GET", "=~^"+testBase+"/"+wsGUID+`\?.*$`,
 		httpmock.NewStringResponder(401, ""))
 	_, err := c.ListPath(context.Background(), "work", wsGUID, itemGUID, "", false)
-	if !errors.Is(err, api.ErrUnauthorized) {
+	if !errors.Is(err, httpretry.ErrUnauthorized) {
 		t.Fatalf("want ErrUnauthorized, got %v", err)
 	}
 }
