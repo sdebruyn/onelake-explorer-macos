@@ -1,25 +1,33 @@
 package auth
 
 import (
-	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
-
-	keyring "github.com/zalando/go-keyring"
 )
 
-// Keychain stores small per-account secrets in the macOS Keychain under
-// the service name "dev.debruyn.ofem" (taken from [config.BundleID]).
+// Keychain stores per-account secrets on disk under
+// ~/Library/Application Support/dev.debruyn.ofem/tokens/, one file per
+// account with 0600 permissions.
 //
-// The byte payload is treated as opaque: the auth/MSAL layer (added in a
-// follow-up change) serialises its token cache into the value, but the
-// keychain layer itself does not interpret it. Implementations must:
-//   - Accept arbitrary byte content, including bytes that are not valid
-//     UTF-8.
+// An earlier implementation used the macOS Keychain via go-keyring; we
+// moved off it because the MSAL token cache after a single Microsoft
+// Entra login already exceeds the ~16 KB Generic Password size limit
+// imposed by SecItemAdd, and chunking that across Keychain entries was
+// more code than it was worth. File-system permissions on the per-user
+// Application Support directory provide equivalent access control: only
+// the same UNIX user (or root) can read the cache, the same boundary
+// the Keychain itself enforces for non-iCloud items.
+//
+// The byte payload is opaque: the auth/MSAL layer serialises its token
+// cache into the value, but the keychain layer does not interpret it.
+// Implementations must:
+//   - Accept arbitrary byte content, including non-UTF-8 bytes.
 //   - Treat a Set with an empty value (nil or zero-length) as a Delete,
 //     so callers do not need a separate code path for "clear this
 //     account".
@@ -39,49 +47,76 @@ type Keychain interface {
 	Delete(account string) error
 }
 
-// keychainService is the Keychain service name shared by all OFEM
-// processes. It matches the reverse-DNS bundle identifier so that
-// Keychain Access.app groups OFEM items together.
-const keychainService = config.BundleID
-
-// NewKeychain returns a [Keychain] backed by the macOS Keychain via
-// github.com/zalando/go-keyring. Bytes are base64-encoded internally
-// because go-keyring's public API is string-only.
-func NewKeychain() Keychain {
-	return &systemKeychain{}
+// NewKeychain returns a file-backed [Keychain] rooted at
+// <ApplicationSupport>/dev.debruyn.ofem/tokens/. The directory and
+// every file inside are created with 0700 / 0600 permissions so only
+// the current UNIX user can read them.
+func NewKeychain() (Keychain, error) {
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		return nil, fmt.Errorf("keychain: resolve paths: %w", err)
+	}
+	dir := filepath.Join(paths.ConfigDir, "tokens")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("keychain: create token dir %q: %w", dir, err)
+	}
+	return &fileKeychain{root: dir}, nil
 }
 
-type systemKeychain struct{}
+type fileKeychain struct {
+	root string
+}
 
-func (s *systemKeychain) Get(account string) ([]byte, error) {
-	encoded, err := keyring.Get(keychainService, account)
+// path returns the on-disk location for an account's token blob. The
+// account name is hex-encoded so any byte (including slashes) maps to
+// a safe filename, and the same account always maps to the same file.
+func (f *fileKeychain) path(account string) string {
+	return filepath.Join(f.root, hex.EncodeToString([]byte(account))+".bin")
+}
+
+func (f *fileKeychain) Get(account string) ([]byte, error) {
+	data, err := os.ReadFile(f.path(account))
 	if err != nil {
-		if errors.Is(err, keyring.ErrNotFound) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("keychain: no entry for %q: %w", account, os.ErrNotExist)
 		}
 		return nil, fmt.Errorf("keychain get %q: %w", account, err)
 	}
-	raw, decErr := base64.StdEncoding.DecodeString(encoded)
-	if decErr != nil {
-		return nil, fmt.Errorf("keychain decode %q: %w", account, decErr)
-	}
-	return raw, nil
+	return data, nil
 }
 
-func (s *systemKeychain) Set(account string, value []byte) error {
+func (f *fileKeychain) Set(account string, value []byte) error {
 	if len(value) == 0 {
-		return s.Delete(account)
+		return f.Delete(account)
 	}
-	encoded := base64.StdEncoding.EncodeToString(value)
-	if err := keyring.Set(keychainService, account, encoded); err != nil {
-		return fmt.Errorf("keychain set %q: %w", account, err)
+	dest := f.path(account)
+	// Write to a temp file and atomically rename so a crash mid-write
+	// can never leave a half-written token cache at the canonical path.
+	tmp, err := os.CreateTemp(f.root, ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("keychain set %q: create temp: %w", account, err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(value); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("keychain set %q: write: %w", account, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("keychain set %q: close temp: %w", account, err)
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return fmt.Errorf("keychain set %q: chmod temp: %w", account, err)
+	}
+	if err := os.Rename(tmpName, dest); err != nil {
+		return fmt.Errorf("keychain set %q: rename: %w", account, err)
 	}
 	return nil
 }
 
-func (s *systemKeychain) Delete(account string) error {
-	err := keyring.Delete(keychainService, account)
-	if err == nil || errors.Is(err, keyring.ErrNotFound) {
+func (f *fileKeychain) Delete(account string) error {
+	err := os.Remove(f.path(account))
+	if err == nil || errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	return fmt.Errorf("keychain delete %q: %w", account, err)

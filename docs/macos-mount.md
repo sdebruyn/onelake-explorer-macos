@@ -12,7 +12,7 @@ See [docs/file-provider.md](file-provider.md) for the technical design.
 
 ## Why not FUSE-T as a stepping stone
 
-The first draft of this plan included a FUSE-T mount as an intermediate Phase 1, with File Provider Extension as Phase 3. Sam rejected this as wasted work. The reasoning is sound:
+The first draft of this plan included a FUSE-T mount as an intermediate Phase 1, with File Provider Extension as Phase 3. That intermediate phase was rejected as wasted work. The reasoning is sound:
 
 - The **mount layer code itself is not reusable** when migrating from FUSE-T to File Provider Extension. They are fundamentally different APIs:
   - FUSE-T = Go callbacks implementing VFS operations.
@@ -57,12 +57,12 @@ Rejected for the same reasons FUSE-T was rejected, plus the additional cost of b
 - App Group entitlement and File Provider entitlement.
 - Swift host app + Swift extension wrapping our Go core via cgo/C-ABI.
 - Sandbox restrictions on the extension — we have to be careful what we access.
-- macOS 12.5 minimum for File Provider; we go higher to macOS 14 Sonoma per Sam's choice, to use the latest APIs and avoid compat code.
+- macOS 12.5 minimum for File Provider; we go higher to macOS 14 Sonoma by project choice, to use the latest APIs and avoid compat code.
 
 ## Min macOS and architecture
 
-- **macOS 14 Sonoma minimum.** Picked over the technically possible 12.5 because Sam wants to stay on modern APIs and accepts the smaller addressable Mac population. Latest File Provider APIs (placeholder icons, fast cache reclamation, advanced enumeration) are stable from 13 onwards but get incremental improvements in 14.
-- **arm64-only.** Sam chose this; we do not ship Intel binaries. Apple Silicon adoption among modern data-engineering Macs is high enough to make Universal builds unnecessary overhead.
+- **macOS 14 Sonoma minimum.** Picked over the technically possible 12.5 because the project chooses to stay on modern APIs and accept the smaller addressable Mac population. Latest File Provider APIs (placeholder icons, fast cache reclamation, advanced enumeration) are stable from 13 onwards but get incremental improvements in 14.
+- **arm64-only.** The project ships arm64 binaries only, no Intel. Apple Silicon adoption among modern data-engineering Macs is high enough to make Universal builds unnecessary overhead.
 
 ## Summary
 

@@ -5,7 +5,7 @@
 - **Opt-out**, enabled by default, clearly disclosed on first run and in README.
 - **Disable any time** with `OFEM_TELEMETRY=0` env var or `ofem config set telemetry off` (the daemon picks up the change on next start; the menu bar shows the current state).
 - **No PII**: no UPN, no workspace name, no item name, no file name, no folder path.
-- **Tenant IDs are collected** (Sam confirmed this is acceptable). Tenant IDs are aggregate-level enough to be useful for understanding adoption per tenant without identifying individual users.
+- **Tenant IDs are collected** (this is the documented decision). Tenant IDs are aggregate-level enough to be useful for understanding adoption per tenant without identifying individual users.
 - **Pseudonymous install ID** is generated locally on first run (a random UUIDv4 stored in config) so we can deduplicate events from the same install without identifying the user.
 - **No tracking across re-installs**: removing OFEM (`brew uninstall --zap`) removes the install ID; reinstalling generates a new one.
 
@@ -103,7 +103,7 @@ No persistent on-disk telemetry queue — keeps complexity down.
 
 ## What about Crash Reporting?
 
-Sam chose integrated, not Sentry-on-the-side. Panics and unhandled errors go through the same telemetry pipeline:
+Crash reporting is integrated, not Sentry-on-the-side. Panics and unhandled errors go through the same telemetry pipeline:
 
 - A `defer recover()` in main captures Go panics. We send a `panic` event with a SHA256 of the stack trace as `errorCode`, plus `appVersion`. We do NOT send the stack trace itself (which can contain file paths or memory addresses).
 - Unhandled errors in the OneLake / Fabric clients emit `error` events with the API error code.

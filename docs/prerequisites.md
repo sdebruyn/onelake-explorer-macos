@@ -5,7 +5,7 @@ This document distinguishes between:
 - **Local development** — what you need to clone the repo, build, run tests, and dogfood OFEM on your own machine (no signing, no notarization, no release).
 - **Publishing & signing** — what additionally is needed to produce the official signed/notarized `.app` and ship it via Homebrew cask.
 
-If you only want to contribute code, you only need the **Local development** section. The publishing requirements are only relevant to the maintainer (Sam) and to release CI.
+If you only want to contribute code, you only need the **Local development** section. The publishing requirements are only relevant to the maintainer and to release CI.
 
 ---
 
@@ -86,7 +86,7 @@ For local dogfooding of the `.app`:
 
 ### Domain ownership
 
-The bundle identifier `dev.debruyn.ofem` implies ownership of `debruyn.dev`. Sam owns this. Not strictly required for code signing but expected by Apple's reverse-DNS convention.
+The bundle identifier `dev.debruyn.ofem` implies ownership of `debruyn.dev`, which the maintainer owns. Not strictly required for code signing but expected by Apple's reverse-DNS convention.
 
 ### Initial bootstrap order
 
@@ -112,7 +112,7 @@ Run this script to verify your local-dev environment is ready:
 ./scripts/check-prereqs.sh   # to be added in the Phase 0 scaffolding
 ```
 
-A reference snapshot from Sam's machine at the time of writing:
+A reference snapshot from the maintainer's machine at the time of writing:
 
 | Tool | Status |
 |---|---|
