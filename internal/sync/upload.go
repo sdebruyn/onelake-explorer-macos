@@ -94,8 +94,10 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 		return fmt.Errorf("sync.Put: spill rewind: %w", err)
 	}
 
-	if err := e.uploadWithLastWriteWins(ctx, k, tmp.file, size, tmp.rewind); err != nil {
-		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, err) {
+	writeErr := e.uploadWithLastWriteWins(ctx, k, tmp.file, size, tmp.rewind)
+	e.observeNetworkResult(writeErr)
+	if writeErr != nil {
+		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, writeErr) {
 			e.track(telemetry.Event{
 				Name:             "file_upload",
 				AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
@@ -105,8 +107,31 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 			})
 			return fmt.Errorf("sync.Put: %w", ErrWorkspacePaused)
 		}
+		// Network unreachable: rewind the spill and queue the bytes so
+		// the daemon can drain them on the next online window.
+		if IsOfflineError(writeErr) {
+			if rerr := tmp.rewind(); rerr == nil {
+				qerr := e.enqueueOfflineUpload(ctx, k, tmp.file, size)
+				if qerr == nil {
+					e.track(telemetry.Event{
+						Name:             "file_upload",
+						AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
+						DurationMs:       elapsedMs(start, e.now),
+						Success:          boolPtr(false),
+						ErrorCode:        telemetry.SafeErrorCode("queued_offline"),
+					})
+					// Silently succeed at the call site: less-protective,
+					// less-intrusive default. The next online drain
+					// completes the upload; the cache row is left
+					// untouched so a later Open re-checks the remote.
+					return nil
+				}
+				e.logger.Warn("offline queue write failed; surfacing original error",
+					slog.String("path", k.Path), slog.Any("err", qerr))
+			}
+		}
 		errCode := "write_failed"
-		if errors.Is(err, ErrLastWriteWinsExhausted) {
+		if errors.Is(writeErr, ErrLastWriteWinsExhausted) {
 			errCode = "lww_exhausted"
 		}
 		e.track(telemetry.Event{
@@ -116,7 +141,7 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 			Success:          boolPtr(false),
 			ErrorCode:        telemetry.SafeErrorCode(errCode),
 		})
-		return fmt.Errorf("sync.Put: write: %w", err)
+		return fmt.Errorf("sync.Put: write: %w", writeErr)
 	}
 
 	// Persist the local copy. The same bytes the lake just received now

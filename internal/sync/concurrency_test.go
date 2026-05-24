@@ -21,9 +21,9 @@ func TestPerAccountSemaphore_CapEnforced(t *testing.T) {
 
 	const goroutines = 16
 	var (
-		peak   int32
-		inUse  int32
-		wg     sync.WaitGroup
+		peak    int32
+		inUse   int32
+		wg      sync.WaitGroup
 		barrier = make(chan struct{})
 	)
 	wg.Add(goroutines)

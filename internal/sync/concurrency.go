@@ -83,12 +83,3 @@ func (s *perAccountSemaphore) channel(alias string) chan struct{} {
 	}
 	return ch
 }
-
-// inFlight reports how many slots are currently held for alias. Useful
-// for assertion-style tests; not for production decision-making.
-func (s *perAccountSemaphore) inFlight(alias string) int {
-	if s == nil {
-		return 0
-	}
-	return len(s.channel(alias))
-}

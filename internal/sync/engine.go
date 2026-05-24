@@ -33,6 +33,7 @@ package sync
 import (
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
@@ -134,6 +135,10 @@ type Engine struct {
 	pausedTracker       *pausedTracker
 	downloadSem         *perAccountSemaphore
 	uploadSem           *perAccountSemaphore
+	offline             *offlineState
+	queueMu             sync.Mutex
+	queue               []queuedUpload
+	drainMu             sync.Mutex
 	now                 func() time.Time
 }
 
@@ -195,6 +200,7 @@ func New(opts Options) (*Engine, error) {
 		pausedTracker:       newPausedTracker(),
 		downloadSem:         newPerAccountSemaphore(downloads),
 		uploadSem:           newPerAccountSemaphore(uploads),
+		offline:             newOfflineState(),
 		now:                 now,
 	}, nil
 }
