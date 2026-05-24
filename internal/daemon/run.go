@@ -18,6 +18,7 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/fabric"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/ipc"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/logging"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/onelake"
@@ -168,12 +169,18 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}()
 	tel.Track(telemetry.Event{Name: "app_start"})
 
+	// Per-host request gate. One process-wide registry is shared between
+	// the Fabric and OneLake clients so a 429 on either upstream pauses
+	// every in-flight retry on that host - see internal/httpgate for
+	// the rationale.
+	gates := httpgate.DefaultRegistry()
+
 	// Sync engine. Stitch the Fabric REST and OneLake DFS clients to
 	// the same token provider and feed both into the engine alongside
 	// the cache and telemetry client. New only errors when a required
 	// dependency is missing, which would be a programmer error here.
-	fabricClient := fabric.New(fabric.Options{TokenProvider: registry})
-	onelakeClient := onelake.New(onelake.Options{TokenProvider: registry})
+	fabricClient := fabric.New(fabric.Options{TokenProvider: registry, Registry: gates})
+	onelakeClient := onelake.New(onelake.Options{TokenProvider: registry, Registry: gates})
 	engine, err := sync.New(sync.Options{
 		Cache:     c,
 		Fabric:    fabricClient,

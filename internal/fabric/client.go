@@ -20,6 +20,7 @@ import (
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/api"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
 )
 
 // defaultBaseURL is the canonical Fabric REST endpoint. Override via
@@ -55,6 +56,11 @@ type Options struct {
 	BaseURL string
 	// MaxAttempts caps retries for 429 / 5xx. Default 4.
 	MaxAttempts int
+	// Registry, when non-nil, plumbs every round trip (including each
+	// retry from internal/api.Do) through the per-host gate for Fabric.
+	// Without a registry the client is unrate-limited - acceptable for
+	// unit tests but not for the daemon, which always wires one in.
+	Registry *httpgate.Registry
 }
 
 // Client is the Fabric REST client. Construct with New. All methods
@@ -76,6 +82,12 @@ func New(opts Options) *Client {
 	}
 	if c.http == nil {
 		c.http = defaultHTTPClient()
+	}
+	if opts.Registry != nil {
+		// Wrap the existing http.Client so every retry attempt issued by
+		// internal/api.Do (and any peer goroutine) shares the same
+		// per-host pause window and QPS budget.
+		c.http = httpgate.Wrap(c.http, opts.Registry)
 	}
 	if c.baseURL == "" {
 		c.baseURL = defaultBaseURL
