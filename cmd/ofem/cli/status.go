@@ -111,7 +111,9 @@ func printDaemonStatus(out io.Writer, socketPath string, verbose bool) {
 }
 
 // printGates renders the per-host gate snapshots returned by the daemon.
-// The Host column is padded to the longest hostname for alignment.
+// The Host column is padded to the longest hostname for alignment; the
+// summary text after the host comes from [httpgate.State.Summary] so the
+// format lives in one place (the human-readable Stringer on State).
 func printGates(out io.Writer, gates []httpgate.State) {
 	fmt.Fprintln(out, "Gates:")
 	hostWidth := 0
@@ -121,16 +123,7 @@ func printGates(out io.Writer, gates []httpgate.State) {
 		}
 	}
 	for _, g := range gates {
-		paused := "no"
-		if d := time.Until(g.PauseUntil); d > 0 {
-			paused = fmt.Sprintf("for %s", d.Round(time.Second))
-		}
-		fmt.Fprintf(out, "  %-*s inflight=%d/%d tokens=%d/%d paused: %s\n",
-			hostWidth, g.Host,
-			g.Inflight, g.Concurrency,
-			g.Available, g.Burst,
-			paused,
-		)
+		fmt.Fprintf(out, "  %-*s %s\n", hostWidth, g.Host, g.Summary())
 	}
 }
 

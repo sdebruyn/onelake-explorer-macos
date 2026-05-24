@@ -30,4 +30,21 @@
 //
 // Concurrency safety: every exported method on [Gate] and [Registry] is
 // safe for concurrent use.
+//
+// # Interaction with internal/api.Do
+//
+// The retry layer in internal/api.Do composes with — and does not
+// replace — the gate's pause window. When a 5xx response carries no
+// Retry-After header, api.Do sleeps its own initialBackoff (~500ms)
+// before retrying; the retry's Acquire then waits for the gate's
+// [Defaults.MissingRetryAfter] window to elapse. These waits are
+// additive: the effective delay before the next attempt actually
+// leaves the local process is api.Do's backoff PLUS the gate's pause.
+//
+// In practice that means an unmarked 5xx on the Fabric host costs
+// ~500ms (api.Do) + ~30s (Fabric MissingRetryAfter); on the OneLake
+// host ~500ms + ~10s. This is intentional — the doubled wait costs
+// half a second over either bound alone but guarantees that peer
+// goroutines on the same host also observe the pause through the
+// shared gate, not just the goroutine that received the 5xx.
 package httpgate

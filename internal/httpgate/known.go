@@ -17,6 +17,13 @@ const (
 // FabricBudget is the inflight cap, qps and burst recommended for the
 // Fabric REST host. Fabric is the lower-budget upstream of the two so we
 // keep both concurrency and qps tight.
+//
+// TODO(telemetry): FabricQPS=2 is conservative relative to nothing —
+// Microsoft does not publish concrete RPS limits for the Fabric REST
+// surface, so this number is a guess sized to be safe on first sync.
+// Revisit once we have multi-tenant production traffic in the
+// telemetry pipeline (see docs/telemetry.md) and a feel for the real
+// throttle threshold. 4–5 qps is a likely safe bump.
 const (
 	FabricConcurrency = 8
 	FabricQPS         = 2

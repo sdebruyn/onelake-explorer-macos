@@ -198,7 +198,7 @@ func (g *Gate) State() State {
 	pause := g.pauseUntil
 	g.mu.Unlock()
 
-	// time.Until + rate.Limiter.Tokens both read state without mutating.
+	// rate.Limiter.Tokens reads state without mutating.
 	tokens := g.limiter.Tokens()
 	if tokens < 0 {
 		tokens = 0
@@ -207,10 +207,16 @@ func (g *Gate) State() State {
 		tokens = float64(g.burst)
 	}
 
+	// len() on a channel is safe to call from any goroutine, but the
+	// returned value has no happens-before relationship with concurrent
+	// send/receive ops — Inflight is a best-effort snapshot, fine for
+	// status display but NOT load-bearing for control flow.
+	inflight := len(g.sem)
+
 	return State{
 		Host:        g.host,
 		PauseUntil:  pause,
-		Inflight:    len(g.sem),
+		Inflight:    inflight,
 		Concurrency: g.concurrency,
 		Available:   int(tokens),
 		Burst:       g.burst,
@@ -221,10 +227,23 @@ func (g *Gate) State() State {
 // String renders the gate's state in a compact, human-friendly form.
 // Used by the CLI's `ofem status --verbose` output.
 func (s State) String() string {
+	return fmt.Sprintf("%s %s", s.Host, s.summary())
+}
+
+// summary renders everything after the host column — used by
+// [State.String] and by the CLI's printGates so the format lives in
+// one place. printGates handles host-column padding separately and
+// then prepends s.Host itself.
+func (s State) summary() string {
 	paused := "no"
 	if d := time.Until(s.PauseUntil); d > 0 {
 		paused = fmt.Sprintf("for %s", d.Round(time.Second))
 	}
-	return fmt.Sprintf("%s inflight=%d/%d tokens=%d/%d paused: %s",
-		s.Host, s.Inflight, s.Concurrency, s.Available, s.Burst, paused)
+	return fmt.Sprintf("inflight=%d/%d tokens=%d/%d paused: %s",
+		s.Inflight, s.Concurrency, s.Available, s.Burst, paused)
 }
+
+// Summary returns the per-host gate summary without the host prefix,
+// suitable for callers (like the CLI's tabular printer) that need to
+// align the host column themselves.
+func (s State) Summary() string { return s.summary() }
