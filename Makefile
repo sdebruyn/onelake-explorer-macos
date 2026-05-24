@@ -82,3 +82,39 @@ release-snapshot:
 help:
 	@echo "Targets:"
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-18s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+
+# --- Phase 1: macOS app + File Provider Extension ---
+
+XCODE_PROJECT := apple/OneLake.xcodeproj
+APPLE_CONFIG  := apple/Local.xcconfig
+
+.PHONY: apple-bootstrap apple-gen apple-build apple-clean
+
+# First-time setup: copy the xcconfig sample if it's missing and tell the
+# user to fill in their team ID.
+apple-bootstrap:
+	@if [ ! -f $(APPLE_CONFIG) ]; then \
+		cp apple/Local.xcconfig.sample $(APPLE_CONFIG); \
+		echo "Created $(APPLE_CONFIG). Edit it and set DEVELOPMENT_TEAM."; \
+	else \
+		echo "$(APPLE_CONFIG) already exists. Nothing to do."; \
+	fi
+
+# Regenerate the .xcodeproj from project.yml. Run after touching project.yml.
+# --project-root . lets the spec reference source paths from the repo root
+# (e.g. "apple/OneLake") while --project apple drops the generated
+# .xcodeproj next to the spec.
+apple-gen:
+	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: brew install xcodegen"; exit 1; }
+	xcodegen generate --spec apple/project.yml --project-root . --project apple
+
+# Build the OneLake.app target (Debug, arm64) for local dogfooding.
+apple-build: apple-gen
+	xcodebuild -project $(XCODE_PROJECT) \
+		-scheme OneLake \
+		-configuration Debug \
+		-derivedDataPath apple/DerivedData \
+		build
+
+apple-clean:
+	rm -rf apple/OneLake.xcodeproj apple/OneLake.xcworkspace apple/build apple/DerivedData

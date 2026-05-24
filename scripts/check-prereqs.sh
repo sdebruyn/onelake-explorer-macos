@@ -148,6 +148,20 @@ else
     hint "go install golang.org/x/tools/cmd/goimports@latest"
 fi
 
+# xcodegen owns the Xcode project (apple/project.yml); required from Phase 1
+# onwards for `make apple-gen` / `make apple-build`.
+if command -v xcodegen >/dev/null 2>&1; then
+    xg_ver=$(xcodegen --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+    if [ -n "$xg_ver" ]; then
+        ok "xcodegen $xg_ver (needed for Phase 1 apple-gen/apple-build)"
+    else
+        ok "xcodegen installed (version detection failed; assuming OK)"
+    fi
+else
+    warn "xcodegen not installed (needed once you start working on the Phase 1 .app / File Provider Extension)"
+    hint "brew install xcodegen"
+fi
+
 # --- GitHub authentication ---
 
 hdr "GitHub authentication"
