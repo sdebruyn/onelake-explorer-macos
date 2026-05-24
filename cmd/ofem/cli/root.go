@@ -25,6 +25,7 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newLoginCmd())
 	root.AddCommand(newStatusCmd())
 	root.AddCommand(newConfigCmd())
+	root.AddCommand(newCacheCmd())
 	root.AddCommand(newDaemonCmd())
 	root.AddCommand(newDebugCmd())
 

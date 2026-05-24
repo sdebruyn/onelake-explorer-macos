@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -208,6 +209,119 @@ WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
 
 	c.maybeDeleteBlob(ctx, sha)
 	return nil
+}
+
+// DiskUsage walks the on-disk blob root and returns the number of blob
+// files present and the sum of their sizes in bytes. Unlike [Cache.BlobBytes]
+// it sees orphaned blobs (files on disk with no surviving metadata link),
+// which is what the CLI wants when reporting "what's on the user's disk".
+//
+// Files that vanish mid-walk are skipped silently because eviction can
+// race with the call. A missing blob root (cache not yet opened by any
+// process) reports (0, 0, nil).
+func (c *Cache) DiskUsage(ctx context.Context) (count int, bytes int64, err error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	walkErr := filepath.WalkDir(c.blobRoot, func(_ string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if errors.Is(walkErr, fs.ErrNotExist) {
+				return nil
+			}
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			if errors.Is(infoErr, fs.ErrNotExist) {
+				return nil
+			}
+			return infoErr
+		}
+		// Skip the leftover temp files [StoreBlob] uses for atomic writes.
+		// They are not "blobs" yet and reporting them inflates the figure
+		// shown to the user.
+		if filepath.Ext(d.Name()) == ".tmp" {
+			return nil
+		}
+		count++
+		bytes += info.Size()
+		return nil
+	})
+	if walkErr != nil {
+		if errors.Is(walkErr, fs.ErrNotExist) {
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("cache.DiskUsage: %w", walkErr)
+	}
+	return count, bytes, nil
+}
+
+// Wipe deletes every blob file under the blob root and clears the
+// blob_sha256 / blob_size columns on every metadata row in a single
+// transaction. Metadata rows themselves survive — the sync engine still
+// needs them to know what exists remotely; on the next access the row
+// simply behaves as "not cached" and the blob is re-downloaded.
+//
+// The reported counts come from the disk walk before deletion so callers
+// can tell the user exactly how much was reclaimed. Wipe is safe to call
+// on an empty cache and returns (0, 0, nil) in that case.
+func (c *Cache) Wipe(ctx context.Context) (count int, bytes int64, err error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+
+	count, bytes, err = c.DiskUsage(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("cache.Wipe: %w", err)
+	}
+
+	// 1. Clear blob links across the metadata table inside one transaction
+	//    so observers see an atomic switch from "cached" to "not cached".
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("cache.Wipe: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+UPDATE path_metadata
+SET blob_sha256 = '', blob_size = 0
+WHERE blob_sha256 != ''
+`); err != nil {
+		return 0, 0, fmt.Errorf("cache.Wipe: clear links: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("cache.Wipe: commit: %w", err)
+	}
+
+	// 2. Drop every blob shard directory from disk. We remove the shard
+	//    directories rather than walking individual files because it's
+	//    cheaper and avoids leaving behind empty <ab>/ subdirs.
+	entries, err := os.ReadDir(c.blobRoot)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return count, bytes, nil
+		}
+		return 0, 0, fmt.Errorf("cache.Wipe: read blob root: %w", err)
+	}
+	for _, e := range entries {
+		path := filepath.Join(c.blobRoot, e.Name())
+		if err := os.RemoveAll(path); err != nil {
+			c.logger.Warn("wipe entry failed",
+				slog.String("event", "blob.wipe.entry_failed"),
+				slog.String("path", path),
+				slog.Any("err", err),
+			)
+		}
+	}
+	c.logger.Info("cache wiped",
+		slog.String("event", "blob.wipe"),
+		slog.Int("blobs", count),
+		slog.Int64("bytes", bytes),
+	)
+	return count, bytes, nil
 }
 
 // BlobBytes returns the total size, in bytes, of every blob currently
