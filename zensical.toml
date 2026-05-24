@@ -26,7 +26,7 @@ nav = [
   ] },
   { "Architecture & design" = [
     { "Overview" = "design/overview.md" },
-    { "macOS integration — File Provider vs alternatives" = "macos-mount.md" },
+    { "macOS integration" = "macos-mount.md" },
     { "File Provider Extension" = "file-provider.md" },
     { "Authentication" = "auth.md" },
     { "OneLake & Fabric APIs" = "onelake-api.md" },
@@ -37,7 +37,6 @@ nav = [
   { "Contributing" = [
     { "How to contribute" = "design/contributing.md" },
     { "Prerequisites" = "prerequisites.md" },
-    { "Roadmap" = "design/roadmap.md" },
   ] },
 ]
 

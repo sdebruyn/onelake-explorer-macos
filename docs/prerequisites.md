@@ -32,17 +32,16 @@ Plus a configured **Microsoft Entra tenant** with at least one workspace you can
 - `entr` — auto-run tests on file save (`brew install entr`).
 - `dlv` — Go debugger (`brew install delve`).
 
-### Phase 0 (CLI-only) can be done WITHOUT
+### CLI-only work does NOT require
 
 - Xcode (technically — but you have it anyway for the standard Mac dev environment).
 - Apple Developer Program membership.
 - Any signing certificates.
 
-You can `go build ./cmd/ofem` and use the unsigned binary locally as much as you want during Phase 0.
+`go build ./cmd/ofem` produces an unsigned binary you can run locally.
 
-### Phase 1+ (File Provider Extension) adds
+### Working on the `.app` and File Provider Extension also requires
 
-For local dogfooding of the `.app`:
 - Xcode 15+ (you already need it).
 - A free Apple ID and **ad-hoc signing** are enough to install the `.app` on your own Mac. Other people cannot install your build without disabling Gatekeeper.
 
@@ -127,7 +126,7 @@ The first time the release pipeline runs end-to-end, this is the order:
 Run this script to verify your local-dev environment is ready:
 
 ```bash
-./scripts/check-prereqs.sh   # to be added in the Phase 0 scaffolding
+./scripts/check-prereqs.sh
 ```
 
 A reference snapshot from the maintainer's machine at the time of writing:
@@ -146,6 +145,6 @@ A reference snapshot from the maintainer's machine at the time of writing:
 | `goreleaser` (publish only) | ❌ install via `brew install goreleaser` (only needed when cutting releases) |
 | `create-dmg` (publish only) | ❌ install via `brew install create-dmg` (only needed when cutting releases) |
 | Developer ID Application certificate | ❌ not yet acquired; needed only when shipping the first signed build |
-| Apple Developer Program membership | ❌ not yet enrolled; defer until Phase 1 nears completion |
+| Apple Developer Program membership | ❌ not yet enrolled; required only when shipping signed builds |
 | Microsoft Entra App Registration | ✅ client ID `939b4a06-cc18-49eb-9674-a1fc041489f6` (multi-tenant, public client) |
-| Azure Application Insights resource | ❌ to be created during Phase 0 implementation |
+| Azure Application Insights resource | ❌ not yet created |

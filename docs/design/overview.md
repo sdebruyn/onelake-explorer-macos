@@ -16,7 +16,7 @@ Settled during product discovery and unchanged since:
 
 ## Tech stack at a glance
 
-- **Go** for the core library, CLI, and daemon. Chosen over Rust for time-to-market — see [Tech stack](../tech-stack.md).
+- **Go** for the core library, CLI, and daemon. See [Tech stack](../tech-stack.md).
 - **Swift** for the macOS host app and File Provider Extension. The Go core ships as a static library and is called over a cgo / C-ABI bridge.
 - **SQLite** (pure-Go `modernc.org/sqlite`, no cgo) for the metadata cache.
 - **MSAL Go** for Microsoft Entra authentication.
@@ -51,11 +51,11 @@ Settled during product discovery and unchanged since:
 └────────────────────────────────┘
 ```
 
-Why three processes:
+What each process does:
 
-- The **host app** holds the auth UI, registers the File Provider domain, and shows the menu-bar status icon. It may be quit by the user.
-- The **File Provider Extension** is sandboxed and short-lived — macOS launches it on demand for each Finder request. It cannot hold network sockets or run scheduled work.
-- The **daemon** handles everything the sandbox blocks: telemetry batching, adaptive polling, the Unix socket the CLI talks to, scheduled cache eviction.
+- The **host app** holds the auth UI, registers the File Provider domain, and shows the menu-bar status icon.
+- The **File Provider Extension** is sandboxed and short-lived — macOS launches it on demand for each Finder request. It implements the `NSFileProvider*` classes and calls into the Go core.
+- The **daemon** runs as a LaunchAgent, batches telemetry, polls Fabric on an adaptive schedule, runs scheduled cache eviction, and holds the Unix socket the CLI talks to.
 
 All three share state through a macOS App Group (`group.dev.debruyn.ofem`): config TOML, the SQLite metadata cache, the cached blob shards, and the per-account Keychain entries.
 
@@ -77,22 +77,18 @@ onelake-explorer-macos/
 │   ├── config/                 # TOML on-disk config under ~/Library/Application Support/dev.debruyn.ofem/
 │   ├── logging/                # slog setup (CLI text vs daemon JSON-to-file)
 │   └── buildinfo/              # link-time version/commit/date/conn-string
-├── apple/                      # Xcode project, host app, File Provider Extension (Phase 1+)
+├── apple/                      # Xcode project, host app, File Provider Extension
 ├── docs/                       # this site's source
 ├── scripts/                    # check-prereqs, seed-labels
 ├── homebrew/                   # cask template (also lives in homebrew-ofem tap)
 └── .github/                    # workflows, issue templates, FUNDING.yml
 ```
 
-## Status today
-
-Phase 0 is implemented and in flight: scaffolding, CI/lint/release tooling, telemetry, auth (foundation + MSAL), Fabric REST + OneLake DFS clients, SQLite metadata + LRU blob cache, sync engine, daemon + LaunchAgent + Unix socket IPC. See [Roadmap](roadmap.md) for the live milestone status and Phase 1+ plans.
-
 ## Where to read more
 
 | Topic | Page |
 |---|---|
-| Why File Provider Extension, alternatives rejected | [macOS integration](../macos-mount.md) |
+| File Provider Extension as the mount mechanism | [macOS integration](../macos-mount.md) |
 | File Provider Extension internals + Swift ↔ Go bridge | [File Provider](../file-provider.md) |
 | Microsoft Entra auth design | [Authentication](../auth.md) |
 | OneLake DFS + Fabric REST APIs | [OneLake APIs](../onelake-api.md) |
