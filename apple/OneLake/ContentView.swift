@@ -77,8 +77,12 @@ struct ContentView: View {
         } catch {
             ContentView.log.error("Could not create \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
-        ContentView.log.info("Opening Finder mount at \(url.path, privacy: .public)")
-        NSWorkspace.shared.open(url)
+        ContentView.log.info("Opening Finder at \(url.path, privacy: .public)")
+        let opened = NSWorkspace.shared.open(url)
+        ContentView.log.info("NSWorkspace.shared.open returned \(opened, privacy: .public)")
+        if !opened {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
     }
 
     /// Calls into the Go core via the cgo bridge to read the linked
