@@ -36,7 +36,9 @@ OFEM — OneLake File Explorer for macOS. Native Finder integration with Microso
 - `gofmt` + `goimports` + `golangci-lint` mandatory.
 - TOML for config files; SQLite for the metadata cache.
 - Bundle ID and config namespace: `dev.debruyn.ofem`. Display name in Finder: `OneLake`.
-- Mount path: `~/OneLake/<alias>/<workspace>/<folder>?/<item>/...`.
+- Mount path on disk: `~/Library/CloudStorage/OneLake-<alias>/<workspace>/<folder>?/<item>/...` (ASCII hyphen, matching OneDrive / Google Drive). macOS picks the parent — File Provider does not let us anchor under `~/OneLake/`; see `docs/file-provider-domain-nesting.md`.
+- Finder sidebar shows each domain by the label macOS composes from `<CFBundleDisplayName>` and `NSFileProviderDomain.displayName` (empirically `OneLake — <alias>` with em-dash, OneDrive-style). The em-dash is **display only**; on disk it stays ASCII.
+- Logical identifier hierarchy (inside the domain): `<alias>/<workspace>/<folder>?/<item>/...`.
 
 ## Where things live
 
@@ -84,6 +86,9 @@ go build -buildmode=c-archive -o build/libofemcore.a ./core
 
 ## Open questions / known unknowns
 
-- Whether `replicatedKnownFolder` API in File Provider lets us nest per-account domains under a single `~/OneLake/` parent — to be answered during Phase 1 design spike.
 - Exact behavior of paused Fabric capacity workspaces on the File Provider domain — italic icon needs API-level confirmation.
 - Whether MSAL Go's cache extensibility plays nicely with the macOS Keychain library we pick — needs a small spike during Phase 0.
+
+## Resolved spikes
+
+- **Nesting per-account domains under one `~/OneLake/` parent.** Not possible. `replicatedKnownFolder` is the iCloud-style Desktop/Documents takeover API (macOS 15+) and not a custom-parent mechanism. Each domain lands at `~/Library/CloudStorage/OneLake-<alias>/`. See `docs/file-provider-domain-nesting.md`.

@@ -79,10 +79,24 @@ What lives in the shared Keychain:
 ## Domain model
 
 OFEM registers **one File Provider domain per account-alias**:
-- `NSFileProviderDomain(identifier: "ofem.work", displayName: "OneLake — work", pathRelativeToDocumentStorage: "work")`.
-- `NSFileProviderDomain(identifier: "ofem.client-a", displayName: "OneLake — client-a", pathRelativeToDocumentStorage: "client-a")`.
+- `NSFileProviderDomain(identifier: "ofem.work", displayName: "work", pathRelativeToDocumentStorage: "work")`.
+- `NSFileProviderDomain(identifier: "ofem.client-a", displayName: "client-a", pathRelativeToDocumentStorage: "client-a")`.
 
-Each domain shows up as a separate Finder sidebar entry. macOS handles the per-domain mount paths automatically; we don't control where in `~/Library/CloudStorage` they materialize. The `replicatedKnownFolder` API may also be used to surface them grouped under a single `~/OneLake/` parent if Apple's API allows.
+We pass the bare alias as `displayName`. macOS constructs the
+on-disk folder as `<CFBundleDisplayName>-<displayName>`, so every
+domain materialises at `~/Library/CloudStorage/OneLake-<alias>/` with
+an ASCII hyphen (matching the OneDrive `OneDrive-<tenant>` and Google
+Drive `GoogleDrive-<email>` conventions — verified by hexdumping real
+installs). The Finder sidebar shows the system-composed label
+(empirically `OneLake — <alias>` with an em-dash for OneDrive-style
+products); we do not pre-join the em-dash into `displayName`, because
+that would double the bundle prefix on disk (`OneLake-OneLake — work`)
+and put a non-ASCII char into a path that shell completion, `grep`,
+and `find` pipelines have to walk. There is no API to group multiple
+domains under one custom parent like `~/OneLake/`. See [domain nesting
+spike](file-provider-domain-nesting.md) for the API surface that was
+investigated, why `replicatedKnownFolders` is the wrong tool, and the
+reasoning behind accepting one Finder entry per account.
 
 ## Item identifiers
 
@@ -229,6 +243,9 @@ release pipeline.
 
 ## Open design questions
 
-- Whether `replicatedKnownFolder` API lets us nest all per-account domains under one `~/OneLake/` parent in Finder, or whether they land separately in `~/Library/CloudStorage/OneLake-<alias>/`.
 - How to handle very large files (>5 GB) — macOS will request range reads; our streaming code must not buffer the entire file.
 - How to communicate "capacity paused" workspace state to the user when File Provider's grayed-out / italic options are limited.
+
+## Resolved design questions
+
+- **Can multiple per-account domains nest under one `~/OneLake/` parent in Finder?** No. See [docs/file-provider-domain-nesting.md](file-provider-domain-nesting.md). Each account lands at `~/Library/CloudStorage/OneLake-<alias>/` and gets its own Finder sidebar entry, matching the OneDrive / Google Drive pattern.

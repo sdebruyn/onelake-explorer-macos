@@ -18,6 +18,7 @@ Microsoft ships a [OneLake File Explorer](https://learn.microsoft.com/fabric/one
 - [Use in Finder](use.md)
 - [Privacy & telemetry](privacy.md)
 - [Architecture overview](design/overview.md) — how it works under the hood
+- [File Provider domain nesting spike](file-provider-domain-nesting.md) — why each account gets its own Finder entry under `~/Library/CloudStorage/`
 - [Contribute](design/contributing.md)
 
 ## Requirements
