@@ -93,7 +93,7 @@ On `AADSTS50076` / `AADSTS50079` / `interaction_required`, the daemon silently r
 1. Removes the Keychain item.
 2. Removes the account from the registry config.
 3. Optionally calls Microsoft's `/oauth2/v2.0/logout` (best effort, no error if it fails).
-4. Removes the account's folder from `~/OneLake/<alias>/` after a confirmation prompt (or `--force`).
+4. Removes the account's folder from `~/Library/CloudStorage/OneLake-<alias>/` (and the matching Finder sidebar entry `OneLake — <alias>`) after a confirmation prompt (or `--force`).
 
 ## Sovereign clouds
 

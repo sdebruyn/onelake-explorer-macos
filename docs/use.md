@@ -1,17 +1,17 @@
 # Use in Finder
 
-Open Finder. You'll see **OneLake** in the sidebar under Locations. Inside:
+Open Finder. Each OneLake account appears as its own entry in the sidebar under **Locations**, named `OneLake — <alias>` (one per account, the same pattern as OneDrive and Google Drive). On disk they live under `~/Library/CloudStorage/`, picked by macOS — File Provider apps don't get to choose the parent folder:
 
 ```
-~/OneLake/
-├── work/
+~/Library/CloudStorage/
+├── OneLake — work/
 │   └── Sales Analytics/
 │       └── BronzeLake.lakehouse/
 │           ├── Files/
 │           │   └── raw/
 │           │       └── 2026-Q2.csv
 │           └── Tables/
-└── client-a/
+└── OneLake — client-a/
     └── ...
 ```
 
@@ -26,7 +26,7 @@ Open Finder. You'll see **OneLake** in the sidebar under Locations. Inside:
 
 ## Multiple accounts
 
-Each account has its own top-level folder under `~/OneLake/`. Different tenants live next to each other — you never need to "switch account".
+Each account gets its own top-level entry in Finder's Locations sidebar (`OneLake — work`, `OneLake — client-a`, …), backed by its own folder under `~/Library/CloudStorage/`. Different tenants live next to each other — you never need to "switch account".
 
 ## What you can't do from Finder
 
