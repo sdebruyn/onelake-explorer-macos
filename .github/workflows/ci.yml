@@ -78,6 +78,34 @@ jobs:
       - name: Smoke test
         run: ./bin/ofem --version
 
+  apple-gen:
+    name: Apple project generation
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew/downloads
+            ~/Library/Caches/Homebrew/api
+          key: brew-${{ runner.os }}-xcodegen-v1
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Bootstrap local xcconfig
+        # CI has no signing identity yet; the sample file is enough to
+        # let xcodegen reference DEVELOPMENT_TEAM without erroring.
+        run: make apple-bootstrap
+
+      - name: Generate Xcode project
+        run: make apple-gen
+
+      - name: Verify project.pbxproj exists
+        run: test -f apple/OneLake.xcodeproj/project.pbxproj
+
   commitlint:
     name: Commitlint
     runs-on: ubuntu-latest

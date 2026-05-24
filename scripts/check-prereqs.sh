@@ -148,6 +148,26 @@ else
     hint "go install golang.org/x/tools/cmd/goimports@latest"
 fi
 
+# xcodegen owns the Xcode project (apple/project.yml); required from Phase 1
+# onwards for `make apple-gen` / `make apple-build`. Treat absence as a warning
+# (not a hard miss) because Phase 0 Go work doesn't need it, but if it *is*
+# installed, compare the version against the 2.40 minimum from
+# docs/prerequisites.md instead of just printing it.
+if command -v xcodegen >/dev/null 2>&1; then
+    xg_ver=$(xcodegen --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+    if [ -z "$xg_ver" ]; then
+        ok "xcodegen installed (version detection failed; assuming OK)"
+    elif version_ge "$xg_ver" "2.40"; then
+        ok "xcodegen $xg_ver (need 2.40+, used by apple-gen/apple-build)"
+    else
+        warn "xcodegen $xg_ver is older than the 2.40+ documented in docs/prerequisites.md"
+        hint "brew upgrade xcodegen"
+    fi
+else
+    warn "xcodegen not installed (needed once you start working on the Phase 1 .app / File Provider Extension)"
+    hint "brew install xcodegen"
+fi
+
 # --- GitHub authentication ---
 
 hdr "GitHub authentication"

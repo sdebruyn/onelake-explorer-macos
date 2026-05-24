@@ -179,6 +179,60 @@ Read path: we never read these from OneLake (they would never be there in the fi
 - Inline editing UI — Finder + the file's default app handle that.
 - Per-file conflict resolution UI — we chose last-write-wins.
 
+## Build flow
+
+The Xcode project is not committed. The source of truth is
+`apple/project.yml`, which [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+turns into `apple/OneLake.xcodeproj`. Keeping the spec as YAML avoids the
+churn and merge conflicts of a hand-maintained `.pbxproj`.
+
+Typical local workflow:
+
+```bash
+# Once, per developer: write apple/Local.xcconfig (gitignored) and put
+# your Apple Developer team ID in it.
+make apple-bootstrap
+
+# After every change to apple/project.yml, or when cloning fresh:
+make apple-gen
+
+# Clean Debug build via xcodebuild (also re-runs apple-gen).
+make apple-build
+
+# Or open the generated project in Xcode for run / debug.
+open apple/OneLake.xcodeproj
+```
+
+The bundled targets are:
+- `OneLake.app` — SwiftUI host application (bundle id `dev.debruyn.ofem`).
+- `OneLakeFileProvider.appex` — embedded File Provider Extension
+  (bundle id `dev.debruyn.ofem.fileprovider`).
+
+Both share the App Group `group.dev.debruyn.ofem` and the matching
+Keychain access group.
+
+The Go core library (`libofemcore.a`) is **not yet linked**. As of this
+PR the extension is a Swift-only stub that returns "no such item" /
+empty enumerators so the bundle loads cleanly and Finder shows an
+empty domain. The cgo bridge — building `libofemcore.a` as a static
+C-archive and exposing it to Swift — lands in the next PR.
+
+### Signing for local vs release
+
+For local dev a **free Apple ID Personal Team** is enough. The
+extension's `com.apple.developer.file-provider.testing-mode = true`
+entitlement is what lets a Personal-Team-signed bundle register a File
+Provider domain on your own Mac without going through the full
+provisioning-profile dance.
+
+For Homebrew cask distribution we need:
+- Apple Developer Program enrollment ($99/yr),
+- a `Developer ID Application` certificate,
+- and notarization via `xcrun notarytool`.
+
+See [docs/packaging-homebrew.md](packaging-homebrew.md) for the full
+release pipeline.
+
 ## Open design questions for MVP design spike
 
 - Whether `replicatedKnownFolder` API lets us nest all per-account domains under one `~/OneLake/` parent in Finder, or whether they land separately in `~/Library/CloudStorage/OneLake-<alias>/`.
