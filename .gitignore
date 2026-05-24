@@ -85,3 +85,6 @@ apple/DerivedData/
 
 # Local signing config — per-developer, not committed
 apple/Local.xcconfig
+
+# cgo bridge build output (libofemcore.a + libofemcore.h)
+apple/build/cgo/
