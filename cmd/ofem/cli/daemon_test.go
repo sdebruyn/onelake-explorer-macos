@@ -86,7 +86,18 @@ func TestDaemonUninstallRemovesPlist(t *testing.T) {
 }
 
 func TestDaemonStartInvokesLaunchctl(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Pre-write a plist so StartLaunchAgent stays on the kickstart fast
+	// path and never falls through to the bootstrap re-load branch.
+	plistDir := filepath.Join(home, "Library", "LaunchAgents")
+	if err := os.MkdirAll(plistDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(plistDir, daemon.LaunchAgentFileName), []byte("stub"), 0o644); err != nil {
+		t.Fatalf("write plist: %v", err)
+	}
+
 	var captured [][]string
 	daemon.SetLaunchctlForTest(t, func(args []string) error {
 		cp := make([]string, len(args))

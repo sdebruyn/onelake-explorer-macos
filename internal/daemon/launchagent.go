@@ -264,12 +264,45 @@ func UninstallLaunchAgent(home string) error {
 	return nil
 }
 
-// StartLaunchAgent kickstarts the agent, restarting it if already
-// running. Useful after `ofem daemon install` to launch the daemon
-// without waiting for the next login.
-func StartLaunchAgent() error {
-	target := launchctlTarget() + "/" + LaunchAgentLabel
-	return launchctlRunner([]string{"kickstart", "-k", target})
+// ErrNotInstalled is returned by StartLaunchAgent/StopLaunchAgent when the
+// LaunchAgent plist is missing or unknown to launchd. The CLI maps this to a
+// friendly "run 'ofem daemon install' first" message instead of leaking the
+// raw launchctl exit code.
+var ErrNotInstalled = errors.New("daemon: LaunchAgent is not installed")
+
+// StartLaunchAgent kickstarts the running daemon. If launchd has
+// forgotten the service (for example after a previous
+// StopLaunchAgent/bootout) but the plist still exists on disk, it is
+// re-bootstrapped and enabled before returning. If the plist itself is
+// missing, [ErrNotInstalled] is returned so the CLI can print a
+// friendly hint rather than leaking a raw launchctl exit code.
+func StartLaunchAgent(home string) error {
+	if home == "" {
+		return errors.New("daemon: home directory is required")
+	}
+	target := launchctlTarget()
+	label := target + "/" + LaunchAgentLabel
+	plistPath := LaunchAgentPlistPath(home)
+	// Fast path: tell launchd to restart the running service.
+	if err := launchctlRunner([]string{"kickstart", "-k", label}); err == nil {
+		return nil
+	} else if !isNotBootstrapped(err) {
+		return err
+	}
+	// Service is unknown to launchd. Re-bootstrap from the on-disk plist.
+	if _, statErr := os.Stat(plistPath); statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			return ErrNotInstalled
+		}
+		return fmt.Errorf("daemon: stat plist: %w", statErr)
+	}
+	if err := launchctlRunner([]string{"bootstrap", target, plistPath}); err != nil {
+		return err
+	}
+	if err := launchctlRunner([]string{"enable", label}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // StopLaunchAgent sends SIGTERM to the running daemon process via
@@ -307,20 +340,24 @@ func isAlreadyBootstrapped(err error) bool {
 }
 
 // isNotBootstrapped recognises the launchctl outcome for "no such
-// service". Treated as a successful no-op by UninstallLaunchAgent.
+// service". Treated as a successful no-op by UninstallLaunchAgent and
+// translated to [ErrNotInstalled] by StartLaunchAgent/StopLaunchAgent.
 // Exit code 113 is the canonical "could not find specified service"
-// from `launchctl bootout` on modern macOS; we still substring-match
-// the descriptive text for older releases.
+// from `launchctl bootout`/`kickstart` on modern macOS; 36 shows up on
+// some macOS releases for the same outcome. We still substring-match
+// the descriptive text so we stay robust across launchctl tweaks.
 func isNotBootstrapped(err error) bool {
 	var le *launchctlError
-	if errors.As(err, &le) && le.ExitCode == 113 {
+	if errors.As(err, &le) && (le.ExitCode == 113 || le.ExitCode == 36) {
 		return true
 	}
 	msg := err.Error()
 	return containsAny(msg, []string{
 		"Could not find specified service",
+		"service not bootstrapped",
 		"No such process",
 		"Boot-out failed: 5",
+		"bootout failed: 5: Input/output error",
 		"not loaded",
 	})
 }

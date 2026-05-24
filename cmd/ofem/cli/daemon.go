@@ -94,7 +94,11 @@ running, launchctl restarts it; if it has crashed, KeepAlive will pick
 it up on its own.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := daemon.StartLaunchAgent(); err != nil {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("resolve home: %w", err)
+			}
+			if err := daemon.StartLaunchAgent(home); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Daemon started")
