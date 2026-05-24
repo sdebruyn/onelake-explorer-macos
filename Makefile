@@ -7,6 +7,9 @@
 #   make fmt         — gofmt + goimports (mutates files in place)
 #   make fmt-check   — read-only gofmt check (fails on unformatted files)
 #   make ci          — fmt-check + lint + test + build (run before pushing)
+#   make docs-cli    — regenerate docs/cli/ from the cobra command tree
+#   make docs        — docs-cli + zensical build (full local docs build)
+#   make docs-serve  — docs-cli + zensical serve (live reload)
 #   make clean       — remove build artifacts
 #
 # Note: `make ci` deliberately uses fmt-check (read-only) so it matches
@@ -29,7 +32,7 @@ LDFLAGS := -s -w \
 	-X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Commit=$(COMMIT) \
 	-X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test lint fmt fmt-check vet tidy ci clean smoke release-snapshot help
+.PHONY: all build test lint fmt fmt-check vet tidy ci clean smoke release-snapshot help docs docs-cli docs-serve
 
 all: ci
 
@@ -78,6 +81,24 @@ clean:
 
 release-snapshot:
 	goreleaser release --snapshot --clean
+
+# --- Docs site (zensical → ofem.debruyn.dev) ---
+#
+# The CLI reference under docs/cli/ is generated from the cobra command
+# tree by `make docs-cli`. The generated files are committed so the
+# Cloudflare Pages build (which only runs zensical, no Go toolchain)
+# stays simple. CI fails on drift — see .github/workflows/ci.yml.
+
+docs-cli:
+	@mkdir -p docs/cli
+	@find docs/cli -maxdepth 1 -type f -name '*.md' -delete
+	go run ./cmd/ofem-docs docs/cli
+
+docs: docs-cli
+	uvx --from 'zensical>=0.0.42' zensical build
+
+docs-serve: docs-cli
+	uvx --from 'zensical>=0.0.42' zensical serve
 
 help:
 	@echo "Targets:"
