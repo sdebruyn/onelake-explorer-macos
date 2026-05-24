@@ -64,10 +64,6 @@ export OFEM_TELEMETRY=0
 
 You can verify with `ofem config get telemetry`.
 
-## Source-built binaries
-
-If you build OFEM yourself (clone the repo and `go build`), the Application Insights connection string is empty by default. That means **telemetry is silently off for source builds** — only the official Homebrew release ships with the embedded connection string. Contributors and forks do not send data to the maintainer's telemetry endpoint.
-
 ## How to inspect what's sent
 
 OFEM logs every telemetry event at debug level. Tail the daemon log to see exactly what's being sent:
