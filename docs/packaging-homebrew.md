@@ -1,12 +1,8 @@
 # Packaging & distribution
 
-## Phase 0 (developer-only)
+OFEM ships as a Homebrew cask of the macOS `.app`.
 
-No distribution. `go build ./cmd/ofem` produces a local binary for development. No Apple Developer artifacts required.
-
-## Phase 1+ — Homebrew cask of the macOS `.app`
-
-### Output artifact
+## Output artifact
 
 A single signed and notarized DMG containing `OneLake.app`. The `.app` bundles:
 - The Swift host app (`OneLake`).
@@ -14,7 +10,7 @@ A single signed and notarized DMG containing `OneLake.app`. The `.app` bundles:
 - The Go CLI binary (`ofem`), embedded at `OneLake.app/Contents/Resources/bin/ofem`.
 - The Go core library is statically linked into the Swift binaries; not shipped separately.
 
-### Build pipeline
+## Build pipeline
 
 ```
         GitHub Actions (runs on macos-15-arm64)
@@ -38,7 +34,7 @@ A single signed and notarized DMG containing `OneLake.app`. The `.app` bundles:
 14. goreleaser bumps homebrew-ofem tap repo with new cask version
 ```
 
-### Homebrew cask
+## Homebrew cask
 
 We maintain a separate tap repository `homebrew-ofem`. The cask:
 
@@ -85,11 +81,11 @@ end
 
 `zap` runs on `brew uninstall --zap ofem` and wipes user data; default `brew uninstall` preserves it.
 
-### Versioning
+## Versioning
 
 CalVer: `YYYY.MM.PATCH` (e.g. `2026.05.1`). A git tag `v2026.05.1` triggers the release pipeline.
 
-### Signing identity and notarization
+## Signing identity and notarization
 
 We need:
 - Apple Developer Program enrollment (~$99/year). Required to obtain code signing certificates.
@@ -100,7 +96,7 @@ We need:
   - `NOTARY_API_KEY_P8` — the contents of the `.p8` private key.
 - A **Provisioning profile** is not required for non-Mac-App-Store distribution; Developer ID signing is sufficient.
 
-### Entitlements
+## Entitlements
 
 `apple/OneLake.entitlements`:
 - `com.apple.security.app-sandbox` = true.
@@ -113,7 +109,7 @@ We need:
 - `com.apple.developer.file-provider.testing-mode` = true (in dev builds only).
 - `NSExtension` plist with `NSExtensionFileProviderSupportedItemActions` enumerated.
 
-### GoReleaser config (`.goreleaser.yaml`)
+## GoReleaser config (`.goreleaser.yaml`)
 
 GoReleaser handles the Go binary part (`ofem` CLI) and Release upload. The Xcode part is a separate workflow step that produces the DMG which GoReleaser then attaches as a release artifact.
 
@@ -153,15 +149,15 @@ brews:
 
 Note: the `brews` block is for the **CLI-only** formula in `homebrew-ofem` (for users who want just the CLI without the full `.app`). The `.app` is shipped via the **cask** which is updated by a separate workflow step.
 
-### Pre-release / beta channel
+## Pre-release / beta channel
 
 No formal beta tap. Pre-release versions are tagged like `v2026.05.0-rc.1` and GoReleaser marks the GitHub Release as "prerelease". Users who want to try them download the DMG directly from the Releases page. Stable installs via Homebrew see only stable tags.
 
-### Update mechanism
+## Update mechanism
 
 `brew upgrade --cask ofem`. No in-app update check; no Sparkle. The daemon logs the running version on startup so users can compare against `brew info ofem` output.
 
-### Uninstall
+## Uninstall
 
 ```bash
 brew uninstall --cask ofem          # removes app, keeps data
@@ -170,7 +166,7 @@ brew uninstall --cask --zap ofem    # removes app + all user data
 
 The `uninstall launchctl:` directive in the cask stops the daemon. The `app` directive removes `OneLake.app`. `zap` removes everything else.
 
-### Local development distribution
+## Local development distribution
 
 For pre-release dogfooding, developers can run `./scripts/build-local.sh` which:
 1. Builds the Go binary (no codesigning).
