@@ -6,7 +6,7 @@
 - Support **multiple accounts in multiple tenants simultaneously**.
 - Get tokens with the audience that OneLake DFS and the Fabric REST API both accept: `https://storage.azure.com/`.
 - Cache tokens persistently across daemon restarts using the macOS Keychain.
-- Handle token refresh transparently; surface re-auth requests minimally (per Sam's preference for non-intrusive UX).
+- Handle token refresh transparently; surface re-auth requests minimally (per OFEM's preference for non-intrusive UX).
 - Public cloud only in MVP.
 
 ## Microsoft Entra App Registration
@@ -88,7 +88,7 @@ On every OneLake request:
 
 ## Conditional Access / MFA challenges
 
-Per Sam's preference: **silent retry on a fixed interval (30 minutes for `AADSTS50076` / `AADSTS50079` / `interaction_required`), plus a menu bar error indicator**. No macOS notification.
+By project preference: **silent retry on a fixed interval (30 minutes for `AADSTS50076` / `AADSTS50079` / `interaction_required`), plus a menu bar error indicator**. No macOS notification.
 
 Rationale: data engineers are used to seeing the "click to re-auth" pattern in many tools and would rather have a quiet UI than a poking notification.
 
@@ -113,4 +113,4 @@ Out of scope for MVP. Architecturally we keep the authority host configurable pe
 - **Random port** for localhost redirect avoids collisions and reduces attack surface vs. a fixed well-known port.
 - **Refresh tokens** are stored in Keychain, scoped per account; they cannot be exported via the CLI.
 - **No token printing**: even `ofem debug` commands never echo tokens.
-- The Entra App Registration is owned by Sam; users only consent to delegated permissions and can revoke at any time via [https://myapplications.microsoft.com](https://myapplications.microsoft.com).
+- The Entra App Registration is owned by the project maintainer; users only consent to delegated permissions and can revoke at any time via [https://myapplications.microsoft.com](https://myapplications.microsoft.com).

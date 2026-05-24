@@ -114,7 +114,7 @@ A user double-clicks a folder in Finder. macOS calls `enumerator(for: containerI
 3. If `<accountAlias>/<workspaceGUID>` → call Fabric REST `GET /workspaces/{id}/items` + `GET /workspaces/{id}/folders`, return items + folders.
 4. If `<accountAlias>/<workspaceGUID>/<itemGUID>/<path>` → call OneLake DFS `GET /{workspaceGUID}/{itemGUID}/{path}?resource=filesystem&recursive=false`, return files + folders.
 
-Results are cached in SQLite with a TTL appropriate for the level (30 seconds for currently-open folders, 5 minutes for the rest, per Sam's adaptive polling decision).
+Results are cached in SQLite with a TTL appropriate for the level (30 seconds for currently-open folders, 5 minutes for the rest, per the project's adaptive polling decision).
 
 ## Working set updates
 
@@ -154,7 +154,7 @@ When the user saves a modified file, macOS calls `createItem` or `modifyItem`. O
 
 ## Conflict resolution
 
-Per Sam's choice: **last-write-wins on mtime**. If our extension is asked to upload a file whose remote version has a newer mtime than the local base version, we still upload. No conflict copy.
+By project choice: **last-write-wins on mtime**. If our extension is asked to upload a file whose remote version has a newer mtime than the local base version, we still upload. No conflict copy.
 
 This is implemented entirely in the upload path — we don't read remote-then-merge; we just `PUT`.
 

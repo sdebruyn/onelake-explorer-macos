@@ -43,7 +43,7 @@ A phased roadmap from empty repo to a polished, signed, notarized `OneLake.app` 
 | 1.13 | Signing + notarization in GitHub Actions; DMG via `create-dmg` |
 | 1.14 | `homebrew-ofem` tap; cask formula; GoReleaser hookup |
 | 1.15 | First-run disclosure; `ofem config set telemetry off` works |
-| 1.16 | Beta testing on Sam's own Macs + 2-3 willing volunteers |
+| 1.16 | Beta testing on the maintainer's own Macs + 2-3 willing volunteers |
 | 1.17 | Tag `v2026.MM.1`; first public release; README badges go green |
 
 **Exit criteria**: `brew install --cask ofem` on a clean Mac succeeds; `ofem login`; OneLake appears in Finder with all configured accounts; opening, editing, creating, deleting files all work and round-trip to OneLake. App Insights shows events from external installs.
@@ -60,7 +60,7 @@ A phased roadmap from empty repo to a polished, signed, notarized `OneLake.app` 
 | 2.2 | Menu bar status icon (`NSStatusItem`): sync state, recent activity, pause/resume, open Finder, open settings, quit |
 | 2.3 | First-run guided flow in the host app instead of CLI |
 | 2.4 | Settings screen: telemetry toggle, cache max size, parallelism, log level |
-| 2.5 | macOS notification on certain error classes (configurable; default off per Sam's preference) |
+| 2.5 | macOS notification on certain error classes (configurable; default off per the project's non-intrusive-UX preference) |
 
 **Exit criteria**: a non-technical user can install OFEM, sign in, and use OneLake in Finder without ever touching Terminal.
 
@@ -90,7 +90,7 @@ These don't fit neatly into one phase:
 - **Telemetry analysis**: review App Insights weekly for top errors, adoption by tenant, version uptake. Inform roadmap prioritization.
 - **Security**: respond to GitHub Private Security Advisories within 72 hours. Quarterly dependency audit (`govulncheck`, `gh dependabot alerts`).
 - **Releases**: tag-based via GitHub Actions. CalVer `YYYY.MM.PATCH`. No fixed cadence; release when meaningful change accumulated.
-- **Issue triage**: weekly. Issues are the public roadmap (Sam's choice over a separate roadmap doc).
+- **Issue triage**: weekly. Issues are the public roadmap (chosen over a separate roadmap doc).
 
 ## What is explicitly **out of scope** for the foreseeable future
 
@@ -113,6 +113,6 @@ These may be revisited if there is real user demand expressed in Issues, but the
 | Apple changes File Provider API in a way that breaks us | Medium | Medium | Pin tested macOS versions in CI; monitor WWDC announcements |
 | OneLake API breaks compatibility | Low | High | Nightly integration tests catch drift; pin Fabric API version explicitly |
 | MSAL Go deprecated or replaced | Low | Medium | We use a thin wrapper, can swap to azidentity |
-| Sam's time runs out | Always | High | Build for sustained low-effort maintenance; encourage contributors via clear CONTRIBUTING.md |
+| Maintainer time runs out | Always | High | Build for sustained low-effort maintenance; encourage contributors via clear CONTRIBUTING.md |
 | Code-signing certificate expires mid-release | Medium | Medium | Renew 60 days before expiry; document renewal in `docs/release-runbook.md` (to be written) |
 | App Insights free tier exceeded | Low | Low | Sampling rules; rotate to higher tier with sponsor money if it happens |
