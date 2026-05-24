@@ -226,7 +226,7 @@ func TestSweepPausedWorkspaces_ProbesEachPausedRow(t *testing.T) {
 	})
 	_ = f.cache.SetWorkspaceStatus(ctx, cache.WorkspaceStatus{
 		AccountAlias: testAlias, WorkspaceID: "ws-active",
-		State: cache.WorkspaceStateActive,
+		State:      cache.WorkspaceStateActive,
 		DetectedAt: seedTime,
 	})
 
@@ -257,21 +257,78 @@ func TestSweepPausedWorkspaces_ProbesEachPausedRow(t *testing.T) {
 	}
 }
 
-// TestExtractErrorCode covers the JSON helper in isolation.
+// TestExtractErrorCode covers the JSON helper in isolation. The
+// helper lowercases its input internally so the test exercises both
+// lower-case AND mixed-case inputs to assert the case-insensitivity
+// contract.
 func TestExtractErrorCode(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{`{"errorcode":"CapacityPaused"}`, "CapacityPaused"},
-		{`{ "errorcode" :  "X" }`, "X"},
+		{`{"errorcode":"CapacityPaused"}`, "capacitypaused"},
+		{`{ "errorcode" :  "X" }`, "x"},
 		{`{"errorcode":  "spaces"}`, "spaces"},
 		{`{"message":"no code"}`, ""},
 		{``, ""},
+		// Mixed case must now work without the caller pre-lowercasing:
+		{`{"errorCode":"CapacityPaused"}`, "capacitypaused"},
+		{`{"ERRORCODE":"CapacityNotActive"}`, "capacitynotactive"},
 	}
 	for _, c := range cases {
-		got := extractErrorCode(strings.ToLower(c.in))
-		if got != strings.ToLower(c.want) {
+		got := extractErrorCode(c.in)
+		if got != c.want {
 			t.Errorf("extractErrorCode(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestDrainOfflineQueue_KeepsRestOnMidFailure verifies the FIFO
+// ordering invariant under a mid-drain failure: when entry 2 of 3
+// fails to upload, entries 2 and 3 must remain in the queue (in that
+// order) so a follow-up drain re-tries from the failed entry rather
+// than skipping it. Closes the sad-path coverage gap on
+// drainOfflineQueue from review item LOW-9.
+func TestDrainOfflineQueue_KeepsRestOnMidFailure(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+
+	// Seed the queue with three entries; the second one's upload will
+	// fail because we register a 403 responder for its path.
+	k1 := cache.Key{AccountAlias: "a", WorkspaceID: "w", ItemID: "i", Path: "Files/q1.txt"}
+	k2 := cache.Key{AccountAlias: "a", WorkspaceID: "w", ItemID: "i", Path: "Files/q2.txt"}
+	k3 := cache.Key{AccountAlias: "a", WorkspaceID: "w", ItemID: "i", Path: "Files/q3.txt"}
+	for _, k := range []cache.Key{k1, k2, k3} {
+		if err := f.engine.enqueueOfflineUpload(ctx, k, strings.NewReader("xx"), 2); err != nil {
+			t.Fatalf("enqueue %s: %v", k.Path, err)
+		}
+	}
+	if got := f.engine.queueDepth(); got != 3 {
+		t.Fatalf("queue depth before drain = %d, want 3", got)
+	}
+
+	httpmock.RegisterResponder("PUT", "=~^"+testOneLakeBase+`.*`,
+		func(req *http.Request) (*http.Response, error) {
+			if strings.Contains(req.URL.Path, "q2.txt") {
+				return httpmock.NewStringResponse(403, "denied"), nil
+			}
+			return httpmock.NewStringResponse(201, ""), nil
+		})
+	httpmock.RegisterResponder("PATCH", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(202, ""))
+	httpmock.RegisterResponder("HEAD", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(200, ""))
+
+	f.engine.drainOfflineQueue(ctx)
+
+	// k1 succeeded → removed; k2 failed → kept; k3 still queued behind k2.
+	if got := f.engine.queueDepth(); got != 2 {
+		t.Errorf("queue depth after partial drain = %d, want 2 (k2 + k3)", got)
+	}
+	// FIFO check: head must be k2.
+	f.engine.queueMu.Lock()
+	head := f.engine.queue[0].key
+	f.engine.queueMu.Unlock()
+	if head != k2 {
+		t.Errorf("queue head = %+v, want %+v (FIFO preserved)", head, k2)
 	}
 }

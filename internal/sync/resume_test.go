@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -241,6 +242,46 @@ func TestOpen_PartialResume_EtagChanged(t *testing.T) {
 	}
 	if _, err := os.Stat(partialEtagFor(k)); !os.IsNotExist(err) {
 		t.Errorf("partial-spill etag survived: stat err = %v", err)
+	}
+}
+
+// TestFinalisePartial_SHAMismatchDiscardsAll verifies the
+// belt-and-suspenders SHA check inside finalisePartial. If the
+// assembled bytes do not hash to the expected SHA, the spill AND its
+// etag sidecar are discarded — so the next attempt does not pick up
+// where the bogus partial left off. This is the second line of
+// defence behind If-Match in case a server ignores If-Match on GET.
+func TestFinalisePartial_SHAMismatchDiscardsAll(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+	k := cache.Key{AccountAlias: "a", WorkspaceID: "w", ItemID: "i", Path: "Files/sha.bin"}
+
+	// Stage spill + etag sidecar so we can assert they get cleaned up.
+	if err := os.MkdirAll(filepath.Dir(partialFor(k)), 0o700); err != nil {
+		t.Fatalf("mkdir partials: %v", err)
+	}
+	if err := os.WriteFile(partialFor(k), []byte("HALF"), 0o600); err != nil {
+		t.Fatalf("write spill: %v", err)
+	}
+	if err := storePartialEtag(k, "etag-x"); err != nil {
+		t.Fatalf("store etag: %v", err)
+	}
+	t.Cleanup(func() { discardPartial(k) })
+
+	// We tell finalisePartial to append "rest" (4 bytes) so the total
+	// matches expectedTotal=8. expectedSHA is a wrong hash → must fail.
+	_, _, err := f.engine.finalisePartial(ctx, k, strings.NewReader("rest"), 8, 4, "0000000000000000000000000000000000000000000000000000000000000000")
+	if err == nil {
+		t.Fatal("finalisePartial: want SHA mismatch error, got nil")
+	}
+	if !strings.Contains(err.Error(), "sha mismatch") {
+		t.Errorf("err = %v, want sha mismatch", err)
+	}
+	if _, serr := os.Stat(partialFor(k)); !os.IsNotExist(serr) {
+		t.Errorf("partial spill survived SHA mismatch: stat err = %v", serr)
+	}
+	if _, serr := os.Stat(partialEtagFor(k)); !os.IsNotExist(serr) {
+		t.Errorf("partial etag sidecar survived SHA mismatch: stat err = %v", serr)
 	}
 }
 

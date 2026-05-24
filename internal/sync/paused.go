@@ -80,9 +80,13 @@ func IsPausedCapacityError(err error) bool {
 
 // extractErrorCode pulls the value of a JSON `"errorCode": "<v>"` field
 // from body. It tolerates extra whitespace and the surrounding object.
-// Returns "" when the field is absent. Body is expected to be
-// lower-cased by the caller for case-insensitive matching.
+// Returns "" when the field is absent.
+//
+// The function lowercases its input on entry so callers do not have to
+// preserve a "lowercase the body first" contract — a future caller
+// that forgets the convention would otherwise miss the JSON key.
 func extractErrorCode(body string) string {
+	body = strings.ToLower(body)
 	const key = `"errorcode"`
 	idx := strings.Index(body, key)
 	if idx < 0 {
