@@ -21,6 +21,7 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/api"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpretry"
 )
 
 // defaultBaseURL is the canonical Fabric REST endpoint. Override via
@@ -35,7 +36,7 @@ const defaultBaseURL = "https://api.fabric.microsoft.com"
 // control, never a fixed wall-clock budget.
 const defaultResponseHeaderTimeout = 30 * time.Second
 
-// defaultMaxAttempts is how many times api.Do retries a single request.
+// defaultMaxAttempts is how many times [httpretry.Do] retries a single request.
 const defaultMaxAttempts = 4
 
 // maxPaginationPages caps how many pages listAllPages will walk before
@@ -57,7 +58,7 @@ type Options struct {
 	// MaxAttempts caps retries for 429 / 5xx. Default 4.
 	MaxAttempts int
 	// Registry, when non-nil, plumbs every round trip (including each
-	// retry from internal/api.Do) through the per-host gate for Fabric.
+	// retry from [httpretry.Do]) through the per-host gate for Fabric.
 	// Without a registry the client is unrate-limited - acceptable for
 	// unit tests but not for the daemon, which always wires one in.
 	Registry *httpgate.Registry
@@ -85,7 +86,7 @@ func New(opts Options) *Client {
 	}
 	if opts.Registry != nil {
 		// Wrap the existing http.Client so every retry attempt issued by
-		// internal/api.Do (and any peer goroutine) shares the same
+		// [httpretry.Do] (and any peer goroutine) shares the same
 		// per-host pause window and QPS budget.
 		c.http = httpgate.Wrap(c.http, opts.Registry)
 	}
@@ -331,5 +332,5 @@ func (c *Client) doJSON(ctx context.Context, alias, method, pathAndQuery string,
 	}
 
 	slog.Debug("fabric: request", "method", method, "path", pathAndQuery)
-	return api.Do(ctx, c.http, req, c.maxAttempts)
+	return httpretry.Do(ctx, c.http, req, httpretry.Policy{MaxAttempts: c.maxAttempts})
 }
