@@ -79,10 +79,24 @@ What lives in the shared Keychain:
 ## Domain model
 
 OFEM registers **one File Provider domain per account-alias**:
-- `NSFileProviderDomain(identifier: "ofem.work", displayName: "OneLake — work", pathRelativeToDocumentStorage: "work")`.
-- `NSFileProviderDomain(identifier: "ofem.client-a", displayName: "OneLake — client-a", pathRelativeToDocumentStorage: "client-a")`.
+- `NSFileProviderDomain(identifier: "ofem.work", displayName: "work", pathRelativeToDocumentStorage: "work")`.
+- `NSFileProviderDomain(identifier: "ofem.client-a", displayName: "client-a", pathRelativeToDocumentStorage: "client-a")`.
 
-Each domain shows up as a separate Finder sidebar entry — `OneLake — work`, `OneLake — client-a`, etc. macOS picks the on-disk path: every domain materialises at `~/Library/CloudStorage/OneLake-<alias>/` and there is no API to group multiple domains under one custom parent like `~/OneLake/`. See [domain nesting spike](file-provider-domain-nesting.md) for the API surface that was investigated, why `replicatedKnownFolders` is the wrong tool, and the reasoning behind accepting one Finder entry per account.
+We pass the bare alias as `displayName`. macOS constructs the
+on-disk folder as `<CFBundleDisplayName>-<displayName>`, so every
+domain materialises at `~/Library/CloudStorage/OneLake-<alias>/` with
+an ASCII hyphen (matching the OneDrive `OneDrive-<tenant>` and Google
+Drive `GoogleDrive-<email>` conventions — verified by hexdumping real
+installs). The Finder sidebar shows the system-composed label
+(empirically `OneLake — <alias>` with an em-dash for OneDrive-style
+products); we do not pre-join the em-dash into `displayName`, because
+that would double the bundle prefix on disk (`OneLake-OneLake — work`)
+and put a non-ASCII char into a path that shell completion, `grep`,
+and `find` pipelines have to walk. There is no API to group multiple
+domains under one custom parent like `~/OneLake/`. See [domain nesting
+spike](file-provider-domain-nesting.md) for the API surface that was
+investigated, why `replicatedKnownFolders` is the wrong tool, and the
+reasoning behind accepting one Finder entry per account.
 
 ## Item identifiers
 
