@@ -1,5 +1,5 @@
 // Package cli wires together the cobra command tree for the ofem binary.
-// Each command lives in its own file (account.go, mount.go, ...).
+// Each command lives in its own file (account.go, daemon.go, ...).
 package cli
 
 import (
@@ -23,7 +23,6 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newAccountCmd())
 	root.AddCommand(newLoginCmd())
-	root.AddCommand(newMountCmd())
 	root.AddCommand(newStatusCmd())
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newDaemonCmd())

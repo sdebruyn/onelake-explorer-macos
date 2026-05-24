@@ -17,7 +17,7 @@ func TestRootHelp(t *testing.T) {
 		t.Fatalf("execute --help: %v", err)
 	}
 	out := buf.String()
-	for _, want := range []string{"OneLake File Explorer", "login", "account", "mount", "status", "config", "daemon"} {
+	for _, want := range []string{"OneLake File Explorer", "login", "account", "status", "config", "daemon"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("--help output missing %q\nfull output:\n%s", want, out)
 		}
