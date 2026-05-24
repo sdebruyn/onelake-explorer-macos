@@ -309,3 +309,96 @@ func TestDelete_DropsBlobWhenLastReference(t *testing.T) {
 		t.Errorf("blob still on disk after Delete: %v", err)
 	}
 }
+
+func TestDiskUsage_EmptyCacheIsZero(t *testing.T) {
+	t.Parallel()
+	c := newCache(t)
+	count, n, err := c.DiskUsage(context.Background())
+	if err != nil {
+		t.Fatalf("DiskUsage: %v", err)
+	}
+	if count != 0 || n != 0 {
+		t.Fatalf("expected (0, 0), got (%d, %d)", count, n)
+	}
+}
+
+func TestDiskUsage_CountsBlobsOnly(t *testing.T) {
+	t.Parallel()
+	c := newCache(t)
+	ctx := context.Background()
+
+	for i, payload := range [][]byte{[]byte("one"), []byte("two-bytes"), []byte("three-bytes!")} {
+		if _, _, err := c.StoreBlob(ctx, bytes.NewReader(payload)); err != nil {
+			t.Fatalf("StoreBlob %d: %v", i, err)
+		}
+	}
+
+	count, n, err := c.DiskUsage(ctx)
+	if err != nil {
+		t.Fatalf("DiskUsage: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want 3", count)
+	}
+	want := int64(len("one") + len("two-bytes") + len("three-bytes!"))
+	if n != want {
+		t.Errorf("bytes = %d, want %d", n, want)
+	}
+}
+
+func TestWipe_RemovesBlobsAndClearsLinks(t *testing.T) {
+	t.Parallel()
+	c := newCache(t)
+	ctx := context.Background()
+
+	e := sampleEntry()
+	if err := c.Put(ctx, e); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	data := []byte("wipe-me")
+	sha, size, err := c.StoreBlob(ctx, bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("StoreBlob: %v", err)
+	}
+	if err := c.LinkBlob(ctx, e.Key, sha, size); err != nil {
+		t.Fatalf("LinkBlob: %v", err)
+	}
+
+	count, n, err := c.Wipe(ctx)
+	if err != nil {
+		t.Fatalf("Wipe: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1", count)
+	}
+	if n != int64(len(data)) {
+		t.Errorf("bytes = %d, want %d", n, len(data))
+	}
+
+	// Blob file must be gone.
+	_, p := blobShardPath(c.blobRoot, sha)
+	if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("blob still on disk after Wipe: %v", err)
+	}
+
+	// Metadata row survives but with cleared link.
+	got, err := c.Get(ctx, e.Key)
+	if err != nil {
+		t.Fatalf("Get after Wipe: %v", err)
+	}
+	if got.BlobSHA256 != "" || got.BlobSize != 0 {
+		t.Errorf("blob link still set after Wipe: sha=%q size=%d", got.BlobSHA256, got.BlobSize)
+	}
+}
+
+func TestWipe_EmptyCacheReturnsZero(t *testing.T) {
+	t.Parallel()
+	c := newCache(t)
+	count, n, err := c.Wipe(context.Background())
+	if err != nil {
+		t.Fatalf("Wipe: %v", err)
+	}
+	if count != 0 || n != 0 {
+		t.Errorf("expected (0, 0), got (%d, %d)", count, n)
+	}
+}
