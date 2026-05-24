@@ -86,7 +86,7 @@ release:
 brews:
   - name: ofem
     description: OneLake File Explorer CLI for macOS
-    homepage: https://github.com/sdebruyn/onelake-explorer-macos
+    homepage: https://ofem.debruyn.dev
     license: MIT
     repository:
       owner: sdebruyn
