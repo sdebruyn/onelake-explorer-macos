@@ -2,14 +2,7 @@
 
 ## Language: Go for core + CLI, Swift for host app and File Provider Extension
 
-The core library and CLI are written in **Go**. The reasons, specifically:
-
-- **Familiar to the maintainer** — no learning ramp-up before shipping.
-- **Mature Azure stack** — `azidentity` is GA and `msal-go` is the official Microsoft authentication library, so we get first-party support for the auth flows we depend on.
-- **Fast iteration** — sub-second incremental builds keep the inner loop tight on a part-time project.
-- **Statically linkable into Swift via cgo** — `go build -buildmode=c-archive` produces a `.a` plus a C header the Swift host app and File Provider Extension can import directly. No runtime dependency for end users.
-
-The macOS `.app` host and the File Provider Extension must be in Swift (or Objective-C). The Go core ships as a static library (`libofemcore.a`) plus a generated C header (via cgo's `//export` directives) that Swift imports.
+The core library, CLI, and daemon are written in **Go**. The macOS `.app` host and the File Provider Extension are written in **Swift**. The Go core ships as a static library (`libofemcore.a`) plus a generated C header (via cgo's `//export` directives) that Swift imports.
 
 ## Go libraries
 
@@ -73,8 +66,8 @@ The macOS `.app` host and the File Provider Extension must be in Swift (or Objec
 
 ### Host app
 
-- SwiftUI (macOS 14+ baseline) for the account-management UI in Phase 2.
-- [`Sparkle`](https://sparkle-project.org/) is **not** used — updates are Homebrew-only by decision.
+- SwiftUI (macOS 14+ baseline) for the account-management UI.
+- [`Sparkle`](https://sparkle-project.org/) is **not** used — updates are Homebrew-only.
 
 ### File Provider Extension
 
@@ -98,7 +91,7 @@ The macOS `.app` host and the File Provider Extension must be in Swift (or Objec
 
 See [docs/packaging-homebrew.md](packaging-homebrew.md) for the full pipeline.
 
-## Repository layout (planned)
+## Repository layout
 
 ```
 onelake-explorer-macos/

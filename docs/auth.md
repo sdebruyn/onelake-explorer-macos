@@ -6,8 +6,8 @@
 - Support **multiple accounts in multiple tenants simultaneously**.
 - Get tokens with the audience that OneLake DFS and the Fabric REST API both accept: `https://storage.azure.com/`.
 - Cache tokens persistently across daemon restarts using the macOS Keychain.
-- Handle token refresh transparently; surface re-auth requests minimally (per OFEM's preference for non-intrusive UX).
-- Public cloud only in MVP.
+- Handle token refresh transparently; surface re-auth requests through a quiet menu bar indicator rather than system notifications.
+- Microsoft public cloud only.
 
 ## Microsoft Entra App Registration
 
@@ -22,8 +22,6 @@ We register a **multi-tenant public client application** in our own tenant:
 | API permissions | `https://storage.azure.com/user_impersonation` (delegated). Optionally also Fabric Service if needed for admin-search endpoints in later phases. |
 
 The client ID lives in `internal/auth/client.go` as a constant — it is a public identifier, not a secret.
-
-> Why our own registration instead of reusing the Azure CLI client ID (`04b07795-…`)? Branded consent screen ("OneLake File Explorer for macOS" instead of "Microsoft Azure CLI"), clean telemetry attribution, our own scope control, and we don't get caught by tenant policies that specifically block the Azure CLI app.
 
 ## Token acquisition flows
 
@@ -41,8 +39,6 @@ We support two flows, chosen automatically per environment:
    - We poll `/token` every 5 seconds until success, error, or expiry.
 
 Both flows are implemented on top of the Go MSAL library [`github.com/AzureAD/microsoft-authentication-library-for-go`](https://github.com/AzureAD/microsoft-authentication-library-for-go) (`msal-go`). MSAL Go natively supports both flows on a `PublicClientApplication`.
-
-> Why MSAL Go and not the Azure SDK's `azidentity`? `azidentity`'s `InteractiveBrowserCredential` and `DeviceCodeCredential` are convenience wrappers around MSAL anyway, with less control over the cache backend and tenant-switching semantics. For a multi-account / multi-tenant app where we manage `AuthenticationRecord`s explicitly, going to MSAL directly is cleaner.
 
 ## Multi-tenant + multi-account model
 
@@ -74,7 +70,7 @@ MSAL Go uses an in-memory `cache.ExportReplace` interface by default. We impleme
 
 Library: [`github.com/keybase/go-keychain`](https://github.com/keybase/go-keychain) or [`github.com/zalando/go-keyring`](https://github.com/zalando/go-keyring). Both work on macOS without any C dependency.
 
-Keychain access is scoped per-app (via the app's code signature once we have a Developer ID). Until then (Phase 0 dev builds), access is per-user.
+Keychain access is scoped per-app via the app's code signature. Unsigned local development builds get per-user scope.
 
 ## Token refresh and silent acquisition
 
@@ -88,9 +84,7 @@ On every OneLake request:
 
 ## Conditional Access / MFA challenges
 
-By project preference: **silent retry on a fixed interval (30 minutes for `AADSTS50076` / `AADSTS50079` / `interaction_required`), plus a menu bar error indicator**. No macOS notification.
-
-Rationale: data engineers are used to seeing the "click to re-auth" pattern in many tools and would rather have a quiet UI than a poking notification.
+On `AADSTS50076` / `AADSTS50079` / `interaction_required`, the daemon silently retries on a 30 minute interval and surfaces a menu bar error indicator. No macOS notification is posted.
 
 ## Logout / account removal
 
@@ -103,7 +97,7 @@ Rationale: data engineers are used to seeing the "click to re-auth" pattern in m
 
 ## Sovereign clouds
 
-Out of scope for MVP. Architecturally we keep the authority host configurable per account (`authority_host: login.microsoftonline.com` default), so adding US Gov / China / Germany is a config change + endpoint mapping when someone files an issue.
+OFEM targets the Microsoft public cloud. The authority host is kept configurable per account (`authority_host: login.microsoftonline.com` default), so adding US Gov / China / Germany is a config change plus an endpoint mapping.
 
 ## Security considerations
 

@@ -56,14 +56,10 @@ We use the **replication model**, which is what Apple recommends for cloud stora
 └────────────────────────────┘
 ```
 
-Why three processes:
-- The **host app** is what the user opens to manage accounts. It runs unsandboxed enough to talk to the system browser for auth, write to the App Group container, register File Provider domains.
-- The **File Provider Extension** is sandboxed by Apple. It is launched on demand when Finder needs files. It cannot hold long-lived network sockets, cannot do auth flows, and cannot run scheduled background work.
-- The **daemon** is needed for everything the sandbox blocks: long-lived telemetry batching, scheduled cache eviction, the Unix socket the CLI talks to, refresh polling not tied to a specific Finder request.
-
-The host app and daemon are different processes because:
-- The host app may be closed by the user (the menu bar icon doesn't keep it alive).
-- The daemon must keep running regardless, started by LaunchAgent at login.
+What each process does:
+- The **host app** holds the account-management UI, registers File Provider domains, talks to the system browser for auth, and writes to the App Group container.
+- The **File Provider Extension** is sandboxed by Apple. macOS launches it on demand when Finder needs files. It implements the `NSFileProvider*` classes and calls into the Go core via FFI.
+- The **daemon** runs as a LaunchAgent, holds the Unix socket the CLI talks to, batches telemetry, and runs adaptive polling against Fabric.
 
 ## Shared state via App Group
 
@@ -86,9 +82,7 @@ OFEM registers **one File Provider domain per account-alias**:
 - `NSFileProviderDomain(identifier: "ofem.work", displayName: "OneLake — work", pathRelativeToDocumentStorage: "work")`.
 - `NSFileProviderDomain(identifier: "ofem.client-a", displayName: "OneLake — client-a", pathRelativeToDocumentStorage: "client-a")`.
 
-Each domain shows up as a separate Finder sidebar entry. macOS handles the per-domain mount paths automatically; we don't control where in `~/Library/CloudStorage` they materialize. But we can also call `replicatedKnownFolder` API to surface them grouped under a single `~/OneLake/` parent if Apple's API allows — TODO during MVP design spike.
-
-Alternative considered: one global `ofem.main` domain with all accounts as top-level items inside. Rejected: per-domain sync state, per-domain sign-out, per-domain icon ("OneLake — work" tells you what you're looking at) are all easier with per-account domains.
+Each domain shows up as a separate Finder sidebar entry. macOS handles the per-domain mount paths automatically; we don't control where in `~/Library/CloudStorage` they materialize. The `replicatedKnownFolder` API may also be used to surface them grouped under a single `~/OneLake/` parent if Apple's API allows.
 
 ## Item identifiers
 
@@ -114,7 +108,7 @@ A user double-clicks a folder in Finder. macOS calls `enumerator(for: containerI
 3. If `<accountAlias>/<workspaceGUID>` → call Fabric REST `GET /workspaces/{id}/items` + `GET /workspaces/{id}/folders`, return items + folders.
 4. If `<accountAlias>/<workspaceGUID>/<itemGUID>/<path>` → call OneLake DFS `GET /{workspaceGUID}/{itemGUID}/{path}?resource=filesystem&recursive=false`, return files + folders.
 
-Results are cached in SQLite with a TTL appropriate for the level (30 seconds for currently-open folders, 5 minutes for the rest, per the project's adaptive polling decision).
+Results are cached in SQLite with a TTL appropriate for the level: 30 seconds for currently-open folders, 5 minutes for the rest.
 
 ## Working set updates
 
@@ -127,12 +121,8 @@ same JSON-RPC 2.0 protocol the CLI uses on its Unix-domain socket (see
 (0600). The extension cannot reach that socket directly because of its
 sandbox, so its inbound RPCs come over a dedicated XPC service the
 host app registers on the App Group; the daemon brokers between the
-two. The XPC bridge is a Phase 1 deliverable. As of this writing the
-IPC layer wires only the CLI side; the daemon already serves the
-`status`, `account.*`, `config.snapshot` methods that the CLI uses
-today, plus stubs (`sync.refresh`, `mount.list`) for the sync engine
-and File Provider domain enumeration that the next two PRs will fill
-in.
+two. The daemon exposes `status`, `account.*`, `config.snapshot`,
+`sync.refresh`, and `mount.list` methods.
 
 ## Fetching content
 
@@ -154,7 +144,7 @@ When the user saves a modified file, macOS calls `createItem` or `modifyItem`. O
 
 ## Conflict resolution
 
-By project choice: **last-write-wins on mtime**. If our extension is asked to upload a file whose remote version has a newer mtime than the local base version, we still upload. No conflict copy.
+**Last-write-wins on mtime.** If the extension is asked to upload a file whose remote version has a newer mtime than the local base version, it still uploads. No conflict copy.
 
 This is implemented entirely in the upload path — we don't read remote-then-merge; we just `PUT`.
 
@@ -175,9 +165,9 @@ Read path: we never read these from OneLake (they would never be there in the fi
 ## What we do NOT implement
 
 - `documentChanged(forItemAt:)` notifications to the extension — unnecessary in the replication model.
-- Custom thumbnails — let macOS generate them from the cached content.
-- Inline editing UI — Finder + the file's default app handle that.
-- Per-file conflict resolution UI — we chose last-write-wins.
+- Custom thumbnails — macOS generates them from the cached content.
+- Inline editing UI — Finder and the file's default app handle that.
+- Per-file conflict resolution UI — last-write-wins.
 
 ## Build flow
 
@@ -211,29 +201,23 @@ The bundled targets are:
 Both share the App Group `group.dev.debruyn.ofem` and the matching
 Keychain access group.
 
-The Go core library (`libofemcore.a`) is **not yet linked**. As of this
-PR the extension is a Swift-only stub that returns "no such item" /
-empty enumerators so the bundle loads cleanly and Finder shows an
-empty domain. The cgo bridge — building `libofemcore.a` as a static
-C-archive and exposing it to Swift — lands in the next PR.
-
 ### Signing for local vs release
 
-For local dev a **free Apple ID Personal Team** is enough. The
+A free Apple ID Personal Team is enough for local development. The
 extension's `com.apple.developer.file-provider.testing-mode = true`
-entitlement is what lets a Personal-Team-signed bundle register a File
-Provider domain on your own Mac without going through the full
+entitlement lets a Personal-Team-signed bundle register a File Provider
+domain on the developer's own Mac without going through a full
 provisioning-profile dance.
 
-For Homebrew cask distribution we need:
+Homebrew cask distribution requires:
 - Apple Developer Program enrollment ($99/yr),
 - a `Developer ID Application` certificate,
-- and notarization via `xcrun notarytool`.
+- notarization via `xcrun notarytool`.
 
 See [docs/packaging-homebrew.md](packaging-homebrew.md) for the full
 release pipeline.
 
-## Open design questions for MVP design spike
+## Open design questions
 
 - Whether `replicatedKnownFolder` API lets us nest all per-account domains under one `~/OneLake/` parent in Finder, or whether they land separately in `~/Library/CloudStorage/OneLake-<alias>/`.
 - How to handle very large files (>5 GB) — macOS will request range reads; our streaming code must not buffer the entire file.
