@@ -110,7 +110,13 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 		// Network unreachable: rewind the spill and queue the bytes so
 		// the daemon can drain them on the next online window.
 		if IsOfflineError(writeErr) {
-			if rerr := tmp.rewind(); rerr == nil {
+			if rerr := tmp.rewind(); rerr != nil {
+				// Cheap diagnostic: without this an operator has no way
+				// to tell that queuing was even attempted, only that
+				// the upload surfaced its original network error.
+				e.logger.Warn("offline detected but spill rewind failed; skipping queue",
+					slog.String("path", k.Path), slog.Any("err", rerr))
+			} else {
 				qerr := e.enqueueOfflineUpload(ctx, k, tmp.file, size)
 				if qerr == nil {
 					e.track(telemetry.Event{

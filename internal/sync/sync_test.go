@@ -80,6 +80,14 @@ func (s stubTenants) TenantID(alias string) (string, bool) {
 // newEngine builds an engine plumbed through httpmock against both the
 // Fabric REST and OneLake DFS endpoints.
 func newEngine(t *testing.T, opts ...func(*Options)) *engineFixture {
+	return newEngineAt(t, "", opts...)
+}
+
+// newEngineAt builds an engine rooted at the given cache directory.
+// Pass "" to allocate a fresh t.TempDir(); pass a previously-used path
+// to re-open an existing cache (the offline-queue restart tests rely
+// on this to model a daemon crash + restart).
+func newEngineAt(t *testing.T, cacheRoot string, opts ...func(*Options)) *engineFixture {
 	t.Helper()
 
 	httpmock.Activate()
@@ -102,7 +110,10 @@ func newEngine(t *testing.T, opts ...func(*Options)) *engineFixture {
 		MaxAttempts:   2,
 	})
 
-	c, err := cache.Open(cache.Options{Root: t.TempDir()})
+	if cacheRoot == "" {
+		cacheRoot = t.TempDir()
+	}
+	c, err := cache.Open(cache.Options{Root: cacheRoot})
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
