@@ -19,7 +19,7 @@ We register a **multi-tenant public client application** in our own tenant:
 | Supported account types | Accounts in any organizational directory (multi-tenant) |
 | Redirect URI | `http://localhost` (Public client/native) |
 | Allow public client flows | **Yes** |
-| API permissions | `https://storage.azure.com/user_impersonation` (delegated). Optionally also Fabric Service if needed for admin-search endpoints in later phases. |
+| API permissions | `https://storage.azure.com/user_impersonation` (delegated). Optionally Fabric Service for admin-search endpoints. |
 
 The client ID lives in `internal/auth/client.go` as a constant — it is a public identifier, not a secret.
 

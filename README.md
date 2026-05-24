@@ -4,7 +4,7 @@
 
 **Browse Microsoft Fabric OneLake from Finder.** Like OneDrive or Google Drive — but for your data lake. Multiple accounts in multiple tenants, side by side, with a single Homebrew install.
 
-> Pre-release, under active development. Public beta coming soon.
+> Pre-release, under active development.
 
 📖 **Documentation, screenshots and walkthroughs: [ofem.debruyn.dev](https://ofem.debruyn.dev)**
 
