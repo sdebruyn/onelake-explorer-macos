@@ -38,6 +38,7 @@ targets:
         PRODUCT_NAME: OneLake
         INFOPLIST_FILE: OneLake/Info.plist
         CODE_SIGN_ENTITLEMENTS: OneLake/OneLake.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - target: OneLakeFileProvider
         embed: true
