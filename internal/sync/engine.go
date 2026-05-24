@@ -28,6 +28,36 @@
 //
 //   - Every public method emits a telemetry event per docs/telemetry.md.
 //     The macOS-metadata short-circuit emits no telemetry by design.
+//
+// # Throttling layers
+//
+// OFEM gates concurrent traffic at two independent layers and the two
+// must be reasoned about separately:
+//
+//  1. Per-account caps (this package, see concurrency.go). A
+//     perAccountSemaphore caps in-flight Put / Open calls per account
+//     alias. The slot is held for the entire logical operation —
+//     including the chunked PUT/PATCH chain, the LWW retry loop, and
+//     the partial-download resume retries — and released via deferred
+//     `release` exactly once at function exit, even on error paths
+//     (412 storm, ErrLastWriteWinsExhausted, …). This is fairness
+//     between accounts: a misbehaving account cannot starve others.
+//
+//  2. Per-host caps (internal/httpgate, see PR #39). A per-host token
+//     bucket caps the raw HTTP requests OFEM emits against a single
+//     origin. The bucket is consumed for every chunk PUT / PATCH /
+//     GET that goes on the wire and released by the transport when
+//     the response completes. This is origin protection: we never
+//     hammer onelake.dfs.fabric.microsoft.com beyond what the docs
+//     say it tolerates.
+//
+// The two layers compose: a single Put can hold one per-account
+// upload slot AND consume per-host tokens for each chunk in its
+// PUT/PATCH chain. They do not double-count or interlock because
+// they gate orthogonal resources (logical operation vs HTTP request).
+// A 412 storm on one account does not lock per-account slots beyond
+// the deferred release scope and never holds per-host tokens (412
+// responses release the token on receipt).
 package sync
 
 import (
