@@ -21,14 +21,12 @@ import (
 func newDaemonCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "daemon",
-		Short: "Manage the OFEM background daemon (LaunchAgent)",
-		Long: `Manage the OFEM background daemon.
+		Short: "Manage the OFEM background service",
+		Long: `Manage the OFEM background service that keeps OneLake visible in Finder.
 
-The daemon owns the SQLite metadata cache, refreshes Microsoft Entra
-tokens silently, drives the File Provider Extension via XPC, and serves
-local IPC for the CLI and host app. It is normally launched by macOS's
-launchd via the per-user LaunchAgent installed under
-~/Library/LaunchAgents/.`,
+Installed once per Mac, it starts at every login and runs in the background.
+You rarely interact with it directly — use 'ofem daemon install' once after
+your first 'ofem login' and the daemon takes care of the rest.`,
 	}
 	cmd.AddCommand(newDaemonInstallCmd())
 	cmd.AddCommand(newDaemonUninstallCmd())
