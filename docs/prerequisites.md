@@ -46,6 +46,24 @@ For local dogfooding of the `.app`:
 - Xcode 15+ (you already need it).
 - A free Apple ID and **ad-hoc signing** are enough to install the `.app` on your own Mac. Other people cannot install your build without disabling Gatekeeper.
 
+#### Phase 1 tooling
+
+The Xcode project is generated from `apple/project.yml` by XcodeGen, so the
+spec stays human-readable and merge-friendly. The generated `.xcodeproj`
+is gitignored.
+
+| Tool | Minimum version | Recommended | How to install |
+|---|---|---|---|
+| `xcodegen` | 2.40 | latest | `brew install xcodegen` |
+
+Then:
+
+```bash
+make apple-bootstrap   # writes apple/Local.xcconfig (gitignored); edit it
+make apple-gen         # regenerates apple/OneLake.xcodeproj
+make apple-build       # Debug build via xcodebuild
+```
+
 ---
 
 ## Publishing & signing (maintainer / release CI only)
