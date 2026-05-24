@@ -116,5 +116,8 @@ apple-build: apple-gen
 		-derivedDataPath apple/DerivedData \
 		build
 
+# Removes only generated/build artefacts. apple/Local.xcconfig is intentionally
+# preserved: it holds the per-developer DEVELOPMENT_TEAM and is not a build
+# output. Use `make apple-bootstrap` to (re)create it from the .sample.
 apple-clean:
 	rm -rf apple/OneLake.xcodeproj apple/OneLake.xcworkspace apple/build apple/DerivedData

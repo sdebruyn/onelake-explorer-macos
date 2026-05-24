@@ -5,7 +5,6 @@ options:
     macOS: "14.0"
   groupSortPosition: top
   generateEmptyDirectories: true
-  xcodeVersion: "15.0"
 fileGroups:
   - apple/Local.xcconfig.sample
 configs:
@@ -46,7 +45,6 @@ targets:
   OneLakeFileProvider:
     type: app-extension
     platform: macOS
-    productType: com.apple.product-type.app-extension
     sources:
       - path: apple/OneLakeFileProvider
         excludes:
