@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpretry"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/onelake"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/telemetry"
 )
@@ -90,8 +91,28 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 	// response-header metadata (etag, content-length, last-modified,
 	// content-type) alongside the body so we can populate the cache row
 	// without a follow-up HEAD.
-	rangeStart, partial := e.partialRangeStart(ctx, cached)
-	body, props, err := e.onelake.Read(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, rangeStart, -1)
+	//
+	// When a partial-spill is present and pinned to an etag, send the
+	// request with If-Match. If the server signals 412 the partial is
+	// no longer compatible with the live resource — discard everything
+	// and retry once from offset 0.
+	rangeStart, pinnedEtag, partial := e.partialRangeStart(ctx, cached)
+	ifMatch := pinnedEtag
+	body, props, err := e.onelake.ReadWithIfMatch(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, rangeStart, -1, ifMatch)
+	if err != nil {
+		if partial && errors.Is(err, httpretry.ErrPreconditionFailed) {
+			// Remote etag changed between the original GET and this
+			// resume attempt. Trash the partial spill + sidecar and
+			// retry once from scratch.
+			e.logger.Info("resume etag changed; discarding partial and restarting",
+				slog.String("path", k.Path),
+				slog.String("pinned_etag", pinnedEtag))
+			discardPartial(k)
+			rangeStart = 0
+			partial = false
+			body, props, err = e.onelake.ReadWithIfMatch(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, 0, -1, "")
+		}
+	}
 	if err != nil {
 		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, err) {
 			e.track(telemetry.Event{
@@ -114,6 +135,17 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 	}
 	defer func() { _ = body.Close() }()
 
+	// Pin the partial to the response etag so a follow-up resume can
+	// detect remote mutation via If-Match. Best-effort: if the sidecar
+	// write fails, partialRangeStart will refuse the next resume and we
+	// just re-download from offset 0 — safer than a silent stitch.
+	if !partial && props != nil && props.ETag != "" {
+		if serr := storePartialEtag(k, props.ETag); serr != nil {
+			e.logger.Debug("could not write partial etag sidecar",
+				slog.String("path", k.Path), slog.Any("err", serr))
+		}
+	}
+
 	// Pick the expected total from the server-side response when
 	// available (most reliable), falling back to the cached value used
 	// to decide on the Range. The expectedTotal is what finalisePartial
@@ -130,7 +162,17 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 		}
 	}
 
-	sha, size, err := e.finalisePartial(ctx, k, body, expectedTotal, rangeStart)
+	// When the cache row carries a known SHA, ask finalisePartial to
+	// SHA-verify the assembled bytes — this catches the rare case where
+	// size matches by coincidence but the bytes were stitched from
+	// incompatible versions (which If-Match should prevent, but defense
+	// in depth: a server that ignores If-Match on GET would otherwise
+	// silently corrupt the cache).
+	expectedSHA := ""
+	if partial {
+		expectedSHA = cached.BlobSHA256
+	}
+	sha, size, err := e.finalisePartial(ctx, k, body, expectedTotal, rangeStart, expectedSHA)
 	if err != nil {
 		e.track(telemetry.Event{
 			Name:             "file_download",

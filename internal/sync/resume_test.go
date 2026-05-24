@@ -49,7 +49,9 @@ func TestOpen_PartialDownloadResume(t *testing.T) {
 		t.Fatalf("seed cache: %v", err)
 	}
 
-	// Pre-stage a partial-spill on disk equal to the first half.
+	// Pre-stage a partial-spill on disk equal to the first half, plus
+	// an etag sidecar pinning it to the same etag the cache row has.
+	// Without the sidecar, partialRangeStart would refuse to resume.
 	partialPath := partialFor(k)
 	if err := os.MkdirAll(filepath.Dir(partialPath), 0o700); err != nil {
 		t.Fatalf("mkdir partials: %v", err)
@@ -57,24 +59,36 @@ func TestOpen_PartialDownloadResume(t *testing.T) {
 	if err := os.WriteFile(partialPath, full[:half], 0o600); err != nil {
 		t.Fatalf("write partial: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(partialPath) })
+	if err := storePartialEtag(k, "etag-1"); err != nil {
+		t.Fatalf("store partial etag: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(partialPath)
+		_ = os.Remove(partialEtagFor(k))
+	})
 
-	// HEAD: report etag != cached so the cache-hit branch falls through.
+	// HEAD: return the same etag so the engine falls into the cache-
+	// hit fast path; we then need the blob to be missing so we still
+	// fall through to GET. The blob has not been stored yet (we only
+	// seeded the metadata row), so OpenBlob will fail and the engine
+	// loops down to the resume GET.
 	httpmock.RegisterResponder("HEAD", "=~^"+testOneLakeBase+`.*`,
 		func(_ *http.Request) (*http.Response, error) {
 			resp := httpmock.NewStringResponse(200, "")
-			resp.Header.Set("ETag", "etag-2")
+			resp.Header.Set("ETag", "etag-1")
 			resp.Header.Set("Content-Length", strconv.FormatInt(int64(len(full)), 10))
 			return resp, nil
 		})
 
 	var rangeRequested string
+	var ifMatchHdr string
 	httpmock.RegisterResponder("GET", "=~^"+testOneLakeBase+`.*`,
 		func(req *http.Request) (*http.Response, error) {
 			rangeRequested = req.Header.Get("Range")
+			ifMatchHdr = req.Header.Get("If-Match")
 			body := full[half:]
 			resp := httpmock.NewBytesResponse(206, body)
-			resp.Header.Set("ETag", "etag-2")
+			resp.Header.Set("ETag", "etag-1")
 			resp.Header.Set("Content-Length", strconv.FormatInt(int64(len(body)), 10))
 			return resp, nil
 		})
@@ -94,6 +108,9 @@ func TestOpen_PartialDownloadResume(t *testing.T) {
 	if rangeRequested == "" || rangeRequested != "bytes=64-" {
 		t.Errorf("Range header = %q, want bytes=64-", rangeRequested)
 	}
+	if ifMatchHdr != "etag-1" {
+		t.Errorf("If-Match header = %q, want etag-1", ifMatchHdr)
+	}
 
 	row, _ := f.cache.Get(ctx, k)
 	if row.BlobSHA256 != wantSha {
@@ -106,6 +123,124 @@ func TestOpen_PartialDownloadResume(t *testing.T) {
 	// Partial-spill must be cleaned up on success.
 	if _, err := os.Stat(partialPath); !os.IsNotExist(err) {
 		t.Errorf("partial-spill survived a successful Open: stat err = %v", err)
+	}
+}
+
+// TestOpen_PartialResume_EtagChanged covers the HIGH-2 data-integrity
+// scenario: a partial-spill exists pinned to etag-1, but the remote
+// moved to etag-2 between the original GET and the resumed request.
+// The server enforces If-Match by returning 412; the engine must
+// trash the partial AND its sidecar, then re-download the full
+// resource from offset 0. Without this guard the engine would stitch
+// old (etag-1) bytes onto new (etag-2) bytes and store a hybrid blob
+// whose Content-Length matches but whose SHA is meaningless.
+func TestOpen_PartialResume_EtagChanged(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+
+	full := bytes.Repeat([]byte("ABCDEFGH"), 16) // 128 bytes, all "new"
+	half := int64(len(full) / 2)
+
+	k := cache.Key{
+		AccountAlias: testAlias,
+		WorkspaceID:  testWorkspaceID,
+		ItemID:       testItemID,
+		Path:         "Files/changed.bin",
+	}
+
+	// Seed cache row with the old etag and content length.
+	if err := f.cache.Put(ctx, cache.Entry{
+		Key: k, Name: "changed.bin", ParentPath: "Files",
+		ContentLength: int64(len(full)), Etag: "etag-1",
+	}); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	// Stage a partial pinned to etag-1 with the OLD bytes (zeros).
+	old := bytes.Repeat([]byte{0xAA}, int(half))
+	partialPath := partialFor(k)
+	if err := os.MkdirAll(filepath.Dir(partialPath), 0o700); err != nil {
+		t.Fatalf("mkdir partials: %v", err)
+	}
+	if err := os.WriteFile(partialPath, old, 0o600); err != nil {
+		t.Fatalf("write partial: %v", err)
+	}
+	if err := storePartialEtag(k, "etag-1"); err != nil {
+		t.Fatalf("store partial etag: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(partialPath)
+		_ = os.Remove(partialEtagFor(k))
+	})
+
+	httpmock.RegisterResponder("HEAD", "=~^"+testOneLakeBase+`.*`,
+		func(_ *http.Request) (*http.Response, error) {
+			resp := httpmock.NewStringResponse(200, "")
+			resp.Header.Set("ETag", "etag-2")
+			resp.Header.Set("Content-Length", strconv.FormatInt(int64(len(full)), 10))
+			return resp, nil
+		})
+
+	var (
+		gets               atomic.Int32
+		sawIfMatchOnFirst  string
+		sawRangeOnFirst    string
+		sawIfMatchOnSecond string
+		sawRangeOnSecond   string
+	)
+	httpmock.RegisterResponder("GET", "=~^"+testOneLakeBase+`.*`,
+		func(req *http.Request) (*http.Response, error) {
+			n := gets.Add(1)
+			if n == 1 {
+				sawIfMatchOnFirst = req.Header.Get("If-Match")
+				sawRangeOnFirst = req.Header.Get("Range")
+				// Reject the resume because the etag changed.
+				resp := httpmock.NewStringResponse(412, "etag changed")
+				return resp, nil
+			}
+			sawIfMatchOnSecond = req.Header.Get("If-Match")
+			sawRangeOnSecond = req.Header.Get("Range")
+			resp := httpmock.NewBytesResponse(200, full)
+			resp.Header.Set("ETag", "etag-2")
+			resp.Header.Set("Content-Length", strconv.FormatInt(int64(len(full)), 10))
+			return resp, nil
+		})
+
+	rc, err := f.engine.Open(ctx, k)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = rc.Close() }()
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, full) {
+		t.Errorf("body mismatch:\n got %x\nwant %x", got, full)
+	}
+	if sawIfMatchOnFirst != "etag-1" {
+		t.Errorf("first GET If-Match = %q, want etag-1", sawIfMatchOnFirst)
+	}
+	if sawRangeOnFirst == "" {
+		t.Error("first GET should have carried a Range header (resume)")
+	}
+	if sawIfMatchOnSecond != "" {
+		t.Errorf("second GET If-Match = %q, want empty (full re-download)", sawIfMatchOnSecond)
+	}
+	if sawRangeOnSecond != "" {
+		t.Errorf("second GET Range = %q, want empty (full re-download)", sawRangeOnSecond)
+	}
+	if gets.Load() != 2 {
+		t.Errorf("GET calls = %d, want 2 (412 then 200)", gets.Load())
+	}
+
+	// The old partial must be gone: a successful full-download cleans
+	// up after itself.
+	if _, err := os.Stat(partialPath); !os.IsNotExist(err) {
+		t.Errorf("partial-spill survived: stat err = %v", err)
+	}
+	if _, err := os.Stat(partialEtagFor(k)); !os.IsNotExist(err) {
+		t.Errorf("partial-spill etag survived: stat err = %v", err)
 	}
 }
 
