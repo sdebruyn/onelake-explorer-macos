@@ -2,20 +2,12 @@
 
 ## Language: Go for core + CLI, Swift for host app and File Provider Extension
 
-After explicit evaluation of Go vs Rust, we chose **Go**:
+The core library and CLI are written in **Go**. The reasons, specifically:
 
-| Criterion | Go | Rust |
-|---|---|---|
-| Familiar to maintainer | Yes (Sam) | No (would be learning project) |
-| Azure SDK maturity | `azidentity` GA, `msal-go` mature | `azure_identity` preview/beta |
-| MSAL maturity | `msal-go` is the official Microsoft library | Community crates only |
-| Compile time / iteration | Fast | Slow |
-| FFI to Swift | cgo, slightly rough | cbindgen + C-ABI, cleaner |
-| File-provider-like memory safety wins | Limited (GC, race detector helps) | Strong (compile-time guarantees) |
-| Async story | Goroutines, simple | tokio, sharper learning curve |
-| Time to first MVP | Faster | Slower (4-6 weeks ramp-up) |
-
-Rust was the riskier "learning opportunity" path; Go is the safer "ship the product" path. Both can do FUSE-T integration (relevant only if we ever revisit) and FFI to Swift. Sam confirmed Go.
+- **Familiar to the maintainer** — no learning ramp-up before shipping.
+- **Mature Azure stack** — `azidentity` is GA and `msal-go` is the official Microsoft authentication library, so we get first-party support for the auth flows we depend on.
+- **Fast iteration** — sub-second incremental builds keep the inner loop tight on a part-time project.
+- **Statically linkable into Swift via cgo** — `go build -buildmode=c-archive` produces a `.a` plus a C header the Swift host app and File Provider Extension can import directly. No runtime dependency for end users.
 
 The macOS `.app` host and the File Provider Extension must be in Swift (or Objective-C). The Go core ships as a static library (`libofemcore.a`) plus a generated C header (via cgo's `//export` directives) that Swift imports.
 
