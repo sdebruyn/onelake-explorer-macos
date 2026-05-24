@@ -10,6 +10,10 @@ dist/
 *.test
 *.out
 
+# Stray top-level `go build` outputs for cmd/* binaries
+/ofem
+/ofem-docs
+
 # Go workspace
 go.work
 go.work.sum

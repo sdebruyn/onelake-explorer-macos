@@ -78,6 +78,34 @@ jobs:
       - name: Smoke test
         run: ./bin/ofem --version
 
+  docs-cli:
+    name: CLI reference up to date
+    # Line-ending reproducibility note: the generator reads zensical.toml
+    # with os.ReadFile and emits the nav block with bare "\n". A Windows
+    # checkout with core.autocrlf=true would mix CRLF with LF and trip
+    # the diff guard below, but OFEM is macOS-only (see CLAUDE.md hard
+    # constraints + README) so Windows is not a supported dev environment.
+    # CI itself runs on Linux/macOS, so LF stays LF end-to-end.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Regenerate CLI reference
+        run: make docs-cli
+
+      - name: Fail if docs/cli/ or zensical.toml drifted
+        run: |
+          if ! git diff --exit-code -- docs/cli/ zensical.toml; then
+            echo "::error::CLI reference is out of date. Run 'make docs-cli' locally and commit the result."
+            exit 1
+          fi
+
   apple-gen:
     name: Apple project generation
     runs-on: macos-15
