@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 200" width="640" height="200" role="img" aria-label="ofem.">
+  <defs>
+    <radialGradient id="deep" cx="0.3" cy="0.3" r="0.95">
+      <stop offset="0" stop-color="#0078D4"></stop>
+      <stop offset="0.6" stop-color="#1A508B"></stop>
+      <stop offset="1" stop-color="#0F3A6B"></stop>
+    </radialGradient>
+    <radialGradient id="mid" cx="0.3" cy="0.3" r="0.95">
+      <stop offset="0" stop-color="#028FDC"></stop>
+      <stop offset="0.7" stop-color="#0078D4"></stop>
+      <stop offset="1" stop-color="#1A508B"></stop>
+    </radialGradient>
+    <radialGradient id="spark" cx="0.4" cy="0.4" r="0.7">
+      <stop offset="0" stop-color="#A6E0FF"></stop>
+      <stop offset="0.6" stop-color="#5BC5FF"></stop>
+      <stop offset="1" stop-color="#028FDC"></stop>
+    </radialGradient>
+  </defs>
+  
+  <g>
+    <g transform="translate(-8 28) scale(0.7)">
+      <path d="M100 16 C 100 16 36 92 36 130 A 64 64 0 0 0 164 130 C 164 92 100 16 100 16 Z" fill="url(#deep)"></path>
+    </g>
+    <g transform="translate(82 14) scale(0.52)">
+      <path d="M100 16 C 100 16 36 92 36 130 A 64 64 0 0 0 164 130 C 164 92 100 16 100 16 Z" fill="url(#mid)"></path>
+    </g>
+    <g transform="translate(38 102) scale(0.34)">
+      <path d="M100 16 C 100 16 36 92 36 130 A 64 64 0 0 0 164 130 C 164 92 100 16 100 16 Z" fill="url(#spark)"></path>
+    </g>
+  </g>
+  
+  <text x="232" y="132" font-family="Inter Tight, Inter, -apple-system, system-ui, sans-serif" font-weight="600" font-size="112" letter-spacing="-2.2" fill="#0F1822">ofem<tspan fill="#0078D4">.</tspan></text>
+</svg>

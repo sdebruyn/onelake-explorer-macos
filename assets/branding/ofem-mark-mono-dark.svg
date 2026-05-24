@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="OFEM (monochrome dark)">
+  <g fill="#0F1822">
+    <g transform="translate(-8 28) scale(0.7)">
+      <path d="M100 16 C 100 16 36 92 36 130 A 64 64 0 0 0 164 130 C 164 92 100 16 100 16 Z"></path>
+    </g>
+    <g transform="translate(82 14) scale(0.52)" opacity="0.72">
+      <path d="M100 16 C 100 16 36 92 36 130 A 64 64 0 0 0 164 130 C 164 92 100 16 100 16 Z"></path>
+    </g>
+    <g transform="translate(38 102) scale(0.34)" opacity="0.46">
+      <path d="M100 16 C 100 16 36 92 36 130 A 64 64 0 0 0 164 130 C 164 92 100 16 100 16 Z"></path>
+    </g>
+  </g>
+</svg>
