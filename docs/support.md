@@ -2,35 +2,32 @@
 
 ## Bug or feature request
 
-Open an issue: [github.com/sdebruyn/onelake-explorer-macos/issues](https://github.com/sdebruyn/onelake-explorer-macos/issues).
-
-There are templates for bugs and feature requests. Please search first — chances are someone else has hit the same thing.
+[Open an issue.](https://github.com/sdebruyn/onelake-explorer-macos/issues) Templates available for both. Please search first.
 
 ## Security issues
 
-Please do **not** open a public issue. Use [GitHub Private Security Advisories](https://github.com/sdebruyn/onelake-explorer-macos/security/advisories/new) instead. The full security policy is in [SECURITY.md](https://github.com/sdebruyn/onelake-explorer-macos/blob/main/SECURITY.md).
+Please do **not** open a public issue. Use [GitHub Private Security Advisories](https://github.com/sdebruyn/onelake-explorer-macos/security/advisories/new) instead.
 
-## Questions or discussion
+## Questions
 
-[GitHub Discussions](https://github.com/sdebruyn/onelake-explorer-macos/discussions) for anything that isn't a bug or feature request — usage questions, design feedback, "how would I…?".
+[GitHub Discussions](https://github.com/sdebruyn/onelake-explorer-macos/discussions) for anything that isn't a bug or feature request.
 
-## Logs to attach
-
-When filing a bug, please include:
+## When filing a bug, please include
 
 1. `ofem --version` output.
-2. `sw_vers` output.
-3. The relevant slice of `~/Library/Logs/dev.debruyn.ofem/ofem.log` — please redact any sensitive content (workspace names, file paths, tokens).
-4. Steps to reproduce.
+2. `sw_vers` output (macOS version).
+3. Steps to reproduce.
 
 ## Tenant admins
 
-OFEM uses standard Microsoft Entra public-client flows and asks for the `https://storage.azure.com/user_impersonation` scope. If your tenant has a "Block third-party app consent" policy, OFEM requires admin consent the first time a user signs in. The consent screen identifies the app as **OneLake File Explorer for macOS** (Microsoft Entra App Registration is owned by Sam Debruyn).
+OFEM uses a multi-tenant Microsoft Entra public-client App Registration owned by Sam Debruyn ("OneLake File Explorer for macOS"). It asks for the `https://storage.azure.com/user_impersonation` scope — read and write OneLake files, nothing else.
 
-To pre-consent for your whole tenant, an admin can visit `https://login.microsoftonline.com/{tenantId}/adminconsent?client_id=939b4a06-cc18-49eb-9674-a1fc041489f6` and approve.
+To pre-consent for your tenant, an admin can visit:
 
-## SLA and support level
+```
+https://login.microsoftonline.com/{tenantId}/adminconsent?client_id=939b4a06-cc18-49eb-9674-a1fc041489f6
+```
 
-This is a volunteer-maintained open-source project. Best-effort response time on issues is typically within a few days. Critical security issues are prioritised — see [SECURITY.md](https://github.com/sdebruyn/onelake-explorer-macos/blob/main/SECURITY.md) for the SLA on those.
+## Sponsor
 
-If you'd like to sponsor OFEM so maintenance can scale, [GitHub Sponsors](https://github.com/sponsors/sdebruyn) is the right channel.
+OFEM is volunteer-maintained. [GitHub Sponsors](https://github.com/sponsors/sdebruyn) helps cover the Apple Developer Program membership and Azure costs.
