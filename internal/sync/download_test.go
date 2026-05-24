@@ -3,7 +3,9 @@ package sync
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/jarcoal/httpmock"
@@ -266,6 +268,87 @@ func TestOpen_StaleEtagRedownloads(t *testing.T) {
 	got, _ := io.ReadAll(rc)
 	if string(got) != "v2" {
 		t.Errorf("body = %q, want v2 (re-downloaded)", got)
+	}
+}
+
+// TestOpen_OfflineServesStaleBlob covers the MEDIUM-4 fix: when the
+// freshness HEAD fails with an offline-class error (DNS, network
+// unreachable, …) AND the cache has a fully stored blob, Open serves
+// the cached bytes tagged `served_stale_offline` instead of refusing.
+// Consistent with how OneDrive/Dropbox behave offline — a file the
+// user already downloaded yesterday must keep opening with no Wi-Fi.
+func TestOpen_OfflineServesStaleBlob(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+
+	const body = "cached bytes"
+	k := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/offline.txt"}
+
+	// Stage the blob in the cache then link a metadata row to it.
+	sha, _, err := f.cache.StoreBlob(ctx, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("StoreBlob: %v", err)
+	}
+	if err := f.cache.Put(ctx, cache.Entry{
+		Key: k, Name: "offline.txt", ParentPath: "Files",
+		ContentLength: int64(len(body)), Etag: "etag-cached",
+		BlobSHA256: sha, BlobSize: int64(len(body)),
+	}); err != nil {
+		t.Fatalf("seed Put: %v", err)
+	}
+
+	// HEAD fails with a DNS error (the offline classifier recognises this).
+	httpmock.RegisterResponder("HEAD", "=~^"+testOneLakeBase+`.*`,
+		func(_ *http.Request) (*http.Response, error) {
+			return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+		})
+	// GET must NOT be called — we should serve the cached blob without it.
+	httpmock.RegisterResponder("GET", "=~^"+testOneLakeBase+`.*`,
+		func(req *http.Request) (*http.Response, error) {
+			t.Errorf("unexpected GET while offline: %s", req.URL)
+			return httpmock.NewStringResponse(500, ""), nil
+		})
+
+	rc, err := f.engine.Open(ctx, k)
+	if err != nil {
+		t.Fatalf("Open offline with cached blob: want nil, got %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if string(got) != body {
+		t.Errorf("body = %q, want %q", got, body)
+	}
+	if !f.engine.Offline() {
+		t.Error("engine should report Offline()=true after the failed HEAD")
+	}
+
+	events := f.drainEvents(t)
+	ev := findEvent(t, events, "file_download")
+	if ev.ErrorCode != "served_stale_offline" {
+		t.Errorf("errorCode = %q, want served_stale_offline", ev.ErrorCode)
+	}
+	if ev.Success == nil || !*ev.Success {
+		t.Errorf("event success = %v, want true", ev.Success)
+	}
+}
+
+// TestOpen_OfflineWithoutCachedBlob confirms the asymmetric guard:
+// when offline AND no cached blob exists, Open surfaces the offline
+// error rather than fabricating a response.
+func TestOpen_OfflineWithoutCachedBlob(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+
+	k := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/missing.txt"}
+
+	httpmock.RegisterResponder("GET", "=~^"+testOneLakeBase+`.*`,
+		func(_ *http.Request) (*http.Response, error) {
+			return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+		})
+
+	_, err := f.engine.Open(ctx, k)
+	if err == nil {
+		t.Fatal("Open offline with no cache: want error, got nil")
 	}
 }
 

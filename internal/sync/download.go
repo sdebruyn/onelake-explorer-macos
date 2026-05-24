@@ -28,9 +28,20 @@ import (
 // straight off the GET response, so the row is fully populated and a
 // follow-up Open hits the cache-fresh fast path.
 //
+// Offline semantics: when the freshness HEAD fails with an
+// IsOfflineError AND the cache row carries a fully stored blob
+// (BlobSHA256 non-empty), Open returns the cached bytes tagged
+// `served_stale_offline` rather than failing. This mirrors how
+// OneDrive/Dropbox behave offline: a cached file the user already
+// downloaded yesterday must keep opening from a coffee shop with no
+// Wi-Fi. When the cache only holds a partial-spill (no BlobSHA256),
+// or holds nothing at all, the offline error stays — we won't fake
+// data that was never fully cached.
+//
 // Telemetry: emits file_download with durationMs, success, and
 // bytesTransferred. Pure cache-hit emits the event with
-// bytesTransferred = 0.
+// bytesTransferred = 0; an offline cache-hit emits with
+// ErrorCode = "served_stale_offline" and Success = true.
 func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 	start := e.now()
 
@@ -57,6 +68,34 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 		fresh, props, err := e.isBlobFresh(ctx, k, cached)
 		switch {
 		case err != nil:
+			// Offline fallback: when the freshness HEAD failed because
+			// the host is offline AND we have a fully stored blob,
+			// serve the stale bytes rather than refusing. This matches
+			// OneDrive/Dropbox behaviour and is the asymmetric mirror
+			// of the offline upload queue: we won't lose the user's
+			// edits, we also won't gate their reads on connectivity.
+			if IsOfflineError(err) {
+				e.observeNetworkResult(err)
+				rc, oerr := e.cache.OpenBlob(ctx, cached.BlobSHA256)
+				if oerr == nil {
+					_ = e.cache.Touch(ctx, k)
+					e.logger.Debug("offline; serving stale cached blob",
+						slog.String("alias", k.AccountAlias),
+						slog.String("path", k.Path))
+					e.track(telemetry.Event{
+						Name:             "file_download",
+						AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
+						DurationMs:       elapsedMs(start, e.now),
+						Success:          boolPtr(true),
+						ErrorCode:        telemetry.SafeErrorCode("served_stale_offline"),
+					})
+					return rc, nil
+				}
+				// Blob row says we have it but the file is gone; fall
+				// through to surface the original offline error.
+				e.logger.Warn("offline and cached blob missing; surfacing original error",
+					slog.String("path", k.Path), slog.Any("err", oerr))
+			}
 			return nil, err
 		case fresh:
 			rc, err := e.cache.OpenBlob(ctx, cached.BlobSHA256)
