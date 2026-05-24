@@ -111,6 +111,16 @@ GoReleaser uses these to auto-generate the release notes on each GitHub Release,
 - Markdown only. No images unless they show something not expressible in text.
 - Use the doc per topic, not a giant README. See existing structure.
 
+### CLI reference (`docs/cli/`)
+
+The CLI reference is generated from the cobra command tree by `cmd/ofem-docs`. When you add or modify a command, flag, or short/long description in `cmd/ofem/cli/`, run:
+
+```bash
+make docs-cli
+```
+
+and commit the regenerated `docs/cli/*.md` files together with the matching nav block in `zensical.toml`. CI runs the same target and fails if the committed files drift from the cobra tree, so the published reference can never go stale. Never hand-edit files under `docs/cli/`.
+
 ## Releasing (maintainer)
 
 ```bash
