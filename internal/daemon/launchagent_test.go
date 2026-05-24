@@ -346,13 +346,34 @@ func TestStartLaunchAgentReturnsErrNotInstalled(t *testing.T) {
 	}
 }
 
-func TestStopLaunchAgentSendsSIGTERM(t *testing.T) {
+func TestStopLaunchAgentBootsOut(t *testing.T) {
 	// No t.Parallel(): launchctlRunner is process-wide global.
 	calls := stubLaunchctl(t, nil)
 	if err := StopLaunchAgent(); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if len(*calls) != 1 || (*calls)[0][0] != "kill" || (*calls)[0][1] != "SIGTERM" {
-		t.Errorf("expected kill SIGTERM call, got %v", *calls)
+	wantTarget := launchctlTarget() + "/" + LaunchAgentLabel
+	if len(*calls) != 1 || (*calls)[0][0] != "bootout" || (*calls)[0][1] != wantTarget {
+		t.Errorf("expected bootout %q call, got %v", wantTarget, *calls)
+	}
+}
+
+func TestStopLaunchAgentReturnsErrNotInstalled(t *testing.T) {
+	// No t.Parallel(): launchctlRunner is process-wide global.
+	stubLaunchctl(t, func(args []string) error {
+		if len(args) > 0 && args[0] == "bootout" {
+			return &launchctlError{
+				Args:     args,
+				ExitCode: 113,
+				Stderr:   "Could not find specified service\n",
+				Err:      errors.New("exit status 113"),
+			}
+		}
+		return nil
+	})
+
+	err := StopLaunchAgent()
+	if !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("expected ErrNotInstalled, got %v", err)
 	}
 }

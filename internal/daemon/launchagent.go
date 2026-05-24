@@ -305,12 +305,21 @@ func StartLaunchAgent(home string) error {
 	return nil
 }
 
-// StopLaunchAgent sends SIGTERM to the running daemon process via
-// launchctl. The agent will respawn because of KeepAlive=true; callers
-// who want a permanent stop should use UninstallLaunchAgent.
+// StopLaunchAgent asks launchd to bootout the daemon. Bootout tells
+// launchd to forget about the service, so KeepAlive=true will not
+// immediately respawn it (which is what `launchctl kill SIGTERM` would
+// have done). The plist file on disk is preserved — use
+// [UninstallLaunchAgent] to remove it. If the service was already not
+// loaded, [ErrNotInstalled] is returned.
 func StopLaunchAgent() error {
 	target := launchctlTarget() + "/" + LaunchAgentLabel
-	return launchctlRunner([]string{"kill", "SIGTERM", target})
+	if err := launchctlRunner([]string{"bootout", target}); err != nil {
+		if isNotBootstrapped(err) {
+			return ErrNotInstalled
+		}
+		return err
+	}
+	return nil
 }
 
 // launchctlTarget returns the gui/<uid> domain string launchctl uses on
