@@ -230,7 +230,7 @@ func TestDefaultClientFactoryRejectsEmptyArguments(t *testing.T) {
 
 func TestDefaultClientFactoryReturnsClient(t *testing.T) {
 	kc := NewMemoryKeychain()
-	c, err := DefaultClientFactory(PlaceholderClientID, "11111111-2222-3333-4444-555555555555", kc, "work")
+	c, err := DefaultClientFactory(EntraClientID, "11111111-2222-3333-4444-555555555555", kc, "work")
 	if err != nil {
 		t.Fatalf("DefaultClientFactory: %v", err)
 	}

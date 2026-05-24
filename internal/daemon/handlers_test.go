@@ -51,7 +51,7 @@ func newTestHandlers(t *testing.T) *Handlers {
 	}
 
 	kc := auth.NewMemoryKeychain()
-	reg := auth.NewRegistry(store, kc, auth.PlaceholderClientID, nil)
+	reg := auth.NewRegistry(store, kc, auth.EntraClientID, nil)
 
 	cacheRoot := filepath.Join(dir, "cache")
 	c, err := cache.Open(cache.Options{Root: cacheRoot, MaxBlobBytes: 1024})

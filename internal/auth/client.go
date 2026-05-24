@@ -1,11 +1,12 @@
 package auth
 
-// PlaceholderClientID is the Microsoft Entra App Registration client ID
-// embedded into source builds. It MUST be replaced with the real OFEM
-// App Registration GUID before the first signed/notarized release.
-// Tracked at https://github.com/sdebruyn/onelake-explorer-macos/issues
-// (label: area:auth).
-const PlaceholderClientID = "00000000-0000-0000-0000-000000000000"
+// EntraClientID is the Microsoft Entra App Registration client ID
+// embedded into OFEM builds. This is the real multi-tenant public-client
+// registration owned by Sam Debruyn (display name
+// "OneLake File Explorer for macOS"), with http://localhost as the
+// redirect URI and "Allow public client flows" enabled. The delegated
+// API permission is Azure Storage / user_impersonation.
+const EntraClientID = "939b4a06-cc18-49eb-9674-a1fc041489f6"
 
 // Scopes is the set of OAuth scopes OFEM requests. The single scope
 // covers both Fabric REST and OneLake DFS (audience storage.azure.com).

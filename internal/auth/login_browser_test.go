@@ -14,7 +14,7 @@ func TestLoginInteractiveRejectsEmptyClientID(t *testing.T) {
 }
 
 func TestLoginInteractiveRejectsNilKeychain(t *testing.T) {
-	_, _, _, err := LoginInteractive(context.Background(), PlaceholderClientID, "", nil)
+	_, _, _, err := LoginInteractive(context.Background(), EntraClientID, "", nil)
 	if err == nil {
 		t.Fatal("expected error for nil keychain")
 	}
@@ -31,7 +31,7 @@ func TestLoginInteractiveCancelsCleanlyOnContextCancel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, _, _, err := LoginInteractive(ctx, PlaceholderClientID, "", NewMemoryKeychain())
+		_, _, _, err := LoginInteractive(ctx, EntraClientID, "", NewMemoryKeychain())
 		done <- err
 	}()
 
