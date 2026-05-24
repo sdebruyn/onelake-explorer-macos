@@ -30,8 +30,9 @@ func newLoginCmd() *cobra.Command {
 By default ofem opens the system browser for an interactive sign-in. Use
 --device-code on machines without a browser (SSH sessions, headless CI).
 After authentication you are prompted for a short alias for the account
-(e.g. "work", "client-a"); pick something memorable because you will use
-it as the path prefix in Finder under ~/OneLake/<alias>/.`,
+(e.g. "work", "client-a"); pick something memorable because it becomes
+the Finder entry "OneLake — <alias>" (on disk:
+~/Library/CloudStorage/OneLake-<alias>/).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runLogin(cmd, loginOptions{
