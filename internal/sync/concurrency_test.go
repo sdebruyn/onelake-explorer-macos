@@ -1,0 +1,213 @@
+package sync
+
+import (
+	"context"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/jarcoal/httpmock"
+
+	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
+)
+
+func TestPerAccountSemaphore_CapEnforced(t *testing.T) {
+	s := newPerAccountSemaphore(3)
+	ctx := context.Background()
+
+	const goroutines = 16
+	var (
+		peak   int32
+		inUse  int32
+		wg     sync.WaitGroup
+		barrier = make(chan struct{})
+	)
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			if err := s.acquire(ctx, "alias-1"); err != nil {
+				t.Errorf("acquire: %v", err)
+				return
+			}
+			n := atomic.AddInt32(&inUse, 1)
+			for {
+				prev := atomic.LoadInt32(&peak)
+				if n <= prev {
+					break
+				}
+				if atomic.CompareAndSwapInt32(&peak, prev, n) {
+					break
+				}
+			}
+			<-barrier
+			atomic.AddInt32(&inUse, -1)
+			s.release("alias-1")
+		}()
+	}
+
+	// Let the spawned goroutines pile up against the cap, then release
+	// them all at once.
+	time.Sleep(50 * time.Millisecond)
+	close(barrier)
+	wg.Wait()
+
+	if peak > 3 {
+		t.Errorf("peak in-flight = %d, want <= 3", peak)
+	}
+}
+
+func TestPerAccountSemaphore_AliasesAreIndependent(t *testing.T) {
+	s := newPerAccountSemaphore(1)
+	ctx := context.Background()
+	if err := s.acquire(ctx, "a"); err != nil {
+		t.Fatalf("acquire a: %v", err)
+	}
+	defer s.release("a")
+	// Another alias must succeed independently.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := s.acquire(ctx, "b"); err != nil {
+			t.Errorf("acquire b: %v", err)
+		}
+		s.release("b")
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("acquire on alias b blocked even though alias a held the only slot")
+	}
+}
+
+func TestPerAccountSemaphore_RespectsContext(t *testing.T) {
+	s := newPerAccountSemaphore(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := s.acquire(ctx, "a"); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer s.release("a")
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.acquire(ctx2, "a") }()
+	cancel2()
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("want ctx.Err(), got nil")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("acquire did not unblock on context cancel")
+	}
+	cancel()
+}
+
+// TestOpen_DownloadConcurrencyCap launches more parallel Opens than
+// the cap and asserts that no more than cap requests ever sit in
+// flight against the mock server.
+func TestOpen_DownloadConcurrencyCap(t *testing.T) {
+	f := newEngine(t, func(o *Options) { o.MaxConcurrentDownloads = 2 })
+	ctx := context.Background()
+
+	var (
+		inFlight int32
+		peak     int32
+		release  = make(chan struct{})
+	)
+	httpmock.RegisterResponder("GET", "=~^"+testOneLakeBase+`.*`,
+		func(req *http.Request) (*http.Response, error) {
+			n := atomic.AddInt32(&inFlight, 1)
+			for {
+				prev := atomic.LoadInt32(&peak)
+				if n <= prev || atomic.CompareAndSwapInt32(&peak, prev, n) {
+					break
+				}
+			}
+			<-release
+			atomic.AddInt32(&inFlight, -1)
+			body := "x"
+			resp := httpmock.NewStringResponse(200, body)
+			resp.Header.Set("ETag", "e")
+			resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+			return resp, nil
+		})
+
+	const n = 6
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			k := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID,
+				Path: "Files/c-" + strings.Repeat("a", i+1) + ".txt"}
+			rc, err := f.engine.Open(ctx, k)
+			if err == nil {
+				_ = rc.Close()
+			}
+			errs <- err
+		}()
+	}
+	// Let the goroutines pile up against the semaphore.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("Open: %v", err)
+		}
+	}
+	if peak > 2 {
+		t.Errorf("peak concurrent GET = %d, want <= 2", peak)
+	}
+}
+
+// TestPut_UploadConcurrencyCap mirrors the download cap assertion on
+// the upload path.
+func TestPut_UploadConcurrencyCap(t *testing.T) {
+	f := newEngine(t, func(o *Options) { o.MaxConcurrentUploads = 2 })
+	ctx := context.Background()
+
+	var inFlight, peak int32
+	release := make(chan struct{})
+	httpmock.RegisterResponder("PUT", "=~^"+testOneLakeBase+`.*`,
+		func(_ *http.Request) (*http.Response, error) {
+			n := atomic.AddInt32(&inFlight, 1)
+			for {
+				prev := atomic.LoadInt32(&peak)
+				if n <= prev || atomic.CompareAndSwapInt32(&peak, prev, n) {
+					break
+				}
+			}
+			<-release
+			atomic.AddInt32(&inFlight, -1)
+			return httpmock.NewStringResponse(201, ""), nil
+		})
+	httpmock.RegisterResponder("PATCH", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(202, ""))
+	httpmock.RegisterResponder("HEAD", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(200, ""))
+
+	const n = 5
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			k := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID,
+				Path: "Files/up-" + strings.Repeat("b", i+1) + ".txt"}
+			errs <- f.engine.Put(ctx, k, strings.NewReader("ok"), 2)
+		}()
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("Put: %v", err)
+		}
+	}
+	if peak > 2 {
+		t.Errorf("peak concurrent PUT = %d, want <= 2", peak)
+	}
+}

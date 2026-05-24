@@ -58,6 +58,15 @@ type NetConfig struct {
 	// MaxConcurrencyPerAccount caps in-flight HTTP requests per account.
 	// Default 4 (conservative; tuned by user preference, see docs/auth.md).
 	MaxConcurrencyPerAccount int `toml:"max_concurrency_per_account"`
+
+	// MaxConcurrentUploadsPerAccount caps parallel sync.Put calls per
+	// account. Default 4. Lower this when running on metered networks.
+	MaxConcurrentUploadsPerAccount int `toml:"max_concurrent_uploads_per_account"`
+
+	// MaxConcurrentDownloadsPerAccount caps parallel sync.Open calls
+	// per account. Default 8. Raise this when Finder users routinely
+	// open many cloud-only files at once.
+	MaxConcurrentDownloadsPerAccount int `toml:"max_concurrent_downloads_per_account"`
 }
 
 // LogConfig controls slog output.
@@ -100,7 +109,9 @@ func Default() File {
 			MaxSizeBytes: 10 * 1024 * 1024 * 1024, // 10 GiB
 		},
 		Net: NetConfig{
-			MaxConcurrencyPerAccount: 4,
+			MaxConcurrencyPerAccount:         4,
+			MaxConcurrentUploadsPerAccount:   4,
+			MaxConcurrentDownloadsPerAccount: 8,
 		},
 		Log: LogConfig{
 			Level: "info",

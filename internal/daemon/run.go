@@ -182,12 +182,14 @@ func Run(ctx context.Context, opts RunOptions) error {
 	fabricClient := fabric.New(fabric.Options{TokenProvider: registry, Registry: gates})
 	onelakeClient := onelake.New(onelake.Options{TokenProvider: registry, Registry: gates})
 	engine, err := sync.New(sync.Options{
-		Cache:     c,
-		Fabric:    fabricClient,
-		OneLake:   onelakeClient,
-		Telemetry: tel,
-		Tenants:   registry,
-		Logger:    logger,
+		Cache:                  c,
+		Fabric:                 fabricClient,
+		OneLake:                onelakeClient,
+		Telemetry:              tel,
+		Tenants:                registry,
+		Logger:                 logger,
+		MaxConcurrentUploads:   cfg.Net.MaxConcurrentUploadsPerAccount,
+		MaxConcurrentDownloads: cfg.Net.MaxConcurrentDownloadsPerAccount,
 	})
 	if err != nil {
 		return fmt.Errorf("daemon: build sync engine: %w", err)
