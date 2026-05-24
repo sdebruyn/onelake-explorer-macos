@@ -12,7 +12,7 @@ Settled during product discovery and unchanged since:
 - **Install via Homebrew cask**.
 - **No external runtime dependency** for end users (no Python, no .NET, no Node). Statically distributable binary.
 - **macOS 14 Sonoma or later on Apple Silicon (arm64) only**.
-- All code, comments, commit messages, PR descriptions in English.
+- **Project communication, code, comments, commit messages, PR descriptions all in English** so anyone can contribute.
 
 ## Tech stack at a glance
 
@@ -20,7 +20,7 @@ Settled during product discovery and unchanged since:
 - **Swift** for the macOS host app and File Provider Extension. The Go core ships as a static library and is called over a cgo / C-ABI bridge.
 - **SQLite** (pure-Go `modernc.org/sqlite`, no cgo) for the metadata cache.
 - **MSAL Go** for Microsoft Entra authentication.
-- **macOS Keychain** for token storage.
+- **macOS Keychain** for token storage (via `zalando/go-keyring`).
 - **Azure Application Insights** for opt-out telemetry.
 - **Homebrew cask** for distribution. **GoReleaser** for the CLI binary; **xcodebuild + codesign + notarytool + create-dmg** for the signed `.app`.
 
@@ -84,14 +84,22 @@ onelake-explorer-macos/
 └── .github/                    # workflows, issue templates, FUNDING.yml
 ```
 
+## Status today
+
+Phase 0 is implemented and in flight: scaffolding, CI/lint/release tooling, telemetry, auth (foundation + MSAL), Fabric REST + OneLake DFS clients, SQLite metadata + LRU blob cache, sync engine, daemon + LaunchAgent + Unix socket IPC. See [Roadmap](roadmap.md) for the live milestone status and Phase 1+ plans.
+
 ## Where to read more
 
 | Topic | Page |
 |---|---|
+| Reference: Microsoft's Windows OneLake File Explorer | [Windows File Explorer](../onelake-file-explorer-windows.md) |
 | Why File Provider Extension, alternatives rejected | [macOS integration](../macos-mount.md) |
 | File Provider Extension internals + Swift ↔ Go bridge | [File Provider](../file-provider.md) |
 | Microsoft Entra auth design | [Authentication](../auth.md) |
 | OneLake DFS + Fabric REST APIs | [OneLake APIs](../onelake-api.md) |
+| Language and library choices | [Tech stack](../tech-stack.md) |
 | Telemetry schema + redaction | [Telemetry](../telemetry.md) |
+| Research that led to the App Insights decision | [Telemetry hosting research](../telemetry-hosting-research.md) |
 | Build, sign, notarize, ship | [Packaging](../packaging-homebrew.md) |
 | Prior art search | [Prior art](../prior-art.md) |
+| Local-dev vs publishing prerequisites | [Prerequisites](../prerequisites.md) |
