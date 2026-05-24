@@ -47,4 +47,4 @@ a handful of debug commands for development.
 Day-to-day usage is in Finder once the daemon is running; the CLI is for
 setup, account management, and troubleshooting.
 
-See https://github.com/sdebruyn/onelake-explorer-macos for documentation.`
+See https://ofem.debruyn.dev for documentation.`
