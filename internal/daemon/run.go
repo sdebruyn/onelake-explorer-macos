@@ -133,7 +133,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if kc == nil {
 		kc = auth.NewKeychain()
 	}
-	registry := auth.NewRegistry(store, kc, auth.PlaceholderClientID, nil)
+	registry := auth.NewRegistry(store, kc, auth.EntraClientID, nil)
 
 	// Telemetry. Init returns a no-op client whenever telemetry is
 	// disabled (env, config flag, or unset connection string) so the

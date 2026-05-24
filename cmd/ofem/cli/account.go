@@ -67,7 +67,7 @@ func newAccountRemoveCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
-			registry := auth.NewRegistry(store, auth.NewKeychain(), auth.PlaceholderClientID, nil)
+			registry := auth.NewRegistry(store, auth.NewKeychain(), auth.EntraClientID, nil)
 			if err := registry.Remove(alias); err != nil {
 				if errors.Is(err, os.ErrNotExist) {
 					return fmt.Errorf("no account with alias %q (try `ofem account list`)", alias)

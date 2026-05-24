@@ -64,7 +64,7 @@ func runLogin(cmd *cobra.Command, opts loginOptions) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 	kc := auth.NewKeychain()
-	registry := auth.NewRegistry(store, kc, auth.PlaceholderClientID, nil)
+	registry := auth.NewRegistry(store, kc, auth.EntraClientID, nil)
 
 	// Cancellable context so ctrl-C during a device-code wait shuts the
 	// flow down rather than leaving MSAL polling forever.
@@ -82,14 +82,14 @@ func runLogin(cmd *cobra.Command, opts loginOptions) error {
 		cacheBytes []byte
 	)
 	if opts.deviceCode {
-		account, _, cacheBytes, err = auth.LoginDeviceCode(ctx, auth.PlaceholderClientID, opts.tenantHint, kc,
+		account, _, cacheBytes, err = auth.LoginDeviceCode(ctx, auth.EntraClientID, opts.tenantHint, kc,
 			func(verificationURL, userCode string, _ time.Time) {
 				fmt.Fprintf(stdout, "To sign in, visit %s and enter the code: %s\n", verificationURL, userCode)
 			},
 		)
 	} else {
 		fmt.Fprintln(stdout, "Opening browser to sign in...")
-		account, _, cacheBytes, err = auth.LoginInteractive(ctx, auth.PlaceholderClientID, opts.tenantHint, kc)
+		account, _, cacheBytes, err = auth.LoginInteractive(ctx, auth.EntraClientID, opts.tenantHint, kc)
 	}
 	if err != nil {
 		return fmt.Errorf("sign in: %w", err)

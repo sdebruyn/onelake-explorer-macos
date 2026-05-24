@@ -34,9 +34,9 @@ type Registry struct {
 // NewRegistry returns a Registry that reads and writes accounts to the
 // given [config.Store] and per-account secrets to the given [Keychain].
 // store and kc must be non-nil. clientID is the Microsoft Entra App
-// Registration GUID; pass [PlaceholderClientID] until a real registration
-// exists. factory builds MSAL clients on demand; pass
-// [DefaultClientFactory] in production code and a stub in tests.
+// Registration GUID; production callers pass [EntraClientID]. factory
+// builds MSAL clients on demand; pass [DefaultClientFactory] in
+// production code and a stub in tests.
 //
 // If factory is nil, [DefaultClientFactory] is used.
 func NewRegistry(store *config.Store, kc Keychain, clientID string, factory ClientFactory) *Registry {

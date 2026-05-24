@@ -57,7 +57,7 @@ For local dogfooding of the `.app`:
 | App Store Connect API key (for notarytool) | included in Developer Program | https://appstoreconnect.apple.com/access/integrations/api → "+" → "Developer" or "Admin" role |
 | App Group identifier `group.dev.debruyn.ofem` | included | https://developer.apple.com/account/resources/identifiers → "+" → App Groups |
 | File Provider entitlement | included | configured per-extension in the `.entitlements` file |
-| Microsoft Entra App Registration | free | https://entra.microsoft.com → App registrations → "+" — see [docs/auth.md](auth.md) for exact settings |
+| Microsoft Entra App Registration | free | ✅ done — client ID `939b4a06-cc18-49eb-9674-a1fc041489f6` ("OneLake File Explorer for macOS", multi-tenant, public client). See [docs/auth.md](auth.md) for the underlying settings. |
 | Azure Application Insights resource (Free tier) | free up to 5 GB/month | https://portal.azure.com → "Application Insights" → "+" → choose Pay-As-You-Go subscription, Free pricing tier |
 | GitHub repository | free | already exists once initial scaffolding is pushed |
 | GitHub Actions secrets (set on the repo) | free | see below |
@@ -129,5 +129,5 @@ A reference snapshot from Sam's machine at the time of writing:
 | `create-dmg` (publish only) | ❌ install via `brew install create-dmg` (only needed when cutting releases) |
 | Developer ID Application certificate | ❌ not yet acquired; needed only when shipping the first signed build |
 | Apple Developer Program membership | ❌ not yet enrolled; defer until Phase 1 nears completion |
-| Microsoft Entra App Registration | ❌ to be created during Phase 0 implementation |
+| Microsoft Entra App Registration | ✅ client ID `939b4a06-cc18-49eb-9674-a1fc041489f6` (multi-tenant, public client) |
 | Azure Application Insights resource | ❌ to be created during Phase 0 implementation |

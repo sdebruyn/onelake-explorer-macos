@@ -14,14 +14,14 @@ func TestLoginDeviceCodeRejectsEmptyClientID(t *testing.T) {
 }
 
 func TestLoginDeviceCodeRejectsNilKeychain(t *testing.T) {
-	_, _, _, err := LoginDeviceCode(context.Background(), PlaceholderClientID, "", nil, func(string, string, time.Time) {})
+	_, _, _, err := LoginDeviceCode(context.Background(), EntraClientID, "", nil, func(string, string, time.Time) {})
 	if err == nil {
 		t.Fatal("expected error for nil keychain")
 	}
 }
 
 func TestLoginDeviceCodeRejectsNilPrompt(t *testing.T) {
-	_, _, _, err := LoginDeviceCode(context.Background(), PlaceholderClientID, "", NewMemoryKeychain(), nil)
+	_, _, _, err := LoginDeviceCode(context.Background(), EntraClientID, "", NewMemoryKeychain(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil prompt")
 	}
@@ -39,7 +39,7 @@ func TestLoginDeviceCodeCancelsCleanlyOnContextCancel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, _, _, err := LoginDeviceCode(ctx, PlaceholderClientID, "", NewMemoryKeychain(), func(string, string, time.Time) {})
+		_, _, _, err := LoginDeviceCode(ctx, EntraClientID, "", NewMemoryKeychain(), func(string, string, time.Time) {})
 		done <- err
 	}()
 

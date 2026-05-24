@@ -27,7 +27,7 @@ When filing a bug, please include:
 
 OFEM uses standard Microsoft Entra public-client flows and asks for the `https://storage.azure.com/user_impersonation` scope. If your tenant has a "Block third-party app consent" policy, OFEM requires admin consent the first time a user signs in. The consent screen identifies the app as **OneLake File Explorer for macOS** (Microsoft Entra App Registration is owned by Sam Debruyn).
 
-To pre-consent for your whole tenant, an admin can visit `https://login.microsoftonline.com/{tenantId}/adminconsent?client_id={OFEM_CLIENT_ID}` and approve. The exact `OFEM_CLIENT_ID` will be published in the changelog with the first signed release.
+To pre-consent for your whole tenant, an admin can visit `https://login.microsoftonline.com/{tenantId}/adminconsent?client_id=939b4a06-cc18-49eb-9674-a1fc041489f6` and approve.
 
 ## SLA and support level
 
