@@ -43,6 +43,8 @@ nav = [
 [project.theme]
 custom_dir = "overrides"
 language = "en"
+logo = "assets/logo.svg"
+favicon = "assets/favicon.ico"
 features = [
   "content.action.edit",
   "content.code.annotate",
