@@ -3,6 +3,7 @@ package httpgate
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -177,10 +178,12 @@ func TestPenalty_StampedePrevention(t *testing.T) {
 	}
 }
 
-// TestPenalty_LatestWins covers the case where two callers post Penalty
-// nearly simultaneously with different deadlines. The later deadline
-// must win regardless of arrival order.
-func TestPenalty_LatestWins(t *testing.T) {
+// TestPenalty_LatestWinsSequential covers the case where two callers
+// post Penalty with different deadlines. The later deadline must win
+// regardless of arrival order. This is the simple ordering check; the
+// concurrent variant in TestPenalty_LatestWinsConcurrent exercises the
+// mutex under contention.
+func TestPenalty_LatestWinsSequential(t *testing.T) {
 	g := New(testHost, 1, 1000, 1000)
 
 	now := time.Now()
@@ -201,6 +204,47 @@ func TestPenalty_LatestWins(t *testing.T) {
 	st = g2.State()
 	if !st.PauseUntil.Equal(later) {
 		t.Errorf("after later-then-earlier: PauseUntil = %s, want %s", st.PauseUntil, later)
+	}
+}
+
+// TestPenalty_LatestWinsConcurrent spawns 50 goroutines, each posting a
+// Penalty at base + rand(0..100ms), and asserts that the final
+// PauseUntil equals the maximum deadline posted. Run with -race to
+// verify the Penalty mutex is taken correctly on the read-modify-write.
+func TestPenalty_LatestWinsConcurrent(t *testing.T) {
+	g := New(testHost, 1, 1000, 1000)
+
+	const posters = 50
+	base := time.Now().Add(time.Second)
+
+	deadlines := make([]time.Time, posters)
+	r := rand.New(rand.NewSource(1))
+	for i := range deadlines {
+		// Future deadlines so Penalty doesn't drop them as "in past".
+		deadlines[i] = base.Add(time.Duration(r.Intn(100)) * time.Millisecond)
+	}
+	var want time.Time
+	for _, d := range deadlines {
+		if d.After(want) {
+			want = d
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(posters)
+	start := make(chan struct{})
+	for _, d := range deadlines {
+		go func(d time.Time) {
+			defer wg.Done()
+			<-start
+			g.Penalty(d)
+		}(d)
+	}
+	close(start)
+	wg.Wait()
+
+	if got := g.State().PauseUntil; !got.Equal(want) {
+		t.Errorf("PauseUntil = %s, want %s (max of %d posted)", got, want, posters)
 	}
 }
 
@@ -256,6 +300,161 @@ func TestAcquire_ContextCancel(t *testing.T) {
 	st := g.State()
 	if st.Inflight != 0 {
 		t.Errorf("Inflight after cancel = %d, want 0", st.Inflight)
+	}
+}
+
+// TestNew_ClampsInvalidArgs covers the three defensive clamp branches
+// in New (concurrency<1, qps<=0, burst<1) so callers can pass zero
+// defaults without special-casing them.
+func TestNew_ClampsInvalidArgs(t *testing.T) {
+	g := New(testHost, 0, 0, 0)
+	st := g.State()
+	if st.Concurrency < 1 || st.QPS <= 0 || st.Burst < 1 {
+		t.Errorf("clamp did not apply: %+v", st)
+	}
+	// Negative values too.
+	g = New(testHost, -5, -3, -2)
+	st = g.State()
+	if st.Concurrency < 1 || st.QPS <= 0 || st.Burst < 1 {
+		t.Errorf("clamp did not apply on negatives: %+v", st)
+	}
+}
+
+// TestAcquire_SemaphoreCancel verifies that context cancellation while
+// waiting for a concurrency slot returns ctx.Err() without leaking the
+// held slot.
+func TestAcquire_SemaphoreCancel(t *testing.T) {
+	g := New(testHost, 1, 1000, 1000)
+
+	// Take the single slot so the next Acquire blocks on the semaphore.
+	rel, err := g.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("Acquire first: %v", err)
+	}
+	defer rel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := g.Acquire(ctx)
+		done <- err
+	}()
+
+	// Give the goroutine a moment to block on g.sem.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Acquire err = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Acquire did not return after cancel")
+	}
+
+	// The held slot is still ours; nothing should be over-counted.
+	if got := g.State().Inflight; got != 1 {
+		t.Errorf("Inflight = %d, want 1 (the held slot)", got)
+	}
+}
+
+// TestAcquire_TokenCancel verifies that context cancellation while
+// waiting on the rate-limiter token (step 3) returns ctx.Err() and
+// releases the concurrency slot taken in step 2.
+func TestAcquire_TokenCancel(t *testing.T) {
+	// Burst=0 effectively means every Acquire has to wait for a token
+	// refill at 1 qps. New clamps burst<1 to 1, so use a slow qps
+	// instead and drain the burst first.
+	g := New(testHost, 4, 0.1, 1)
+
+	// Drain the burst.
+	rel, err := g.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("Acquire drain: %v", err)
+	}
+	rel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := g.Acquire(ctx)
+		done <- err
+	}()
+
+	// Give the goroutine a moment to enter limiter.Wait. The next
+	// token won't arrive for ~10 seconds at qps=0.1.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Acquire err = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Acquire did not return after token-wait cancel")
+	}
+
+	// Slot must have been given back. Inflight should be 0.
+	if got := g.State().Inflight; got != 0 {
+		t.Errorf("Inflight after token-wait cancel = %d, want 0", got)
+	}
+}
+
+// TestAcquire_RePauseCancel covers step-4 cancellation: a Penalty
+// posted while Acquire is mid-flight (after step 1, before step 4)
+// forces Acquire back into waitPause where the ctx cancel must release
+// the held slot.
+//
+// We engineer this by giving the gate a slow rate-limiter (qps=2,
+// burst=1) and draining the burst first. The next Acquire then blocks
+// in step 3 (limiter.Wait) for ~500ms. While it's stuck there we post
+// a long Penalty — by the time the token arrives, step 4 reads a
+// future pauseUntil and enters waitPause. We then cancel ctx.
+func TestAcquire_RePauseCancel(t *testing.T) {
+	g := New(testHost, 4, 2, 1)
+
+	// Drain the initial burst so the next Acquire blocks on the token.
+	rel, err := g.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("drain Acquire: %v", err)
+	}
+	rel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := g.Acquire(ctx)
+		done <- err
+	}()
+
+	// Wait long enough that the goroutine is inside limiter.Wait, but
+	// less than the token-refill interval (~500ms).
+	time.Sleep(100 * time.Millisecond)
+
+	// Post a long Penalty. When the token arrives shortly after, step
+	// 4's pause re-check will see this and enter waitPause.
+	g.Penalty(time.Now().Add(time.Hour))
+
+	// Wait past the token arrival so the goroutine has time to reach
+	// step 4's waitPause.
+	time.Sleep(600 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Acquire err = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Acquire did not return after re-pause cancel")
+	}
+
+	if got := g.State().Inflight; got != 0 {
+		t.Errorf("Inflight after step-4 cancel = %d, want 0", got)
 	}
 }
 

@@ -53,6 +53,37 @@ func TestRegistry_States(t *testing.T) {
 	}
 }
 
+// TestNewRegistry_ClampsDefaults verifies that NewRegistry clamps
+// invalid Defaults values to the same sensible minimums New does.
+func TestNewRegistry_ClampsDefaults(t *testing.T) {
+	r := NewRegistry(Defaults{})
+	d := r.Defaults()
+	if d.Concurrency < 1 || d.QPS <= 0 || d.Burst < 1 {
+		t.Errorf("zero-value defaults not clamped: %+v", d)
+	}
+
+	r = NewRegistry(Defaults{Concurrency: -1, QPS: -1, Burst: -1})
+	d = r.Defaults()
+	if d.Concurrency < 1 || d.QPS <= 0 || d.Burst < 1 {
+		t.Errorf("negative defaults not clamped: %+v", d)
+	}
+}
+
+// TestRegistry_GateHostExposed verifies that the Host() helper returns
+// the host passed to Register / Gate.
+func TestRegistry_GateHostExposed(t *testing.T) {
+	r := NewRegistry(Defaults{Concurrency: 1, QPS: 1, Burst: 1})
+	const h = "explicit.example.com"
+	r.Register(h, 1, 1, 1)
+	if got := r.Gate(h).Host(); got != h {
+		t.Errorf("Host = %q, want %q", got, h)
+	}
+	const lazy = "lazy.example.com"
+	if got := r.Gate(lazy).Host(); got != lazy {
+		t.Errorf("lazy Host = %q, want %q", got, lazy)
+	}
+}
+
 // TestDefaultRegistry verifies the convenience constructor pre-
 // registers both production hosts.
 func TestDefaultRegistry(t *testing.T) {
@@ -92,7 +123,7 @@ func TestState_String(t *testing.T) {
 	s.PauseUntil = time.Now().Add(23 * time.Second)
 	got = s.String()
 	if !contains(got, "paused: for ") {
-		t.Errorf("paused branch missing in %q", got)
+		t.Errorf("State.String() = %q, want substring %q", got, "paused: for ")
 	}
 }
 
