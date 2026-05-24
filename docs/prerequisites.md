@@ -121,30 +121,10 @@ The first time the release pipeline runs end-to-end, this is the order:
 
 ---
 
-## Environment check for THIS machine (as of writing)
-
-Run this script to verify your local-dev environment is ready:
+## Verify your local environment
 
 ```bash
 ./scripts/check-prereqs.sh
 ```
 
-A reference snapshot from the maintainer's machine at the time of writing:
-
-| Tool | Status |
-|---|---|
-| Go 1.26.3 darwin/arm64 | ✅ |
-| Xcode 26.5 | ✅ |
-| git 2.50.1 | ✅ |
-| Homebrew 5.1.13 | ✅ |
-| gh 2.92.0 (authenticated as `sdebruyn`) | ✅ |
-| macOS 26.3.1 arm64 | ✅ (well above min macOS 14) |
-| Xcode Command Line Tools at `/Applications/Xcode.app/...` | ✅ |
-| `golangci-lint` | ❌ install via `brew install golangci-lint` |
-| `commitlint` | ❌ install via `brew install commitlint` |
-| `goreleaser` (publish only) | ❌ install via `brew install goreleaser` (only needed when cutting releases) |
-| `create-dmg` (publish only) | ❌ install via `brew install create-dmg` (only needed when cutting releases) |
-| Developer ID Application certificate | ❌ not yet acquired; needed only when shipping the first signed build |
-| Apple Developer Program membership | ❌ not yet enrolled; required only when shipping signed builds |
-| Microsoft Entra App Registration | ✅ client ID `939b4a06-cc18-49eb-9674-a1fc041489f6` (multi-tenant, public client) |
-| Azure Application Insights resource | ❌ not yet created |
+Runs through the toolchain above and reports what is missing, with the right install command for each.
