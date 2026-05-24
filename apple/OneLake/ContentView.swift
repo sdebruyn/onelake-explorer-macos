@@ -72,6 +72,11 @@ struct ContentView: View {
     private func openFinderMount() {
         let expanded = NSString(string: "~/OneLake").expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        } catch {
+            ContentView.log.error("Could not create \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
         ContentView.log.info("Opening Finder mount at \(url.path, privacy: .public)")
         NSWorkspace.shared.open(url)
     }
