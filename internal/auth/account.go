@@ -11,8 +11,10 @@ import (
 // distinguished by their user-chosen [Account.Alias].
 type Account struct {
 	// Alias is the user-chosen short name, unique across all accounts.
-	// It must satisfy [ValidateAlias] because it is later used as a path
-	// segment under ~/OneLake/<alias>/.
+	// It must satisfy [ValidateAlias] because it is later used as the
+	// on-disk suffix of the File Provider domain folder
+	// (~/Library/CloudStorage/OneLake-<alias>/) and as the first path
+	// segment of every NSFileProviderItemIdentifier.
 	Alias string
 
 	// HomeAccountID is MSAL's per-user-per-tenant identifier
@@ -44,8 +46,8 @@ const MaxAliasLength = 32
 // [MaxAliasLength] inclusive.
 //
 // On top of the character whitelist, the following names are rejected
-// because they are unsafe as path segments under ~/OneLake/<alias>/ or
-// as CLI arguments:
+// because they are unsafe as the on-disk suffix of
+// ~/Library/CloudStorage/OneLake-<alias>/ or as CLI arguments:
 //
 //   - aliases consisting only of dots (".", "..", "..." …): they collapse
 //     or escape the parent directory when joined into a path;
@@ -55,9 +57,9 @@ const MaxAliasLength = 32
 //     hidden by default in Finder and most shells, which is confusing.
 //
 // The rules are intentionally strict because the alias becomes part of
-// the mount path (~/OneLake/<alias>/...) and the keychain account name,
-// so anything that could be misinterpreted by macOS, a shell, or a URL
-// parser is rejected.
+// the mount path (~/Library/CloudStorage/OneLake-<alias>/...) and the
+// keychain account name, so anything that could be misinterpreted by
+// macOS, a shell, or a URL parser is rejected.
 func ValidateAlias(alias string) error {
 	if alias == "" {
 		return fmt.Errorf("alias must not be empty")

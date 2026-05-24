@@ -65,17 +65,23 @@ struct ContentView: View {
         .frame(minWidth: 420, minHeight: 320)
     }
 
-    /// Reveals (or creates) the `~/OneLake` parent in Finder. The
-    /// File Provider domains will be nested under this path once the
-    /// extension is wired up; for now opening the path simply shows
-    /// the user where their mounts will appear.
+    /// Opens `~/Library/CloudStorage/` in Finder — the macOS-managed
+    /// parent that every File Provider Extension lands under. Once the
+    /// extension is wired up, each OneLake account materialises here as
+    /// its own `OneLake-<alias>` folder (shown in the Finder sidebar as
+    /// `OneLake — <alias>`). For now opening this path simply shows
+    /// the user where their mounts will appear. We create the directory
+    /// on demand because it only exists after the user (or some app)
+    /// has registered at least one CloudStorage provider — on a fresh
+    /// macOS install with no File Provider Extensions ever activated
+    /// it is not guaranteed to be there.
     private func openFinderMount() {
-        let expanded = NSString(string: "~/OneLake").expandingTildeInPath
+        let expanded = NSString(string: "~/Library/CloudStorage").expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
         do {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         } catch {
-            ContentView.log.error("Could not create \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            ContentView.log.error("createDirectory failed for \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
         ContentView.log.info("Opening Finder at \(url.path, privacy: .public)")
         let opened = NSWorkspace.shared.open(url)

@@ -25,7 +25,7 @@ Requires macOS 14 Sonoma or later on Apple Silicon. No system-level changes, no 
 - Multiple OneLake accounts across multiple Microsoft Entra tenants visible side by side in Finder.
 - Online-only placeholders by default — files stream on demand, cached locally for instant reopen.
 - Drag, drop, double-click, save in any app. Spotlight indexing and Quick Look work out of the box.
-- Per-account folders under `~/OneLake/` so workspaces from different tenants never collide.
+- One Finder sidebar entry per account (`OneLake — work`, `OneLake — client-a`, …) so workspaces from different tenants never collide. macOS places each one under `~/Library/CloudStorage/OneLake-<alias>/`, the same way OneDrive and Google Drive do.
 
 ## What's not here
 

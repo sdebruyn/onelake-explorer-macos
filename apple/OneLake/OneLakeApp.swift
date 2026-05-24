@@ -5,7 +5,8 @@
 // land after launching from /Applications. It will grow into the
 // account-management UI in Phase 2; for now it is a single window
 // confirming the bundle is wired correctly and pointing users at the
-// Finder mount that will eventually appear at `~/OneLake`.
+// `~/Library/CloudStorage/` parent where each account's File Provider
+// domain (`OneLake — <alias>`) will eventually appear.
 
 import SwiftUI
 import os.log

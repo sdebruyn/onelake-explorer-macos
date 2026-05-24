@@ -10,7 +10,7 @@ OFEM opens your browser at Microsoft sign-in. After you authenticate, you pick a
 Name this account [work]:
 ```
 
-That alias becomes the folder under `~/OneLake/`. Pick something memorable.
+That alias becomes the Finder entry `OneLake — <alias>` (on disk: `~/Library/CloudStorage/OneLake-<alias>/`). Pick something memorable.
 
 ## Add another account
 
