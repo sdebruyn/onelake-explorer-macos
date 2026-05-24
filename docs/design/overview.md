@@ -92,14 +92,11 @@ Phase 0 is implemented and in flight: scaffolding, CI/lint/release tooling, tele
 
 | Topic | Page |
 |---|---|
-| Reference: Microsoft's Windows OneLake File Explorer | [Windows File Explorer](../onelake-file-explorer-windows.md) |
 | Why File Provider Extension, alternatives rejected | [macOS integration](../macos-mount.md) |
 | File Provider Extension internals + Swift ↔ Go bridge | [File Provider](../file-provider.md) |
 | Microsoft Entra auth design | [Authentication](../auth.md) |
 | OneLake DFS + Fabric REST APIs | [OneLake APIs](../onelake-api.md) |
 | Language and library choices | [Tech stack](../tech-stack.md) |
 | Telemetry schema + redaction | [Telemetry](../telemetry.md) |
-| Research that led to the App Insights decision | [Telemetry hosting research](../telemetry-hosting-research.md) |
 | Build, sign, notarize, ship | [Packaging](../packaging-homebrew.md) |
-| Prior art search | [Prior art](../prior-art.md) |
 | Local-dev vs publishing prerequisites | [Prerequisites](../prerequisites.md) |

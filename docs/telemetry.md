@@ -17,7 +17,7 @@ Chosen for:
 - Out-of-the-box dashboards in the Azure portal.
 - Workbooks for custom analysis without needing Fabric.
 
-For Fabric-side analysis (optional, when richer notebooks are needed): set up Diagnostic Settings export from the App Insights resource to an ADLS Gen2 storage account, then create an OneLake shortcut into a Fabric Lakehouse. The full architecture trade-off is documented in [docs/telemetry-hosting-research.md](telemetry-hosting-research.md).
+For Fabric-side analysis (optional, when richer notebooks are needed): set up Diagnostic Settings export from the App Insights resource to an ADLS Gen2 storage account, then create an OneLake shortcut into a Fabric Lakehouse.
 
 ## Schema
 
