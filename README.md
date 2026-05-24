@@ -65,6 +65,8 @@ Full plan with milestones in [PLAN.md](PLAN.md).
 └────────────────────────────────┘
 ```
 
+Full architecture details — hard constraints, tech stack, process model, source layout, design-doc index: [ofem.debruyn.dev/design/overview/](https://ofem.debruyn.dev/design/overview/) (source: [`docs/design/overview.md`](docs/design/overview.md)).
+
 ## Documentation
 
 | Document | Topic |
