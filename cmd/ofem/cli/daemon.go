@@ -9,6 +9,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -88,10 +89,11 @@ func newDaemonUninstallCmd() *cobra.Command {
 func newDaemonStartCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "start",
-		Short: "Start (or restart) the daemon now via launchctl",
-		Long: `Ask launchd to kickstart the daemon now. If it is already
-running, launchctl restarts it; if it has crashed, KeepAlive will pick
-it up on its own.`,
+		Short: "Start the daemon",
+		Long: `Start the OFEM daemon now. If it is already running, it is
+restarted in place. If launchd has forgotten the service (for example
+after 'ofem daemon stop'), it is re-bootstrapped from the installed
+plist.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			home, err := os.UserHomeDir()
@@ -99,6 +101,11 @@ it up on its own.`,
 				return fmt.Errorf("resolve home: %w", err)
 			}
 			if err := daemon.StartLaunchAgent(home); err != nil {
+				if errors.Is(err, daemon.ErrNotInstalled) {
+					fmt.Fprintln(cmd.ErrOrStderr(), "The daemon LaunchAgent is not installed yet.")
+					fmt.Fprintln(cmd.ErrOrStderr(), "Run 'ofem daemon install' first.")
+					return nil // friendly hint, not an error
+				}
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Daemon started")
@@ -110,13 +117,21 @@ it up on its own.`,
 func newDaemonStopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
-		Short: "Send SIGTERM to the daemon (KeepAlive will restart it)",
-		Args:  cobra.NoArgs,
+		Short: "Stop the daemon",
+		Long: `Tell launchd to unload the OFEM daemon. The service will stay
+unloaded until you run 'ofem daemon start' or log in again. To
+permanently remove it, use 'ofem daemon uninstall'.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := daemon.StopLaunchAgent(); err != nil {
+				if errors.Is(err, daemon.ErrNotInstalled) {
+					fmt.Fprintln(cmd.ErrOrStderr(), "The daemon LaunchAgent is not loaded.")
+					fmt.Fprintln(cmd.ErrOrStderr(), "Nothing to stop.")
+					return nil
+				}
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "SIGTERM sent to daemon")
+			fmt.Fprintln(cmd.OutOrStdout(), "Daemon stopped")
 			return nil
 		},
 	}
