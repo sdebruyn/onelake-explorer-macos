@@ -32,6 +32,13 @@ type syncRefresher interface {
 	RefreshFolder(ctx context.Context, k cache.Key) (sync.Diff, error)
 }
 
+// offlineReporter is the subset of [sync.Engine] the status handler
+// uses to surface "is the host offline" to the IPC client. Defined as
+// an interface so tests can stub it without spinning up the engine.
+type offlineReporter interface {
+	Offline() bool
+}
+
 // Handlers bundles the dependencies every IPC handler needs and exposes
 // a Register method that binds all of OFEM's methods on a [ipc.Server].
 //
@@ -42,6 +49,7 @@ type Handlers struct {
 	registry  *auth.Registry
 	cache     *cache.Cache
 	engine    syncRefresher
+	offline   offlineReporter
 	gates     *httpgate.Registry
 	startedAt time.Time
 	version   string
@@ -53,11 +61,13 @@ type Handlers struct {
 // error indicating the engine is not wired. gates may be nil for tests;
 // when nil, status returns an empty Gates list.
 func NewHandlers(store *config.Store, registry *auth.Registry, cache *cache.Cache, engine syncRefresher, gates *httpgate.Registry) *Handlers {
+	off, _ := engine.(offlineReporter)
 	return &Handlers{
 		store:     store,
 		registry:  registry,
 		cache:     cache,
 		engine:    engine,
+		offline:   off,
 		gates:     gates,
 		startedAt: time.Now().UTC(),
 		version:   buildinfo.Version,
@@ -96,9 +106,27 @@ type StatusResponse struct {
 	// when the daemon was built without a gate registry (tests). See
 	// internal/httpgate for the meaning of each field.
 	Gates []httpgate.State `json:"gates"`
+	// PausedWorkspaces lists every workspace the sync engine currently
+	// considers unreachable due to a paused / suspended Fabric
+	// capacity. Empty when no workspace is paused.
+	PausedWorkspaces []PausedWorkspace `json:"pausedWorkspaces"`
+	// Offline reports whether the daemon believes the host is offline
+	// (DNS / network-unreachable on the last outbound attempt). When
+	// true, writes are queued locally for later drain.
+	Offline bool `json:"offline"`
 }
 
-func (h *Handlers) handleStatus(_ context.Context, _ json.RawMessage) (any, error) {
+// PausedWorkspace is the JSON-friendly view of one paused workspace.
+// Times are emitted as RFC 3339.
+type PausedWorkspace struct {
+	AccountAlias string    `json:"accountAlias"`
+	WorkspaceID  string    `json:"workspaceId"`
+	Reason       string    `json:"reason"`
+	DetectedAt   time.Time `json:"detectedAt"`
+	ProbedAt     time.Time `json:"probedAt,omitempty"`
+}
+
+func (h *Handlers) handleStatus(ctx context.Context, _ json.RawMessage) (any, error) {
 	snap := h.store.Snapshot()
 	aliases := make([]string, 0, len(snap.Accounts))
 	for alias := range snap.Accounts {
@@ -116,13 +144,39 @@ func (h *Handlers) handleStatus(_ context.Context, _ json.RawMessage) (any, erro
 		gates = h.gates.States()
 	}
 
+	paused := make([]PausedWorkspace, 0)
+	if h.cache != nil {
+		statuses, err := h.cache.ListWorkspaceStatuses(ctx)
+		if err == nil {
+			for _, s := range statuses {
+				if s.State != cache.WorkspaceStatePaused {
+					continue
+				}
+				paused = append(paused, PausedWorkspace{
+					AccountAlias: s.AccountAlias,
+					WorkspaceID:  s.WorkspaceID,
+					Reason:       s.Reason,
+					DetectedAt:   s.DetectedAt,
+					ProbedAt:     s.ProbedAt,
+				})
+			}
+		}
+	}
+
+	offline := false
+	if h.offline != nil {
+		offline = h.offline.Offline()
+	}
+
 	return StatusResponse{
-		DaemonVersion: h.version,
-		StartedAt:     h.startedAt,
-		Accounts:      aliases,
-		CacheBytes:    cacheBytes,
-		CacheMaxBytes: snap.Cache.MaxSizeBytes,
-		Gates:         gates,
+		DaemonVersion:    h.version,
+		StartedAt:        h.startedAt,
+		Accounts:         aliases,
+		CacheBytes:       cacheBytes,
+		CacheMaxBytes:    snap.Cache.MaxSizeBytes,
+		Gates:            gates,
+		PausedWorkspaces: paused,
+		Offline:          offline,
 	}, nil
 }
 

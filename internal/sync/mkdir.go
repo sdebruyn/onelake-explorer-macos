@@ -16,7 +16,21 @@ import (
 func (e *Engine) Mkdir(ctx context.Context, k cache.Key) error {
 	start := e.now()
 
+	if err := e.guardPausedWorkspace(ctx, k.AccountAlias, k.WorkspaceID); err != nil {
+		return err
+	}
+
 	if err := e.onelake.CreateDirectory(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path); err != nil {
+		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, err) {
+			e.track(telemetry.Event{
+				Name:             "folder_create",
+				AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
+				DurationMs:       elapsedMs(start, e.now),
+				Success:          boolPtr(false),
+				ErrorCode:        telemetry.SafeErrorCode("capacity_paused"),
+			})
+			return fmt.Errorf("sync.Mkdir: %w", ErrWorkspacePaused)
+		}
 		e.track(telemetry.Event{
 			Name:             "folder_create",
 			AccountAliasHash: telemetry.HashAlias(k.AccountAlias),

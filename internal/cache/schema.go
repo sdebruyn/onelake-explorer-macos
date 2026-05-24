@@ -10,7 +10,10 @@ package cache
 //     scan can use an index. The existing idx_pm_blob_lru is partial
 //     (WHERE blob_sha256 is non-empty) and therefore unusable for the
 //     poller's query, which matches any row regardless of blob presence.
-const schemaVersion = 2
+//   - v3: add workspace_status so the sync engine can persist
+//     paused-capacity / unreachable-workspace signals and the daemon's
+//     adaptive poller can skip workspaces it knows are unreachable.
+const schemaVersion = 3
 
 // schemaSQL creates every persistent object the cache relies on. It is
 // designed to be safe to execute on every Open: each statement uses
@@ -48,6 +51,26 @@ CREATE INDEX IF NOT EXISTS idx_pm_blob_lru
 -- scan before this index existed.
 CREATE INDEX IF NOT EXISTS idx_pm_last_accessed
     ON path_metadata (last_accessed_ns);
+
+-- workspace_status tracks per-workspace availability flags. A row is
+-- created the first time the sync engine observes a workspace as
+-- paused / unreachable; the row is updated (not deleted) when the
+-- workspace becomes reachable again so callers can inspect the
+-- transition timeline.
+--
+-- state values currently used:
+--   'active'  — workspace is reachable.
+--   'paused'  — Fabric capacity is paused, suspended, or otherwise
+--               unable to accept reads/writes against this workspace.
+CREATE TABLE IF NOT EXISTS workspace_status (
+    account_alias  TEXT    NOT NULL,
+    workspace_id   TEXT    NOT NULL,
+    state          TEXT    NOT NULL DEFAULT 'active',
+    reason         TEXT    NOT NULL DEFAULT '',
+    detected_at_ns INTEGER NOT NULL DEFAULT 0,
+    probed_at_ns   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_alias, workspace_id)
+);
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY

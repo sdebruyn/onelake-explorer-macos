@@ -22,6 +22,7 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/api"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpretry"
 )
 
 const (
@@ -52,7 +53,7 @@ const (
 // Callers control the overall deadline through context.
 //
 // Registry, when non-nil, plumbs every round trip (including each retry
-// from internal/api.Do) through the per-host gate for OneLake. Without
+// from [httpretry.Do]) through the per-host gate for OneLake. Without
 // a registry the client is unrate-limited - acceptable for unit tests
 // but not for the daemon, which should always wire one in.
 type Options struct {
@@ -85,7 +86,7 @@ func New(opts Options) *Client {
 	}
 	if opts.Registry != nil {
 		// Wrap the existing http.Client so every retry attempt issued by
-		// internal/api.Do (and any peer goroutine) shares the same
+		// [httpretry.Do] (and any peer goroutine) shares the same
 		// per-host pause window and QPS budget.
 		c.http = httpgate.Wrap(c.http, opts.Registry)
 	}
@@ -246,20 +247,36 @@ func (c *Client) GetProperties(ctx context.Context, alias, workspaceGUID, itemGU
 // the body. Callers that want to skip a follow-up HEAD can persist
 // these values straight away. The struct is always non-nil on success.
 func (c *Client) Read(ctx context.Context, alias, workspaceGUID, itemGUID, path string, rangeStart, rangeEnd int64) (io.ReadCloser, *PathProperties, error) {
+	return c.ReadWithIfMatch(ctx, alias, workspaceGUID, itemGUID, path, rangeStart, rangeEnd, "")
+}
+
+// ReadWithIfMatch is [Read] plus an optional If-Match header that
+// pins the response to a known ETag. Useful for partial-download
+// resume: if the remote etag changed between the original GET and the
+// resumed range request, DFS replies 412 PreconditionFailed and the
+// caller discards the (now incompatible) on-disk partial.
+//
+// Pass ifMatch="" to skip the header (equivalent to [Read]).
+func (c *Client) ReadWithIfMatch(ctx context.Context, alias, workspaceGUID, itemGUID, path string, rangeStart, rangeEnd int64, ifMatch string) (io.ReadCloser, *PathProperties, error) {
 	if workspaceGUID == "" || itemGUID == "" {
 		return nil, nil, fmt.Errorf("onelake: workspaceGUID and itemGUID required")
 	}
 	u := pathURL(workspaceGUID, itemGUID, path, nil)
 	var extra http.Header
-	if rangeStart > 0 || rangeEnd >= 0 {
+	if rangeStart > 0 || rangeEnd >= 0 || ifMatch != "" {
 		extra = http.Header{}
-		var spec string
-		if rangeEnd >= 0 {
-			spec = fmt.Sprintf("bytes=%d-%d", rangeStart, rangeEnd)
-		} else {
-			spec = fmt.Sprintf("bytes=%d-", rangeStart)
+		if rangeStart > 0 || rangeEnd >= 0 {
+			var spec string
+			if rangeEnd >= 0 {
+				spec = fmt.Sprintf("bytes=%d-%d", rangeStart, rangeEnd)
+			} else {
+				spec = fmt.Sprintf("bytes=%d-", rangeStart)
+			}
+			extra.Set("Range", spec)
 		}
-		extra.Set("Range", spec)
+		if ifMatch != "" {
+			extra.Set("If-Match", ifMatch)
+		}
 	}
 	resp, err := c.doRequest(ctx, alias, http.MethodGet, u, nil, extra)
 	if err != nil {
@@ -464,7 +481,7 @@ func defaultHTTPClient() *http.Client {
 }
 
 // doRequest builds a request against the DFS base, injects the token,
-// then runs it through api.Do for retries. The caller owns the response
+// then runs it through [httpretry.Do]. The caller owns the response
 // body and must close it.
 func (c *Client) doRequest(ctx context.Context, alias, method, pathAndQuery string, body io.Reader, extraHeaders http.Header) (*http.Response, error) {
 	full := c.baseURL + pathAndQuery
@@ -482,5 +499,5 @@ func (c *Client) doRequest(ctx context.Context, alias, method, pathAndQuery stri
 		return nil, err
 	}
 	slog.Debug("onelake: request", "method", method, "path", pathAndQuery)
-	return api.Do(ctx, c.http, req, c.maxAttempts)
+	return httpretry.Do(ctx, c.http, req, httpretry.Policy{MaxAttempts: c.maxAttempts})
 }

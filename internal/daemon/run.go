@@ -182,15 +182,27 @@ func Run(ctx context.Context, opts RunOptions) error {
 	fabricClient := fabric.New(fabric.Options{TokenProvider: registry, Registry: gates})
 	onelakeClient := onelake.New(onelake.Options{TokenProvider: registry, Registry: gates})
 	engine, err := sync.New(sync.Options{
-		Cache:     c,
-		Fabric:    fabricClient,
-		OneLake:   onelakeClient,
-		Telemetry: tel,
-		Tenants:   registry,
-		Logger:    logger,
+		Cache:                  c,
+		Fabric:                 fabricClient,
+		OneLake:                onelakeClient,
+		Telemetry:              tel,
+		Tenants:                registry,
+		Logger:                 logger,
+		MaxConcurrentUploads:   cfg.Net.MaxConcurrentUploadsPerAccount,
+		MaxConcurrentDownloads: cfg.Net.MaxConcurrentDownloadsPerAccount,
 	})
 	if err != nil {
 		return fmt.Errorf("daemon: build sync engine: %w", err)
+	}
+
+	// Rebuild the offline-upload queue from spool files left behind by
+	// a previous daemon process. Without this, a daemon crash between
+	// "Put returns nil queued" and the next drain would orphan the
+	// bytes — see internal/sync/offline.go for the spool format. Errors
+	// are logged but non-fatal: the worst case is a queued upload that
+	// won't drain until the user re-saves the file.
+	if rerr := engine.RecoverOfflineQueue(); rerr != nil {
+		logger.Warn("offline queue recovery failed", slog.Any("err", rerr))
 	}
 
 	// IPC server.

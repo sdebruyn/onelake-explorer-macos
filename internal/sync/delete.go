@@ -58,7 +58,20 @@ func (e *Engine) Delete(ctx context.Context, k cache.Key) error {
 	// recurse so a stale/missing cache does not produce a 409 on
 	// populated directories.
 	recursive := isDir || !cacheHit
+	if err := e.guardPausedWorkspace(ctx, k.AccountAlias, k.WorkspaceID); err != nil {
+		return err
+	}
 	if err := e.onelake.Delete(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, recursive); err != nil {
+		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, err) {
+			e.track(telemetry.Event{
+				Name:             eventName,
+				AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
+				DurationMs:       elapsedMs(start, e.now),
+				Success:          boolPtr(false),
+				ErrorCode:        telemetry.SafeErrorCode("capacity_paused"),
+			})
+			return fmt.Errorf("sync.Delete: %w", ErrWorkspacePaused)
+		}
 		e.track(telemetry.Event{
 			Name:             eventName,
 			AccountAliasHash: telemetry.HashAlias(k.AccountAlias),

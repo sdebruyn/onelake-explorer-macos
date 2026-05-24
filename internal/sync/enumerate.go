@@ -127,8 +127,14 @@ func (e *Engine) enumerateFromCache(ctx context.Context, k cache.Key) (bool, []c
 // Telemetry: emits sync_pulled with itemsChanged when the diff is
 // non-zero. Callers (Enumerate) emit folder_list themselves.
 func (e *Engine) RefreshFolder(ctx context.Context, k cache.Key) (Diff, error) {
+	if err := e.guardPausedWorkspace(ctx, k.AccountAlias, k.WorkspaceID); err != nil {
+		return Diff{}, err
+	}
 	result, err := e.onelake.ListPath(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, false)
 	if err != nil {
+		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, err) {
+			return Diff{}, fmt.Errorf("sync.RefreshFolder: %w", ErrWorkspacePaused)
+		}
 		return Diff{}, fmt.Errorf("sync.RefreshFolder: list: %w", err)
 	}
 

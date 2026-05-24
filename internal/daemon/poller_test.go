@@ -34,6 +34,7 @@ type fakePollerEngine struct {
 	diffs  map[string]sync.Diff
 	errs   map[string]error
 	called []cache.Key
+	sweeps int
 }
 
 func (f *fakePollerEngine) RefreshFolder(_ context.Context, k cache.Key) (sync.Diff, error) {
@@ -44,6 +45,8 @@ func (f *fakePollerEngine) RefreshFolder(_ context.Context, k cache.Key) (sync.D
 	}
 	return f.diffs[key], nil
 }
+
+func (f *fakePollerEngine) SweepPausedWorkspaces(_ context.Context) { f.sweeps++ }
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -192,4 +195,21 @@ func (e *cancelOnFirstEngine) RefreshFolder(_ context.Context, _ cache.Key) (syn
 	e.calls++
 	e.cancel()
 	return e.diff, nil
+}
+
+func (e *cancelOnFirstEngine) SweepPausedWorkspaces(_ context.Context) {}
+
+// TestPollOnce_SweepsPausedWorkspaces verifies the cold-paused
+// recovery hook fires on every sweep, not just on hot items. Without
+// this, a workspace that was paused while nobody was looking at it
+// would never recover in the IPC status surface.
+func TestPollOnce_SweepsPausedWorkspaces(t *testing.T) {
+	c := &fakePollerCache{}
+	e := &fakePollerEngine{}
+
+	pollOnce(context.Background(), c, e, discardLogger(), 30*time.Minute)
+
+	if e.sweeps != 1 {
+		t.Errorf("SweepPausedWorkspaces calls = %d, want 1", e.sweeps)
+	}
 }

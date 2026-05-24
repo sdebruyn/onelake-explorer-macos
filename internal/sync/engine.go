@@ -28,11 +28,42 @@
 //
 //   - Every public method emits a telemetry event per docs/telemetry.md.
 //     The macOS-metadata short-circuit emits no telemetry by design.
+//
+// # Throttling layers
+//
+// OFEM gates concurrent traffic at two independent layers and the two
+// must be reasoned about separately:
+//
+//  1. Per-account caps (this package, see concurrency.go). A
+//     perAccountSemaphore caps in-flight Put / Open calls per account
+//     alias. The slot is held for the entire logical operation —
+//     including the chunked PUT/PATCH chain, the LWW retry loop, and
+//     the partial-download resume retries — and released via deferred
+//     `release` exactly once at function exit, even on error paths
+//     (412 storm, ErrLastWriteWinsExhausted, …). This is fairness
+//     between accounts: a misbehaving account cannot starve others.
+//
+//  2. Per-host caps (internal/httpgate, see PR #39). A per-host token
+//     bucket caps the raw HTTP requests OFEM emits against a single
+//     origin. The bucket is consumed for every chunk PUT / PATCH /
+//     GET that goes on the wire and released by the transport when
+//     the response completes. This is origin protection: we never
+//     hammer onelake.dfs.fabric.microsoft.com beyond what the docs
+//     say it tolerates.
+//
+// The two layers compose: a single Put can hold one per-account
+// upload slot AND consume per-host tokens for each chunk in its
+// PUT/PATCH chain. They do not double-count or interlock because
+// they gate orthogonal resources (logical operation vs HTTP request).
+// A 412 storm on one account does not lock per-account slots beyond
+// the deferred release scope and never holds per-host tokens (412
+// responses release the token on receipt).
 package sync
 
 import (
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
@@ -102,6 +133,19 @@ type Options struct {
 	// visited recently. Defaults to DefaultRecentFolderTTL.
 	RecentFolderTTL time.Duration
 
+	// PausedProbeInterval is the minimum gap between two recovery
+	// probes for the same paused workspace. Defaults to
+	// DefaultPausedProbeInterval.
+	PausedProbeInterval time.Duration
+
+	// MaxConcurrentDownloads caps concurrent Open calls per account.
+	// Defaults to DefaultMaxConcurrentDownloads.
+	MaxConcurrentDownloads int
+
+	// MaxConcurrentUploads caps concurrent Put calls per account.
+	// Defaults to DefaultMaxConcurrentUploads.
+	MaxConcurrentUploads int
+
 	// Now overrides time.Now for tests. Production callers leave it nil.
 	Now func() time.Time
 }
@@ -109,15 +153,23 @@ type Options struct {
 // Engine reconciles a remote OneLake item with the local cache. See the
 // package doc for the contract.
 type Engine struct {
-	cache           *cache.Cache
-	fabric          *fabric.Client
-	onelake         *onelake.Client
-	telemetry       *telemetry.Client
-	tenants         TenantResolver
-	logger          *slog.Logger
-	openFolderTTL   time.Duration
-	recentFolderTTL time.Duration
-	now             func() time.Time
+	cache               *cache.Cache
+	fabric              *fabric.Client
+	onelake             *onelake.Client
+	telemetry           *telemetry.Client
+	tenants             TenantResolver
+	logger              *slog.Logger
+	openFolderTTL       time.Duration
+	recentFolderTTL     time.Duration
+	pausedProbeInterval time.Duration
+	pausedTracker       *pausedTracker
+	downloadSem         *perAccountSemaphore
+	uploadSem           *perAccountSemaphore
+	offline             *offlineState
+	queueMu             sync.Mutex
+	queue               []queuedUpload
+	drainMu             sync.Mutex
+	now                 func() time.Time
 }
 
 // New constructs an Engine from Options. It returns an error if any of
@@ -152,17 +204,34 @@ func New(opts Options) (*Engine, error) {
 	if recentTTL <= 0 {
 		recentTTL = DefaultRecentFolderTTL
 	}
+	probeInterval := opts.PausedProbeInterval
+	if probeInterval <= 0 {
+		probeInterval = DefaultPausedProbeInterval
+	}
+	downloads := opts.MaxConcurrentDownloads
+	if downloads <= 0 {
+		downloads = DefaultMaxConcurrentDownloads
+	}
+	uploads := opts.MaxConcurrentUploads
+	if uploads <= 0 {
+		uploads = DefaultMaxConcurrentUploads
+	}
 
 	return &Engine{
-		cache:           opts.Cache,
-		fabric:          opts.Fabric,
-		onelake:         opts.OneLake,
-		telemetry:       opts.Telemetry,
-		tenants:         opts.Tenants,
-		logger:          logger,
-		openFolderTTL:   openTTL,
-		recentFolderTTL: recentTTL,
-		now:             now,
+		cache:               opts.Cache,
+		fabric:              opts.Fabric,
+		onelake:             opts.OneLake,
+		telemetry:           opts.Telemetry,
+		tenants:             opts.Tenants,
+		logger:              logger,
+		openFolderTTL:       openTTL,
+		recentFolderTTL:     recentTTL,
+		pausedProbeInterval: probeInterval,
+		pausedTracker:       newPausedTracker(),
+		downloadSem:         newPerAccountSemaphore(downloads),
+		uploadSem:           newPerAccountSemaphore(uploads),
+		offline:             newOfflineState(),
+		now:                 now,
 	}, nil
 }
 

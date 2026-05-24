@@ -1,4 +1,4 @@
-package api
+package httpretry
 
 import (
 	"errors"
@@ -39,10 +39,17 @@ func TestFromResponse_TypedSentinels(t *testing.T) {
 		{403, ErrForbidden},
 		{404, ErrNotFound},
 		{409, ErrConflict},
+		{410, ErrGone},
 		{412, ErrPreconditionFailed},
+		{413, ErrPayloadTooLarge},
+		{415, ErrUnsupportedMedia},
+		{416, ErrRangeNotSatisfiable},
+		{422, ErrUnprocessable},
 		{429, ErrThrottled},
 		{500, ErrServerError},
+		{502, ErrServerError},
 		{503, ErrServerError},
+		{504, ErrServerError},
 	}
 	for _, c := range cases {
 		err := FromResponse(mkResp(c.status, "boom", nil))
@@ -53,7 +60,6 @@ func TestFromResponse_TypedSentinels(t *testing.T) {
 }
 
 func TestFromResponse_UntypedStatus(t *testing.T) {
-	// 418 is not specifically mapped; we still return an APIError.
 	err := FromResponse(mkResp(418, "teapot", nil))
 	var ae *APIError
 	if !errors.As(err, &ae) {
@@ -87,7 +93,6 @@ func TestParseRetryAfter_HTTPDate(t *testing.T) {
 	if !errors.As(err, &ae) {
 		t.Fatalf("want APIError")
 	}
-	// Allow ±2s slack since we parsed against wall clock.
 	if ae.RetryAfter < 2*time.Second || ae.RetryAfter > 6*time.Second {
 		t.Errorf("RetryAfter = %v, want ~5s", ae.RetryAfter)
 	}
@@ -102,5 +107,13 @@ func TestParseRetryAfter_Garbage(t *testing.T) {
 	}
 	if ae.RetryAfter != 0 {
 		t.Errorf("RetryAfter = %v, want 0", ae.RetryAfter)
+	}
+}
+
+func TestAPIError_AttemptCountInMessage(t *testing.T) {
+	ae := &APIError{StatusCode: 503, Status: "Service Unavailable", Attempts: 4}
+	msg := ae.Error()
+	if !strings.Contains(msg, "after 4 attempts") {
+		t.Errorf("Error()=%q does not mention attempts", msg)
 	}
 }

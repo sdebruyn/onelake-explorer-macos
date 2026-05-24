@@ -59,6 +59,23 @@ Every event is sent as an App Insights `customEvent` with a fixed property set:
 | `error` | Recoverable error logged | `errorCode`, `event` (the operation that errored as a string) |
 | `panic` | Go panic recovered or process unwound | `errorCode` (hashed stack trace prefix), `appVersion` |
 
+## Sync-engine error-code vocabulary
+
+The sync engine narrows the free-text `errorCode` field on `file_upload`
+and `file_download` to a fixed vocabulary so dashboards have stable
+legends. New codes are added here before the engine starts emitting
+them.
+
+| `errorCode` | Emitted on | Meaning |
+|---|---|---|
+| `read_failed` | `file_download` | Remote GET failed for a reason that is neither paused capacity nor offline. |
+| `write_failed` | `file_upload` | Remote PUT/PATCH chain failed for a reason that is neither paused capacity, offline, nor LWW exhaustion. |
+| `blob_store_failed` | `file_download` | Local blob store rejected the downloaded bytes (out of disk, etc.). |
+| `capacity_paused` | `file_upload`, `file_download` | Workspace's backing Fabric capacity is paused or suspended. |
+| `lww_exhausted` | `file_upload` | Last-write-wins replay loop hit its cap (default 3 cycles) on 412 PreconditionFailed. The local change is dropped — no conflict copy. |
+| `queued_offline` | `file_upload` | Host was offline at the time of the write; bytes were spooled to the persistent offline queue under `<cacheRoot>/offline-queue/` and the caller saw a nil-success. Spool file is fsync'd and the filename encodes the `cache.Key` so a daemon restart can rebuild the queue. |
+| `served_stale_offline` | `file_download` | Host was offline AND the cache held a fully stored blob; the cached bytes were served (with `success=true`) instead of refusing the read. Matches OneDrive / Dropbox offline behaviour. |
+
 ## Connection string distribution
 
 The Application Insights connection string is a committed source constant in `internal/buildinfo/buildinfo.go`. Every OFEM build — official release, source build, or fork — reports to the same endpoint. The string is rotated by issuing a new one for the resource and bumping `internal/buildinfo/buildinfo.go`; old binaries then stop reporting on the next release.

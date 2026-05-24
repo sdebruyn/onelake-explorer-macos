@@ -10,7 +10,7 @@ import (
 
 	"github.com/jarcoal/httpmock"
 
-	"github.com/sdebruyn/onelake-explorer-macos/internal/api"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpretry"
 )
 
 const testBase = "https://api.fabric.microsoft.com"
@@ -183,7 +183,7 @@ func TestGetItem_404(t *testing.T) {
 		httpmock.NewStringResponder(404, `{"error":"NotFound"}`))
 
 	_, err := c.GetItem(context.Background(), "work", "ws1", "missing")
-	if !errors.Is(err, api.ErrNotFound) {
+	if !errors.Is(err, httpretry.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
@@ -193,7 +193,7 @@ func TestListWorkspaces_401(t *testing.T) {
 	httpmock.RegisterResponder("GET", testBase+"/v1/workspaces",
 		httpmock.NewStringResponder(401, `unauthorized`))
 	_, err := c.ListWorkspaces(context.Background(), "work")
-	if !errors.Is(err, api.ErrUnauthorized) {
+	if !errors.Is(err, httpretry.ErrUnauthorized) {
 		t.Fatalf("want ErrUnauthorized, got %v", err)
 	}
 }
@@ -358,7 +358,7 @@ func TestListWorkspaces_429ExhaustsRetries(t *testing.T) {
 		})
 
 	_, err := c.ListWorkspaces(context.Background(), "work")
-	if !errors.Is(err, api.ErrThrottled) {
+	if !errors.Is(err, httpretry.ErrThrottled) {
 		t.Fatalf("want ErrThrottled, got %v", err)
 	}
 	// MaxAttempts is 3 in the test client.
