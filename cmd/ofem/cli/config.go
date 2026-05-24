@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -33,11 +35,12 @@ func newConfigListCmd() *cobra.Command {
 			}
 			f := store.Snapshot()
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "telemetry                = %s\n", boolWord(f.Telemetry))
-			fmt.Fprintf(out, "default_account          = %q\n", f.DefaultAccount)
-			fmt.Fprintf(out, "cache.max_size_bytes     = %d\n", f.Cache.MaxSizeBytes)
+			fmt.Fprintf(out, "telemetry                       = %s\n", boolWord(f.Telemetry))
+			fmt.Fprintf(out, "default_account                 = %q\n", f.DefaultAccount)
+			fmt.Fprintf(out, "cache.max_size_bytes            = %d\n", f.Cache.MaxSizeBytes)
+			fmt.Fprintf(out, "cache.max_size                  = %s   # alias of cache.max_size_bytes, accepts 10GiB / 500MB / etc.\n", humanBytes(f.Cache.MaxSizeBytes))
 			fmt.Fprintf(out, "net.max_concurrency_per_account = %d\n", f.Net.MaxConcurrencyPerAccount)
-			fmt.Fprintf(out, "log.level                = %q\n", f.Log.Level)
+			fmt.Fprintf(out, "log.level                       = %q\n", f.Log.Level)
 			return nil
 		},
 	}
@@ -91,13 +94,15 @@ func newConfigSetCmd() *cobra.Command {
 }
 
 func lookupConfig(f config.File, key string) (string, bool) {
-	switch strings.ToLower(key) {
+	switch normalizeKey(key) {
 	case "telemetry":
 		return boolWord(f.Telemetry), true
 	case "default_account":
 		return f.DefaultAccount, true
 	case "cache.max_size_bytes":
 		return strconv.FormatInt(f.Cache.MaxSizeBytes, 10), true
+	case "cache.max_size":
+		return humanBytes(f.Cache.MaxSizeBytes), true
 	case "net.max_concurrency_per_account":
 		return strconv.Itoa(f.Net.MaxConcurrencyPerAccount), true
 	case "log.level":
@@ -107,7 +112,7 @@ func lookupConfig(f config.File, key string) (string, bool) {
 }
 
 func applyConfig(f *config.File, key, value string) error {
-	switch strings.ToLower(key) {
+	switch normalizeKey(key) {
 	case "telemetry":
 		v, err := parseBool(value)
 		if err != nil {
@@ -121,10 +126,13 @@ func applyConfig(f *config.File, key, value string) error {
 			}
 		}
 		f.DefaultAccount = value
-	case "cache.max_size_bytes":
-		n, err := strconv.ParseInt(value, 10, 64)
-		if err != nil || n < 0 {
-			return fmt.Errorf("cache.max_size_bytes must be a non-negative integer")
+	case "cache.max_size_bytes", "cache.max_size":
+		// Both keys write to Cache.MaxSizeBytes; the parser accepts either
+		// a raw integer (the historical shape) or a human-friendly value
+		// like "10GiB", "500MB", "1024MiB".
+		n, err := parseSize(value)
+		if err != nil {
+			return fmt.Errorf("%s: %w", normalizeKey(key), err)
 		}
 		f.Cache.MaxSizeBytes = n
 	case "net.max_concurrency_per_account":
@@ -146,6 +154,13 @@ func applyConfig(f *config.File, key, value string) error {
 	return nil
 }
 
+// normalizeKey lower-cases the key and treats "-" and "_" interchangeably
+// so `cache.max-size` and `cache.max_size` are the same setting. The
+// underlying TOML/Go field name still uses underscores.
+func normalizeKey(key string) string {
+	return strings.ReplaceAll(strings.ToLower(key), "-", "_")
+}
+
 func parseBool(v string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "1", "true", "on", "yes":
@@ -154,4 +169,75 @@ func parseBool(v string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("invalid boolean %q (use on/off, true/false, 1/0)", v)
+}
+
+// sizeUnits is the suffix → multiplier table parseSize consults. Decimal
+// units use base 10 (1 KB = 1000 B), binary units use base 1024
+// (1 KiB = 1024 B). A bare "B" or no suffix at all means bytes.
+//
+// The shorthand "K"/"M"/"G"/"T" is treated as the binary form to match
+// what most macOS tools (`du -h`, Finder) show; that's also what the
+// user expects when they type `10G`.
+var sizeUnits = []struct {
+	suffix string
+	mult   int64
+}{
+	{"KIB", 1 << 10},
+	{"MIB", 1 << 20},
+	{"GIB", 1 << 30},
+	{"TIB", 1 << 40},
+	{"KB", 1000},
+	{"MB", 1000 * 1000},
+	{"GB", 1000 * 1000 * 1000},
+	{"TB", 1000 * 1000 * 1000 * 1000},
+	{"K", 1 << 10},
+	{"M", 1 << 20},
+	{"G", 1 << 30},
+	{"T", 1 << 40},
+	{"B", 1},
+}
+
+// parseSize converts a human-friendly size string into bytes. Accepted
+// shapes are e.g. "10GiB", "500 MB", "1024MiB", "2048" (bare bytes),
+// "0" (no eviction). Whitespace is tolerated; matching is
+// case-insensitive. Negative inputs and overflow are rejected.
+func parseSize(s string) (int64, error) {
+	raw := strings.TrimSpace(s)
+	if raw == "" {
+		return 0, errors.New("size cannot be empty")
+	}
+	if strings.HasPrefix(raw, "-") {
+		return 0, fmt.Errorf("size must be non-negative, got %q", s)
+	}
+
+	upper := strings.ToUpper(raw)
+
+	// Find the longest matching suffix (so "KIB" wins over "K").
+	var (
+		multiplier int64 = 1
+		digitsEnd        = len(raw)
+	)
+	for _, u := range sizeUnits {
+		if strings.HasSuffix(upper, u.suffix) {
+			multiplier = u.mult
+			digitsEnd = len(raw) - len(u.suffix)
+			break
+		}
+	}
+
+	numberPart := strings.TrimSpace(raw[:digitsEnd])
+	if numberPart == "" {
+		return 0, fmt.Errorf("missing numeric part in %q", s)
+	}
+
+	n, err := strconv.ParseInt(numberPart, 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid size %q", s)
+	}
+
+	// Multiplication overflow check: bail before int64 wraps around.
+	if multiplier != 0 && n > math.MaxInt64/multiplier {
+		return 0, fmt.Errorf("size %q overflows int64", s)
+	}
+	return n * multiplier, nil
 }
