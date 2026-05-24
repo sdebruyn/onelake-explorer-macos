@@ -2,8 +2,10 @@ package httpgate
 
 import (
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,10 +23,19 @@ import (
 // per-host fallback is used.
 //
 // Transport never reads or alters the response body; it only inspects
-// status and headers.
+// status and headers. The gate slot is held for the entire lifetime of
+// the response — from Acquire all the way through to resp.Body.Close —
+// so streaming reads (DFS Range GETs) keep the slot reserved while bytes
+// are still on the wire, not only while the request headers are being
+// exchanged.
 type Transport struct {
 	// Inner is the underlying RoundTripper. nil means
 	// http.DefaultTransport.
+	//
+	// Footgun: http.DefaultTransport has no timeout, so leaving Inner
+	// nil (or wrapping a client whose Transport is nil) yields an
+	// un-timeouted transport behind the gate. Always pass an inner
+	// Transport with sensible per-request timeouts.
 	Inner http.RoundTripper
 	// Registry maps host -> *Gate. Required.
 	Registry *Registry
@@ -45,6 +56,13 @@ func NewTransport(inner http.RoundTripper, registry *Registry) *Transport {
 // If client is nil, a new *http.Client with the gated transport is
 // returned. If registry is nil, Wrap returns client unchanged - the
 // caller opted out.
+//
+// Footgun: the returned client uses http.DefaultTransport when no
+// inner transport is provided, and http.DefaultTransport has no
+// Timeout. Production callers should always pass a *http.Client with
+// a configured Timeout (and ideally an explicit Transport with its
+// own dial/TLS timeouts) so that a stuck connection cannot pin a
+// gate slot indefinitely.
 func Wrap(client *http.Client, registry *Registry) *http.Client {
 	if registry == nil {
 		return client
@@ -61,6 +79,12 @@ func Wrap(client *http.Client, registry *Registry) *http.Client {
 }
 
 // RoundTrip implements http.RoundTripper.
+//
+// The acquired gate slot is released only when resp.Body is closed (or
+// immediately on the error / nil-body paths). This keeps the slot held
+// for the entire I/O lifetime of the response, which is what matters
+// for the OneLake DFS use case where the bulk of the load is the
+// streaming body, not the request handshake.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.Registry == nil {
 		return nil, errors.New("httpgate: Transport.Registry is nil")
@@ -79,13 +103,16 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer release()
 
 	resp, err := inner.RoundTrip(req)
 	if err != nil {
+		release()
 		return nil, err
 	}
 
+	// Post any Penalty BEFORE wrapping the body so the in-band retry in
+	// internal/api.Do (which only sees status+headers) observes the new
+	// pause window the moment it loops back into Acquire.
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
 		until, ok := ParseRetryAfter(resp.Header.Get("Retry-After"), now())
 		if !ok {
@@ -104,5 +131,30 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 
+	if resp.Body == nil {
+		// HEAD responses and synthetic bodies set Body to nil; nothing
+		// to wrap, release the slot now.
+		release()
+		return resp, nil
+	}
+	resp.Body = &releasingBody{ReadCloser: resp.Body, release: release}
 	return resp, nil
+}
+
+// releasingBody wraps the response body so the gate slot is released
+// exactly once, on the first Close(). Subsequent Close() calls (or a
+// double-defer at the call site) are a no-op for the release function
+// but still forward to the wrapped body's Close() so callers see its
+// real error.
+type releasingBody struct {
+	io.ReadCloser
+	release  func()
+	released atomic.Bool
+}
+
+func (b *releasingBody) Close() error {
+	if b.released.CompareAndSwap(false, true) {
+		defer b.release()
+	}
+	return b.ReadCloser.Close()
 }
