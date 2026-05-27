@@ -9,7 +9,10 @@
 //
 // Phase 1: enumeration, fetch, and the full write path (create / modify /
 // delete) are wired up. Metadata-only modifications (rename, reparent,
-// xattr) return `.featureUnsupported` and are deferred to Phase 2.
+// xattr) return NSError(domain: NSCocoaErrorDomain, code:
+// NSFeatureUnsupportedError) — `NSFileProviderError.Code.featureUnsupported`
+// is iOS-only, so we use Foundation's generic equivalent — and are
+// deferred to Phase 2.
 
 import FileProvider
 import Foundation

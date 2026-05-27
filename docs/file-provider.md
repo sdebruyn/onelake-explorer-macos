@@ -179,7 +179,7 @@ When the user saves a modified file, macOS calls `createItem` or `modifyItem`. T
 4. On success, returns the updated `NSFileProviderItem` with the server-assigned etag/mtime from the post-upload HEAD.
 5. On failure (network, throttling, capacity-paused), returns an `NSFileProviderError` macOS understands; macOS surfaces it in the UI and may retry later (we honor `Retry-After`).
 
-`modifyItem` only processes calls where `changedFields` includes `.contents`. Metadata-only changes (rename, reparent) return `NSFeatureUnsupportedError` in Phase 1.
+`modifyItem` only processes calls where `changedFields` includes `.contents`. Metadata-only changes (rename, reparent) return an `NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)` in Phase 1 — not the `NSFileProviderError.notAuthenticated` alias that `NSFileProviderError.featureUnsupported` resolves to on this macOS version.
 
 ## Conflict resolution
 
@@ -256,11 +256,21 @@ subsequent PRs.
 
 ### Signing for local vs release
 
-A free Apple ID Personal Team is enough for local development. The
-extension's `com.apple.developer.file-provider.testing-mode = true`
-entitlement lets a Personal-Team-signed bundle register a File Provider
-domain on the developer's own Mac without going through a full
-provisioning-profile dance.
+The **paid Apple Developer Program** (Developer ID team) is the primary
+development path. It provides a real provisioning profile that includes
+the `com.apple.developer.file-provider` entitlement family; no
+`testing-mode` entitlement is needed or used.
+
+External contributors without a paid Developer Program membership can
+still build and smoke-test the host app using a free Personal Team:
+
+```
+make apple-build-host
+```
+
+This target skips the File Provider Extension, so the full mount
+workflow is not exercised, but it confirms the host app compiles and
+the cgo bridge links correctly.
 
 Homebrew cask distribution requires:
 - Apple Developer Program enrollment ($99/yr),
