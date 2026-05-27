@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -114,7 +115,38 @@ func runLogin(cmd *cobra.Command, opts loginOptions) error {
 		tenantLabel = account.TenantID
 	}
 	fmt.Fprintf(stdout, "Account %q added (%s, tenant %s)\n", finalAlias, account.Username, tenantLabel)
+
+	// Only the host app can register the File Provider domain
+	// (NSFileProviderManager.add lives in the Swift side, not the daemon).
+	// Triggering it here saves the user a manual Finder/Spotlight step
+	// after a fresh `brew install` + `ofem login`. Skipped on device-code
+	// flows because those run in headless contexts (SSH, CI) where there
+	// is no GUI to bring forward.
+	if !opts.deviceCode {
+		launchHostApp(stdout)
+	}
 	return nil
+}
+
+// launchHostApp asks macOS to bring the OneLake host app to the
+// foreground via the app's bundle identifier. The host app's
+// DomainSyncManager reconciles File Provider domains on launch and on
+// applicationDidBecomeActive, so triggering an open is enough to
+// register the just-added account's domain.
+//
+// We use `open -b <bundle-id>` rather than `open -a <name>` because
+// Launch Services name lookup depends on its index being warm — a fresh
+// `brew install` may not have the display name indexed yet, but the
+// bundle id is always resolvable from the installed bundle. The
+// function is a var so tests (and future headless callers) can swap it
+// for a no-op.
+var launchHostApp = func(stdout io.Writer) {
+	c := exec.Command("open", "-b", "dev.debruyn.ofem")
+	if err := c.Start(); err != nil {
+		fmt.Fprintf(stdout, "warning: could not auto-open OneLake Explorer for macOS: %v\n", err)
+		return
+	}
+	fmt.Fprintln(stdout, "Opened OneLake Explorer for macOS — Finder mount will appear shortly.")
 }
 
 // resolveAlias returns the alias to use for the new account. It first
