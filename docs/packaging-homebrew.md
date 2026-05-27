@@ -64,7 +64,7 @@ cask "ofem" do
   url "https://github.com/sdebruyn/onelake-explorer-macos/releases/download/v#{version}/OneLake-#{version}.dmg"
   name "OneLake Explorer for macOS"
   desc "Browse Microsoft Fabric OneLake from Finder"
-  homepage "https://github.com/sdebruyn/onelake-explorer-macos"
+  homepage "https://ofem.debruyn.dev"
 
   depends_on macos: ">= :sonoma"
   depends_on arch: :arm64
@@ -274,3 +274,30 @@ make apple-build-host
 The resulting app lands in `build/Export/OneLake.app`. Drag it into
 `/Applications`. Without notarization it will not pass Gatekeeper on other
 machines; override locally with `xattr -d com.apple.quarantine OneLake.app`.
+
+### Manual sign and notarize
+
+`scripts/sign-and-notarize.sh` is a local developer convenience that signs an
+already-built `OneLake.app`, wraps it in a DMG, and submits it to the Apple
+notarization service. It expects the following environment variables (none of
+these are GitHub Secrets — they are local-only, never committed):
+
+| Variable | Description |
+|---|---|
+| `APPLE_TEAM_ID` | Apple Developer Team ID (e.g. `6D79CUWZ4J`). |
+| `APPLE_API_KEY_ID` | App Store Connect API key identifier (10 characters). |
+| `APPLE_API_ISSUER_ID` | App Store Connect API issuer UUID. |
+| `NOTARY_API_KEY_PATH` | Absolute path to the `.p8` private key file on your local machine. Download it once from App Store Connect (see "How to generate an App Store Connect API key" above). |
+| `VERSION` | CalVer string used to name the DMG (e.g. `2026.05.1`). |
+
+Optional: `OUTPUT_DIR` (default `./dist-app`) and `NOTARY_TIMEOUT` (default `15m`).
+
+Example:
+```bash
+export APPLE_TEAM_ID=6D79CUWZ4J
+export APPLE_API_KEY_ID=XXXXXXXXXX
+export APPLE_API_ISSUER_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+export NOTARY_API_KEY_PATH=~/Downloads/AuthKey_XXXXXXXXXX.p8
+export VERSION=2026.05.1
+scripts/sign-and-notarize.sh build/Export/OneLake.app
+```
