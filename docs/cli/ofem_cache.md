@@ -25,7 +25,7 @@ cache.max_size').
 
 ### SEE ALSO
 
-* [ofem](ofem.md)	 - OneLake File Explorer for macOS
+* [ofem](ofem.md)	 - OneLake Explorer for macOS
 * [ofem cache clear](ofem_cache_clear.md)	 - Delete every blob from the local cache
 * [ofem cache evict](ofem_cache_evict.md)	 - Run LRU eviction down to the configured cache.max_size
 * [ofem cache size](ofem_cache_size.md)	 - Show current cache usage and the configured limit

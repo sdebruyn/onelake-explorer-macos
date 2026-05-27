@@ -4,7 +4,7 @@ Project context for Claude Code sessions on this repo.
 
 ## What this project is
 
-OFEM — OneLake File Explorer for macOS. Native Finder integration with Microsoft Fabric OneLake, distributed via Homebrew cask, written in Go (core + CLI) and Swift (host app + File Provider Extension). MIT licensed, open source from day one.
+OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fabric OneLake, distributed via Homebrew cask, written in Go (core + CLI) and Swift (host app + File Provider Extension). MIT licensed, open source from day one.
 
 ## Hard constraints (do not violate)
 

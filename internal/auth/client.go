@@ -3,7 +3,7 @@ package auth
 // EntraClientID is the Microsoft Entra App Registration client ID
 // embedded into OFEM builds. This is the real multi-tenant public-client
 // registration owned by Sam Debruyn (display name
-// "OneLake File Explorer for macOS"), with http://localhost as the
+// "OneLake Explorer for macOS"), with http://localhost as the
 // redirect URI and "Allow public client flows" enabled. The delegated
 // API permission is Azure Storage / user_impersonation.
 const EntraClientID = "939b4a06-cc18-49eb-9674-a1fc041489f6"

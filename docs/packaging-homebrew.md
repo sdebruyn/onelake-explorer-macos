@@ -62,8 +62,8 @@ cask "ofem" do
   sha256 "abc123..."
 
   url "https://github.com/sdebruyn/onelake-explorer-macos/releases/download/v#{version}/OneLake-#{version}.dmg"
-  name "OneLake"
-  desc "OneLake File Explorer for macOS — Finder integration for Microsoft Fabric"
+  name "OneLake Explorer for macOS"
+  desc "Browse Microsoft Fabric OneLake from Finder"
   homepage "https://github.com/sdebruyn/onelake-explorer-macos"
 
   depends_on macos: ">= :sonoma"

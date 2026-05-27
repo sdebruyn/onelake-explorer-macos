@@ -1,6 +1,6 @@
 [project]
 site_dir = "docs_build/site"
-site_name = "OneLake File Explorer for macOS"
+site_name = "OneLake Explorer for macOS"
 site_description = "OneLake in Finder on macOS — multi-account, multi-tenant, open source."
 site_url = "https://ofem.debruyn.dev"
 site_author = "Sam Debruyn"

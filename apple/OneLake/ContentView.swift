@@ -36,7 +36,7 @@ struct ContentView: View {
                 .foregroundStyle(.tint)
                 .accessibilityHidden(true)
 
-            Text("OneLake")
+            Text("OneLake Explorer for macOS")
                 .font(.largeTitle.bold())
 
             Text("Sign in to your OneLake accounts from the menu bar.")

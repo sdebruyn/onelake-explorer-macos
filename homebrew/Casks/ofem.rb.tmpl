@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Homebrew cask for OFEM — OneLake File Explorer for macOS.
+# Homebrew cask for OFEM — OneLake Explorer for macOS.
 #
 # This file is a template. The release workflow renders it by substituting:
 #   {{ .Version }}   -> CalVer string, e.g. 2026.05.1
@@ -13,7 +13,7 @@ cask "ofem" do
   sha256 "{{ .DMGSHA256 }}"
 
   url "https://github.com/sdebruyn/onelake-explorer-macos/releases/download/v#{version}/OneLake-#{version}.dmg"
-  name "OFEM"
+  name "OneLake Explorer for macOS"
   desc "Browse Microsoft Fabric OneLake from Finder"
   homepage "https://ofem.debruyn.dev"
 

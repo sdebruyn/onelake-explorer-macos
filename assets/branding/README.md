@@ -1,6 +1,6 @@
 # OFEM brand assets
 
-Canonical source of truth for the OFEM (OneLake File Explorer for macOS) marks.
+Canonical source of truth for the OFEM (OneLake Explorer for macOS) marks.
 All other bitmap renditions in this repo are generated from the SVGs in this folder.
 
 ## Files

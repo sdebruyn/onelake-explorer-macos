@@ -4,7 +4,7 @@ title: ofem
 
 ## ofem
 
-OneLake File Explorer for macOS
+OneLake Explorer for macOS
 
 ### Synopsis
 
