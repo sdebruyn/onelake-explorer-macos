@@ -10,8 +10,6 @@
 	</array>
 	<key>com.apple.security.network.client</key>
 	<true/>
-	<key>com.apple.developer.file-provider.testing-mode</key>
-	<true/>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)group.dev.debruyn.ofem</string>

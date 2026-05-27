@@ -151,8 +151,12 @@ We need:
 - `com.apple.security.keychain-access-groups` = `[$(AppIdentifierPrefix)group.dev.debruyn.ofem]`.
 
 `apple/OneLakeFileProvider.entitlements` adds:
-- `com.apple.developer.file-provider.testing-mode` = true (in dev builds only).
 - `NSExtension` plist with `NSExtensionFileProviderSupportedItemActions` enumerated.
+
+Note: `com.apple.developer.file-provider.testing-mode` is **not** used. The paid
+Developer ID team provides a provisioning profile that grants the required File
+Provider entitlements directly. Contributors using a free Personal Team can build
+the host app only (`make apple-build-host`); the extension requires a paid team.
 
 ## GitHub Secrets
 
