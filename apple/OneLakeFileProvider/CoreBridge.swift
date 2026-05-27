@@ -387,6 +387,131 @@ final class CoreBridge {
         }
     }
 
+    // MARK: - Write operations
+
+    /// Upload a new file or create a directory inside a Fabric item.
+    ///
+    /// - Parameters:
+    ///   - alias: Account alias the domain was registered under.
+    ///   - parentIdentifier: Bridge identifier of the parent container,
+    ///     e.g. `"<wsId>/<itemId>"` or `"<wsId>/<itemId>/<parentPath>"`.
+    ///   - filename: Leaf name of the new item.
+    ///   - isDir: `true` to create a directory; `false` to upload a file.
+    ///   - srcPath: Absolute path of the local source file. Ignored when
+    ///     `isDir` is `true`; pass `nil` or empty for directories.
+    /// - Returns: The bridge representation of the newly created item.
+    func createItem(
+        alias: String,
+        parentIdentifier: String,
+        filename: String,
+        isDir: Bool,
+        srcPath: String?
+    ) throws -> BridgeItem {
+        try ensureBootstrapped()
+        let src = srcPath ?? ""
+        let isDirFlag = isDir ? Int32(1) : Int32(0)
+        let raw = try queue.sync { () throws -> Data in
+            guard let cString = alias.withCString({ cAlias in
+                parentIdentifier.withCString { cParent in
+                    filename.withCString { cName in
+                        src.withCString { cSrc in
+                            ofem_core_create_item(
+                                UnsafeMutablePointer(mutating: cAlias),
+                                UnsafeMutablePointer(mutating: cParent),
+                                UnsafeMutablePointer(mutating: cName),
+                                isDirFlag,
+                                UnsafeMutablePointer(mutating: cSrc)
+                            )
+                        }
+                    }
+                }
+            }) else {
+                throw BridgeError.nullPointer("ofem_core_create_item returned NULL")
+            }
+            defer { ofem_core_string_free(cString) }
+            return Data(String(cString: cString).utf8)
+        }
+        let envelope: ItemEnvelope = try decode(raw)
+        if let payload = envelope.error {
+            throw BridgeError(payload: payload)
+        }
+        guard let item = envelope.item else {
+            throw BridgeError.decoding("create_item envelope missing both 'item' and 'error'")
+        }
+        return item
+    }
+
+    /// Replace the content of an existing file.
+    ///
+    /// - Parameters:
+    ///   - alias: Account alias.
+    ///   - identifier: Bridge identifier of the file, e.g. `"<wsId>/<itemId>/<path>"`.
+    ///   - srcPath: Absolute path of the local file with new content.
+    /// - Returns: The updated bridge representation of the item.
+    func modifyItem(
+        alias: String,
+        identifier: String,
+        srcPath: String
+    ) throws -> BridgeItem {
+        try ensureBootstrapped()
+        let raw = try queue.sync { () throws -> Data in
+            guard let cString = alias.withCString({ cAlias in
+                identifier.withCString { cIdent in
+                    srcPath.withCString { cSrc in
+                        ofem_core_modify_item(
+                            UnsafeMutablePointer(mutating: cAlias),
+                            UnsafeMutablePointer(mutating: cIdent),
+                            UnsafeMutablePointer(mutating: cSrc)
+                        )
+                    }
+                }
+            }) else {
+                throw BridgeError.nullPointer("ofem_core_modify_item returned NULL")
+            }
+            defer { ofem_core_string_free(cString) }
+            return Data(String(cString: cString).utf8)
+        }
+        let envelope: ItemEnvelope = try decode(raw)
+        if let payload = envelope.error {
+            throw BridgeError(payload: payload)
+        }
+        guard let item = envelope.item else {
+            throw BridgeError.decoding("modify_item envelope missing both 'item' and 'error'")
+        }
+        return item
+    }
+
+    /// Delete a file or directory from OneLake.
+    ///
+    /// - Parameters:
+    ///   - alias: Account alias.
+    ///   - identifier: Bridge identifier of the item to delete.
+    func deleteItem(alias: String, identifier: String) throws {
+        try ensureBootstrapped()
+        let raw = try queue.sync { () throws -> Data in
+            guard let cString = alias.withCString({ cAlias in
+                identifier.withCString { cIdent in
+                    ofem_core_delete_item(
+                        UnsafeMutablePointer(mutating: cAlias),
+                        UnsafeMutablePointer(mutating: cIdent)
+                    )
+                }
+            }) else {
+                throw BridgeError.nullPointer("ofem_core_delete_item returned NULL")
+            }
+            defer { ofem_core_string_free(cString) }
+            return Data(String(cString: cString).utf8)
+        }
+        // The success envelope is "{}"; check whether there's an error key.
+        struct DeleteEnvelope: Decodable {
+            let error: BridgeErrorPayload?
+        }
+        let envelope: DeleteEnvelope = try decode(raw)
+        if let payload = envelope.error {
+            throw BridgeError(payload: payload)
+        }
+    }
+
     // MARK: - Internals
 
     private func ensureBootstrapped() throws {

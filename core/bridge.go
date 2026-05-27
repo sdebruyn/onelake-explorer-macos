@@ -62,6 +62,8 @@ import (
 const (
 	enumerateDeadline = 10 * time.Second
 	fetchDeadline     = 60 * time.Second
+	writeDeadline     = 60 * time.Second
+	deleteDeadline    = 30 * time.Second
 )
 
 // Synthetic identifier constants used at the JSON boundary. These mirror
@@ -100,6 +102,9 @@ type bridgeEngine interface {
 	ListItems(ctx context.Context, alias, workspaceID string) ([]fabric.Item, error)
 	Enumerate(ctx context.Context, k cache.Key) ([]cache.Entry, error)
 	Open(ctx context.Context, k cache.Key) (io.ReadCloser, error)
+	Put(ctx context.Context, k cache.Key, content io.Reader, size int64) error
+	Delete(ctx context.Context, k cache.Key) error
+	Mkdir(ctx context.Context, k cache.Key) error
 }
 
 // ofem_core_init wires the cache, auth registry, and sync engine and
@@ -474,6 +479,229 @@ func ofem_core_fetch_contents(alias, identifier, destPath *C.char) *C.char { //n
 	return marshalEnvelope(envelope{Item: &item})
 }
 
+// ofem_core_create_item uploads a new file or creates a new directory.
+//
+// parentIdentifier is "<wsId>/<itemId>[/<parentPath>]". filename is the
+// leaf name. isDir must be 1 to create a directory (srcPath ignored), or
+// 0 to upload the file at srcPath.
+//
+// macOS metadata files (matching sync.IsMacOSMetadata) are accepted
+// without contacting the engine: a synthetic item is returned immediately
+// so Finder treats the write as successful while the lake stays clean.
+//
+//export ofem_core_create_item
+func ofem_core_create_item(alias, parentIdentifier, filename *C.char, isDir C.int, srcPath *C.char) *C.char { //nolint:revive // C-ABI symbol name
+	if !bridgeReady.Load() {
+		return notReadyEnvelope()
+	}
+	a := goString(alias)
+	parentID := goString(parentIdentifier)
+	name := goString(filename)
+	dir := isDir != 0
+	src := goString(srcPath)
+
+	parentScope, perr := parseIdentifier(parentID)
+	if perr != nil {
+		return marshalEnvelope(envelope{Error: errorPayloadFromGo(perr)})
+	}
+	if parentScope.kind != scopeItem && parentScope.kind != scopePath {
+		return marshalEnvelope(envelope{Error: &errorPayload{
+			Code:    "noSuchItem",
+			Message: "create_item requires a parent inside a Fabric item",
+		}})
+	}
+
+	// Derive the new item's path by joining the parent path (may be empty
+	// if the parent is the item root) with the filename.
+	newPath := name
+	if parentScope.path != "" {
+		newPath = parentScope.path + "/" + name
+	}
+	ws := parentScope.workspace
+	item := parentScope.item
+
+	// macOS metadata short-circuit: accept but do not touch the engine.
+	if syncpkg.IsMacOSMetadata(newPath) {
+		synthetic := syntheticItem(ws, item, newPath, parentID, name, true)
+		return marshalEnvelope(envelope{Item: &synthetic})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), writeDeadline)
+	defer cancel()
+
+	key := cache.Key{
+		AccountAlias: a,
+		WorkspaceID:  ws,
+		ItemID:       item,
+		Path:         newPath,
+	}
+
+	if dir {
+		if err := bridgeEng.Mkdir(ctx, key); err != nil {
+			return marshalEnvelope(envelope{Error: errorPayloadFromGo(err)})
+		}
+		synthetic := syntheticItem(ws, item, newPath, parentID, name, true)
+		return marshalEnvelope(envelope{Item: &synthetic})
+	}
+
+	// File upload: open the source, stat for size, then put.
+	f, ferr := os.Open(src)
+	if ferr != nil {
+		return marshalEnvelope(envelope{Error: errorPayloadFromGo(ferr)})
+	}
+	defer func() { _ = f.Close() }()
+
+	fi, serr := f.Stat()
+	if serr != nil {
+		return marshalEnvelope(envelope{Error: errorPayloadFromGo(serr)})
+	}
+	size := fi.Size()
+
+	if err := bridgeEng.Put(ctx, key, f, size); err != nil {
+		return marshalEnvelope(envelope{Error: errorPayloadFromGo(err)})
+	}
+
+	// Attempt a cache lookup for the freshly uploaded file so the returned
+	// item carries the server-assigned etag/mtime. Fall back to synthetic
+	// if the cache row isn't there yet.
+	entry, gerr := bridgeCache.Get(ctx, key)
+	if gerr == nil {
+		it := entryToItem(a, entry)
+		return marshalEnvelope(envelope{Item: &it})
+	}
+	synthetic := syntheticItem(ws, item, newPath, parentID, name, false)
+	synthetic.Size = size
+	return marshalEnvelope(envelope{Item: &synthetic})
+}
+
+// ofem_core_modify_item replaces the content of an existing file.
+//
+// identifier must be "<wsId>/<itemId>/<path>". srcPath is the local
+// file with new content. Engine.Put applies last-write-wins semantics
+// and handles the macOS-metadata filter internally.
+//
+//export ofem_core_modify_item
+func ofem_core_modify_item(alias, identifier, srcPath *C.char) *C.char { //nolint:revive // C-ABI symbol name
+	if !bridgeReady.Load() {
+		return notReadyEnvelope()
+	}
+	a := goString(alias)
+	id := goString(identifier)
+	src := goString(srcPath)
+
+	sc, perr := parseIdentifier(id)
+	if perr != nil {
+		return marshalEnvelope(envelope{Error: errorPayloadFromGo(perr)})
+	}
+	if sc.kind != scopePath {
+		return marshalEnvelope(envelope{Error: &errorPayload{
+			Code:    "noSuchItem",
+			Message: "modify_item requires a file identifier",
+		}})
+	}
+
+	f, ferr := os.Open(src)
+	if ferr != nil {
+		return marshalEnvelope(envelope{Error: errorPayloadFromGo(ferr)})
+	}
+	defer func() { _ = f.Close() }()
+
+	fi, serr := f.Stat()
+	if serr != nil {
+		return marshalEnvelope(envelope{Error: errorPayloadFromGo(serr)})
+	}
+	size := fi.Size()
+
+	ctx, cancel := context.WithTimeout(context.Background(), writeDeadline)
+	defer cancel()
+
+	key := cache.Key{
+		AccountAlias: a,
+		WorkspaceID:  sc.workspace,
+		ItemID:       sc.item,
+		Path:         sc.path,
+	}
+	if err := bridgeEng.Put(ctx, key, f, size); err != nil {
+		return marshalEnvelope(envelope{Error: errorPayloadFromGo(err)})
+	}
+
+	entry, gerr := bridgeCache.Get(ctx, key)
+	if gerr == nil {
+		it := entryToItem(a, entry)
+		return marshalEnvelope(envelope{Item: &it})
+	}
+	parentID := buildPathParentID(sc.workspace, sc.item, sc.path)
+	synthetic := syntheticItem(sc.workspace, sc.item, sc.path, parentID, path.Base(sc.path), false)
+	synthetic.Size = size
+	return marshalEnvelope(envelope{Item: &synthetic})
+}
+
+// ofem_core_delete_item removes a file or directory from OneLake.
+//
+// identifier must be "<wsId>/<itemId>/<path>". macOS metadata paths are
+// accepted without contacting the engine (success immediately). On
+// success the function returns "{}"; errors are {"error":{...}}.
+//
+//export ofem_core_delete_item
+func ofem_core_delete_item(alias, identifier *C.char) *C.char { //nolint:revive // C-ABI symbol name
+	if !bridgeReady.Load() {
+		return notReadyEnvelope()
+	}
+	a := goString(alias)
+	id := goString(identifier)
+
+	sc, perr := parseIdentifier(id)
+	if perr != nil {
+		return marshalEnvelope(envelope{Error: errorPayloadFromGo(perr)})
+	}
+	if sc.kind != scopePath {
+		return marshalEnvelope(envelope{Error: &errorPayload{
+			Code:    "noSuchItem",
+			Message: "delete_item requires a path identifier",
+		}})
+	}
+
+	// macOS metadata: Engine.Delete already handles this, but for
+	// consistency we short-circuit here too so no engine call is made.
+	if syncpkg.IsMacOSMetadata(sc.path) {
+		return C.CString("{}")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), deleteDeadline)
+	defer cancel()
+
+	key := cache.Key{
+		AccountAlias: a,
+		WorkspaceID:  sc.workspace,
+		ItemID:       sc.item,
+		Path:         sc.path,
+	}
+	if err := bridgeEng.Delete(ctx, key); err != nil {
+		return marshalEnvelope(envelope{Error: errorPayloadFromGo(err)})
+	}
+	return C.CString("{}")
+}
+
+// syntheticItem builds a bridgeItem for paths where no cache row is
+// available (e.g. after mkdir, or after upload when the HEAD hasn't
+// landed yet). Versions are deterministic so Finder gets stable
+// identity without a remote round-trip.
+func syntheticItem(ws, item, newPath, parentID, name string, isDir bool) bridgeItem {
+	caps := []string{"read", "write", "delete"}
+	if isDir {
+		caps = []string{"read", "write", "delete", "enumerate", "add_subitems"}
+	}
+	return bridgeItem{
+		Identifier:       buildPathID(ws, item, newPath),
+		ParentIdentifier: parentID,
+		Filename:         name,
+		IsDir:            isDir,
+		ContentVersion:   fallbackVersion(newPath, 0, time.Time{}),
+		MetadataVersion:  fallbackVersion(newPath, 0, time.Time{}),
+		Capabilities:     caps,
+	}
+}
+
 // --- identifier parsing -----------------------------------------------------
 
 // scopeKind tags a parsed identifier so callers can switch on intent
@@ -783,9 +1011,9 @@ func entryToItem(alias string, e cache.Entry) bridgeItem {
 		ct = mime.TypeByExtension(path.Ext(e.Path))
 	}
 
-	caps := []string{"read"}
+	caps := []string{"read", "write", "delete"}
 	if e.IsDir {
-		caps = []string{"read", "enumerate"}
+		caps = []string{"read", "write", "delete", "enumerate", "add_subitems"}
 	}
 
 	return bridgeItem{
