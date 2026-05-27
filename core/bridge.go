@@ -21,7 +21,6 @@ import "C"
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +52,13 @@ import (
 // equivalents because the File Provider Extension blocks Finder while a
 // call is outstanding and macOS will kill the extension if it stays
 // unresponsive for too long.
+//
+// enumerateDeadline is 10 s deliberately: macOS's total timeout budget
+// for a File Provider enumerate call is roughly 30 s, and 10 s leaves
+// ample room for the framework to retry and surface a degraded-state icon
+// before the OS decides the extension is hung. For deeper folders with
+// many children, cursor-based pagination will be added in Phase 2 so no
+// single enumerate call needs to fetch an unbounded result set.
 const (
 	enumerateDeadline = 10 * time.Second
 	fetchDeadline     = 60 * time.Second
@@ -66,11 +72,18 @@ const rootContainerID = ".rootContainer"
 
 // bridge holds the package-level state the C-ABI functions share. It is
 // initialised lazily by ofem_core_init and torn down by ofem_core_close.
-// All accesses are guarded by bridgeMu; the atomic flag is a fast-path
-// check so the hot enumerate/fetch paths can early-out without taking
-// the mutex.
+//
+// Concurrency model:
+//   - bridgeInitMu serialises ofem_core_init / ofem_core_close against
+//     each other (writer path).
+//   - bridgeRWMu guards the globals during hot calls: callers take RLock
+//     for the duration of a single bridge call; ofem_core_close takes the
+//     full Lock so it cannot run while any call is in progress.
+//   - bridgeReady is an atomic fast-path so enumerate/fetch can skip
+//     the mutex when the bridge is not yet initialised.
 var (
-	bridgeMu     gosync.Mutex
+	bridgeInitMu gosync.Mutex
+	bridgeRWMu   gosync.RWMutex
 	bridgeReady  atomic.Bool
 	bridgeStore  *config.Store
 	bridgeCache  *cache.Cache
@@ -102,8 +115,8 @@ type bridgeEngine interface {
 //
 //export ofem_core_init
 func ofem_core_init(groupContainerPath *C.char) C.int { //nolint:revive // C-ABI symbol name
-	bridgeMu.Lock()
-	defer bridgeMu.Unlock()
+	bridgeInitMu.Lock()
+	defer bridgeInitMu.Unlock()
 
 	if bridgeReady.Load() {
 		// Re-init is a no-op; surface as a warning so a misbehaving
@@ -209,13 +222,22 @@ func resolveBridgePaths(groupContainerPath *C.char) (config.Paths, error) {
 // globals. Safe to call multiple times; safe to call without a prior
 // successful init.
 //
+// This function acquires bridgeRWMu.Lock() which blocks until all
+// in-flight enumerate / fetch calls (which hold RLock) finish. The
+// Swift side must not call ofem_core_close while intentionally keeping
+// other calls running; the guarantee is: once the last call returns,
+// tearing down is safe.
+//
 //export ofem_core_close
 func ofem_core_close() { //nolint:revive // C-ABI symbol name
-	bridgeMu.Lock()
-	defer bridgeMu.Unlock()
+	bridgeInitMu.Lock()
+	defer bridgeInitMu.Unlock()
 	if !bridgeReady.Load() {
 		return
 	}
+	// Wait for all in-flight callers to finish before clearing globals.
+	bridgeRWMu.Lock()
+	defer bridgeRWMu.Unlock()
 	if bridgeCache != nil {
 		if err := bridgeCache.Close(); err != nil && bridgeLogger != nil {
 			bridgeLogger.Warn("bridge close: cache close error", slog.Any("err", err))
@@ -238,6 +260,11 @@ func ofem_core_close() { //nolint:revive // C-ABI symbol name
 //
 //export ofem_core_list_accounts
 func ofem_core_list_accounts() *C.char { //nolint:revive // C-ABI symbol name
+	if !bridgeReady.Load() {
+		return marshalAccountsEnvelope(nil)
+	}
+	bridgeRWMu.RLock()
+	defer bridgeRWMu.RUnlock()
 	if !bridgeReady.Load() {
 		return marshalAccountsEnvelope(nil)
 	}
@@ -289,6 +316,13 @@ func ofem_core_enumerate(alias, identifier *C.char) *C.char { //nolint:revive //
 	if !bridgeReady.Load() {
 		return notReadyEnvelope()
 	}
+	bridgeRWMu.RLock()
+	defer bridgeRWMu.RUnlock()
+	// Re-check after acquiring the read lock; ofem_core_close could have
+	// run between the atomic load and the RLock().
+	if !bridgeReady.Load() {
+		return notReadyEnvelope()
+	}
 	a := goString(alias)
 	id := goString(identifier)
 
@@ -318,6 +352,11 @@ func ofem_core_item(alias, identifier *C.char) *C.char { //nolint:revive // C-AB
 	if !bridgeReady.Load() {
 		return notReadyEnvelope()
 	}
+	bridgeRWMu.RLock()
+	defer bridgeRWMu.RUnlock()
+	if !bridgeReady.Load() {
+		return notReadyEnvelope()
+	}
 	a := goString(alias)
 	id := goString(identifier)
 
@@ -343,6 +382,11 @@ func ofem_core_item(alias, identifier *C.char) *C.char { //nolint:revive // C-AB
 //
 //export ofem_core_fetch_contents
 func ofem_core_fetch_contents(alias, identifier, destPath *C.char) *C.char { //nolint:revive // C-ABI symbol name
+	if !bridgeReady.Load() {
+		return notReadyEnvelope()
+	}
+	bridgeRWMu.RLock()
+	defer bridgeRWMu.RUnlock()
 	if !bridgeReady.Load() {
 		return notReadyEnvelope()
 	}
@@ -398,6 +442,10 @@ func ofem_core_fetch_contents(alias, identifier, destPath *C.char) *C.char { //n
 		}})
 	}
 	if cerr := f.Close(); cerr != nil {
+		// Close failure (e.g. ENOSPC during fsync) means the file was not
+		// fully flushed. Remove the partial file so Finder never picks it
+		// up as a "successful" partial download.
+		_ = os.Remove(dest)
 		return marshalEnvelope(envelope{Error: &errorPayload{
 			Code: "cannotSynchronize", Message: cerr.Error(),
 		}})
@@ -449,20 +497,43 @@ type scope struct {
 }
 
 // parseIdentifier splits the C-ABI identifier into its components. We
-// keep the grammar deliberately strict so a malformed identifier returns
-// noSuchItem rather than silently misrouting the request.
+// keep the grammar deliberately strict: any identifier that contains an
+// empty segment (double slash, leading slash, or trailing slash that
+// produces an empty item/workspace field) is rejected with an error so
+// the caller sees noSuchItem rather than a Fabric call with an empty ID.
+//
+// Valid forms:
+//
+//	""                  -> scopeRoot
+//	".rootContainer"    -> scopeRoot
+//	"<ws>"              -> scopeWorkspace  (non-empty)
+//	"<ws>/<item>"       -> scopeItem       (both non-empty)
+//	"<ws>/<item>/<p>"   -> scopePath       (ws, item non-empty; p may be empty for item root)
 func parseIdentifier(id string) (scope, error) {
 	switch id {
 	case "", rootContainerID:
 		return scope{kind: scopeRoot}, nil
 	}
+	// Reject leading slash — would produce an empty workspace segment.
+	if strings.HasPrefix(id, "/") {
+		return scope{}, fmt.Errorf("invalid identifier %q: leading slash", id)
+	}
 	parts := strings.SplitN(id, "/", 3)
 	switch len(parts) {
 	case 1:
+		if parts[0] == "" {
+			return scope{}, fmt.Errorf("invalid identifier %q: empty workspace", id)
+		}
 		return scope{kind: scopeWorkspace, workspace: parts[0]}, nil
 	case 2:
+		if parts[0] == "" || parts[1] == "" {
+			return scope{}, fmt.Errorf("invalid identifier %q: empty workspace or item segment", id)
+		}
 		return scope{kind: scopeItem, workspace: parts[0], item: parts[1]}, nil
 	case 3:
+		if parts[0] == "" || parts[1] == "" {
+			return scope{}, fmt.Errorf("invalid identifier %q: empty workspace or item segment", id)
+		}
 		return scope{
 			kind:      scopePath,
 			workspace: parts[0],
@@ -542,8 +613,8 @@ func itemForScope(ctx context.Context, alias string, sc scope) (*bridgeItem, err
 		// Lookup the synthetic workspace row sync.ListWorkspaces wrote.
 		k := cache.Key{
 			AccountAlias: alias,
-			WorkspaceID:  "__workspaces__",
-			ItemID:       "__workspaces__",
+			WorkspaceID:  syncpkg.VirtualWorkspaceID,
+			ItemID:       syncpkg.VirtualWorkspaceID,
 			Path:         sc.workspace,
 		}
 		entry, err := bridgeCache.Get(ctx, k)
@@ -572,11 +643,11 @@ func itemForScope(ctx context.Context, alias string, sc scope) (*bridgeItem, err
 			Capabilities:     []string{"read", "enumerate"},
 		}, nil
 	case scopeItem:
-		// Items live under the workspace's virtual "__items__" row.
+		// Items live under the workspace's virtual row written by sync.ListItems.
 		k := cache.Key{
 			AccountAlias: alias,
 			WorkspaceID:  sc.workspace,
-			ItemID:       "__items__",
+			ItemID:       syncpkg.VirtualItemID,
 			Path:         sc.item,
 		}
 		entry, err := bridgeCache.Get(ctx, k)
@@ -909,16 +980,4 @@ func marshalEnvelope(e envelope) *C.char {
 		return C.CString(string(fallback))
 	}
 	return C.CString(string(data))
-}
-
-// hexShort is a small helper used in a couple of fallback paths to keep
-// the version strings human-recognisable in logs. Not currently called
-// but kept here so a future debug toggle does not need to reintroduce it.
-//
-//nolint:unused // retained for diagnostic toggles
-func hexShort(b []byte) string {
-	if len(b) > 8 {
-		b = b[:8]
-	}
-	return hex.EncodeToString(b)
 }

@@ -10,16 +10,25 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/telemetry"
 )
 
-// virtualWorkspaceID is the placeholder used as workspace_id when
+// VirtualWorkspaceID is the placeholder used as workspace_id when
 // caching the top-level "list of workspaces" for an account. The cache
 // schema requires every key to have a non-empty workspace_id; this
 // constant keeps that invariant satisfied while staying obviously
 // distinct from a real GUID.
-const virtualWorkspaceID = "__workspaces__"
+//
+// Exported so the cgo bridge in core/bridge.go can reference the same
+// value without duplicating the string literal (drift risk).
+const VirtualWorkspaceID = "__workspaces__"
 
-// virtualItemID mirrors virtualWorkspaceID for the cache rows backing
+// VirtualItemID mirrors VirtualWorkspaceID for the cache rows backing
 // per-workspace item listings. Same reasoning.
-const virtualItemID = "__items__"
+//
+// Exported for the same reason as VirtualWorkspaceID.
+const VirtualItemID = "__items__"
+
+// Keep unexported aliases so internal callers don't need to change.
+const virtualWorkspaceID = VirtualWorkspaceID
+const virtualItemID = VirtualItemID
 
 // ListWorkspaces returns the workspaces visible to the given account.
 // The result is also written to the cache so offline enumeration of

@@ -82,6 +82,13 @@ func TestParseIdentifier(t *testing.T) {
 		{"item root path", "ws-1/it-1/", scope{kind: scopePath, workspace: "ws-1", item: "it-1", path: ""}, false},
 		{"deep path", "ws/it/Files/a/b.csv", scope{kind: scopePath, workspace: "ws", item: "it", path: "Files/a/b.csv"}, false},
 		{"trailing slash trimmed", "ws/it/Files/a/", scope{kind: scopePath, workspace: "ws", item: "it", path: "Files/a"}, false},
+		// Negative cases: malformed identifiers must return errors, not silently
+		// route to a backend call with an empty workspace or item ID.
+		{"leading slash", "/abc", scope{}, true},
+		{"trailing slash workspace only", "ws-1/", scope{}, true},
+		{"leading slash item form", "/it-1", scope{}, true},
+		{"double slash", "ws//it", scope{}, true},
+		{"single slash only", "/", scope{}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -405,18 +412,18 @@ func TestBridgeLifecycle(t *testing.T) {
 
 	// Drive the install through the config.Store API so the registry can
 	// find a known account afterwards.
-	bridgeMu.Lock()
+	bridgeInitMu.Lock()
 	bridgeCache = cstore
 	store, err := config.Load()
 	if err != nil {
-		bridgeMu.Unlock()
+		bridgeInitMu.Unlock()
 		t.Fatalf("config.Load: %v", err)
 	}
 	bridgeStore = store
 	bridgeReg = auth.NewRegistry(store, auth.NewMemoryKeychain(), auth.EntraClientID, nil)
 	bridgeEng = &fakeEngine{}
 	bridgeReady.Store(true)
-	bridgeMu.Unlock()
+	bridgeInitMu.Unlock()
 
 	// Empty registry -> empty accounts list, never an error envelope.
 	got := goString(ofem_core_list_accounts())
@@ -429,13 +436,19 @@ func TestBridgeLifecycle(t *testing.T) {
 		t.Fatalf("expected bridgeReady false after close")
 	}
 	ofem_core_close() // second call is a no-op
+
+	// TODO(phase-2): add a race test where one goroutine calls
+	// ofem_core_enumerate while another calls ofem_core_close. The
+	// RWMutex in ofem_core_close guarantees the close blocks until the
+	// in-flight call finishes, but the test requires a c-archive build
+	// to exercise the real C-ABI entry points.
 }
 
 // resetBridgeForTest clears the package globals so a follow-up test can
 // re-init from a clean slate. Test-only helper.
 func resetBridgeForTest() {
-	bridgeMu.Lock()
-	defer bridgeMu.Unlock()
+	bridgeInitMu.Lock()
+	defer bridgeInitMu.Unlock()
 	bridgeStore = nil
 	bridgeCache = nil
 	bridgeReg = nil

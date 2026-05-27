@@ -22,6 +22,15 @@ let ofemDomainIdentifierPrefix = "ofem."
 /// enumeration as authoritative without ever asking us for diffs.
 /// This keeps the Phase 1 surface tiny; real sync anchors land when
 /// the daemon's change-detection ships.
+///
+/// The zero-byte value means macOS will call `enumerateChanges` with
+/// this anchor and we will always respond "no changes, moreComing=false",
+/// causing a full re-enumeration on every refresh. That is correct and
+/// intentional for Phase 1.
+///
+/// TODO(phase-2): replace with MAX(SyncedAt) from the cache so the
+/// daemon's change-detection path can emit real diffs and avoid full
+/// re-enumerations on every Finder refresh.
 private let phaseOneSyncAnchor = NSFileProviderSyncAnchor(Data())
 
 final class OneLakeEnumerator: NSObject, NSFileProviderEnumerator {

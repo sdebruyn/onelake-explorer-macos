@@ -22,6 +22,11 @@
 import Foundation
 import os.log
 
+// TODO(shared-framework): Account and BridgeError below are duplicated
+// in apple/OneLake/CoreBridge.swift (host-app target). Both copies must
+// stay in sync. Tracked for consolidation into a shared framework in
+// Phase 2. See apple/OneLake/CoreBridge.swift for the authoritative comment.
+
 /// JSON shape returned by `ofem_core_list_accounts`.
 struct Account: Decodable, Equatable {
     let alias: String
@@ -180,13 +185,22 @@ final class CoreBridge {
     /// Mirrored in the entitlements files and `Info.plist`.
     static let appGroupIdentifier = "group.dev.debruyn.ofem"
 
-    /// Serial queue used to funnel cgo calls. The Go core is itself
-    /// concurrency-safe; the queue gives us deterministic ordering
-    /// for logs and a single chokepoint we can swap for a real
-    /// scheduler later.
+    /// Serial queue for lightweight synchronous bridge calls (listAccounts,
+    /// enumerate, item). These are expected to return quickly and must not
+    /// be stalled by an in-progress multi-GB download.
     private let queue = DispatchQueue(
         label: "dev.debruyn.ofem.fileprovider.core-bridge",
         qos: .userInitiated
+    )
+
+    /// Separate concurrent queue for fetchContents. Downloads can be
+    /// long-running; running them on a dedicated queue prevents a slow
+    /// download from blocking the serial `queue` and stalling enumerate
+    /// calls while the download is in progress.
+    private let fetchQueue = DispatchQueue(
+        label: "dev.debruyn.ofem.fileprovider.core-bridge.fetch",
+        qos: .userInitiated,
+        attributes: .concurrent
     )
 
     /// Guards `didBootstrap`. Cheap because contention is rare —
@@ -339,7 +353,7 @@ final class CoreBridge {
     func fetchContents(alias: String, identifier: String, dest: URL) async throws -> BridgeItem {
         try ensureBootstrapped()
         return try await withCheckedThrowingContinuation { continuation in
-            queue.async {
+            fetchQueue.async {
                 let result: Result<BridgeItem, Error> = Result {
                     let path = dest.path
                     guard let cString = alias.withCString({ cAlias in

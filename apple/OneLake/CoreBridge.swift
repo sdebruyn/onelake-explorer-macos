@@ -20,6 +20,12 @@
 import Foundation
 import os.log
 
+// TODO(shared-framework): Account and BridgeError below are duplicated
+// in apple/OneLakeFileProvider/CoreBridge.swift (extension target). Both
+// copies must stay in sync. Tracked for consolidation into a shared
+// framework in Phase 2. See apple/OneLakeFileProvider/CoreBridge.swift
+// for the full vocabulary.
+
 /// Account record returned by the Go core. Matches the
 /// extension-side definition byte-for-byte; we don't share the
 /// declaration because the two targets do not share sources.

@@ -153,8 +153,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         // then atomically moves it into its own replicated store
         // once we hand the URL back.
         let dest: URL
+        let tmpDir: URL
         do {
-            let tmpDir = try FileManager.default.url(
+            tmpDir = try FileManager.default.url(
                 for: .itemReplacementDirectory,
                 in: .userDomainMask,
                 appropriateFor: FileManager.default.temporaryDirectory,
@@ -171,6 +172,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         }
 
         Task.detached {
+            // Apple's contract: macOS moves the file out of tmpDir into
+            // its replicated store, but the parent directory itself is
+            // our responsibility to clean up after the completion handler
+            // returns. Defer removal so it happens whether we succeed or
+            // fail (the framework has already moved the file by then).
+            defer { try? FileManager.default.removeItem(at: tmpDir) }
             do {
                 let item = try await CoreBridge.shared.fetchContents(
                     alias: aliasCopy,
