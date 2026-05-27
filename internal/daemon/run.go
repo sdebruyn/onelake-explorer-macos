@@ -205,9 +205,13 @@ func Run(ctx context.Context, opts RunOptions) error {
 		logger.Warn("offline queue recovery failed", slog.Any("err", rerr))
 	}
 
+	// Change feed: the adaptive poller publishes events here; the host app
+	// drains them via sync.pollChanges and calls signalEnumerator.
+	feed := NewChangefeed()
+
 	// IPC server.
 	srv := ipc.NewServer(logger)
-	NewHandlers(store, registry, c, engine, gates).Register(srv)
+	NewHandlers(store, registry, c, engine, gates, feed).Register(srv)
 
 	sockPath := opts.SocketPath
 	if sockPath == "" {
@@ -245,7 +249,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	pollerDone := make(chan struct{})
 	go func() {
 		defer close(pollerDone)
-		runAdaptivePoller(runCtx, c, engine, logger, engine.RecentFolderTTL(), pollerHotWindow)
+		runAdaptivePoller(runCtx, c, engine, logger, engine.RecentFolderTTL(), pollerHotWindow, feed)
 	}()
 
 	// Block until either signal cancellation or the listener exits

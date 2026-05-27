@@ -31,24 +31,25 @@ We use the **replication model**, which is what Apple recommends for cloud stora
                       │   - SwiftUI account UI     │
                       │   - Menu bar status icon   │
                       │   - Registers domain(s)    │
-                      └────────────┬───────────────┘
-                                   │
-                                   │ App Group + XPC
-                                   │
-       ┌───────────────────────────┴───────────────────────────┐
-       │                                                       │
-       ▼                                                       ▼
-┌────────────────────────────┐               ┌────────────────────────────┐
-│  OneLakeFileProvider.appex │               │  ofem daemon (Go)           │
-│  (Swift, sandboxed)        │               │  - LaunchAgent             │
-│  - NSFileProvider*         │               │  - Periodic remote refresh │
-│  - Calls Go core via FFI   │               │  - Telemetry sender        │
-└────────────┬───────────────┘               │  - IPC for CLI             │
-             │                               └────────────┬───────────────┘
-             │ cgo/C-ABI                                  │
-             ▼                                            │
-┌────────────────────────────┐                            │
-│  libofemcore.a (Go)         │ ◄──────────────────────────┘
+                      │   - ChangeWatcher polls    │◄─── long-poll JSON-RPC
+                      └────────────┬───────────────┘     sync.pollChanges
+                                   │                     over Unix socket
+                                   │ signalEnumerator    (ofem.sock)
+                                   │                          │
+       ┌───────────────────────────┴───────────────┐         │
+       │                                           │         │
+       ▼                                           ▼         ▼
+┌────────────────────────────┐     ┌────────────────────────────┐
+│  OneLakeFileProvider.appex │     │  ofem daemon (Go)           │
+│  (Swift, sandboxed)        │     │  - LaunchAgent             │
+│  - NSFileProvider*         │     │  - Adaptive change feed    │
+│  - Calls Go core via FFI   │     │  - Telemetry sender        │
+└────────────┬───────────────┘     │  - IPC for CLI             │
+             │                     └────────────┬───────────────┘
+             │ cgo/C-ABI                        │
+             ▼                                  │
+┌────────────────────────────┐                  │
+│  libofemcore.a (Go)         │ ◄────────────────┘
 │  - Auth (MSAL)             │   shared as static archive
 │  - OneLake DFS client      │
 │  - Cache (SQLite)          │
@@ -132,18 +133,32 @@ Results are cached in SQLite with a TTL appropriate for the level: 30 seconds fo
 
 ## Working set updates
 
-For change-detection on folders the user has visited recently, the daemon (not the extension) polls Fabric on the adaptive schedule. When it finds changes, it calls `NSFileProviderManager.signalEnumerator(for:)` to tell macOS "the X container has changes, please re-enumerate". The extension's enumerator then re-fetches and produces a delta.
+For change-detection on folders the user has visited recently, the daemon (not the extension) polls Fabric on the adaptive schedule. When it finds changes, it publishes them to an in-memory change feed. The **host app** (`OneLake.app`) polls the daemon every 5 seconds via the `sync.pollChanges` JSON-RPC method and calls `NSFileProviderManager.signalEnumerator(for:)` for each affected container. macOS then asks the File Provider Extension to re-enumerate and the extension fetches the delta.
 
-The daemon and extension communicate over **XPC**, wrapped around the
-same JSON-RPC 2.0 protocol the CLI uses on its Unix-domain socket (see
-[`internal/ipc`](../internal/ipc)). The CLI ↔ daemon socket lives at
+The CLI ↔ daemon socket lives at
 `~/Library/Group Containers/group.dev.debruyn.ofem/ofem.sock`, owner-only
-(0600), inside the App Group container so the CLI and daemon find it
-without an extra path-resolution layer. The extension cannot reach that
-socket directly because of its sandbox, so its inbound RPCs come over a
-dedicated XPC service the host app registers on the App Group; the
-daemon brokers between the two. The daemon exposes `status`, `account.*`,
-`config.snapshot`, `sync.refresh`, and `mount.list` methods.
+(0600), inside the App Group container so the CLI and the host app find it
+without an extra path-resolution layer. The host app reuses the same
+JSON-RPC 2.0 framing ([`internal/ipc`](../internal/ipc)) for its polling.
+The daemon exposes `status`, `account.*`, `config.snapshot`, `sync.refresh`,
+`sync.pollChanges`, and `mount.list` methods.
+
+**Phase 1 trade-off:** automatic Finder refresh requires `OneLake.app` to
+be running. If the user quits the host app, the File Provider Extension
+continues to work (files open, upload, download) but it will not receive
+proactive `signalEnumerator` calls. macOS performs its own periodic
+re-enumeration as a fallback; the cadence is at macOS's discretion and is
+typically slower than OFEM's 5-second polling interval. This limitation is
+accepted for Phase 1 and will be addressed in Phase 2 when the daemon gains
+a dedicated signaling channel directly into the extension.
+
+**Why not XPC between daemon and extension?** A sandboxed File Provider
+Extension can communicate with the host app via App Group XPC, but wiring a
+new XPC service correctly (entitlements, Mach service name, bi-directional
+framing) adds significant complexity with no functional benefit in Phase 1:
+the host app is already the domain-registration owner and is expected to
+stay running while the user works. Using the existing Unix socket keeps the
+change-detection path simple and uniform.
 
 ## Fetching content
 

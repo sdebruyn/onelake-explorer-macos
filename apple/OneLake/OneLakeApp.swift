@@ -17,10 +17,12 @@ import AppKit
 import os.log
 
 /// AppDelegate kept around purely to receive the
-/// `applicationDidBecomeActive(_:)` callback. SwiftUI lifecycle
-/// methods cover launch but not "user just `Cmd+Tab`'d back into us",
-/// and re-running reconcile on focus catches the case where the CLI
-/// added or removed an account while the host app was inactive.
+/// `applicationDidBecomeActive(_:)` and `applicationWillTerminate(_:)`
+/// callbacks. SwiftUI lifecycle methods cover launch but not "user just
+/// `Cmd+Tab`'d back into us", and re-running reconcile on focus catches
+/// the case where the CLI added or removed an account while the host app
+/// was inactive. ChangeWatcher is stopped on termination so the polling
+/// loop unwinds cleanly.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "app-delegate")
 
@@ -35,6 +37,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Call stop() directly and synchronously. macOS terminates the process
+        // immediately after this callback returns; a Task would never get a
+        // chance to execute. ChangeWatcher.stop() is idempotent and
+        // non-blocking — it cancels the polling Task and clears the reference.
+        ChangeWatcher.shared.stop()
     }
 }
 
@@ -66,6 +76,11 @@ struct OneLakeApp: App {
                             "Initial domain reconcile failed: \(error.localizedDescription, privacy: .public)"
                         )
                     }
+                    // Start polling the daemon for change events so Finder
+                    // receives signalEnumerator calls when remote content
+                    // changes. The watcher connects lazily; if the daemon is
+                    // not yet running it will retry on each poll interval.
+                    ChangeWatcher.shared.start()
                 }
         }
         .commands {

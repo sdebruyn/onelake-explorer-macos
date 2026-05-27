@@ -34,6 +34,9 @@ type pollerEngine interface {
 // itself (the engine is the single source of truth and already tags them
 // with the resolved tenantId). The poller deliberately does NOT emit a
 // second event per refresh — that would double-count every sweep.
+//
+// feed may be nil; when non-nil, detected changes are published so the
+// host app can call signalEnumerator via the sync.pollChanges RPC.
 func runAdaptivePoller(
 	ctx context.Context,
 	c pollerCache,
@@ -41,6 +44,7 @@ func runAdaptivePoller(
 	logger *slog.Logger,
 	period time.Duration,
 	hotWindow time.Duration,
+	feed *Changefeed,
 ) {
 	if period <= 0 {
 		// Defensive: New always picks a positive default, but a future
@@ -55,7 +59,7 @@ func runAdaptivePoller(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pollOnce(ctx, c, engine, logger, hotWindow)
+			pollOnce(ctx, c, engine, logger, hotWindow, feed)
 		}
 	}
 }
@@ -65,12 +69,17 @@ func runAdaptivePoller(
 // surface recovers without requiring user interaction. Errors from
 // individual refreshes are logged and swallowed so a transient failure
 // on one item does not stall the rest of the sweep.
+//
+// feed may be nil. When non-nil, any item whose refresh produces a
+// non-zero Diff has a ChangeEvent published so the host app can call
+// signalEnumerator on the affected container.
 func pollOnce(
 	ctx context.Context,
 	c pollerCache,
 	engine pollerEngine,
 	logger *slog.Logger,
 	hotWindow time.Duration,
+	feed *Changefeed,
 ) {
 	// Cold-paused recovery probe: one cheap HEAD per paused workspace,
 	// regardless of whether the workspace is in HotItems. Without this,
@@ -121,5 +130,14 @@ func pollOnce(
 			slog.Int("updated", diff.Updated),
 			slog.Int("removed", diff.Removed),
 		)
+
+		// Publish a change event when the diff is non-zero so the host
+		// app can call signalEnumerator on the affected container.
+		if feed != nil && diff.Total() > 0 {
+			domain := "ofem." + k.AccountAlias
+			// The container is the item root (k.Path is cleared above).
+			containerID := k.AccountAlias + "/" + k.WorkspaceID + "/" + k.ItemID
+			feed.Publish(domain, containerID, time.Now().UTC())
+		}
 	}
 }
