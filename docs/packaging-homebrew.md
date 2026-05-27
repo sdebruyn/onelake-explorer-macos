@@ -2,6 +2,8 @@
 
 OFEM ships as a signed and notarized Homebrew cask of the macOS `.app`.
 
+See also: [Release runbook](release-runbook.md) for the step-by-step process Sam follows when cutting a release.
+
 ## Output artifact
 
 A single signed and notarized DMG containing `OneLake.app`. The `.app` bundles:
@@ -12,27 +14,42 @@ A single signed and notarized DMG containing `OneLake.app`. The `.app` bundles:
 
 ## Build pipeline
 
+The full pipeline is implemented in `.github/workflows/release.yml`.
+It splits into two jobs to separate macOS-only work from the Go/GoReleaser work.
+
 ```
-        GitHub Actions (runs on macos-15-arm64)
-        ────────────────────────────────────────
-1. checkout
-2. setup-go (1.26.x)
-3. setup-xcode (latest 26.x)
-4. cache go build, xcodebuild derived data
-5. go build -buildmode=c-archive -o build/libofemcore.a ./core
-6. go build -o build/ofem ./cmd/ofem
-7. xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
-8. xcodebuild -exportArchive ... -exportPath build/Export
-9. codesign --force --options runtime --sign "$DEVELOPER_ID_APPLICATION" \
-       --entitlements apple/OneLake.entitlements build/Export/OneLake.app
-10. create-dmg build/Export/OneLake.app build/OneLake-$VERSION.dmg
-11. xcrun notarytool submit build/OneLake-$VERSION.dmg --wait \
-        --key-id "$NOTARY_KEY_ID" --key "$NOTARY_API_KEY_P8" \
-        --issuer "$NOTARY_ISSUER_ID"
-12. xcrun stapler staple build/OneLake-$VERSION.dmg
-13. goreleaser release (uploads DMG + checksums to GH Releases)
-14. goreleaser bumps homebrew-ofem tap repo with new cask version
+Job A: build-app (macos-15 runner)
+───────────────────────────────────────────────────────────────────────────────
+1.  checkout + setup-go
+2.  brew install xcodegen create-dmg
+3.  Import Developer ID Application cert from APPLE_CERT_P12 into a
+    temporary keychain (deleted after the job).
+4.  Write App Store Connect API key from APPLE_API_KEY_JSON to a tmp .p8 file.
+5.  make cgo-build  -> apple/build/cgo/libofemcore.{a,h}
+6.  make apple-gen  -> regenerate apple/OneLake.xcodeproj from project.yml
+7.  Write apple/Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID
+8.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
+9.  xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
+10. go build -o build/Export/OneLake.app/Contents/Resources/bin/ofem
+11. create-dmg -> dist-app/OneLake-$VERSION.dmg
+12. xcrun notarytool submit --wait --timeout 15m
+13. xcrun stapler staple
+14. Upload DMG to GitHub Release (softprops/action-gh-release)
+15. Upload DMG as workflow artifact for Job B
+
+Job B: release-cli-and-cask (ubuntu-latest, needs: build-app)
+───────────────────────────────────────────────────────────────────────────────
+1.  checkout + setup-go
+2.  Download DMG artifact from Job A -> dist-app/
+3.  goreleaser release --clean
+      - compiles ofem CLI tarball (CGO_ENABLED=0, darwin/arm64)
+      - attaches checksums.txt and dist-app/OneLake-*.dmg to GitHub Release
+      - pushes CLI formula to sdebruyn/homebrew-ofem Formula/ofem.rb
+4.  Render cask template (sed on homebrew/Casks/ofem.rb.tmpl)
+5.  Clone homebrew-ofem, commit + push updated Casks/ofem.rb
 ```
+
+For manual use (local signing without CI), see `scripts/sign-and-notarize.sh`.
 
 ## Homebrew cask
 
@@ -136,6 +153,61 @@ We need:
 `apple/OneLakeFileProvider.entitlements` adds:
 - `com.apple.developer.file-provider.testing-mode` = true (in dev builds only).
 - `NSExtension` plist with `NSExtensionFileProviderSupportedItemActions` enumerated.
+
+## GitHub Secrets
+
+The following secrets must be configured in the repository under
+**Settings > Secrets and variables > Actions** before the first release tag is
+pushed. None of them are committed to the repository.
+
+| Secret | Description |
+|---|---|
+| `APPLE_CERT_P12` | Base64-encoded Developer ID Application `.p12` certificate. Export from Keychain Access (right-click the certificate > Export > Personal Information Exchange `.p12`), then encode: `base64 -i cert.p12 \| pbcopy`. |
+| `APPLE_CERT_PASSWORD` | Password chosen when exporting the `.p12`. |
+| `APPLE_TEAM_ID` | Apple Developer Team ID. For Debruyn Consultancy this is `6D79CUWZ4J`. Find yours at [developer.apple.com/account](https://developer.apple.com/account) under Membership. |
+| `APPLE_API_KEY_JSON` | App Store Connect API key as a JSON object with keys `key_id`, `issuer_id`, and `key` (PEM content). Generate at [appstoreconnect.apple.com/access/integrations/api](https://appstoreconnect.apple.com/access/integrations/api). Store the full JSON as the secret value. |
+| `APPLE_API_KEY_ID` | The 10-character key identifier, also present inside `APPLE_API_KEY_JSON`. Stored separately so it can be used in environment-variable interpolation without parsing JSON. |
+| `APPLE_API_ISSUER_ID` | The issuer UUID, also present inside `APPLE_API_KEY_JSON`. |
+| `HOMEBREW_TAP_PAT` | Fine-grained GitHub PAT with **Contents: write** on `sdebruyn/homebrew-ofem`. The CLI formula push and cask update both use this token. |
+
+### How to generate the Developer ID `.p12`
+
+1. Open **Keychain Access** > My Certificates.
+2. Locate the **Developer ID Application** certificate (issued by Apple).
+3. Right-click > **Export...** > choose Personal Information Exchange (`.p12`).
+4. Set a strong password; note it for `APPLE_CERT_PASSWORD`.
+5. `base64 -i ~/Downloads/cert.p12 | pbcopy` — paste as `APPLE_CERT_P12`.
+
+### How to generate an App Store Connect API key
+
+1. Sign in at [appstoreconnect.apple.com](https://appstoreconnect.apple.com).
+2. Go to **Users and Access** > **Integrations** > **App Store Connect API**.
+3. Click **+**, name it `ofem-notarization`, grant **Developer** access.
+4. Download the `.p8` file (available only once).
+5. Note the **Key ID** (10 chars) and the **Issuer ID** (UUID).
+6. Build the JSON secret:
+   ```bash
+   jq -n \
+     --arg key_id "XXXXXXXXXX" \
+     --arg issuer_id "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" \
+     --rawfile key ~/Downloads/AuthKey_XXXXXXXXXX.p8 \
+     '{"key_id":$key_id,"issuer_id":$issuer_id,"key":$key}' | pbcopy
+   ```
+7. Paste as `APPLE_API_KEY_JSON`. Also store the Key ID as `APPLE_API_KEY_ID` and the Issuer ID as `APPLE_API_ISSUER_ID`.
+
+### The `homebrew-ofem` tap repo
+
+`homebrew-ofem` is a **separate GitHub repository** (`sdebruyn/homebrew-ofem`).
+It must be created manually once before the first release:
+
+```bash
+gh repo create sdebruyn/homebrew-ofem --public --description "Homebrew tap for OFEM"
+# Add the dummy 0.0.0 cask to bootstrap the tap validation pipeline:
+# copy homebrew/ofem.rb from this repo into homebrew-ofem/Casks/ofem.rb.
+```
+
+The release workflow's `release-cli-and-cask` job pushes the CLI formula to
+`Formula/ofem.rb` and the rendered cask to `Casks/ofem.rb` on every release.
 
 ## GoReleaser config (`.goreleaser.yaml`)
 

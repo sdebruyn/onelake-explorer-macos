@@ -1,9 +1,29 @@
+# Release workflow — triggered on every CalVer tag (vYYYY.MM.PATCH).
+#
+# Required GitHub Secrets (add under Settings > Secrets and variables > Actions):
+#
+#   APPLE_CERT_P12          Base64-encoded Developer ID Application .p12 certificate bundle.
+#                           Export from Keychain Access: right-click certificate > Export > .p12.
+#                           Encode: base64 -i cert.p12 | pbcopy
+#   APPLE_CERT_PASSWORD     Password chosen when exporting the .p12.
+#   APPLE_TEAM_ID           Apple Developer Team ID, e.g. 6D79CUWZ4J (Debruyn Consultancy).
+#                           Find it at developer.apple.com/account > Membership.
+#   APPLE_API_KEY_JSON      App Store Connect API key as a JSON file with fields:
+#                             { "key_id": "...", "issuer_id": "...", "key": "-----BEGIN EC PRIVATE KEY-----\n..." }
+#                           Used by notarytool. Generate at appstoreconnect.apple.com/access/integrations/api.
+#                           Encode the full file content as the secret value (plain JSON, NOT base64).
+#   APPLE_API_KEY_ID        The 10-character key identifier, also present inside APPLE_API_KEY_JSON.
+#   APPLE_API_ISSUER_ID     The issuer UUID, also present inside APPLE_API_KEY_JSON.
+#   HOMEBREW_TAP_PAT        Fine-grained GitHub PAT with Contents: write on sdebruyn/homebrew-ofem.
+#                           Needed so GoReleaser can push the CLI formula and so the cask update
+#                           step can commit the updated cask.
+
 name: Release
 
 on:
   push:
     tags:
-      - "v*"
+      - "v[0-9]*.[0-9]*.[0-9]*"
 
 permissions:
   contents: write
@@ -16,8 +36,12 @@ env:
   GO_VERSION: "1.26.x"
 
 jobs:
-  release:
-    name: GoReleaser
+  # ---------------------------------------------------------------------------
+  # Job A: build, sign, notarize, and staple OneLake.app; produce the DMG.
+  # Runs on a real macOS arm64 runner so xcodebuild and codesign work natively.
+  # ---------------------------------------------------------------------------
+  build-app:
+    name: Build, sign, and notarize app
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -31,20 +55,229 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Sanity-check lint before releasing
-        uses: golangci/golangci-lint-action@v9
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v4
         with:
-          version: latest
-          args: --config .golangci.yml --timeout 5m
+          path: |
+            ~/Library/Caches/Homebrew/downloads
+            ~/Library/Caches/Homebrew/api
+          key: brew-${{ runner.os }}-release-tools-v1
 
-      # TODO: build, sign, and notarize OneLake.app + create-dmg here, once
-      # the Xcode project lands. The output DMG goes to ./dist-app/ which
-      # GoReleaser picks up via `release.extra_files`. See
-      # docs/packaging-homebrew.md for the full pipeline and the secrets
-      # the codesign + notarytool steps need (DEVELOPER_ID_APPLICATION_P12_*,
-      # NOTARY_KEY_ID/ISSUER_ID/API_KEY_P8).
+      - name: Install tools (xcodegen, create-dmg)
+        run: brew install xcodegen create-dmg
 
-      - name: GoReleaser
+      # Import the Developer ID Application certificate into a short-lived
+      # keychain so codesign can find it without touching the login keychain.
+      - name: Import signing certificate
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "$APPLE_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERT_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          rm "$RUNNER_TEMP/cert.p12"
+
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+      # Write the App Store Connect API key to a file that notarytool can read.
+      - name: Write notarytool API key
+        env:
+          APPLE_API_KEY_JSON: ${{ secrets.APPLE_API_KEY_JSON }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/notary"
+          echo "$APPLE_API_KEY_JSON" | jq -r '.key' > "$RUNNER_TEMP/notary/key.p8"
+          chmod 600 "$RUNNER_TEMP/notary/key.p8"
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          # Strip leading 'v' from the tag to get the CalVer string.
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build cgo archive (libofemcore.a)
+        run: make cgo-build
+
+      - name: Generate Xcode project
+        run: make apple-gen
+
+      # Bootstrap the xcconfig with the real team ID from the secret so
+      # xcodebuild can resolve the signing identity.
+      - name: Write Local.xcconfig
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cp apple/Local.xcconfig.sample apple/Local.xcconfig
+          sed -i '' "s/DEVELOPMENT_TEAM =.*/DEVELOPMENT_TEAM = $APPLE_TEAM_ID/" apple/Local.xcconfig
+
+      - name: Archive (xcodebuild)
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcodebuild \
+            -project apple/OneLake.xcodeproj \
+            -scheme OneLake \
+            -configuration Release \
+            -destination "generic/platform=macOS" \
+            -derivedDataPath build/Release \
+            -archivePath build/OneLake.xcarchive \
+            -allowProvisioningUpdates \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            archive
+
+      - name: Export archive (Developer ID)
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>developer-id</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>teamID</key>
+            <string>${{ secrets.APPLE_TEAM_ID }}</string>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild \
+            -exportArchive \
+            -archivePath build/OneLake.xcarchive \
+            -exportPath build/Export \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates
+
+      - name: Build CLI binary (embed in .app)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p build/Export/OneLake.app/Contents/Resources/bin
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags "-s -w \
+              -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Version=$VERSION \
+              -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Commit=$(git rev-parse --short HEAD) \
+              -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o build/Export/OneLake.app/Contents/Resources/bin/ofem \
+            ./cmd/ofem
+
+      - name: Create DMG
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist-app
+          create-dmg \
+            --volname "OneLake $VERSION" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "OneLake.app" 175 190 \
+            --hide-extension "OneLake.app" \
+            --app-drop-link 425 190 \
+            "dist-app/OneLake-$VERSION.dmg" \
+            "build/Export/OneLake.app"
+
+      - name: Notarize DMG
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          xcrun notarytool submit \
+            "dist-app/OneLake-$VERSION.dmg" \
+            --key "$RUNNER_TEMP/notary/key.p8" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait \
+            --timeout 15m
+
+      - name: Staple notarization ticket
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: xcrun stapler staple "dist-app/OneLake-$VERSION.dmg"
+
+      - name: Compute DMG SHA-256
+        id: dmg_sha
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sha=$(shasum -a 256 "dist-app/OneLake-$VERSION.dmg" | awk '{print $1}')
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      # Upload the DMG as a workflow artifact so the release-cli-and-cask job
+      # can pick it up for the cask update step.
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ github.ref_name }}
+          path: dist-app/OneLake-*.dmg
+          retention-days: 7
+
+      # Also upload to the GitHub Release directly so the URL is stable and
+      # GoReleaser does not need to know about the file.
+      - name: Upload DMG to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-app/OneLake-*.dmg
+          fail_on_unmatched_files: true
+
+      - name: Clean up keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain" 2>/dev/null || true
+
+      - name: Clean up notary key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/notary/key.p8"
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dmg_sha256: ${{ steps.dmg_sha.outputs.sha256 }}
+
+  # ---------------------------------------------------------------------------
+  # Job B: compile the CLI tarball via GoReleaser, publish the GitHub Release
+  # notes + CLI archive, push CLI formula to homebrew-ofem, and update cask.
+  # Runs on ubuntu-latest because GoReleaser + git push does not need macOS.
+  # ---------------------------------------------------------------------------
+  release-cli-and-cask:
+    name: Publish CLI release and update cask
+    runs-on: ubuntu-latest
+    needs: build-app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Download the DMG that build-app produced so GoReleaser can attach it
+      # to the release via `release.extra_files`.
+      - name: Download DMG artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dmg-${{ github.ref_name }}
+          path: dist-app
+
+      - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -52,4 +285,33 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GH_TOKEN }}
+          HOMEBREW_TAP_PAT: ${{ secrets.HOMEBREW_TAP_PAT }}
+
+      # Update the Homebrew cask in the homebrew-ofem tap with the new
+      # version and the SHA-256 of the freshly notarized DMG.
+      - name: Update Homebrew cask
+        env:
+          VERSION: ${{ needs.build-app.outputs.version }}
+          DMG_SHA256: ${{ needs.build-app.outputs.dmg_sha256 }}
+          HOMEBREW_TAP_PAT: ${{ secrets.HOMEBREW_TAP_PAT }}
+        run: |
+          # Render the cask from the template by substituting placeholders.
+          sed \
+            -e "s/{{ .Version }}/$VERSION/g" \
+            -e "s/{{ .DMGSHA256 }}/$DMG_SHA256/g" \
+            homebrew/Casks/ofem.rb.tmpl > /tmp/ofem.rb
+
+          # Clone the tap, commit the new cask, push.
+          git clone \
+            "https://x-access-token:$HOMEBREW_TAP_PAT@github.com/sdebruyn/homebrew-ofem.git" \
+            /tmp/homebrew-ofem
+
+          mkdir -p /tmp/homebrew-ofem/Casks
+          cp /tmp/ofem.rb /tmp/homebrew-ofem/Casks/ofem.rb
+
+          cd /tmp/homebrew-ofem
+          git config user.name  "ofem-release-bot"
+          git config user.email "noreply@debruyn.dev"
+          git add Casks/ofem.rb
+          git commit -m "chore(cask): bump ofem to v$VERSION"
+          git push
