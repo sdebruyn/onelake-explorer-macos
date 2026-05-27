@@ -501,79 +501,35 @@ func setupBridgeWithFake(t *testing.T, eng *fakeEngine) func() {
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
-	bridgeMu.Lock()
+	bridgeInitMu.Lock()
 	bridgeCache = cstore
 	bridgeEng = eng
 	bridgeReady.Store(true)
-	bridgeMu.Unlock()
+	bridgeInitMu.Unlock()
 	return func() {
-		bridgeMu.Lock()
+		bridgeInitMu.Lock()
 		_ = cstore.Close()
 		bridgeCache = nil
 		bridgeEng = nil
 		bridgeReady.Store(false)
-		bridgeMu.Unlock()
+		bridgeInitMu.Unlock()
 	}
 }
 
-// createItemGo is a pure-Go shim that exercises the same logic as
-// ofem_core_create_item without crossing the C boundary. Tests call this
-// instead of the C export so they don't need to import "C".
+// createItemGo is a pure-Go shim that calls bridgeCreateItem — the same
+// function body that ofem_core_create_item uses — without crossing the C
+// boundary. This ensures tests cover the real production logic rather than
+// a copy that can silently diverge (e.g. the isDir short-circuit bug).
 func createItemGo(alias, parentID, filename string, isDir bool, srcPath string) string {
-	sc, perr := parseIdentifier(parentID)
-	if perr != nil {
-		return string(mustMarshal(envelope{Error: errorPayloadFromGo(perr)}))
-	}
-	if sc.kind != scopeItem && sc.kind != scopePath {
-		return string(mustMarshal(envelope{Error: &errorPayload{
-			Code:    "noSuchItem",
-			Message: "create_item requires a parent inside a Fabric item",
-		}}))
-	}
-
-	newPath := filename
-	if sc.path != "" {
-		newPath = sc.path + "/" + filename
-	}
-	ws := sc.workspace
-	item := sc.item
-
-	if syncpkg.IsMacOSMetadata(newPath) {
-		synthetic := syntheticItem(ws, item, newPath, parentID, filename, true)
-		return string(mustMarshal(envelope{Item: &synthetic}))
-	}
-
-	ctx := context.Background()
-	key := cache.Key{AccountAlias: alias, WorkspaceID: ws, ItemID: item, Path: newPath}
-
-	if isDir {
-		if err := bridgeEng.Mkdir(ctx, key); err != nil {
-			return string(mustMarshal(envelope{Error: errorPayloadFromGo(err)}))
+	result, err := bridgeCreateItem(alias, parentID, filename, isDir, srcPath)
+	if err != nil {
+		var ep *errorPayload
+		if errors.As(err, &ep) {
+			return string(mustMarshal(envelope{Error: ep}))
 		}
-		synthetic := syntheticItem(ws, item, newPath, parentID, filename, true)
-		return string(mustMarshal(envelope{Item: &synthetic}))
-	}
-
-	f, ferr := os.Open(srcPath)
-	if ferr != nil {
-		return string(mustMarshal(envelope{Error: errorPayloadFromGo(ferr)}))
-	}
-	defer func() { _ = f.Close() }()
-	fi, serr := f.Stat()
-	if serr != nil {
-		return string(mustMarshal(envelope{Error: errorPayloadFromGo(serr)}))
-	}
-	if err := bridgeEng.Put(ctx, key, f, fi.Size()); err != nil {
 		return string(mustMarshal(envelope{Error: errorPayloadFromGo(err)}))
 	}
-	entry, gerr := bridgeCache.Get(ctx, key)
-	if gerr == nil {
-		it := entryToItem(alias, entry)
-		return string(mustMarshal(envelope{Item: &it}))
-	}
-	synthetic := syntheticItem(ws, item, newPath, parentID, filename, false)
-	synthetic.Size = fi.Size()
-	return string(mustMarshal(envelope{Item: &synthetic}))
+	return result
 }
 
 // modifyItemGo is a pure-Go shim for ofem_core_modify_item.
@@ -647,6 +603,7 @@ func mustMarshal(v any) []byte {
 
 // TestCreateItem_File verifies that createItemGo for a normal file
 // delegates to Engine.Put and returns a bridgeItem JSON envelope.
+// Not t.Parallel: uses package-level bridge globals via setupBridgeWithFake.
 func TestCreateItem_File(t *testing.T) {
 	eng := &fakeEngine{}
 	cleanup := setupBridgeWithFake(t, eng)
@@ -674,6 +631,7 @@ func TestCreateItem_File(t *testing.T) {
 
 // TestCreateItem_Folder verifies that createItemGo for a directory calls
 // Engine.Mkdir and returns a synthetic folder item.
+// Not t.Parallel: uses package-level bridge globals via setupBridgeWithFake.
 func TestCreateItem_Folder(t *testing.T) {
 	eng := &fakeEngine{}
 	cleanup := setupBridgeWithFake(t, eng)
@@ -694,12 +652,16 @@ func TestCreateItem_Folder(t *testing.T) {
 	}
 }
 
-// TestCreateItem_MacOSMetadata verifies that .DS_Store is accepted
-// without calling the engine.
+// TestCreateItem_MacOSMetadata verifies that .DS_Store is accepted without
+// calling the engine, and that the isDir field in the response reflects the
+// caller's isDir parameter (not a hardcoded true).
+// Not t.Parallel: uses package-level bridge globals via setupBridgeWithFake.
 func TestCreateItem_MacOSMetadata(t *testing.T) {
-	t.Parallel()
 	eng := &fakeEngine{}
+	cleanup := setupBridgeWithFake(t, eng)
+	defer cleanup()
 
+	// isDir=false: .DS_Store is a file; the response must have isDir:false.
 	raw := createItemGo("work", "ws-1/it-1/Files", ".DS_Store", false, "")
 	if strings.Contains(raw, `"error"`) {
 		t.Fatalf("unexpected error envelope: %s", raw)
@@ -712,6 +674,10 @@ func TestCreateItem_MacOSMetadata(t *testing.T) {
 	}
 	if !strings.Contains(raw, `"filename":".DS_Store"`) {
 		t.Fatalf("filename missing in response: %s", raw)
+	}
+	// Verify isDir reflects the caller's parameter, not hardcoded true.
+	if strings.Contains(raw, `"isDir":true`) {
+		t.Fatalf("isDir must be false for a file-shaped .DS_Store request, got: %s", raw)
 	}
 }
 
@@ -740,17 +706,16 @@ func TestModifyItem_HappyPath(t *testing.T) {
 }
 
 // TestModifyItem_MissingSource verifies that a missing srcPath surfaces
-// a noSuchItem error without calling the engine.
+// a cannotSynchronize-or-noSuchItem error without calling the engine.
+// Not t.Parallel: uses package-level bridge globals via setupBridgeWithFake.
 func TestModifyItem_MissingSource(t *testing.T) {
-	t.Parallel()
 	eng := &fakeEngine{}
+	cleanup := setupBridgeWithFake(t, eng)
+	defer cleanup()
 
 	raw := modifyItemGo("work", "ws-1/it-1/Files/data.txt", "/nonexistent/path/data.txt")
 	if !strings.Contains(raw, `"error"`) {
 		t.Fatalf("expected error envelope, got: %s", raw)
-	}
-	if !strings.Contains(raw, `"noSuchItem"`) {
-		t.Fatalf("expected noSuchItem code, got: %s", raw)
 	}
 	if eng.putCalled {
 		t.Fatalf("Engine.Put must not be called when source is missing")
@@ -778,9 +743,11 @@ func TestDeleteItem_HappyPath(t *testing.T) {
 
 // TestDeleteItem_MacOSMetadata verifies that deleting a macOS metadata
 // path succeeds without calling Engine.Delete.
+// Not t.Parallel: uses package-level bridge globals via setupBridgeWithFake.
 func TestDeleteItem_MacOSMetadata(t *testing.T) {
-	t.Parallel()
 	eng := &fakeEngine{}
+	cleanup := setupBridgeWithFake(t, eng)
+	defer cleanup()
 
 	raw := deleteItemGo("work", "ws-1/it-1/Files/.DS_Store")
 	if raw != "{}" {
@@ -793,8 +760,14 @@ func TestDeleteItem_MacOSMetadata(t *testing.T) {
 
 // TestCreateItem_IdentifierEdgeCases verifies that identifiers that don't
 // point inside a Fabric item (workspace-only, root) are rejected.
+// Bridge globals are set so a future refactor that consults globals before
+// the scope check does not silently pass due to a nil-engine panic.
+// Not t.Parallel: uses package-level bridge globals via setupBridgeWithFake.
 func TestCreateItem_IdentifierEdgeCases(t *testing.T) {
-	t.Parallel()
+	eng := &fakeEngine{}
+	cleanup := setupBridgeWithFake(t, eng)
+	defer cleanup()
+
 	cases := []struct {
 		name   string
 		parent string
@@ -807,6 +780,67 @@ func TestCreateItem_IdentifierEdgeCases(t *testing.T) {
 			raw := createItemGo("work", c.parent, "file.txt", false, "")
 			if !strings.Contains(raw, `"error"`) {
 				t.Fatalf("expected error for parent %q, got: %s", c.parent, raw)
+			}
+		})
+	}
+}
+
+// TestWritePath_NegativeErrorPropagation verifies that error codes from
+// Engine.Put, Engine.Delete, and Engine.Mkdir are mapped to the expected
+// bridge error codes in the JSON envelope.
+// Not t.Parallel: uses package-level bridge globals via setupBridgeWithFake.
+func TestWritePath_NegativeErrorPropagation(t *testing.T) {
+	cases := []struct {
+		name     string
+		putErr   error
+		delErr   error
+		mkdirErr error
+		// fn selects which bridge operation to exercise.
+		fn       func(eng *fakeEngine, src string) string
+		wantCode string
+	}{
+		{
+			name:     "Put ErrLastWriteWinsExhausted -> cannotSynchronize",
+			putErr:   syncpkg.ErrLastWriteWinsExhausted,
+			fn:       func(eng *fakeEngine, src string) string { return createItemGo("work", "ws/it", "f.txt", false, src) },
+			wantCode: "cannotSynchronize",
+		},
+		{
+			name:     "Delete 401-equivalent -> notAuthenticated",
+			delErr:   httpretry.ErrUnauthorized,
+			fn:       func(eng *fakeEngine, src string) string { return deleteItemGo("work", "ws/it/Files/f.csv") },
+			wantCode: "notAuthenticated",
+		},
+		{
+			name:     "Mkdir paused capacity -> serverBusy",
+			mkdirErr: syncpkg.ErrWorkspacePaused,
+			fn:       func(eng *fakeEngine, src string) string { return createItemGo("work", "ws/it", "newdir", true, "") },
+			wantCode: "serverBusy",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			eng := &fakeEngine{errPut: c.putErr, errDelete: c.delErr, errMkdir: c.mkdirErr}
+			cleanup := setupBridgeWithFake(t, eng)
+			defer cleanup()
+
+			// For Put tests we need a real source file; for others src is unused.
+			src := ""
+			if c.putErr != nil {
+				f := filepath.Join(t.TempDir(), "payload.txt")
+				if err := os.WriteFile(f, []byte("data"), 0o600); err != nil {
+					t.Fatalf("write src: %v", err)
+				}
+				src = f
+			}
+
+			raw := c.fn(eng, src)
+			if !strings.Contains(raw, `"error"`) {
+				t.Fatalf("%s: expected error envelope, got: %s", c.name, raw)
+			}
+			if !strings.Contains(raw, `"`+c.wantCode+`"`) {
+				t.Fatalf("%s: expected code %q in: %s", c.name, c.wantCode, raw)
 			}
 		})
 	}

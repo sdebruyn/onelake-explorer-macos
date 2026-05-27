@@ -282,13 +282,25 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             FileProviderExtension.log.debug(
                 "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — metadata-only, unsupported in Phase 1"
             )
-            completionHandler(nil, [], false, NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError))
+            completionHandler(nil, [], false, NSFileProviderError(.featureUnsupported))
             progress.completedUnitCount = 1
             return progress
         }
 
         let aliasCopy = self.alias
-        let identifier = item.itemIdentifier.rawValue
+        let scope: EnumScope
+        do {
+            scope = try ItemIdentifierParser.parse(item.itemIdentifier)
+        } catch let error as BridgeError {
+            completionHandler(nil, [], false, error.nsFileProviderError)
+            progress.completedUnitCount = 1
+            return progress
+        } catch {
+            completionHandler(nil, [], false, error)
+            progress.completedUnitCount = 1
+            return progress
+        }
+        let identifier = ItemIdentifierParser.bridgeIdentifier(for: scope)
 
         FileProviderExtension.log.debug("modifyItem \(identifier, privacy: .public)")
 
@@ -325,7 +337,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
         let aliasCopy = self.alias
-        let rawId = identifier.rawValue
+        let scope: EnumScope
+        do {
+            scope = try ItemIdentifierParser.parse(identifier)
+        } catch let error as BridgeError {
+            completionHandler(error.nsFileProviderError)
+            progress.completedUnitCount = 1
+            return progress
+        } catch {
+            completionHandler(error)
+            progress.completedUnitCount = 1
+            return progress
+        }
+        let rawId = ItemIdentifierParser.bridgeIdentifier(for: scope)
 
         FileProviderExtension.log.debug("deleteItem \(rawId, privacy: .public)")
 

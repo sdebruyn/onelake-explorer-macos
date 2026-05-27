@@ -479,6 +479,102 @@ func ofem_core_fetch_contents(alias, identifier, destPath *C.char) *C.char { //n
 	return marshalEnvelope(envelope{Item: &item})
 }
 
+// bridgeCreateItem is the shared implementation for ofem_core_create_item
+// and the test shim. Using a single function body guarantees the macOS
+// metadata short-circuit (including the isDir field) is tested through
+// the same code path that runs in production.
+//
+// Callers must hold bridgeRWMu.RLock for the duration.
+func bridgeCreateItem(alias, parentID, name string, isDir bool, srcPath string) (string, error) {
+	parentScope, perr := parseIdentifier(parentID)
+	if perr != nil {
+		return "", perr
+	}
+	if parentScope.kind != scopeItem && parentScope.kind != scopePath {
+		return "", &errorPayload{Code: "noSuchItem", Message: "create_item requires a parent inside a Fabric item"}
+	}
+
+	// Derive the new item's path by joining the parent path (may be empty
+	// if the parent is the item root) with the filename.
+	newPath := name
+	if parentScope.path != "" {
+		newPath = parentScope.path + "/" + name
+	}
+	ws := parentScope.workspace
+	item := parentScope.item
+
+	// macOS metadata short-circuit: accept but do not touch the engine.
+	// Use the actual isDir parameter so a file-shaped request (isDir=false)
+	// gets file capabilities even when it hits the metadata short-circuit.
+	if syncpkg.IsMacOSMetadata(newPath) {
+		synthetic := syntheticItem(ws, item, newPath, parentID, name, isDir)
+		data, err := json.Marshal(envelope{Item: &synthetic})
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), writeDeadline)
+	defer cancel()
+
+	key := cache.Key{
+		AccountAlias: alias,
+		WorkspaceID:  ws,
+		ItemID:       item,
+		Path:         newPath,
+	}
+
+	if isDir {
+		if err := bridgeEng.Mkdir(ctx, key); err != nil {
+			return "", err
+		}
+		synthetic := syntheticItem(ws, item, newPath, parentID, name, true)
+		data, err := json.Marshal(envelope{Item: &synthetic})
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+
+	// File upload: open the source, stat for size, then put.
+	f, ferr := os.Open(srcPath)
+	if ferr != nil {
+		return "", ferr
+	}
+	defer func() { _ = f.Close() }()
+
+	fi, serr := f.Stat()
+	if serr != nil {
+		return "", serr
+	}
+	size := fi.Size()
+
+	if err := bridgeEng.Put(ctx, key, f, size); err != nil {
+		return "", err
+	}
+
+	// Attempt a cache lookup for the freshly uploaded file so the returned
+	// item carries the server-assigned etag/mtime. Fall back to synthetic
+	// if the cache row isn't there yet.
+	entry, gerr := bridgeCache.Get(ctx, key)
+	if gerr == nil {
+		it := entryToItem(alias, entry)
+		data, err := json.Marshal(envelope{Item: &it})
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	synthetic := syntheticItem(ws, item, newPath, parentID, name, false)
+	synthetic.Size = size
+	data, err := json.Marshal(envelope{Item: &synthetic})
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 // ofem_core_create_item uploads a new file or creates a new directory.
 //
 // parentIdentifier is "<wsId>/<itemId>[/<parentPath>]". filename is the
@@ -494,84 +590,24 @@ func ofem_core_create_item(alias, parentIdentifier, filename *C.char, isDir C.in
 	if !bridgeReady.Load() {
 		return notReadyEnvelope()
 	}
+	bridgeRWMu.RLock()
+	defer bridgeRWMu.RUnlock()
+
 	a := goString(alias)
 	parentID := goString(parentIdentifier)
 	name := goString(filename)
 	dir := isDir != 0
 	src := goString(srcPath)
 
-	parentScope, perr := parseIdentifier(parentID)
-	if perr != nil {
-		return marshalEnvelope(envelope{Error: errorPayloadFromGo(perr)})
-	}
-	if parentScope.kind != scopeItem && parentScope.kind != scopePath {
-		return marshalEnvelope(envelope{Error: &errorPayload{
-			Code:    "noSuchItem",
-			Message: "create_item requires a parent inside a Fabric item",
-		}})
-	}
-
-	// Derive the new item's path by joining the parent path (may be empty
-	// if the parent is the item root) with the filename.
-	newPath := name
-	if parentScope.path != "" {
-		newPath = parentScope.path + "/" + name
-	}
-	ws := parentScope.workspace
-	item := parentScope.item
-
-	// macOS metadata short-circuit: accept but do not touch the engine.
-	if syncpkg.IsMacOSMetadata(newPath) {
-		synthetic := syntheticItem(ws, item, newPath, parentID, name, true)
-		return marshalEnvelope(envelope{Item: &synthetic})
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), writeDeadline)
-	defer cancel()
-
-	key := cache.Key{
-		AccountAlias: a,
-		WorkspaceID:  ws,
-		ItemID:       item,
-		Path:         newPath,
-	}
-
-	if dir {
-		if err := bridgeEng.Mkdir(ctx, key); err != nil {
-			return marshalEnvelope(envelope{Error: errorPayloadFromGo(err)})
+	result, err := bridgeCreateItem(a, parentID, name, dir, src)
+	if err != nil {
+		var ep *errorPayload
+		if errors.As(err, &ep) {
+			return marshalEnvelope(envelope{Error: ep})
 		}
-		synthetic := syntheticItem(ws, item, newPath, parentID, name, true)
-		return marshalEnvelope(envelope{Item: &synthetic})
-	}
-
-	// File upload: open the source, stat for size, then put.
-	f, ferr := os.Open(src)
-	if ferr != nil {
-		return marshalEnvelope(envelope{Error: errorPayloadFromGo(ferr)})
-	}
-	defer func() { _ = f.Close() }()
-
-	fi, serr := f.Stat()
-	if serr != nil {
-		return marshalEnvelope(envelope{Error: errorPayloadFromGo(serr)})
-	}
-	size := fi.Size()
-
-	if err := bridgeEng.Put(ctx, key, f, size); err != nil {
 		return marshalEnvelope(envelope{Error: errorPayloadFromGo(err)})
 	}
-
-	// Attempt a cache lookup for the freshly uploaded file so the returned
-	// item carries the server-assigned etag/mtime. Fall back to synthetic
-	// if the cache row isn't there yet.
-	entry, gerr := bridgeCache.Get(ctx, key)
-	if gerr == nil {
-		it := entryToItem(a, entry)
-		return marshalEnvelope(envelope{Item: &it})
-	}
-	synthetic := syntheticItem(ws, item, newPath, parentID, name, false)
-	synthetic.Size = size
-	return marshalEnvelope(envelope{Item: &synthetic})
+	return C.CString(result)
 }
 
 // ofem_core_modify_item replaces the content of an existing file.
@@ -585,6 +621,9 @@ func ofem_core_modify_item(alias, identifier, srcPath *C.char) *C.char { //nolin
 	if !bridgeReady.Load() {
 		return notReadyEnvelope()
 	}
+	bridgeRWMu.RLock()
+	defer bridgeRWMu.RUnlock()
+
 	a := goString(alias)
 	id := goString(identifier)
 	src := goString(srcPath)
@@ -638,7 +677,11 @@ func ofem_core_modify_item(alias, identifier, srcPath *C.char) *C.char { //nolin
 
 // ofem_core_delete_item removes a file or directory from OneLake.
 //
-// identifier must be "<wsId>/<itemId>/<path>". macOS metadata paths are
+// identifier must be a scopePath identifier: "<wsId>/<itemId>/<path>".
+// Workspace-level ("<wsId>"), item-root ("<wsId>/<itemId>"), and the
+// root container are NOT valid targets — deleting an entire Fabric
+// workspace or item via the bridge is intentionally unsupported and
+// returns noSuchItem. macOS metadata paths (e.g. ".DS_Store") are
 // accepted without contacting the engine (success immediately). On
 // success the function returns "{}"; errors are {"error":{...}}.
 //
@@ -647,6 +690,9 @@ func ofem_core_delete_item(alias, identifier *C.char) *C.char { //nolint:revive 
 	if !bridgeReady.Load() {
 		return notReadyEnvelope()
 	}
+	bridgeRWMu.RLock()
+	defer bridgeRWMu.RUnlock()
+
 	a := goString(alias)
 	id := goString(identifier)
 
@@ -654,10 +700,14 @@ func ofem_core_delete_item(alias, identifier *C.char) *C.char { //nolint:revive 
 	if perr != nil {
 		return marshalEnvelope(envelope{Error: errorPayloadFromGo(perr)})
 	}
+	// Only scopePath is valid: workspace-level and item-root deletions
+	// are not supported via this bridge (would delete entire OneLake
+	// items or workspaces). Returning noSuchItem causes macOS to stop
+	// retrying rather than treating it as a transient failure.
 	if sc.kind != scopePath {
 		return marshalEnvelope(envelope{Error: &errorPayload{
 			Code:    "noSuchItem",
-			Message: "delete_item requires a path identifier",
+			Message: "delete_item only supports path-scoped identifiers (workspace/item/path); cannot delete workspace or item roots",
 		}})
 	}
 
@@ -964,6 +1014,10 @@ type errorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
+
+// Error implements the error interface so *errorPayload can be returned
+// from internal helpers that signal both Go errors and bridge error codes.
+func (e *errorPayload) Error() string { return e.Code + ": " + e.Message }
 
 // --- adapters: fabric/cache rows -> bridgeItem ------------------------------
 
