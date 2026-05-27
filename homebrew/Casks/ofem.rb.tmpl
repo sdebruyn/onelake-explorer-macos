@@ -18,9 +18,12 @@ cask "ofem" do
   homepage "https://ofem.debruyn.dev"
 
   livecheck do
-    url :url
-    strategy :github_releases
-    regex(/^v(\d+\.\d+\.\d+)$/i)
+    # Skip until the first stable CalVer release tag is pushed. Once
+    # v2026.MM.PATCH is live, replace with:
+    #   url :url
+    #   strategy :github_releases
+    #   regex(/^v(\d+\.\d+\.\d+)$/i)
+    skip "pre-release — no stable tag yet"
   end
 
   depends_on macos: ">= :sonoma"

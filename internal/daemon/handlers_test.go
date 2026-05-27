@@ -221,6 +221,39 @@ func TestHandleConfigSnapshotOmitsInstallID(t *testing.T) {
 	}
 }
 
+// TestHandleConfigSnapshotScrubsUPN verifies that config.snapshot does not
+// expose HomeAccountID (AAD objectId) or Username (UPN) in its Accounts map.
+// Both fields are present in config.Account but must be stripped before the
+// response reaches any IPC client, consistent with docs/telemetry.md.
+func TestHandleConfigSnapshotScrubsUPN(t *testing.T) {
+	h := newTestHandlers(t)
+	// Add an account that carries a UPN and HomeAccountID.
+	if _, err := h.handleAccountAdd(context.Background(), mustJSON(t, AccountAddRequest{
+		Alias:     "work",
+		SecretB64: base64.StdEncoding.EncodeToString([]byte("x")),
+		Account: AccountPayload{
+			Alias:         "work",
+			HomeAccountID: "secret-oid.tid",
+			Username:      "secret@contoso.com",
+			TenantID:      "11111111-1111-1111-1111-111111111111",
+		},
+	})); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	res, err := h.handleConfigSnapshot(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	out, _ := json.Marshal(res)
+	got := string(out)
+	if strings.Contains(got, "secret-oid.tid") {
+		t.Errorf("config.snapshot leaked HomeAccountID: %s", got)
+	}
+	if strings.Contains(got, "secret@contoso.com") {
+		t.Errorf("config.snapshot leaked UPN (Username): %s", got)
+	}
+}
+
 func TestHandleSyncRefreshReturnsDiff(t *testing.T) {
 	h := newTestHandlers(t)
 	stub := &stubEngine{diff: sync.Diff{Added: 2, Updated: 1, Removed: 3}}

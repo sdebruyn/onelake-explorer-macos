@@ -13,11 +13,17 @@
 //   * Decoding the JSON envelopes the Go core produces into typed
 //     Swift values, surfacing typed errors on failure.
 //
-// The bridge is intentionally thread-safe by way of a serial dispatch
-// queue: the C entry points themselves are safe to call concurrently
-// from Go's perspective, but funnelling every call through a single
-// queue gives us deterministic ordering and a single place to hang
-// future tracing/diagnostics off.
+// Thread-safety model:
+//   - Lightweight read-only calls (listAccounts, enumerate, item) are
+//     dispatched on a serial queue so they have deterministic ordering
+//     and a single place to hang future tracing/diagnostics.
+//   - Write calls (createItem, modifyItem, deleteItem) are dispatched on
+//     a dedicated concurrent writeQueue that mirrors the pattern used
+//     for fetchContents. The Go core serialises at the engine level, so
+//     the serial Swift queue buys nothing for writes except latency under
+//     concurrent Finder operations.
+//   - fetchContents uses a separate concurrent fetchQueue so long-running
+//     downloads never block enumerate calls.
 
 import Foundation
 import os.log
@@ -199,6 +205,19 @@ final class CoreBridge {
     /// calls while the download is in progress.
     private let fetchQueue = DispatchQueue(
         label: "dev.debruyn.ofem.fileprovider.core-bridge.fetch",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+
+    /// Separate concurrent queue for write operations (createItem,
+    /// modifyItem, deleteItem). Write calls have a 60-second deadline on
+    /// the Go side and can block for the full window during large uploads.
+    /// Dispatching them here prevents a slow upload from blocking the
+    /// serial `queue` and stalling concurrent enumerate calls in Finder.
+    /// The Go core serialises conflicting writes at the engine level, so
+    /// a concurrent Swift queue is safe.
+    private let writeQueue = DispatchQueue(
+        label: "dev.debruyn.ofem.fileprovider.core-bridge.write",
         qos: .userInitiated,
         attributes: .concurrent
     )
@@ -410,7 +429,7 @@ final class CoreBridge {
         try ensureBootstrapped()
         let src = srcPath ?? ""
         let isDirFlag = isDir ? Int32(1) : Int32(0)
-        let raw = try queue.sync { () throws -> Data in
+        let raw = try writeQueue.sync { () throws -> Data in
             guard let cString = alias.withCString({ cAlias in
                 parentIdentifier.withCString { cParent in
                     filename.withCString { cName in
@@ -454,7 +473,7 @@ final class CoreBridge {
         srcPath: String
     ) throws -> BridgeItem {
         try ensureBootstrapped()
-        let raw = try queue.sync { () throws -> Data in
+        let raw = try writeQueue.sync { () throws -> Data in
             guard let cString = alias.withCString({ cAlias in
                 identifier.withCString { cIdent in
                     srcPath.withCString { cSrc in
@@ -488,7 +507,7 @@ final class CoreBridge {
     ///   - identifier: Bridge identifier of the item to delete.
     func deleteItem(alias: String, identifier: String) throws {
         try ensureBootstrapped()
-        let raw = try queue.sync { () throws -> Data in
+        let raw = try writeQueue.sync { () throws -> Data in
             guard let cString = alias.withCString({ cAlias in
                 identifier.withCString { cIdent in
                     ofem_core_delete_item(

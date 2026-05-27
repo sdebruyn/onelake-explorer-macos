@@ -22,3 +22,11 @@ func decodeBase64(s string) ([]byte, error) {
 // doesn't need to import sort at the top alongside several other names
 // (keeps the import block compact).
 func sortStrings(s []string) { sort.Strings(s) }
+
+// sortDomains sorts a []MountDomain slice in place by Identifier so the
+// mount.list response is deterministic regardless of map iteration order.
+func sortDomains(d []MountDomain) {
+	sort.Slice(d, func(i, j int) bool {
+		return d[i].Identifier < d[j].Identifier
+	})
+}

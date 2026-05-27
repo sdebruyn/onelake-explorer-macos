@@ -134,11 +134,11 @@ CalVer: `YYYY.MM.PATCH` (e.g. `2026.05.1`). A git tag `v2026.05.1` triggers the 
 
 We need:
 - Apple Developer Program enrollment (~$99/year). Required to obtain code signing certificates.
-- A **Developer ID Application** certificate, exported as a `.p12` and stored in GitHub Actions secrets (`DEVELOPER_ID_APPLICATION_P12_BASE64` + `DEVELOPER_ID_APPLICATION_P12_PASSWORD`).
+- A **Developer ID Application** certificate, exported as a `.p12` and stored in GitHub Actions secrets (`APPLE_CERT_P12` + `APPLE_CERT_PASSWORD`).
 - An **App Store Connect API key** for `notarytool` (preferred over app-specific passwords because it doesn't expire and is per-team scoped):
-  - `NOTARY_KEY_ID` — the 10-character key identifier.
-  - `NOTARY_ISSUER_ID` — the issuer UUID.
-  - `NOTARY_API_KEY_P8` — the contents of the `.p8` private key.
+  - `APPLE_API_KEY_JSON` — the full API key JSON (`key_id`, `issuer_id`, `key`).
+  - `APPLE_API_KEY_ID` — the 10-character key identifier (also inside `APPLE_API_KEY_JSON`).
+  - `APPLE_API_ISSUER_ID` — the issuer UUID (also inside `APPLE_API_KEY_JSON`).
 - A **Provisioning profile** is not required for non-Mac-App-Store distribution; Developer ID signing is sufficient.
 
 ## Entitlements
@@ -198,17 +198,10 @@ pushed. None of them are committed to the repository.
 ### The `homebrew-ofem` tap repo
 
 `homebrew-ofem` is a **separate GitHub repository** (`sdebruyn/homebrew-ofem`).
-It must be created manually once before the first release:
-
-```bash
-gh repo create sdebruyn/homebrew-ofem --public --description "Homebrew tap for OFEM"
-# Add the dummy 0.0.0 cask to bootstrap the tap validation pipeline:
-# copy homebrew/ofem.rb from this repo into homebrew-ofem/Casks/ofem.rb.
-```
-
-The release workflow's `release-cli-and-cask` job renders the cask template
-and pushes the updated `Casks/ofem.rb` to `sdebruyn/homebrew-ofem` on every
-release.
+The tap already exists and was bootstrapped with a dummy `0.0.0` cask in PR #35.
+No manual setup is required — the release workflow's `release-cli-and-cask` job
+renders the cask template and pushes the updated `Casks/ofem.rb` to
+`sdebruyn/homebrew-ofem` automatically on every release tag.
 
 ## GoReleaser config (`.goreleaser.yaml`)
 
@@ -265,10 +258,19 @@ The `uninstall launchctl:` directive in the cask stops the daemon. The `app` dir
 
 ## Local development distribution
 
-For pre-release dogfooding, developers can run `./scripts/build-local.sh` which:
-1. Builds the Go binary (no codesigning).
-2. Builds the Xcode project with the locally available developer certificate (or ad-hoc signing).
-3. Skips notarization.
-4. Produces `build/OneLake.app` ready to drag into `/Applications`.
+For pre-release dogfooding, build the app manually:
 
-This won't pass Gatekeeper on other machines without manual override (`xattr -d com.apple.quarantine`), which is fine for personal dogfooding.
+```bash
+# Build the cgo archive for Swift
+make cgo-build
+
+# Generate the Xcode project from project.yml
+make apple-gen
+
+# Build the host app (ad-hoc or with your local Developer ID cert)
+make apple-build-host
+```
+
+The resulting app lands in `build/Export/OneLake.app`. Drag it into
+`/Applications`. Without notarization it will not pass Gatekeeper on other
+machines; override locally with `xattr -d com.apple.quarantine OneLake.app`.

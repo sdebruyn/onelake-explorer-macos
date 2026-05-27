@@ -482,8 +482,12 @@ func TestBridgeLifecycle(t *testing.T) {
 	// TODO(phase-2): add a race test where one goroutine calls
 	// ofem_core_enumerate while another calls ofem_core_close. The
 	// RWMutex in ofem_core_close guarantees the close blocks until the
-	// in-flight call finishes, but the test requires a c-archive build
-	// to exercise the real C-ABI entry points.
+	// in-flight call finishes, but exercising the real C-ABI entry points
+	// requires a c-archive build (CGO_ENABLED=1 + buildmode=c-archive).
+	// Unblock this test once the Phase 2 c-archive build target is added
+	// to the Makefile; until then the invariant is verified by -race on
+	// the pure-Go bridge helpers (setupBridgeWithFake / bridgeCreateItem
+	// etc.) and by the lock-order analysis in core/bridge.go comments.
 }
 
 // setupBridgeWithFake wires a fakeEngine and an in-memory cache into the
