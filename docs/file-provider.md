@@ -79,8 +79,10 @@ What lives in the shared Keychain:
 ## Domain model
 
 OFEM registers **one File Provider domain per account-alias**:
-- `NSFileProviderDomain(identifier: "ofem.work", displayName: "work", pathRelativeToDocumentStorage: "work")`.
-- `NSFileProviderDomain(identifier: "ofem.client-a", displayName: "client-a", pathRelativeToDocumentStorage: "client-a")`.
+- `NSFileProviderDomain(identifier: "ofem.work", displayName: "work")`.
+- `NSFileProviderDomain(identifier: "ofem.client-a", displayName: "client-a")`.
+
+Note: `pathRelativeToDocumentStorage` is an iOS-only initialiser parameter and is not used on macOS. The macOS `NSFileProviderDomain` init takes only `identifier` and `displayName`; macOS itself derives the on-disk path from `CFBundleDisplayName` + `displayName`.
 
 We pass the bare alias as `displayName`. macOS constructs the
 on-disk folder as `<CFBundleDisplayName>-<displayName>`, so every
