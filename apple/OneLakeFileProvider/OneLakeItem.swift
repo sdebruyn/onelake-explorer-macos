@@ -9,10 +9,8 @@ import FileProvider
 import Foundation
 import UniformTypeIdentifiers
 
-/// Default capability set for read-only items. We will lift these
-/// when modify/create/delete land in a later phase; for Phase 1 we
-/// promise read + enumerate (the framework treats enumeration as a
-/// capability of containers) and nothing else.
+/// Default capability set for items when the Go core returns no capability
+/// list. Falls back to read + enumerate so Finder can at least browse.
 private let defaultReadOnlyCapabilities: NSFileProviderItemCapabilities = [
     .allowsReading,
     .allowsContentEnumerating
@@ -67,9 +65,9 @@ final class OneLakeItem: NSObject, NSFileProviderItem {
         }
 
         // Map the textual capability set from the bridge to the
-        // framework's bitmask. Phase 1 is read-only, so anything not
-        // explicitly allowed by the Go core simply doesn't get the
-        // corresponding bit set.
+        // framework's bitmask. The Go core controls what is allowed;
+        // unknown tokens are silently skipped so a future capability
+        // addition on the Go side never crashes older Swift code.
         if let caps = b.capabilities {
             var bitmask: NSFileProviderItemCapabilities = []
             for cap in caps {
@@ -88,7 +86,10 @@ final class OneLakeItem: NSObject, NSFileProviderItem {
                     bitmask.insert(.allowsTrashing)
                 case "delete":
                     bitmask.insert(.allowsDeleting)
-                case "addChildren":
+                // "add_subitems" is the canonical token emitted by the Go
+                // core; "addChildren" is kept for back-compat in case any
+                // cached bridge response uses the old spelling.
+                case "add_subitems", "addChildren":
                     bitmask.insert(.allowsAddingSubItems)
                 default:
                     continue

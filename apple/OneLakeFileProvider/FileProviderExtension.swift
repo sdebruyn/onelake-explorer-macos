@@ -202,58 +202,130 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     }
 
     // MARK: - Mutations
-    //
-    // Phase 1 is read-only. Every mutation entry point returns the
-    // Foundation `NSFeatureUnsupportedError`, the convention Apple's
-    // own samples use for "not implemented yet" in a File Provider
-    // (NSFileProviderError.Code intentionally has no
-    // `featureUnsupported` case — see NSFileProviderError.h). The
-    // framework treats this as non-retryable and surfaces a
-    // user-visible error rather than looping. TODO(phase-2):
-    // implement the upload, rename, reparent, and delete paths
-    // when the sync engine ships.
-
-    /// Foundation-domain "feature unsupported" error reused by every
-    /// mutation stub below. Kept as a property so the call sites
-    /// read top-to-bottom; building the `NSError` is otherwise
-    /// boilerplate that drowns the intent.
-    private var notImplementedError: NSError {
-        NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)
-    }
 
     func createItem(
-        basedOn _: NSFileProviderItem,
+        basedOn template: NSFileProviderItem,
         fields _: NSFileProviderItemFields,
-        contents _: URL?,
+        contents: URL?,
         options _: NSFileProviderCreateItemOptions = [],
         request _: NSFileProviderRequest,
         completionHandler: @escaping (
             NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?
         ) -> Void
     ) -> Progress {
-        // TODO(phase-2): upload path
-        FileProviderExtension.log.debug("createItem called — feature unsupported in Phase 1")
-        completionHandler(nil, [], false, notImplementedError)
-        return Progress(totalUnitCount: 1)
+        let progress = Progress(totalUnitCount: 1)
+        let aliasCopy = self.alias
+
+        let parentScope: EnumScope
+        do {
+            parentScope = try ItemIdentifierParser.parse(template.parentItemIdentifier)
+        } catch let error as BridgeError {
+            completionHandler(nil, [], false, error.nsFileProviderError)
+            progress.completedUnitCount = 1
+            return progress
+        } catch {
+            completionHandler(nil, [], false, error)
+            progress.completedUnitCount = 1
+            return progress
+        }
+        let parentBridgeId = ItemIdentifierParser.bridgeIdentifier(for: parentScope)
+        let isDir = template.contentType == .folder
+        let srcPath = contents?.path
+
+        FileProviderExtension.log.debug(
+            "createItem \(template.filename, privacy: .public) isDir=\(isDir, privacy: .public) parent=\(parentBridgeId, privacy: .public)"
+        )
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let bridgeItem = try CoreBridge.shared.createItem(
+                    alias: aliasCopy,
+                    parentIdentifier: parentBridgeId,
+                    filename: template.filename,
+                    isDir: isDir,
+                    srcPath: srcPath
+                )
+                completionHandler(OneLakeItem(from: bridgeItem), [], false, nil)
+            } catch let error as BridgeError {
+                FileProviderExtension.log.error(
+                    "createItem failed for \(aliasCopy, privacy: .public)/\(parentBridgeId, privacy: .public)/\(template.filename, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+                completionHandler(nil, [], false, error.nsFileProviderError)
+            } catch {
+                FileProviderExtension.log.error(
+                    "createItem failed: \(error.localizedDescription, privacy: .public)"
+                )
+                completionHandler(nil, [], false, error)
+            }
+            progress.completedUnitCount = 1
+        }
+        return progress
     }
 
     func modifyItem(
         _ item: NSFileProviderItem,
         baseVersion _: NSFileProviderItemVersion,
-        changedFields _: NSFileProviderItemFields,
-        contents _: URL?,
+        changedFields: NSFileProviderItemFields,
+        contents: URL?,
         options _: NSFileProviderModifyItemOptions = [],
         request _: NSFileProviderRequest,
         completionHandler: @escaping (
             NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?
         ) -> Void
     ) -> Progress {
-        // TODO(phase-2): upload + rename + reparent
-        FileProviderExtension.log.debug(
-            "modifyItem called for \(item.itemIdentifier.rawValue, privacy: .public) — feature unsupported"
-        )
-        completionHandler(nil, [], false, notImplementedError)
-        return Progress(totalUnitCount: 1)
+        let progress = Progress(totalUnitCount: 1)
+
+        // Phase 1 handles content-bearing modifications only. Metadata-only
+        // changes (rename, reparent, xattr) are returned as featureUnsupported
+        // so macOS does not retry them in a loop.
+        guard changedFields.contains(.contents), let contentsURL = contents else {
+            FileProviderExtension.log.debug(
+                "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — metadata-only, unsupported in Phase 1"
+            )
+            completionHandler(nil, [], false, NSFileProviderError(.featureUnsupported))
+            progress.completedUnitCount = 1
+            return progress
+        }
+
+        let aliasCopy = self.alias
+        let scope: EnumScope
+        do {
+            scope = try ItemIdentifierParser.parse(item.itemIdentifier)
+        } catch let error as BridgeError {
+            completionHandler(nil, [], false, error.nsFileProviderError)
+            progress.completedUnitCount = 1
+            return progress
+        } catch {
+            completionHandler(nil, [], false, error)
+            progress.completedUnitCount = 1
+            return progress
+        }
+        let identifier = ItemIdentifierParser.bridgeIdentifier(for: scope)
+
+        FileProviderExtension.log.debug("modifyItem \(identifier, privacy: .public)")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let bridgeItem = try CoreBridge.shared.modifyItem(
+                    alias: aliasCopy,
+                    identifier: identifier,
+                    srcPath: contentsURL.path
+                )
+                completionHandler(OneLakeItem(from: bridgeItem), [], false, nil)
+            } catch let error as BridgeError {
+                FileProviderExtension.log.error(
+                    "modifyItem failed for \(aliasCopy, privacy: .public)/\(identifier, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+                completionHandler(nil, [], false, error.nsFileProviderError)
+            } catch {
+                FileProviderExtension.log.error(
+                    "modifyItem failed: \(error.localizedDescription, privacy: .public)"
+                )
+                completionHandler(nil, [], false, error)
+            }
+            progress.completedUnitCount = 1
+        }
+        return progress
     }
 
     func deleteItem(
@@ -263,12 +335,42 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         request _: NSFileProviderRequest,
         completionHandler: @escaping (Error?) -> Void
     ) -> Progress {
-        // TODO(phase-2): delete + trash
-        FileProviderExtension.log.debug(
-            "deleteItem called for \(identifier.rawValue, privacy: .public) — feature unsupported"
-        )
-        completionHandler(notImplementedError)
-        return Progress(totalUnitCount: 1)
+        let progress = Progress(totalUnitCount: 1)
+        let aliasCopy = self.alias
+        let scope: EnumScope
+        do {
+            scope = try ItemIdentifierParser.parse(identifier)
+        } catch let error as BridgeError {
+            completionHandler(error.nsFileProviderError)
+            progress.completedUnitCount = 1
+            return progress
+        } catch {
+            completionHandler(error)
+            progress.completedUnitCount = 1
+            return progress
+        }
+        let rawId = ItemIdentifierParser.bridgeIdentifier(for: scope)
+
+        FileProviderExtension.log.debug("deleteItem \(rawId, privacy: .public)")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try CoreBridge.shared.deleteItem(alias: aliasCopy, identifier: rawId)
+                completionHandler(nil)
+            } catch let error as BridgeError {
+                FileProviderExtension.log.error(
+                    "deleteItem failed for \(aliasCopy, privacy: .public)/\(rawId, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+                completionHandler(error.nsFileProviderError)
+            } catch {
+                FileProviderExtension.log.error(
+                    "deleteItem failed: \(error.localizedDescription, privacy: .public)"
+                )
+                completionHandler(error)
+            }
+            progress.completedUnitCount = 1
+        }
+        return progress
     }
 
     // MARK: - Enumeration

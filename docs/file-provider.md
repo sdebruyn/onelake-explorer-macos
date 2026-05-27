@@ -82,7 +82,11 @@ OFEM registers **one File Provider domain per account-alias**:
 - `NSFileProviderDomain(identifier: "ofem.work", displayName: "work")`.
 - `NSFileProviderDomain(identifier: "ofem.client-a", displayName: "client-a")`.
 
-Note: `pathRelativeToDocumentStorage` is an iOS-only initialiser parameter and is not used on macOS. The macOS `NSFileProviderDomain` init takes only `identifier` and `displayName`; macOS itself derives the on-disk path from `CFBundleDisplayName` + `displayName`.
+`pathRelativeToDocumentStorage` is **not** passed — it is an iOS-only
+parameter. On macOS, the framework derives the mount path automatically
+from `CFBundleDisplayName` (the app's bundle display name, `OneLake` in
+our case) and `NSFileProviderDomain.displayName` (the alias). Passing the
+parameter on macOS is a compile-time error on newer SDKs.
 
 We pass the bare alias as `displayName`. macOS constructs the
 on-disk folder as `<CFBundleDisplayName>-<displayName>`, so every
@@ -152,22 +156,29 @@ When the user opens a placeholder, macOS calls `fetchContents(for: itemIdentifie
 
 ## Uploading content
 
-When the user saves a modified file, macOS calls `createItem` or `modifyItem`. Our extension:
+When the user saves a modified file, macOS calls `createItem` or `modifyItem`. The extension:
 
-1. Resolves the destination OneLake path.
-2. Streams to OneLake DFS using `PUT ?resource=file` + chunked `PATCH ?action=append` + `PATCH ?action=flush`.
-3. On success, returns the updated `NSFileProviderItem` with the new etag/mtime.
-4. On failure (network, throttling, conflict), returns an `NSFileProviderError` macOS understands; macOS surfaces it in the UI and may retry later (we honor `Retry-After`).
+1. Resolves the destination OneLake path from `template.parentItemIdentifier` and `template.filename` (create) or `item.itemIdentifier` (modify).
+2. Delegates to `CoreBridge.shared.createItem` / `modifyItem`, which crosses the cgo boundary into `ofem_core_create_item` / `ofem_core_modify_item`.
+3. The Go core streams to OneLake DFS using `PUT ?resource=file` + chunked `PATCH ?action=append` + `PATCH ?action=flush` via `sync.Engine.Put`.
+4. On success, returns the updated `NSFileProviderItem` with the server-assigned etag/mtime from the post-upload HEAD.
+5. On failure (network, throttling, capacity-paused), returns an `NSFileProviderError` macOS understands; macOS surfaces it in the UI and may retry later (we honor `Retry-After`).
+
+`modifyItem` only processes calls where `changedFields` includes `.contents`. Metadata-only changes (rename, reparent) return `NSFeatureUnsupportedError` in Phase 1.
 
 ## Conflict resolution
 
-**Last-write-wins on mtime.** If the extension is asked to upload a file whose remote version has a newer mtime than the local base version, it still uploads. No conflict copy.
+**Last-write-wins.** If the extension is asked to upload a file whose remote version has a newer mtime than the local base version, it still uploads. No conflict copy.
 
-This is implemented entirely in the upload path — we don't read remote-then-merge; we just `PUT`.
+This is implemented entirely in `sync.Engine.Put` — we don't read remote-then-merge; we just issue the PUT/PATCH chain.
 
 ## macOS metadata filtering
 
-We filter on **write** path: when macOS asks us to create or modify a file matching `\.(DS_Store|Spotlight-V100|Trashes|fseventsd)$` or starting with `._`, we accept the call (return success) but do NOT upload. The local file is still present; OneLake just doesn't see it.
+We filter on the **write** path: when macOS asks us to create, modify, or delete a file matching `\.(DS_Store|Spotlight-V100|Trashes|fseventsd)$` or starting with `._`, we accept the call (return success) but do NOT contact OneLake. The local file is still present; the lake never sees it.
+
+This is implemented at two layers:
+1. `sync.IsMacOSMetadata(path)` is called in `sync.Engine.Put` and `sync.Engine.Delete` so any caller going through the engine is covered automatically.
+2. The cgo bridge additionally short-circuits `ofem_core_create_item` and `ofem_core_delete_item` before reaching the engine, so folder-create paths (which do not go through `Put`) are also filtered.
 
 Read path: we never read these from OneLake (they would never be there in the first place).
 
