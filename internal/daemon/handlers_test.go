@@ -221,6 +221,89 @@ func TestHandleConfigSnapshotOmitsInstallID(t *testing.T) {
 	}
 }
 
+// TestHandleConfigSnapshotScrubsUPN verifies that config.snapshot does not
+// expose HomeAccountID (AAD objectId) or Username (UPN) in its Accounts map.
+// Both fields are present in config.Account but must be stripped before the
+// response reaches any IPC client, consistent with docs/telemetry.md.
+func TestHandleConfigSnapshotScrubsUPN(t *testing.T) {
+	h := newTestHandlers(t)
+	// Add an account that carries a UPN and HomeAccountID.
+	if _, err := h.handleAccountAdd(context.Background(), mustJSON(t, AccountAddRequest{
+		Alias:     "work",
+		SecretB64: base64.StdEncoding.EncodeToString([]byte("x")),
+		Account: AccountPayload{
+			Alias:         "work",
+			HomeAccountID: "secret-oid.tid",
+			Username:      "secret@contoso.com",
+			TenantID:      "11111111-1111-1111-1111-111111111111",
+		},
+	})); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	res, err := h.handleConfigSnapshot(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	out, _ := json.Marshal(res)
+	got := string(out)
+	if strings.Contains(got, "secret-oid.tid") {
+		t.Errorf("config.snapshot leaked HomeAccountID: %s", got)
+	}
+	if strings.Contains(got, "secret@contoso.com") {
+		t.Errorf("config.snapshot leaked UPN (Username): %s", got)
+	}
+}
+
+// TestHandleConfigSnapshotScrubsMultipleAccounts verifies that config.snapshot
+// scrubs HomeAccountID and Username for every account in the response, not
+// just the first one.
+func TestHandleConfigSnapshotScrubsMultipleAccounts(t *testing.T) {
+	h := newTestHandlers(t)
+	for _, req := range []AccountAddRequest{
+		{
+			Alias:     "work",
+			SecretB64: base64.StdEncoding.EncodeToString([]byte("x")),
+			Account: AccountPayload{
+				Alias:         "work",
+				HomeAccountID: "secret-oid-work.tid",
+				Username:      "secret-work@contoso.com",
+				TenantID:      "11111111-1111-1111-1111-111111111111",
+			},
+		},
+		{
+			Alias:     "personal",
+			SecretB64: base64.StdEncoding.EncodeToString([]byte("y")),
+			Account: AccountPayload{
+				Alias:         "personal",
+				HomeAccountID: "secret-oid-personal.tid",
+				Username:      "secret-personal@fabrikam.com",
+				TenantID:      "22222222-2222-2222-2222-222222222222",
+			},
+		},
+	} {
+		if _, err := h.handleAccountAdd(context.Background(), mustJSON(t, req)); err != nil {
+			t.Fatalf("handleAccountAdd(%q): %v", req.Alias, err)
+		}
+	}
+
+	res, err := h.handleConfigSnapshot(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	out, _ := json.Marshal(res)
+	got := string(out)
+	for _, secret := range []string{
+		"secret-oid-work.tid",
+		"secret-work@contoso.com",
+		"secret-oid-personal.tid",
+		"secret-personal@fabrikam.com",
+	} {
+		if strings.Contains(got, secret) {
+			t.Errorf("config.snapshot leaked sensitive value %q: %s", secret, got)
+		}
+	}
+}
+
 func TestHandleSyncRefreshReturnsDiff(t *testing.T) {
 	h := newTestHandlers(t)
 	stub := &stubEngine{diff: sync.Diff{Added: 2, Updated: 1, Removed: 3}}
@@ -305,6 +388,49 @@ func TestHandleMountListStub(t *testing.T) {
 	}
 	if len(r.Domains) != 0 {
 		t.Errorf("expected empty domains, got %+v", r.Domains)
+	}
+}
+
+// TestHandleMountListWithAccounts verifies that mount.list returns one
+// MountDomain per account, sorted by identifier, with the expected alias
+// and mount path embedded.
+func TestHandleMountListWithAccounts(t *testing.T) {
+	h := newTestHandlers(t)
+
+	for _, req := range []AccountAddRequest{
+		{
+			Alias:     "work",
+			SecretB64: base64.StdEncoding.EncodeToString([]byte("x")),
+			Account:   AccountPayload{Alias: "work", HomeAccountID: "h1", Username: "u1", TenantID: "t1"},
+		},
+		{
+			Alias:     "personal",
+			SecretB64: base64.StdEncoding.EncodeToString([]byte("y")),
+			Account:   AccountPayload{Alias: "personal", HomeAccountID: "h2", Username: "u2", TenantID: "t2"},
+		},
+	} {
+		if _, err := h.handleAccountAdd(context.Background(), mustJSON(t, req)); err != nil {
+			t.Fatalf("handleAccountAdd(%q): %v", req.Alias, err)
+		}
+	}
+
+	res, err := h.handleMountList(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("mount.list: %v", err)
+	}
+	r := res.(MountListResponse)
+	if len(r.Domains) != 2 {
+		t.Fatalf("expected 2 domains, got %d: %+v", len(r.Domains), r.Domains)
+	}
+	// sortDomains sorts by identifier; "personal" < "work" lexicographically.
+	if r.Domains[0].Identifier != "personal" || r.Domains[1].Identifier != "work" {
+		t.Errorf("domains not sorted: %v, %v", r.Domains[0].Identifier, r.Domains[1].Identifier)
+	}
+	for _, d := range r.Domains {
+		wantPath := "~/Library/CloudStorage/OneLake-" + d.Identifier
+		if d.MountPath != wantPath {
+			t.Errorf("domain %q MountPath = %q, want %q", d.Identifier, d.MountPath, wantPath)
+		}
 	}
 }
 

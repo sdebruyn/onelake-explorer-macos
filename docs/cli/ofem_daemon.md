@@ -22,7 +22,7 @@ your first 'ofem login' and the daemon takes care of the rest.
 
 ### SEE ALSO
 
-* [ofem](ofem.md)	 - OneLake File Explorer for macOS
+* [ofem](ofem.md)	 - OneLake Explorer for macOS
 * [ofem daemon install](ofem_daemon_install.md)	 - Install the LaunchAgent so OFEM starts at login
 * [ofem daemon run](ofem_daemon_run.md)	 - Run the daemon in the foreground (used by LaunchAgent and for debugging)
 * [ofem daemon start](ofem_daemon_start.md)	 - Start the daemon

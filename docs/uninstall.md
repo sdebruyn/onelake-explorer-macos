@@ -21,5 +21,5 @@ Also deletes the local cache, the daemon's config, and your sign-in state.
 Uninstalling the app does not revoke OFEM's OAuth grant in your Microsoft Entra tenant. To revoke:
 
 1. Open [myapplications.microsoft.com](https://myapplications.microsoft.com).
-2. Find "OneLake File Explorer for macOS".
+2. Find "OneLake Explorer for macOS".
 3. Click **Manage** → **Revoke**.

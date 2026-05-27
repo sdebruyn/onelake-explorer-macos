@@ -318,25 +318,48 @@ func (h *Handlers) handleAccountRemove(_ context.Context, params json.RawMessage
 
 // ConfigSnapshotResponse is the payload returned by "config.snapshot".
 // It mirrors [config.File] but omits InstallID to keep telemetry
-// pseudonymisation off the wire.
+// pseudonymisation off the wire. The Accounts map is scrubbed to remove
+// HomeAccountID and Username (UPN) for the same reason account.list uses
+// AccountSummary: docs/telemetry.md explicitly prohibits UPNs from being
+// sent over any logged channel, and the IPC socket is accessible to any
+// process the user runs.
 type ConfigSnapshotResponse struct {
-	Telemetry      bool                      `json:"telemetry"`
-	DefaultAccount string                    `json:"defaultAccount"`
-	Cache          config.CacheConfig        `json:"cache"`
-	Net            config.NetConfig          `json:"net"`
-	Log            config.LogConfig          `json:"log"`
-	Accounts       map[string]config.Account `json:"accounts"`
+	Telemetry      bool                         `json:"telemetry"`
+	DefaultAccount string                       `json:"defaultAccount"`
+	Cache          config.CacheConfig           `json:"cache"`
+	Net            config.NetConfig             `json:"net"`
+	Log            config.LogConfig             `json:"log"`
+	Accounts       map[string]configAccountSafe `json:"accounts"`
+}
+
+// configAccountSafe is the subset of [config.Account] safe to expose over
+// IPC. It omits HomeAccountID (AAD objectId) and Username (UPN) for
+// consistency with AccountSummary in account.list.
+type configAccountSafe struct {
+	Alias      string `json:"alias"`
+	TenantID   string `json:"tenantId"`
+	TenantName string `json:"tenantName,omitempty"`
+	AddedAt    string `json:"addedAt,omitempty"`
 }
 
 func (h *Handlers) handleConfigSnapshot(_ context.Context, _ json.RawMessage) (any, error) {
 	snap := h.store.Snapshot()
+	accounts := make(map[string]configAccountSafe, len(snap.Accounts))
+	for k, a := range snap.Accounts {
+		accounts[k] = configAccountSafe{
+			Alias:      a.Alias,
+			TenantID:   a.TenantID,
+			TenantName: a.TenantName,
+			AddedAt:    a.AddedAt,
+		}
+	}
 	return ConfigSnapshotResponse{
 		Telemetry:      snap.Telemetry,
 		DefaultAccount: snap.DefaultAccount,
 		Cache:          snap.Cache,
 		Net:            snap.Net,
 		Log:            snap.Log,
-		Accounts:       snap.Accounts,
+		Accounts:       accounts,
 	}, nil
 }
 
@@ -420,8 +443,15 @@ func (h *Handlers) handleSyncPollChanges(_ context.Context, params json.RawMessa
 
 // MountListResponse is the payload returned by "mount.list".
 type MountListResponse struct {
-	// Domains is the list of registered File Provider domains. Returned
-	// empty until the File Provider Extension lands in Phase 1.
+	// Domains is the list of registered File Provider domains, derived
+	// from the accounts in config.toml. Each account maps to one domain
+	// with the mount path the macOS File Provider framework assigns under
+	// ~/Library/CloudStorage/. The daemon cannot query NSFileProviderManager
+	// from Go; the host app is the authoritative source for the actual domain
+	// registration state. This list reflects config.toml, not live domain state.
+	//
+	// TODO(phase-2): replace with a real NSFileProviderDomain query once the
+	// host app exposes domain registration state over IPC.
 	Domains []MountDomain `json:"domains"`
 }
 
@@ -430,10 +460,24 @@ type MountListResponse struct {
 type MountDomain struct {
 	Identifier  string `json:"identifier"`
 	DisplayName string `json:"displayName"`
+	// MountPath is the expected on-disk location under ~/Library/CloudStorage/.
+	// It is constructed from the alias; the actual directory only appears once
+	// the File Provider Extension registers and macOS creates it.
+	MountPath string `json:"mountPath,omitempty"`
 }
 
 func (h *Handlers) handleMountList(_ context.Context, _ json.RawMessage) (any, error) {
-	return MountListResponse{Domains: []MountDomain{}}, nil
+	snap := h.store.Snapshot()
+	domains := make([]MountDomain, 0, len(snap.Accounts))
+	for alias := range snap.Accounts {
+		domains = append(domains, MountDomain{
+			Identifier:  alias,
+			DisplayName: "OneLake — " + alias, // em-dash, matching Finder sidebar label
+			MountPath:   "~/Library/CloudStorage/OneLake-" + alias,
+		})
+	}
+	sortDomains(domains)
+	return MountListResponse{Domains: domains}, nil
 }
 
 // --- small helpers kept private so they don't pollute the package API.

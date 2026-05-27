@@ -74,7 +74,7 @@ make apple-build       # Debug build via xcodebuild
 | App Store Connect API key (for notarytool) | included in Developer Program | https://appstoreconnect.apple.com/access/integrations/api → "+" → "Developer" or "Admin" role |
 | App Group identifier `group.dev.debruyn.ofem` | included | https://developer.apple.com/account/resources/identifiers → "+" → App Groups |
 | File Provider entitlement | included | configured per-extension in the `.entitlements` file |
-| Microsoft Entra App Registration | free | ✅ done — client ID `939b4a06-cc18-49eb-9674-a1fc041489f6` ("OneLake File Explorer for macOS", multi-tenant, public client). See [docs/auth.md](auth.md) for the underlying settings. |
+| Microsoft Entra App Registration | free | ✅ done — client ID `939b4a06-cc18-49eb-9674-a1fc041489f6` ("OneLake Explorer for macOS", multi-tenant, public client). See [docs/auth.md](auth.md) for the underlying settings. |
 | Azure Application Insights resource (Free tier) | free up to 5 GB/month | https://portal.azure.com → "Application Insights" → "+" → choose Pay-As-You-Go subscription, Free pricing tier |
 | GitHub repository | free | already exists once initial scaffolding is pushed |
 | GitHub Actions secrets (set on the repo) | free | see below |

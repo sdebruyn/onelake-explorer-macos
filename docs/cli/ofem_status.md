@@ -19,5 +19,5 @@ ofem status [flags]
 
 ### SEE ALSO
 
-* [ofem](ofem.md)	 - OneLake File Explorer for macOS
+* [ofem](ofem.md)	 - OneLake Explorer for macOS
 

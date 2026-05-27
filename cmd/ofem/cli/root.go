@@ -13,7 +13,7 @@ import (
 func NewRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "ofem",
-		Short:         "OneLake File Explorer for macOS",
+		Short:         "OneLake Explorer for macOS",
 		Long:          longDescription,
 		Version:       versionString(),
 		SilenceUsage:  true,

@@ -15,7 +15,7 @@ We register a **multi-tenant public client application** in our own tenant:
 
 | Property | Value |
 |---|---|
-| Display name | `OneLake File Explorer for macOS` |
+| Display name | `OneLake Explorer for macOS` |
 | Supported account types | Accounts in any organizational directory (multi-tenant) |
 | Redirect URI | `http://localhost` (Public client/native) |
 | Allow public client flows | **Yes** |

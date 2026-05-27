@@ -20,7 +20,7 @@ Please do **not** open a public issue. Use [GitHub Private Security Advisories](
 
 ## Tenant admins
 
-OFEM uses a multi-tenant Microsoft Entra public-client App Registration owned by the project maintainer ("OneLake File Explorer for macOS"). It asks for the `https://storage.azure.com/user_impersonation` scope — read and write OneLake files, nothing else.
+OFEM uses a multi-tenant Microsoft Entra public-client App Registration owned by the project maintainer ("OneLake Explorer for macOS"). It asks for the `https://storage.azure.com/user_impersonation` scope — read and write OneLake files, nothing else.
 
 To pre-consent for your tenant, an admin can visit:
 

@@ -2,9 +2,9 @@
 # sign-and-notarize.sh — sign OneLake.app, create a DMG, submit for notarization,
 # and staple the ticket. Prints the path to the stapled DMG on stdout.
 #
-# This script is the single source of truth for the sign-and-notarize logic.
-# The GitHub Actions release workflow (.github/workflows/release.yml) calls
-# this script rather than inlining the signing commands, keeping both in sync.
+# This script is a local developer convenience for manual signing runs.
+# The GitHub Actions release workflow (.github/workflows/release.yml) inlines
+# all signing and notarization commands directly and does NOT call this script.
 # See docs/packaging-homebrew.md for the full pipeline description.
 #
 # Usage:

@@ -7,9 +7,9 @@
 // `NSFileProviderError` values the framework retries / surfaces
 // appropriately.
 //
-// Phase 1 is read-only: enumeration + fetch are wired up,
-// create / modify / delete return `.featureUnsupported`. Those slots
-// will light up when the upload path lands.
+// Phase 1: enumeration, fetch, and the full write path (create / modify /
+// delete) are wired up. Metadata-only modifications (rename, reparent,
+// xattr) return `.featureUnsupported` and are deferred to Phase 2.
 
 import FileProvider
 import Foundation
