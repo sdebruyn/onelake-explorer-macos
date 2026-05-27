@@ -1,7 +1,9 @@
 // Package config holds the on-disk OFEM configuration and the per-account
 // registry. The shape mirrors the docs/auth.md and docs/telemetry.md
-// designs. All paths live under the macOS Application Support directory
-// at ~/Library/Application Support/dev.debruyn.ofem/.
+// designs. All on-disk state lives under the macOS App Group container at
+// ~/Library/Group Containers/group.dev.debruyn.ofem/ so the daemon, the
+// CLI, the host app, and the sandboxed File Provider Extension can share
+// it. See docs/file-provider.md for the rationale.
 package config
 
 import (
@@ -14,9 +16,18 @@ import (
 )
 
 // BundleID is the reverse-DNS identifier shared by every OFEM process
-// (CLI, daemon, host app, File Provider Extension). It anchors the macOS
-// paths and the LaunchAgent label.
+// (CLI, daemon, host app, File Provider Extension). It anchors the
+// LaunchAgent label and the Apple bundle identifiers.
 const BundleID = "dev.debruyn.ofem"
+
+// GroupID is the App Group identifier shared by the host app, the File
+// Provider Extension, and the daemon. It controls (a) the shared
+// container directory at ~/Library/Group Containers/<GroupID>/ and (b)
+// the keychain-access-group used to share the MSAL token cache.
+//
+// Conventionally, App Group identifiers are prefixed with "group." so
+// they are recognisable to other tooling (codesign, profiles, …).
+const GroupID = "group." + BundleID
 
 // File is the TOML config schema. New fields must be backwards-compatible:
 // add with sensible zero-value defaults rather than removing or renaming.
@@ -120,13 +131,23 @@ func Default() File {
 	}
 }
 
-// Paths resolves the canonical OFEM locations on macOS. They are derived
-// from $HOME and BundleID. Callers should treat them as read-only.
+// Paths resolves the canonical OFEM locations on macOS. They all sit
+// under the shared App Group container so the sandboxed File Provider
+// Extension can read and write them alongside the CLI, the daemon, and
+// the host app. Callers should treat them as read-only.
 type Paths struct {
-	ConfigDir  string // ~/Library/Application Support/dev.debruyn.ofem
+	// ConfigDir is the App Group container root. All other paths are
+	// derived from it.
+	ConfigDir string // ~/Library/Group Containers/group.dev.debruyn.ofem
+	// ConfigFile is the TOML config file with accounts and settings.
 	ConfigFile string // <ConfigDir>/config.toml
-	CacheDir   string // ~/Library/Caches/dev.debruyn.ofem
-	LogDir     string // ~/Library/Logs/dev.debruyn.ofem
+	// CacheDir holds cache.sqlite and the blob shards.
+	CacheDir string // <ConfigDir>/cache
+	// LogDir holds rotated daemon logs.
+	LogDir string // <ConfigDir>/log
+	// SocketPath is the CLI ↔ daemon Unix-domain socket. The sandboxed
+	// extension never talks to it (it goes over XPC); colocating it with
+	// the rest keeps the path layout uniform.
 	SocketPath string // <ConfigDir>/ofem.sock
 }
 
@@ -137,12 +158,12 @@ func ResolvePaths() (Paths, error) {
 	if err != nil {
 		return Paths{}, fmt.Errorf("resolve home dir: %w", err)
 	}
-	cfgDir := filepath.Join(home, "Library", "Application Support", BundleID)
+	cfgDir := filepath.Join(home, "Library", "Group Containers", GroupID)
 	return Paths{
 		ConfigDir:  cfgDir,
 		ConfigFile: filepath.Join(cfgDir, "config.toml"),
-		CacheDir:   filepath.Join(home, "Library", "Caches", BundleID),
-		LogDir:     filepath.Join(home, "Library", "Logs", BundleID),
+		CacheDir:   filepath.Join(cfgDir, "cache"),
+		LogDir:     filepath.Join(cfgDir, "log"),
 		SocketPath: filepath.Join(cfgDir, "ofem.sock"),
 	}, nil
 }

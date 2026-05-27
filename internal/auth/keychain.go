@@ -12,17 +12,19 @@ import (
 )
 
 // Keychain stores per-account secrets on disk under
-// ~/Library/Application Support/dev.debruyn.ofem/tokens/, one file per
-// account with 0600 permissions.
+// ~/Library/Group Containers/group.dev.debruyn.ofem/tokens/, one file
+// per account with 0600 permissions. The App Group container is shared
+// with the sandboxed File Provider Extension, so a single token cache
+// serves the daemon, the CLI, the host app, and the extension.
 //
 // An earlier implementation used the macOS Keychain via go-keyring; we
 // moved off it because the MSAL token cache after a single Microsoft
 // Entra login already exceeds the ~16 KB Generic Password size limit
 // imposed by SecItemAdd, and chunking that across Keychain entries was
 // more code than it was worth. File-system permissions on the per-user
-// Application Support directory provide equivalent access control: only
-// the same UNIX user (or root) can read the cache, the same boundary
-// the Keychain itself enforces for non-iCloud items.
+// Group Container directory provide equivalent access control: only the
+// same UNIX user (or root) can read the cache, the same boundary the
+// Keychain itself enforces for non-iCloud items.
 //
 // The byte payload is opaque: the auth/MSAL layer serialises its token
 // cache into the value, but the keychain layer does not interpret it.

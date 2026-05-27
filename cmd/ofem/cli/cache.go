@@ -33,11 +33,12 @@ func newCacheCmd() *cobra.Command {
 		Short: "Inspect and manage the local OneLake blob cache",
 		Long: `Inspect and manage the local OneLake blob cache.
 
-The cache lives under ~/Library/Caches/dev.debruyn.ofem and is shared
-with the background daemon. Use 'ofem cache size' to see how much disk
-the cached blobs occupy, 'ofem cache clear' to drop them all, and
-'ofem cache evict' to run a manual LRU eviction down to the configured
-limit (see 'ofem config get cache.max_size').`,
+The cache lives under ~/Library/Group Containers/group.dev.debruyn.ofem/cache
+and is shared with the background daemon and the File Provider Extension.
+Use 'ofem cache size' to see how much disk the cached blobs occupy,
+'ofem cache clear' to drop them all, and 'ofem cache evict' to run a
+manual LRU eviction down to the configured limit (see 'ofem config get
+cache.max_size').`,
 	}
 	cmd.AddCommand(newCacheSizeCmd())
 	cmd.AddCommand(newCacheClearCmd())

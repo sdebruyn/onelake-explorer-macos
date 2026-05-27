@@ -131,12 +131,13 @@ For change-detection on folders the user has visited recently, the daemon (not t
 The daemon and extension communicate over **XPC**, wrapped around the
 same JSON-RPC 2.0 protocol the CLI uses on its Unix-domain socket (see
 [`internal/ipc`](../internal/ipc)). The CLI ↔ daemon socket lives at
-`~/Library/Application Support/dev.debruyn.ofem/ofem.sock`, owner-only
-(0600). The extension cannot reach that socket directly because of its
-sandbox, so its inbound RPCs come over a dedicated XPC service the
-host app registers on the App Group; the daemon brokers between the
-two. The daemon exposes `status`, `account.*`, `config.snapshot`,
-`sync.refresh`, and `mount.list` methods.
+`~/Library/Group Containers/group.dev.debruyn.ofem/ofem.sock`, owner-only
+(0600), inside the App Group container so the CLI and daemon find it
+without an extra path-resolution layer. The extension cannot reach that
+socket directly because of its sandbox, so its inbound RPCs come over a
+dedicated XPC service the host app registers on the App Group; the
+daemon brokers between the two. The daemon exposes `status`, `account.*`,
+`config.snapshot`, `sync.refresh`, and `mount.list` methods.
 
 ## Fetching content
 
