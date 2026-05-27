@@ -276,13 +276,18 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let progress = Progress(totalUnitCount: 1)
 
         // Phase 1 handles content-bearing modifications only. Metadata-only
-        // changes (rename, reparent, xattr) are returned as featureUnsupported
-        // so macOS does not retry them in a loop.
+        // changes (rename, reparent, xattr) come back as NSFeatureUnsupportedError
+        // so macOS does not retry them in a loop. NSFileProviderError has no
+        // featureUnsupported case on macOS, so Foundation's generic equivalent
+        // is the conventional fallback.
         guard changedFields.contains(.contents), let contentsURL = contents else {
             FileProviderExtension.log.debug(
                 "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — metadata-only, unsupported in Phase 1"
             )
-            completionHandler(nil, [], false, NSFileProviderError(.featureUnsupported))
+            completionHandler(
+                nil, [], false,
+                NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)
+            )
             progress.completedUnitCount = 1
             return progress
         }
