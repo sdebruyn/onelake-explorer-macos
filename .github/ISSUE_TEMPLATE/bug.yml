@@ -51,7 +51,7 @@ body:
     id: logs
     attributes:
       label: Relevant log output
-      description: From `~/Library/Logs/dev.debruyn.ofem/ofem.log`. Please redact any sensitive content (workspace names, file paths, tokens).
+      description: From `~/Library/Group Containers/group.dev.debruyn.ofem/log/ofem.log`. Please redact any sensitive content (workspace names, file paths, tokens).
       render: shell
   - type: checkboxes
     id: checked

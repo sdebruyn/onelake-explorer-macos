@@ -69,11 +69,8 @@ cask "ofem" do
             ]
 
   zap trash: [
-    "~/Library/Application Support/dev.debruyn.ofem",
-    "~/Library/Caches/dev.debruyn.ofem",
-    "~/Library/Logs/dev.debruyn.ofem",
-    "~/Library/Preferences/dev.debruyn.ofem.plist",
     "~/Library/Group Containers/group.dev.debruyn.ofem",
+    "~/Library/Preferences/dev.debruyn.ofem.plist",
     "~/Library/CloudStorage/OneLake-*",
   ]
 end

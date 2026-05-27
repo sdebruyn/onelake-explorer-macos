@@ -35,8 +35,8 @@ func TestRenderLaunchAgentPlistContainsExpectedFields(t *testing.T) {
 	params := LaunchAgentParams{
 		Label:          "dev.debruyn.ofem.daemon",
 		ExecutablePath: "/usr/local/bin/ofem",
-		StdoutPath:     "/Users/x/Library/Logs/dev.debruyn.ofem/daemon.stdout.log",
-		StderrPath:     "/Users/x/Library/Logs/dev.debruyn.ofem/daemon.stderr.log",
+		StdoutPath:     "/Users/x/Library/Group Containers/group.dev.debruyn.ofem/log/daemon.stdout.log",
+		StderrPath:     "/Users/x/Library/Group Containers/group.dev.debruyn.ofem/log/daemon.stderr.log",
 	}
 	got, err := RenderLaunchAgentPlist(params)
 	if err != nil {
@@ -52,9 +52,9 @@ func TestRenderLaunchAgentPlistContainsExpectedFields(t *testing.T) {
 		"<key>RunAtLoad</key>",
 		"<key>KeepAlive</key>",
 		"<key>StandardOutPath</key>",
-		"<string>/Users/x/Library/Logs/dev.debruyn.ofem/daemon.stdout.log</string>",
+		"<string>/Users/x/Library/Group Containers/group.dev.debruyn.ofem/log/daemon.stdout.log</string>",
 		"<key>StandardErrorPath</key>",
-		"<string>/Users/x/Library/Logs/dev.debruyn.ofem/daemon.stderr.log</string>",
+		"<string>/Users/x/Library/Group Containers/group.dev.debruyn.ofem/log/daemon.stderr.log</string>",
 	}
 	for _, w := range wants {
 		if !strings.Contains(s, w) {
@@ -68,12 +68,13 @@ func TestInstallLaunchAgentWritesPlistAndBootstraps(t *testing.T) {
 	// these tests swap. Running them in parallel races on that global.
 
 	home := t.TempDir()
+	groupDir := filepath.Join(home, "Library", "Group Containers", "group.dev.debruyn.ofem")
 	paths := config.Paths{
-		ConfigDir:  filepath.Join(home, "Library", "Application Support", "dev.debruyn.ofem"),
-		ConfigFile: filepath.Join(home, "Library", "Application Support", "dev.debruyn.ofem", "config.toml"),
-		CacheDir:   filepath.Join(home, "Library", "Caches", "dev.debruyn.ofem"),
-		LogDir:     filepath.Join(home, "Library", "Logs", "dev.debruyn.ofem"),
-		SocketPath: filepath.Join(home, "Library", "Application Support", "dev.debruyn.ofem", "ofem.sock"),
+		ConfigDir:  groupDir,
+		ConfigFile: filepath.Join(groupDir, "config.toml"),
+		CacheDir:   filepath.Join(groupDir, "cache"),
+		LogDir:     filepath.Join(groupDir, "log"),
+		SocketPath: filepath.Join(groupDir, "ofem.sock"),
 	}
 	execPath := "/fake/bin/ofem"
 	calls := stubLaunchctl(t, nil)

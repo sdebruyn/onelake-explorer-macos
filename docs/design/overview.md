@@ -74,7 +74,7 @@ onelake-explorer-macos/
 │   ├── telemetry/              # Application Insights client + redaction
 │   ├── ipc/                    # JSON-RPC 2.0 over Unix socket
 │   ├── daemon/                 # background process + LaunchAgent management
-│   ├── config/                 # TOML on-disk config under ~/Library/Application Support/dev.debruyn.ofem/
+│   ├── config/                 # TOML on-disk config under ~/Library/Group Containers/group.dev.debruyn.ofem/
 │   ├── logging/                # slog setup (CLI text vs daemon JSON-to-file)
 │   └── buildinfo/              # link-time version/commit/date/conn-string
 ├── apple/                      # Xcode project, host app, File Provider Extension
