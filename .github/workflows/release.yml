@@ -14,7 +14,7 @@
 #                           Encode the full file content as the secret value (plain JSON, NOT base64).
 #   APPLE_API_KEY_ID        The 10-character key identifier, also present inside APPLE_API_KEY_JSON.
 #   APPLE_API_ISSUER_ID     The issuer UUID, also present inside APPLE_API_KEY_JSON.
-#   HOMEBREW_TAP_PAT        Fine-grained GitHub PAT with Contents: write on sdebruyn/homebrew-ofem.
+#   HOMEBREW_TAP_GH_TOKEN        Fine-grained GitHub PAT with Contents: write on sdebruyn/homebrew-ofem.
 #                           Needed so GoReleaser can push the CLI formula and so the cask update
 #                           step can commit the updated cask.
 
@@ -291,7 +291,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_PAT: ${{ secrets.HOMEBREW_TAP_PAT }}
+          HOMEBREW_TAP_GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GH_TOKEN }}
 
       # Update the Homebrew cask in the homebrew-ofem tap with the new
       # version and the SHA-256 of the freshly notarized DMG.
@@ -299,7 +299,7 @@ jobs:
         env:
           VERSION: ${{ needs.build-app.outputs.version }}
           DMG_SHA256: ${{ needs.build-app.outputs.dmg_sha256 }}
-          HOMEBREW_TAP_PAT: ${{ secrets.HOMEBREW_TAP_PAT }}
+          HOMEBREW_TAP_GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GH_TOKEN }}
         run: |
           # Render the cask from the template by substituting placeholders.
           # Escape dots in the sed patterns so they match literals, not wildcards.
@@ -312,7 +312,7 @@ jobs:
           # `git pull --rebase` before push handles any commit GoReleaser may
           # have added to the tap in the preceding step.
           git clone \
-            "https://x-access-token:$HOMEBREW_TAP_PAT@github.com/sdebruyn/homebrew-ofem.git" \
+            "https://x-access-token:$HOMEBREW_TAP_GH_TOKEN@github.com/sdebruyn/homebrew-ofem.git" \
             /tmp/homebrew-ofem
 
           mkdir -p /tmp/homebrew-ofem/Casks

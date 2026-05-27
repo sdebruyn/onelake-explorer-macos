@@ -168,7 +168,7 @@ pushed. None of them are committed to the repository.
 | `APPLE_API_KEY_JSON` | App Store Connect API key as a JSON object with keys `key_id`, `issuer_id`, and `key` (PEM content). Generate at [appstoreconnect.apple.com/access/integrations/api](https://appstoreconnect.apple.com/access/integrations/api). Store the full JSON as the secret value. |
 | `APPLE_API_KEY_ID` | The 10-character key identifier, also present inside `APPLE_API_KEY_JSON`. Stored separately so it can be used in environment-variable interpolation without parsing JSON. |
 | `APPLE_API_ISSUER_ID` | The issuer UUID, also present inside `APPLE_API_KEY_JSON`. |
-| `HOMEBREW_TAP_PAT` | Fine-grained GitHub PAT with **Contents: write** on `sdebruyn/homebrew-ofem`. The CLI formula push and cask update both use this token. |
+| `HOMEBREW_TAP_GH_TOKEN` | Fine-grained GitHub PAT with **Contents: write** on `sdebruyn/homebrew-ofem`. The CLI formula push and cask update both use this token. |
 
 ### How to generate the Developer ID `.p12`
 
