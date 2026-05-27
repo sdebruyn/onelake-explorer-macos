@@ -2,6 +2,11 @@
 # sign-and-notarize.sh — sign OneLake.app, create a DMG, submit for notarization,
 # and staple the ticket. Prints the path to the stapled DMG on stdout.
 #
+# This script is the single source of truth for the sign-and-notarize logic.
+# The GitHub Actions release workflow (.github/workflows/release.yml) calls
+# this script rather than inlining the signing commands, keeping both in sync.
+# See docs/packaging-homebrew.md for the full pipeline description.
+#
 # Usage:
 #   sign-and-notarize.sh <path/to/OneLake.app>
 #
@@ -45,21 +50,38 @@ DMG_NAME="OneLake-${VERSION}.dmg"
 DMG_PATH="${OUTPUT_DIR}/${DMG_NAME}"
 
 # ---------------------------------------------------------------------------
-# Codesign the app bundle recursively.
+# Codesign the app bundle inside-out (Apple TN3147).
 #
-# xcodebuild already signs during the archive+export step, but this pass
-# ensures the embedded CLI binary and any helper tools are also signed with
-# the hardened runtime entitlements. --force re-signs everything; --timestamp
-# embeds a secure timestamp required for notarization; --deep signs nested
-# bundles (the .appex extension).
+# xcodebuild -exportArchive already signs the .app and the embedded .appex,
+# but the standalone CLI binary (Contents/Resources/bin/ofem) is placed into
+# the bundle after export and must be signed explicitly. Apple deprecated
+# `--deep` (Xcode 13+) because it can apply incorrect flags to nested
+# components. The correct approach is to sign each component individually
+# from the innermost layer outward.
+#
+# Order: embedded CLI binary -> outer .app bundle.
+# The .appex extension is already signed by xcodebuild and is not re-signed
+# here to avoid invalidating its entitlements.
 # ---------------------------------------------------------------------------
-echo "Signing ${APP_PATH} ..."
+DEVELOPER_ID="Developer ID Application: Debruyn Consultancy ($APPLE_TEAM_ID)"
+CLI_BINARY="${APP_PATH}/Contents/Resources/bin/ofem"
+
+if [[ -f "$CLI_BINARY" ]]; then
+    echo "Signing embedded CLI binary ${CLI_BINARY} ..."
+    codesign \
+        --force \
+        --options runtime \
+        --timestamp \
+        --sign "$DEVELOPER_ID" \
+        "$CLI_BINARY"
+fi
+
+echo "Re-sealing outer app bundle ${APP_PATH} ..."
 codesign \
     --force \
-    --deep \
     --options runtime \
     --timestamp \
-    --sign "Developer ID Application: Debruyn Consultancy ($APPLE_TEAM_ID)" \
+    --sign "$DEVELOPER_ID" \
     "$APP_PATH"
 
 echo "Verifying signature ..."

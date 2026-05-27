@@ -137,22 +137,16 @@ jobs:
             archive
 
       - name: Export archive (Developer ID)
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          cat > "$RUNNER_TEMP/ExportOptions.plist" <<'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key>
-            <string>developer-id</string>
-            <key>signingStyle</key>
-            <string>automatic</string>
-            <key>teamID</key>
-            <string>${{ secrets.APPLE_TEAM_ID }}</string>
-          </dict>
-          </plist>
-          EOF
+          # Build ExportOptions.plist via PlistBuddy so no shell heredoc
+          # quoting rules interfere with the secret value expansion.
+          /usr/libexec/PlistBuddy \
+            -c "Add :method string developer-id" \
+            -c "Add :signingStyle string automatic" \
+            -c "Add :teamID string $APPLE_TEAM_ID" \
+            "$RUNNER_TEMP/ExportOptions.plist"
 
           xcodebuild \
             -exportArchive \
@@ -164,6 +158,7 @@ jobs:
       - name: Build CLI binary (embed in .app)
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           mkdir -p build/Export/OneLake.app/Contents/Resources/bin
           CGO_ENABLED=0 go build \
@@ -174,6 +169,17 @@ jobs:
               -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o build/Export/OneLake.app/Contents/Resources/bin/ofem \
             ./cmd/ofem
+
+          # The CLI binary is added after xcodebuild -exportArchive seals the
+          # bundle signature. Sign inside-out per Apple TN3147: binary first,
+          # then re-seal the outer .app.
+          DEVELOPER_ID="Developer ID Application: Debruyn Consultancy ($APPLE_TEAM_ID)"
+          codesign --force --options runtime --timestamp \
+            --sign "$DEVELOPER_ID" \
+            build/Export/OneLake.app/Contents/Resources/bin/ofem
+          codesign --force --options runtime --timestamp \
+            --sign "$DEVELOPER_ID" \
+            build/Export/OneLake.app
 
       - name: Create DMG
         env:
@@ -281,7 +287,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: latest
+          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -296,12 +302,15 @@ jobs:
           HOMEBREW_TAP_PAT: ${{ secrets.HOMEBREW_TAP_PAT }}
         run: |
           # Render the cask from the template by substituting placeholders.
+          # Escape dots in the sed patterns so they match literals, not wildcards.
           sed \
-            -e "s/{{ .Version }}/$VERSION/g" \
-            -e "s/{{ .DMGSHA256 }}/$DMG_SHA256/g" \
+            -e "s/{{ \.Version }}/$VERSION/g" \
+            -e "s/{{ \.DMGSHA256 }}/$DMG_SHA256/g" \
             homebrew/Casks/ofem.rb.tmpl > /tmp/ofem.rb
 
           # Clone the tap, commit the new cask, push.
+          # `git pull --rebase` before push handles any commit GoReleaser may
+          # have added to the tap in the preceding step.
           git clone \
             "https://x-access-token:$HOMEBREW_TAP_PAT@github.com/sdebruyn/homebrew-ofem.git" \
             /tmp/homebrew-ofem
@@ -314,4 +323,5 @@ jobs:
           git config user.email "noreply@debruyn.dev"
           git add Casks/ofem.rb
           git commit -m "chore(cask): bump ofem to v$VERSION"
+          git pull --rebase origin main
           git push

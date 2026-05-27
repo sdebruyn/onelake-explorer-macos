@@ -19,7 +19,8 @@ cask "ofem" do
 
   livecheck do
     url :url
-    strategy :github_latest
+    strategy :github_releases
+    regex(/^v(\d+\.\d+\.\d+)$/i)
   end
 
   depends_on macos: ">= :sonoma"

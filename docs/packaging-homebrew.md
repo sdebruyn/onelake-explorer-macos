@@ -206,12 +206,16 @@ gh repo create sdebruyn/homebrew-ofem --public --description "Homebrew tap for O
 # copy homebrew/ofem.rb from this repo into homebrew-ofem/Casks/ofem.rb.
 ```
 
-The release workflow's `release-cli-and-cask` job pushes the CLI formula to
-`Formula/ofem.rb` and the rendered cask to `Casks/ofem.rb` on every release.
+The release workflow's `release-cli-and-cask` job renders the cask template
+and pushes the updated `Casks/ofem.rb` to `sdebruyn/homebrew-ofem` on every
+release.
 
 ## GoReleaser config (`.goreleaser.yaml`)
 
-GoReleaser handles the Go binary part (`ofem` CLI) and Release upload. The Xcode part is a separate workflow step that produces the DMG which GoReleaser then attaches as a release artifact.
+GoReleaser handles the Go CLI binary part and attaches it (plus checksums) to
+the GitHub Release. It does **not** manage the Homebrew cask — the cask is
+rendered from `homebrew/Casks/ofem.rb.tmpl` and committed to the tap by the
+`Update Homebrew cask` workflow step after the DMG SHA-256 is known.
 
 ```yaml
 project_name: ofem
@@ -219,35 +223,28 @@ before:
   hooks:
     - go mod tidy
 builds:
-  - id: ofem-cli
+  - id: ofem
     main: ./cmd/ofem
     binary: ofem
     env:
-      - CGO_ENABLED=1
+      - CGO_ENABLED=0
     goos: [darwin]
     goarch: [arm64]
+    flags:
+      - -trimpath
     ldflags:
       - -s -w
-      - -X main.version={{.Version}}
-      - -X main.appInsightsConnString={{.Env.OFEM_APPINSIGHTS_CONNSTRING}}
+      - -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Commit={{ .Commit }}
+      - -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Date={{ .Date }}
 release:
   github:
     owner: sdebruyn
     name: onelake-explorer-macos
   prerelease: auto
   extra_files:
-    - glob: ./build/OneLake-*.dmg
-brews:
-  - repository:
-      owner: sdebruyn
-      name: homebrew-ofem
-    homepage: https://github.com/sdebruyn/onelake-explorer-macos
-    description: OneLake File Explorer for macOS CLI
-    test: |
-      system "#{bin}/ofem", "--version"
+    - glob: ./dist-app/OneLake-*.dmg
 ```
-
-Note: the `brews` block is for the **CLI-only** formula in `homebrew-ofem` (for users who want just the CLI without the full `.app`). The `.app` is shipped via the **cask** which is updated by a separate workflow step.
 
 ## Pre-release / beta channel
 
