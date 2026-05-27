@@ -66,7 +66,7 @@ func TestPollOnce_RefreshesEachHotItemRoot(t *testing.T) {
 		},
 	}
 
-	pollOnce(context.Background(), c, e, discardLogger(), 30*time.Minute)
+	pollOnce(context.Background(), c, e, discardLogger(), 30*time.Minute, nil)
 
 	if len(e.called) != 2 {
 		t.Fatalf("RefreshFolder called %d times, want 2", len(e.called))
@@ -84,7 +84,7 @@ func TestPollOnce_HotItemsErrorIsLoggedNotFatal(t *testing.T) {
 
 	// Just ensure it returns without panicking; the warn line lands in
 	// discardLogger and the engine is never called.
-	pollOnce(context.Background(), c, e, discardLogger(), 30*time.Minute)
+	pollOnce(context.Background(), c, e, discardLogger(), 30*time.Minute, nil)
 
 	if len(e.called) != 0 {
 		t.Errorf("engine called %d times after HotItems error, want 0", len(e.called))
@@ -103,7 +103,7 @@ func TestPollOnce_RefreshErrorIsLoggedAndLoopContinues(t *testing.T) {
 		diffs: map[string]sync.Diff{"work|ws-2|item-B": {Added: 1}},
 	}
 
-	pollOnce(context.Background(), c, e, discardLogger(), 30*time.Minute)
+	pollOnce(context.Background(), c, e, discardLogger(), 30*time.Minute, nil)
 
 	if len(e.called) != 2 {
 		t.Errorf("RefreshFolder called %d times, want 2 (loop should continue past error)", len(e.called))
@@ -115,7 +115,7 @@ func TestPollOnce_HotWindowAppliedToCutoff(t *testing.T) {
 	e := &fakePollerEngine{}
 
 	before := time.Now()
-	pollOnce(context.Background(), c, e, discardLogger(), 15*time.Minute)
+	pollOnce(context.Background(), c, e, discardLogger(), 15*time.Minute, nil)
 	after := time.Now()
 
 	// The cutoff should be roughly 15 minutes before now.
@@ -134,7 +134,7 @@ func TestRunAdaptivePoller_StopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runAdaptivePoller(ctx, c, e, discardLogger(), 50*time.Millisecond, 30*time.Minute)
+		runAdaptivePoller(ctx, c, e, discardLogger(), 50*time.Millisecond, 30*time.Minute, nil)
 		close(done)
 	}()
 
@@ -149,7 +149,7 @@ func TestRunAdaptivePoller_StopsOnContextCancel(t *testing.T) {
 func TestRunAdaptivePoller_ZeroPeriodReturnsImmediately(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
-		runAdaptivePoller(context.Background(), &fakePollerCache{}, &fakePollerEngine{}, discardLogger(), 0, 30*time.Minute)
+		runAdaptivePoller(context.Background(), &fakePollerCache{}, &fakePollerEngine{}, discardLogger(), 0, 30*time.Minute, nil)
 		close(done)
 	}()
 	select {
@@ -176,7 +176,7 @@ func TestPollOnce_StopsAtContextCancelBetweenItems(t *testing.T) {
 	// must observe ctx.Err and bail out.
 	e := &cancelOnFirstEngine{cancel: cancel, diff: sync.Diff{Added: 1}}
 
-	pollOnce(ctx, c, e, discardLogger(), 30*time.Minute)
+	pollOnce(ctx, c, e, discardLogger(), 30*time.Minute, nil)
 
 	if e.calls > 1 {
 		t.Errorf("RefreshFolder called %d times after ctx cancel; want at most 1", e.calls)
@@ -207,7 +207,7 @@ func TestPollOnce_SweepsPausedWorkspaces(t *testing.T) {
 	c := &fakePollerCache{}
 	e := &fakePollerEngine{}
 
-	pollOnce(context.Background(), c, e, discardLogger(), 30*time.Minute)
+	pollOnce(context.Background(), c, e, discardLogger(), 30*time.Minute, nil)
 
 	if e.sweeps != 1 {
 		t.Errorf("SweepPausedWorkspaces calls = %d, want 1", e.sweeps)

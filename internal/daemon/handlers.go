@@ -51,6 +51,7 @@ type Handlers struct {
 	engine    syncRefresher
 	offline   offlineReporter
 	gates     *httpgate.Registry
+	feed      *Changefeed
 	startedAt time.Time
 	version   string
 }
@@ -59,8 +60,9 @@ type Handlers struct {
 // store, registry and cache are required; engine may be nil for tests
 // that don't exercise sync.refresh, in which case the method returns an
 // error indicating the engine is not wired. gates may be nil for tests;
-// when nil, status returns an empty Gates list.
-func NewHandlers(store *config.Store, registry *auth.Registry, cache *cache.Cache, engine syncRefresher, gates *httpgate.Registry) *Handlers {
+// when nil, status returns an empty Gates list. feed may be nil for tests;
+// when nil, sync.pollChanges returns an empty result.
+func NewHandlers(store *config.Store, registry *auth.Registry, cache *cache.Cache, engine syncRefresher, gates *httpgate.Registry, feed *Changefeed) *Handlers {
 	off, _ := engine.(offlineReporter)
 	return &Handlers{
 		store:     store,
@@ -69,6 +71,7 @@ func NewHandlers(store *config.Store, registry *auth.Registry, cache *cache.Cach
 		engine:    engine,
 		offline:   off,
 		gates:     gates,
+		feed:      feed,
 		startedAt: time.Now().UTC(),
 		version:   buildinfo.Version,
 	}
@@ -83,6 +86,7 @@ func (h *Handlers) Register(srv *ipc.Server) {
 	srv.Register("account.remove", h.handleAccountRemove)
 	srv.Register("config.snapshot", h.handleConfigSnapshot)
 	srv.Register("sync.refresh", h.handleSyncRefresh)
+	srv.Register("sync.pollChanges", h.handleSyncPollChanges)
 	srv.Register("mount.list", h.handleMountList)
 }
 
@@ -379,6 +383,39 @@ func (h *Handlers) handleSyncRefresh(ctx context.Context, params json.RawMessage
 		Updated: diff.Updated,
 		Removed: diff.Removed,
 	}, nil
+}
+
+// PollChangesRequest is the payload accepted by "sync.pollChanges".
+// Anchor is the watermark returned by the previous call; pass the zero
+// value on the first call to receive all events in the feed.
+type PollChangesRequest struct {
+	// Anchor is the opaque timestamp watermark from the previous call.
+	// Zero time means "start from the beginning of the feed".
+	Anchor time.Time `json:"anchor"`
+}
+
+func (h *Handlers) handleSyncPollChanges(_ context.Context, params json.RawMessage) (any, error) {
+	var req PollChangesRequest
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, fmt.Errorf("decode params: %w", err)
+		}
+	}
+	if h.feed == nil {
+		// No feed wired (test path or early startup). Return an empty
+		// result with the current time as the anchor so the caller
+		// advances its watermark and does not spin.
+		return PollChangesResult{
+			Events:     []ChangeEvent{},
+			Anchor:     time.Now().UTC(),
+			FullResync: false,
+		}, nil
+	}
+	res := h.feed.Since(req.Anchor)
+	if res.Events == nil {
+		res.Events = []ChangeEvent{}
+	}
+	return res, nil
 }
 
 // MountListResponse is the payload returned by "mount.list".

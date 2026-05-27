@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
@@ -61,7 +62,7 @@ func newTestHandlers(t *testing.T) *Handlers {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 
-	return NewHandlers(store, reg, c, nil, nil)
+	return NewHandlers(store, reg, c, nil, nil, nil)
 }
 
 func TestHandleStatus(t *testing.T) {
@@ -304,6 +305,62 @@ func TestHandleMountListStub(t *testing.T) {
 	}
 	if len(r.Domains) != 0 {
 		t.Errorf("expected empty domains, got %+v", r.Domains)
+	}
+}
+
+func TestHandleSyncPollChangesNilFeedReturnsEmpty(t *testing.T) {
+	h := newTestHandlers(t)
+	// feed is nil in newTestHandlers; handler must return an empty, non-nil
+	// event list and a non-zero anchor.
+	res, err := h.handleSyncPollChanges(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("sync.pollChanges: %v", err)
+	}
+	r, ok := res.(PollChangesResult)
+	if !ok {
+		t.Fatalf("type: got %T", res)
+	}
+	if r.Events == nil {
+		t.Errorf("Events should be non-nil empty slice for stable JSON, got nil")
+	}
+	if len(r.Events) != 0 {
+		t.Errorf("expected 0 events with nil feed, got %d", len(r.Events))
+	}
+	if r.Anchor.IsZero() {
+		t.Errorf("Anchor should be non-zero even with nil feed")
+	}
+}
+
+func TestHandleSyncPollChangesReturnsFeedEvents(t *testing.T) {
+	h := newTestHandlers(t)
+	h.feed = NewChangefeed()
+
+	base := time.Now().UTC()
+	h.feed.Publish("ofem.work", "work/.rootContainer", base.Add(time.Second))
+	h.feed.Publish("ofem.work", "work/ws-1/item-A", base.Add(2*time.Second))
+
+	params, _ := json.Marshal(PollChangesRequest{Anchor: base})
+	res, err := h.handleSyncPollChanges(context.Background(), params)
+	if err != nil {
+		t.Fatalf("sync.pollChanges: %v", err)
+	}
+	r := res.(PollChangesResult)
+	if len(r.Events) != 2 {
+		t.Errorf("events = %d, want 2", len(r.Events))
+	}
+	if r.FullResync {
+		t.Errorf("FullResync should be false on first poll")
+	}
+
+	// Second poll at the returned anchor should yield no events.
+	params2, _ := json.Marshal(PollChangesRequest{Anchor: r.Anchor})
+	res2, err := h.handleSyncPollChanges(context.Background(), params2)
+	if err != nil {
+		t.Fatalf("sync.pollChanges (second): %v", err)
+	}
+	r2 := res2.(PollChangesResult)
+	if len(r2.Events) != 0 {
+		t.Errorf("second poll events = %d, want 0", len(r2.Events))
 	}
 }
 
