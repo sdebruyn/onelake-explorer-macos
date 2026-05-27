@@ -50,9 +50,10 @@ type Keychain interface {
 }
 
 // NewKeychain returns a file-backed [Keychain] rooted at
-// <ApplicationSupport>/dev.debruyn.ofem/tokens/. The directory and
-// every file inside are created with 0700 / 0600 permissions so only
-// the current UNIX user can read them.
+// <ConfigDir>/tokens/ — i.e. inside the shared App Group container at
+// ~/Library/Group Containers/group.dev.debruyn.ofem/tokens/. The
+// directory and every file inside are created with 0700 / 0600
+// permissions so only the current UNIX user can read them.
 func NewKeychain() (Keychain, error) {
 	paths, err := config.ResolvePaths()
 	if err != nil {

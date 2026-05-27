@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -76,40 +77,52 @@ func TestStoreRoundtrip(t *testing.T) {
 	}
 }
 
-func TestResolvePathsContainsBundleID(t *testing.T) {
+func TestResolvePathsUnderGroupContainer(t *testing.T) {
 	p, err := ResolvePaths()
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("home dir: %v", err)
+	}
+	wantRoot := filepath.Join(home, "Library", "Group Containers", GroupID)
+
+	if p.ConfigDir != wantRoot {
+		t.Errorf("ConfigDir = %q, want %q", p.ConfigDir, wantRoot)
+	}
+
+	// Every other path must be a direct descendant of the App Group
+	// container root — that is what pins the new layout (the old layout
+	// scattered paths across Application Support, Caches, and Logs).
 	for name, path := range map[string]string{
-		"ConfigDir":  p.ConfigDir,
 		"CacheDir":   p.CacheDir,
 		"LogDir":     p.LogDir,
 		"SocketPath": p.SocketPath,
 		"ConfigFile": p.ConfigFile,
 	} {
-		if !filepathContains(path, BundleID) {
-			t.Errorf("%s = %q does not contain %q", name, path, BundleID)
+		if !strings.HasPrefix(path, wantRoot+string(filepath.Separator)) {
+			t.Errorf("%s = %q is not a descendant of ConfigDir %q", name, path, wantRoot)
+		}
+
+		// Every path must reference the full GroupID, not just the
+		// BundleID — otherwise the old layout would also satisfy the
+		// assertion (BundleID is a substring of GroupID).
+		if !strings.Contains(path, GroupID) {
+			t.Errorf("%s = %q does not contain GroupID %q", name, path, GroupID)
+		}
+
+		// Negative assertions: none of the legacy macOS locations may
+		// appear in any resolved path.
+		for _, legacy := range []string{
+			"Application Support",
+			filepath.Join("Library", "Caches"),
+			filepath.Join("Library", "Logs"),
+		} {
+			if strings.Contains(path, legacy) {
+				t.Errorf("%s = %q still references legacy location %q", name, path, legacy)
+			}
 		}
 	}
-}
-
-func filepathContains(p, needle string) bool {
-	for _, seg := range filepath.SplitList(p + ":") {
-		_ = seg
-	}
-	return stringContains(p, needle)
-}
-
-func stringContains(s, substr string) bool {
-	return len(substr) == 0 || (len(s) >= len(substr) && indexOf(s, substr) >= 0)
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }
