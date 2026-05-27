@@ -31,24 +31,25 @@ We use the **replication model**, which is what Apple recommends for cloud stora
                       │   - SwiftUI account UI     │
                       │   - Menu bar status icon   │
                       │   - Registers domain(s)    │
-                      └────────────┬───────────────┘
-                                   │
-                                   │ App Group + XPC
-                                   │
-       ┌───────────────────────────┴───────────────────────────┐
-       │                                                       │
-       ▼                                                       ▼
-┌────────────────────────────┐               ┌────────────────────────────┐
-│  OneLakeFileProvider.appex │               │  ofem daemon (Go)           │
-│  (Swift, sandboxed)        │               │  - LaunchAgent             │
-│  - NSFileProvider*         │               │  - Periodic remote refresh │
-│  - Calls Go core via FFI   │               │  - Telemetry sender        │
-└────────────┬───────────────┘               │  - IPC for CLI             │
-             │                               └────────────┬───────────────┘
-             │ cgo/C-ABI                                  │
-             ▼                                            │
-┌────────────────────────────┐                            │
-│  libofemcore.a (Go)         │ ◄──────────────────────────┘
+                      │   - ChangeWatcher polls    │◄─── long-poll JSON-RPC
+                      └────────────┬───────────────┘     sync.pollChanges
+                                   │                     over Unix socket
+                                   │ signalEnumerator    (ofem.sock)
+                                   │                          │
+       ┌───────────────────────────┴───────────────┐         │
+       │                                           │         │
+       ▼                                           ▼         ▼
+┌────────────────────────────┐     ┌────────────────────────────┐
+│  OneLakeFileProvider.appex │     │  ofem daemon (Go)           │
+│  (Swift, sandboxed)        │     │  - LaunchAgent             │
+│  - NSFileProvider*         │     │  - Adaptive change feed    │
+│  - Calls Go core via FFI   │     │  - Telemetry sender        │
+└────────────┬───────────────┘     │  - IPC for CLI             │
+             │                     └────────────┬───────────────┘
+             │ cgo/C-ABI                        │
+             ▼                                  │
+┌────────────────────────────┐                  │
+│  libofemcore.a (Go)         │ ◄────────────────┘
 │  - Auth (MSAL)             │   shared as static archive
 │  - OneLake DFS client      │
 │  - Cache (SQLite)          │

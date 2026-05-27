@@ -364,6 +364,89 @@ func TestHandleSyncPollChangesReturnsFeedEvents(t *testing.T) {
 	}
 }
 
+// TestChangeEventJSONShape verifies the exact JSON field names that the Swift
+// DaemonClient decodes. Any rename of a Go field without a matching JSON tag
+// update will be caught here before it silently breaks the cross-language
+// contract.
+func TestChangeEventJSONShape(t *testing.T) {
+	ts, _ := time.Parse(time.RFC3339, "2025-06-01T12:00:00Z")
+	ev := ChangeEvent{
+		Domain:      "ofem.work",
+		ContainerID: "work/.rootContainer",
+		OccurredAt:  ts,
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal ChangeEvent: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range []string{"domain", "containerId", "occurredAt"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("ChangeEvent JSON missing key %q; got %v", key, m)
+		}
+	}
+	for _, badKey := range []string{"Domain", "ContainerID", "OccurredAt"} {
+		if _, ok := m[badKey]; ok {
+			t.Errorf("ChangeEvent JSON has Pascal-case key %q; want camelCase", badKey)
+		}
+	}
+}
+
+// TestPollChangesResultJSONShape verifies the response-envelope field names
+// match what Swift's PollChangesResponse CodingKeys expect: events, anchor,
+// fullResync.
+func TestPollChangesResultJSONShape(t *testing.T) {
+	ts, _ := time.Parse(time.RFC3339, "2025-06-01T12:00:00Z")
+	res := PollChangesResult{
+		Events: []ChangeEvent{
+			{Domain: "ofem.work", ContainerID: "work/.rootContainer", OccurredAt: ts},
+		},
+		Anchor:     ts,
+		FullResync: true,
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal PollChangesResult: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range []string{"events", "anchor", "fullResync"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("PollChangesResult JSON missing key %q; got %v", key, m)
+		}
+	}
+	events, ok := m["events"].([]any)
+	if !ok || len(events) != 1 {
+		t.Fatalf("events field malformed: %v", m["events"])
+	}
+	ev0 := events[0].(map[string]any)
+	for _, key := range []string{"domain", "containerId", "occurredAt"} {
+		if _, ok := ev0[key]; !ok {
+			t.Errorf("nested ChangeEvent JSON missing key %q; got %v", key, ev0)
+		}
+	}
+}
+
+// TestHandleSyncPollChangesMalformedSinceErrors verifies that passing a
+// malformed since/anchor value returns a JSON-RPC-level error rather than
+// panicking or returning a zero-value result.
+func TestHandleSyncPollChangesMalformedSinceErrors(t *testing.T) {
+	h := newTestHandlers(t)
+	h.feed = NewChangefeed()
+
+	// Provide a params object whose "anchor" value is not a valid timestamp.
+	badParams := json.RawMessage(`{"anchor":"not-a-timestamp"}`)
+	_, err := h.handleSyncPollChanges(context.Background(), badParams)
+	if err == nil {
+		t.Fatal("expected error for malformed anchor, got nil")
+	}
+}
+
 func mustJSON(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)

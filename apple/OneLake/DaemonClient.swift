@@ -7,11 +7,17 @@
 //
 //   ~/Library/Group Containers/group.dev.debruyn.ofem/ofem.sock
 //
-// This client wraps Network.framework's NWConnection (`.unix(path:)`)
-// because Foundation's URLSession does not support Unix-domain sockets,
-// and the raw Darwin syscall approach requires bridging through
-// UnsafeMutablePointer. NWConnection gives a clean async surface with
-// automatic connection management and straightforward cancellation.
+// Network.framework approach for Unix-domain sockets:
+//
+//   NWConnection supports Unix-domain sockets via NWEndpoint.unix(path:).
+//   The correct NWParameters to pass is NWParameters(tls: nil) — no explicit
+//   TCP transport. When the endpoint is a Unix path, Network.framework selects
+//   a stream transport over the Unix socket automatically; passing .tcp would
+//   attempt a TCP connection to the path string, which fails on a Unix socket.
+//
+//   The stateUpdateHandler fires on every state transition (preparing →
+//   ready, ready → failed, etc.). A CheckedContinuation must be resumed
+//   exactly once; all handlers use a one-shot guard to ensure this.
 //
 // Usage is one-instance-per-app-lifetime: create, call `connect()`, then
 // poll via `pollChanges(since:)`. On disconnect the caller should discard
@@ -63,6 +69,13 @@ enum DaemonClientError: Error {
     case protocolError(String)
 }
 
+/// Connection state tracked by DaemonClient.
+private enum ConnectionState {
+    case disconnected
+    case connecting
+    case connected
+}
+
 /// Lightweight async JSON-RPC 2.0 client over the daemon's Unix socket.
 /// Not safe for concurrent calls — ChangeWatcher serialises them via its
 /// single polling Task.
@@ -73,9 +86,10 @@ final class DaemonClient {
 
     private let socketPath: String
     private var connection: NWConnection?
+    private var connectionState: ConnectionState = .disconnected
 
     /// Returns true when a connection is established and ready.
-    var isConnected: Bool { connection != nil }
+    var isConnected: Bool { connectionState == .connected }
     private let decoder: JSONDecoder = {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
@@ -106,23 +120,37 @@ final class DaemonClient {
         // Tear down any previous connection first.
         connection?.cancel()
         connection = nil
+        connectionState = .connecting
 
         let ep = NWEndpoint.unix(path: socketPath)
-        let conn = NWConnection(to: ep, using: .tcp)
-        // NWConnection over a unix endpoint ignores the `.tcp` parameter;
-        // Network.framework picks the correct transport. We still pass
-        // `.tcp` because `.unix` is not a standalone NWParameters value —
-        // the endpoint type alone determines Unix-socket semantics.
+        // NWParameters(tls: nil) is correct for Unix-domain sockets.
+        // Passing .tcp here would attempt a TCP connection to the path string
+        // instead of opening the Unix socket. With tls:nil Network.framework
+        // uses an unencrypted stream transport, which is correct since the
+        // Unix socket is owner-only (0600) and never leaves the machine.
+        let params = NWParameters(tls: nil)
+        let conn = NWConnection(to: ep, using: params)
 
+        // stateUpdateHandler fires on every transition. Guard against
+        // resuming the continuation more than once — doing so would crash
+        // with a "continuation resumed more than once" fatal error.
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            conn.stateUpdateHandler = { state in
+            var didResume = false
+            conn.stateUpdateHandler = { [weak self] state in
+                guard !didResume else { return }
                 switch state {
                 case .ready:
+                    didResume = true
+                    self?.connectionState = .connected
                     cont.resume()
                 case .failed(let err):
+                    didResume = true
+                    self?.connectionState = .disconnected
                     cont.resume(throwing: err)
                 case .waiting(let err):
                     // Waiting means the path is unavailable; surface as error.
+                    didResume = true
+                    self?.connectionState = .disconnected
                     cont.resume(throwing: err)
                 default:
                     break
@@ -144,7 +172,7 @@ final class DaemonClient {
         anchor: Date,
         fullResync: Bool
     ) {
-        guard connection != nil else { throw DaemonClientError.notConnected }
+        guard connectionState == .connected, connection != nil else { throw DaemonClientError.notConnected }
 
         struct PollParams: Encodable {
             let anchor: Date?
@@ -181,6 +209,7 @@ final class DaemonClient {
     func disconnect() {
         connection?.cancel()
         connection = nil
+        connectionState = .disconnected
     }
 
     // MARK: - Frame I/O

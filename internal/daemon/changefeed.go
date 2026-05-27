@@ -16,13 +16,13 @@ const maxFeedEvents = 10_000
 // a domain whose content may have changed since the previous poll.
 type ChangeEvent struct {
 	// Domain is the File Provider domain identifier, e.g. "ofem.work".
-	Domain string
+	Domain string `json:"domain"`
 	// ContainerID is the NSFileProviderItemIdentifier of the container
 	// that changed. May be the working-set identifier or any folder
 	// container.
-	ContainerID string
+	ContainerID string `json:"containerId"`
 	// OccurredAt is when the daemon detected the change.
-	OccurredAt time.Time
+	OccurredAt time.Time `json:"occurredAt"`
 }
 
 // PollChangesResult is the response payload for the sync.pollChanges RPC.

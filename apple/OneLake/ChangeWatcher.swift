@@ -89,6 +89,14 @@ final class ChangeWatcher {
                 )
                 // Reset connection so next iteration reconnects.
                 client.disconnect()
+                // Phase 1 accepted trade-off: if the daemon reported FullResync
+                // in a response that we fail to process (e.g. signalEnumerator
+                // threw), the flag is lost. On reconnect we reset anchor to nil,
+                // which causes the daemon to return all events it currently holds;
+                // if the feed itself was truncated the daemon will set FullResync
+                // again. A persistent pendingFullResync flag would be more robust
+                // but is deferred to Phase 2 when the signaling path gains
+                // end-to-end reliability guarantees.
                 anchor = nil
             }
 

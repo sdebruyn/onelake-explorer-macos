@@ -40,9 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        Task { @MainActor in
-            ChangeWatcher.shared.stop()
-        }
+        // Call stop() directly and synchronously. macOS terminates the process
+        // immediately after this callback returns; a Task would never get a
+        // chance to execute. ChangeWatcher.stop() is idempotent and
+        // non-blocking — it cancels the polling Task and clears the reference.
+        ChangeWatcher.shared.stop()
     }
 }
 
