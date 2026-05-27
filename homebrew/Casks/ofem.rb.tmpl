@@ -1,0 +1,53 @@
+# frozen_string_literal: true
+
+# Homebrew cask for OFEM — OneLake File Explorer for macOS.
+#
+# This file is a template. The release workflow renders it by substituting:
+#   {{ .Version }}   -> CalVer string, e.g. 2026.05.1
+#   {{ .DMGSHA256 }} -> SHA-256 of the signed and notarized DMG
+#
+# The rendered file is committed to sdebruyn/homebrew-ofem as Casks/ofem.rb
+# by the release-cli-and-cask workflow job.
+cask "ofem" do
+  version "{{ .Version }}"
+  sha256 "{{ .DMGSHA256 }}"
+
+  url "https://github.com/sdebruyn/onelake-explorer-macos/releases/download/v#{version}/OneLake-#{version}.dmg"
+  name "OFEM"
+  desc "Browse Microsoft Fabric OneLake from Finder"
+  homepage "https://ofem.debruyn.dev"
+
+  livecheck do
+    url :url
+    strategy :github_releases
+    regex(/^v(\d+\.\d+\.\d+)$/i)
+  end
+
+  depends_on macos: ">= :sonoma"
+  depends_on arch: :arm64
+
+  app "OneLake.app"
+  binary "#{appdir}/OneLake.app/Contents/Resources/bin/ofem"
+
+  postflight do
+    # Register the LaunchAgent so the daemon starts on next login.
+    # sudo: false — the ofem daemon runs as the current user, no privilege needed.
+    system_command "#{appdir}/OneLake.app/Contents/Resources/bin/ofem",
+                   args: ["daemon", "install"],
+                   sudo: false
+  end
+
+  uninstall launchctl: "dev.debruyn.ofem.daemon",
+            quit:      "dev.debruyn.ofem.app",
+            delete:    [
+              "~/Library/LaunchAgents/dev.debruyn.ofem.daemon.plist",
+            ]
+
+  zap trash: [
+    "~/Library/Group Containers/group.dev.debruyn.ofem",
+    "~/Library/Preferences/dev.debruyn.ofem.plist",
+    # Each account materialises as its own File Provider domain.
+    # Zapped only on explicit `brew uninstall --zap` to avoid data loss.
+    "~/Library/CloudStorage/OneLake-*",
+  ]
+end
