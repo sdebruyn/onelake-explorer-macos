@@ -9,7 +9,7 @@ Step-by-step process for cutting an OFEM release. Versioning follows CalVer:
   are configured in GitHub Actions.
 - The `sdebruyn/homebrew-ofem` tap repo exists and has been bootstrapped with
   the dummy `0.0.0` cask.
-- The `HOMEBREW_TAP_PAT` has Contents: write on `sdebruyn/homebrew-ofem`.
+- The `HOMEBREW_TAP_GH_TOKEN` has Contents: write on `sdebruyn/homebrew-ofem`.
 - `main` is green on CI.
 
 ## Steps
@@ -100,5 +100,5 @@ rm /tmp/test.p12
 
 ### Cask push fails with permission error
 
-Verify that `HOMEBREW_TAP_PAT` has Contents: write on `sdebruyn/homebrew-ofem`
+Verify that `HOMEBREW_TAP_GH_TOKEN` has Contents: write on `sdebruyn/homebrew-ofem`
 and that the token has not expired (fine-grained PATs can be set to expire).
