@@ -25,16 +25,15 @@ Job A: build-app (macos-15 runner)
 3.  Import Developer ID Application cert from APPLE_CERT_P12 into a
     temporary keychain (deleted after the job).
 4.  Write App Store Connect API key from APPLE_API_KEY_JSON to a tmp .p8 file.
-5.  make cgo-build  -> apple/build/cgo/libofemcore.{a,h}
-6.  make apple-gen  -> regenerate apple/OneLake.xcodeproj from project.yml
-7.  Write apple/Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID
-8.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
-9.  xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
-10. go build -o build/Export/OneLake.app/Contents/Resources/bin/ofem
-11. create-dmg -> dist-app/OneLake-$VERSION.dmg
-12. xcrun notarytool submit --wait --timeout 15m
-13. xcrun stapler staple
-14. Upload DMG to GitHub Release (softprops/action-gh-release)
+5.  make apple-gen  -> regenerate apple/OneLake.xcodeproj from project.yml
+6.  Write apple/Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID
+7.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
+8.  xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
+9.  go build -o build/Export/OneLake.app/Contents/Resources/bin/ofem
+10. create-dmg -> dist-app/OneLake-$VERSION.dmg
+11. xcrun notarytool submit --wait --timeout 15m
+12. xcrun stapler staple
+13. Upload DMG to GitHub Release (softprops/action-gh-release)
 15. Upload DMG as workflow artifact for Job B
 
 Job B: release-cli-and-cask (ubuntu-latest, needs: build-app)
@@ -265,9 +264,6 @@ The `uninstall launchctl:` directive in the cask stops the daemon. The `app` dir
 For pre-release dogfooding, build the app manually:
 
 ```bash
-# Build the cgo archive for Swift
-make cgo-build
-
 # Generate the Xcode project from project.yml
 make apple-gen
 

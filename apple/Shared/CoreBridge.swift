@@ -17,12 +17,27 @@ import Foundation
 import os.log
 
 /// JSON shape returned by the "account.list" IPC method (extra keys such
-/// as addedAt / defaultAccount are ignored).
+/// as addedAt / defaultAccount are ignored). Every field except `alias`
+/// decodes defensively to "" when absent, because the daemon's
+/// AccountSummary marks them `omitempty` — an account with no tenant name
+/// drops the key entirely, which a non-optional `String` would reject.
 struct Account: Decodable, Equatable {
     let alias: String
     let username: String
     let tenantId: String
     let tenantName: String
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        alias = try c.decode(String.self, forKey: .alias)
+        username = (try c.decodeIfPresent(String.self, forKey: .username)) ?? ""
+        tenantId = (try c.decodeIfPresent(String.self, forKey: .tenantId)) ?? ""
+        tenantName = (try c.decodeIfPresent(String.self, forKey: .tenantName)) ?? ""
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case alias, username, tenantId, tenantName
+    }
 }
 
 /// Decoded representation of a single item entry. Mapped onto OneLakeItem
@@ -222,9 +237,10 @@ final class CoreBridge {
         guard let item = env.item else {
             throw BridgeError.decoding("fp.fetchContents envelope missing both 'item' and 'error'")
         }
-        // Move the daemon-written bytes to the URL macOS gave us.
+        // Move (not copy) the daemon-written bytes to the URL macOS gave
+        // us, so a large download is not written to disk twice.
         try? FileManager.default.removeItem(at: dest)
-        try FileManager.default.copyItem(at: staged, to: dest)
+        try FileManager.default.moveItem(at: staged, to: dest)
         return item
     }
 
@@ -272,16 +288,20 @@ final class CoreBridge {
 
     // MARK: - Internals
 
-    /// Runs an async IPC call to completion on a background task and blocks
-    /// the caller until it returns. Safe because every caller runs off the
-    /// main thread (the extension dispatches reads/writes on background
-    /// queues) and IPCClient uses its own connection queue, so the wait
-    /// never deadlocks an executor.
+    /// Runs an async IPC call to completion and blocks the caller until it
+    /// returns. The work runs on a DETACHED task: an unstructured `Task {}`
+    /// would inherit the caller's actor isolation, so a caller on the main
+    /// actor (e.g. the host app's @MainActor DomainSyncManager) would park
+    /// the main thread on the semaphore while the continuation waited for
+    /// that same main actor — a deadlock. Task.detached resumes on a
+    /// background executor, so the signal always lands. Callers should
+    /// still invoke this off the main thread to avoid a UI hitch for the
+    /// IPC round-trip (the host app wraps it in its own detached task).
     private func callBlocking<T: Decodable>(_ method: String, _ params: [String: Any]) throws -> T {
         guard let client = client else { throw BridgeError.notBootstrapped }
         let sem = DispatchSemaphore(value: 0)
         let box = ResultBox<Data>()
-        Task {
+        Task.detached {
             do { box.result = .success(try await client.call(method: method, params: params)) }
             catch { box.result = .failure(error) }
             sem.signal()

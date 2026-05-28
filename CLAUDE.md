@@ -23,7 +23,7 @@ OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fa
 - Mount mechanism: File Provider Extension, never FUSE-T. See `docs/macos-mount.md` for the rejected alternatives.
 - Auth: `docs/auth.md` — MSAL Go, own multi-tenant Entra App Registration, Keychain-backed cache, per-account `PublicClientApplication`.
 - OneLake API: `docs/onelake-api.md` — ADLS Gen2 DFS endpoint for I/O (audience `https://storage.azure.com/`), Fabric REST for discovery (Power BI Service audience `https://analysis.windows.net/powerbi/api`). Two distinct audiences — a single one returns 401 on Fabric REST. See `docs/auth.md`.
-- Tech stack: `docs/tech-stack.md` — Go for core + CLI, Swift for `.app` and `.appex`, cgo C-ABI bridge.
+- Tech stack: `docs/tech-stack.md` — Go for core + CLI + daemon, Swift for `.app` and `.appex`. The daemon owns the engine/cache; the Swift targets are thin JSON-RPC clients over the daemon's unix socket (no cgo — removed in the SIMPLIFICATION).
 - Telemetry: `docs/telemetry.md` — opt-out, App Insights free tier, tenant IDs collected but never UPN / workspace / file names.
 - Packaging: `docs/packaging-homebrew.md` — GoReleaser + xcodebuild + notarytool, DMG via Homebrew cask.
 - Prerequisites: `docs/prerequisites.md` — splits local dev vs publishing/signing.
@@ -43,9 +43,8 @@ OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fa
 ## Where things live
 
 - `cmd/ofem/` — CLI entrypoint.
-- `internal/auth/`, `internal/onelake/`, `internal/fabric/`, `internal/cache/`, `internal/sync/`, `internal/ipc/`, `internal/telemetry/`, `internal/config/`, `internal/log/` — Go core packages.
-- `core/` — cgo-exported façade for Swift.
-- `apple/` — Xcode project, host app, File Provider Extension.
+- `internal/auth/`, `internal/onelake/`, `internal/fabric/`, `internal/cache/`, `internal/sync/`, `internal/fp/`, `internal/ipc/`, `internal/daemon/`, `internal/telemetry/`, `internal/config/`, `internal/log/` — Go core packages. `internal/fp/` is the File Provider domain model the daemon serves over IPC.
+- `apple/` — Xcode project, host app, File Provider Extension. `apple/Shared/` holds the IPC client + CoreBridge shared by both Swift targets.
 - `docs/` — all design docs.
 - `homebrew/` — cask template (also lives in separate `homebrew-ofem` tap repo for release publishing).
 - `.github/` — workflows, issue templates, FUNDING.yml.
@@ -65,8 +64,9 @@ OFEM_INTEGRATION=1 go test ./...
 # Lint
 golangci-lint run
 
-# Generate cgo header for the Swift bridge
-go build -buildmode=c-archive -o build/libofemcore.a ./core
+# Build + run the macOS app (regenerates the Xcode project, builds the
+# host app + File Provider Extension; both talk to the daemon over IPC)
+make apple-build
 ```
 
 ## Things to avoid

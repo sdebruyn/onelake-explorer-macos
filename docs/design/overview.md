@@ -17,38 +17,33 @@ Settled during product discovery and unchanged since:
 ## Tech stack at a glance
 
 - **Go** for the core library, CLI, and daemon. See [Tech stack](../tech-stack.md).
-- **Swift** for the macOS host app and File Provider Extension. The Go core ships as a static library and is called over a cgo / C-ABI bridge.
+- **Swift** for the macOS host app and File Provider Extension. The Go engine runs in the daemon; the Swift targets call it over JSON-RPC on a Unix-domain socket (no cgo).
 - **SQLite** (pure-Go `modernc.org/sqlite`, no cgo) for the metadata cache.
 - **MSAL Go** for Microsoft Entra authentication.
-- **macOS Keychain** for token storage (via `zalando/go-keyring`).
+- **macOS Keychain** for token storage (file-backed secret store under the OFEM config dir).
 - **Azure Application Insights** for opt-out telemetry.
 - **Homebrew cask** for distribution. **GoReleaser** for the CLI binary; **xcodebuild + codesign + notarytool + create-dmg** for the signed `.app`.
 
 ## Process model
 
 ```
-┌────────────────────────────────┐
-│  OneLake.app (host, Swift)     │  ← user opens for account management
-│  - Auth flow (browser)         │
-│  - Account add/remove UI       │
-│  - Menu bar status icon        │
-└──────────┬─────────────────────┘
-           │ XPC / App Group
-┌──────────┴─────────────────────┐
-│  OneLake FileProvider .appex   │  ← macOS-managed sandboxed extension
-│  - Swift NSFileProvider*       │
-│  - Bridge to core lib          │
-└──────────┬─────────────────────┘
-           │ cgo / C-ABI
-┌──────────┴─────────────────────┐
-│  libofemcore (Go)               │  ← auth + OneLake API + cache + sync
-└──────────┬─────────────────────┘
-           │ JSON-RPC over Unix socket
-┌──────────┴─────────────────────┐
-│  ofem daemon (Go)               │  ← long-running: telemetry, polling, IPC
-│  +                             │
-│  ofem CLI (Go)                  │  ← setup, account mgmt, debug
-└────────────────────────────────┘
+┌────────────────────────────────┐   ┌────────────────────────────────┐
+│  OneLake.app (host, Swift)     │   │  OneLake FileProvider .appex   │
+│  - account add/remove UI       │   │  - Swift NSFileProvider*       │
+│  - menu bar status icon        │   │  - IPCClient → fp.* methods    │
+└──────────────┬─────────────────┘   └───────────────┬────────────────┘
+               │   JSON-RPC over the Unix socket      │
+               │   (ofem.sock in the App Group)       │
+               └──────────────────┬───────────────────┘
+                                  ▼
+              ┌────────────────────────────────────┐
+              │  ofem daemon (Go)                  │  ← long-running; owns the
+              │  - engine: auth/onelake/fabric/    │    engine, cache + blob
+              │    cache/sync/fp                   │    store; telemetry; polling
+              │  - IPC server (internal/ipc)       │
+              └──────────────────┬─────────────────┘
+                                 ▲
+                   ofem CLI (Go) ─┘  ← setup / account mgmt / debug, also IPC
 ```
 
 What each process does:

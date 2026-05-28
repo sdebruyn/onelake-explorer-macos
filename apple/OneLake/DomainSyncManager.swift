@@ -53,13 +53,14 @@ final class DomainSyncManager {
     /// add / remove so the operator can audit the activity from
     /// Console.app.
     func reconcile() async throws {
-        // Make sure the Go core is up before we ask it for accounts.
-        // The host app's `ContentView` already does this on first
-        // load, but invoking it again is cheap and removes the
-        // ordering dependency.
+        // Confirm we can locate the daemon socket (no in-process core to
+        // boot any more). Cheap and synchronous — no IPC.
         _ = CoreBridge.shared.bootstrap()
 
-        let accounts = try CoreBridge.shared.listAccounts()
+        // listAccounts() blocks on a synchronous IPC round-trip. Run it on
+        // a detached task so this @MainActor method does not park the main
+        // thread on the daemon socket.
+        let accounts = try await Task.detached { try CoreBridge.shared.listAccounts() }.value
         let existing = try await Self.existingDomains()
         let existingById: [String: NSFileProviderDomain] = Dictionary(
             uniqueKeysWithValues: existing.map { ($0.identifier.rawValue, $0) }
