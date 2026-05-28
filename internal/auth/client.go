@@ -26,11 +26,19 @@ var FabricScopes = []string{
 	"https://analysis.windows.net/powerbi/api/Item.Read.All",
 }
 
-// LoginScopes is the union requested during interactive / device-code
-// sign-in so a single consent covers both OneLake DFS and Fabric REST.
-// MSAL then serves per-resource tokens silently from the cached refresh
-// token without further interaction.
-var LoginScopes = append(append([]string{}, OneLakeScopes...), FabricScopes...)
+// LoginScopes is what interactive / device-code sign-in requests. It is
+// deliberately a SINGLE resource (OneLake / storage): the Microsoft
+// Entra v2 endpoint rejects an interactive request whose scopes span
+// more than one resource with AADSTS28000. The Fabric (Power BI)
+// resource token is acquired silently afterwards via TokenForScopes —
+// the Fabric delegated permissions are admin-consented on the app
+// registration, so MSAL mints that token from the same refresh token
+// without a second interactive prompt.
+//
+// (If a tenant has not admin-consented the Fabric permissions, the first
+// Fabric silent acquisition returns consent_required; surfacing an
+// interactive re-consent for that case is a Phase 2 refinement.)
+var LoginScopes = append([]string{}, OneLakeScopes...)
 
 // Scopes is retained for callers that have not migrated to the
 // audience-specific variants.
