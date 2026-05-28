@@ -106,9 +106,6 @@ jobs:
           # Strip leading 'v' from the tag to get the CalVer string.
           echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build cgo archive (libofemcore.a)
-        run: make cgo-build
-
       - name: Generate Xcode project
         run: make apple-gen
 

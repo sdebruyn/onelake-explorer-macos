@@ -4,7 +4,7 @@ The scope of the product, grouped by component. The Go core library is shared ac
 
 ## Core library
 
-The Go core under `internal/` and `core/` is the shared engine for every surface — CLI, daemon, host app, and File Provider Extension.
+The Go core under `internal/` is the shared engine. The CLI and the daemon run it in-process; the host app and File Provider Extension are thin Swift clients that reach the daemon — the single owner of the engine, cache, and blob store — over JSON-RPC. (There is no longer a cgo build of the engine inside the Swift targets; see the SIMPLIFICATION.)
 
 - **Auth (`internal/auth`)**: MSAL Go integration, interactive browser flow, device-code fallback, Keychain-backed token cache, multi-account registry.
 - **Fabric REST (`internal/fabric`)**: typed client for `GET /workspaces`, `GET /workspaces/{id}/items`, `GET /workspaces/{id}/folders`, with pagination.
@@ -12,8 +12,8 @@ The Go core under `internal/` and `core/` is the shared engine for every surface
 - **Cache (`internal/cache`)**: SQLite (`modernc.org/sqlite`) schema for file metadata, plus an LRU blob cache with a size cap.
 - **Sync (`internal/sync`)**: reconciliation engine, write queue, last-write-wins conflict resolution.
 - **Telemetry (`internal/telemetry`)**: App Insights client, opt-out behavior, schema, event emission helpers.
-- **IPC (`internal/ipc`)**: JSON-RPC 2.0 over a Unix-domain socket for CLI ↔ daemon and daemon ↔ extension traffic.
-- **cgo façade (`core/`)**: C-ABI exports and generated header so Swift can link `libofemcore.a`.
+- **IPC (`internal/ipc`)**: JSON-RPC 2.0 over a Unix-domain socket for CLI ↔ daemon and extension ↔ daemon traffic.
+- **File Provider model (`internal/fp`)**: identifier parsing, the wire-shape item, and the enumerate/item/fetch/create/modify/delete operations the daemon serves to the extension over IPC.
 
 Unit tests cover every internal package; integration tests gated by `OFEM_INTEGRATION=1` run against a real Fabric workspace. CI enforces a total-coverage **floor** (currently 60%, ratcheted up as coverage climbs) and prints the percentage on every run; 80% remains the aspiration, not yet the gate. CI runs `golangci-lint`, `go test -race`, `govulncheck`, commitlint, and build verifies.
 
@@ -39,7 +39,7 @@ Distributed as `OneLake.app`, signed with a Developer ID Application certificate
 
 ## File Provider integration
 
-The mount surface in Finder, implemented as a sandboxed extension that bridges to the Go core via cgo.
+The mount surface in Finder, implemented as a sandboxed extension that calls the daemon's File Provider IPC methods (`fp.*`) over the Unix socket.
 
 - One File Provider domain per account-alias; multi-account end-to-end.
 - Account-list and root container enumeration via the Go core.

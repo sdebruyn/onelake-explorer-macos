@@ -42,18 +42,6 @@ settings:
     PROVISIONING_PROFILE_SPECIFIER: ""
     ENABLE_HARDENED_RUNTIME: NO
     GENERATE_INFOPLIST_FILE: NO
-settingGroups:
-  cgoBridge:
-    LIBRARY_SEARCH_PATHS:
-      - $(SRCROOT)/build/cgo
-    HEADER_SEARCH_PATHS:
-      - $(SRCROOT)/build/cgo
-    OTHER_LDFLAGS:
-      - -lofemcore
-      - -framework
-      - Security
-      - -framework
-      - CoreFoundation
 targets:
   OneLake:
     type: application
@@ -64,9 +52,8 @@ targets:
           - "**/*.xcconfig"
           - "**/Info.plist"
           - "**/*.entitlements"
+      - path: apple/Shared
     settings:
-      groups:
-        - cgoBridge
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem
         PRODUCT_NAME: OneLake
@@ -75,4 +62,3 @@ targets:
         # signed team identity; drop them for the ad-hoc local build.
         CODE_SIGN_ENTITLEMENTS: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        SWIFT_OBJC_BRIDGING_HEADER: OneLake/OneLakeCoreBridge.h

@@ -2,7 +2,7 @@
 
 ## Language: Go for core + CLI, Swift for host app and File Provider Extension
 
-The core library, CLI, and daemon are written in **Go**. The macOS `.app` host and the File Provider Extension are written in **Swift**. The Go core ships as a static library (`libofemcore.a`) plus a generated C header (via cgo's `//export` directives) that Swift imports.
+The core library, CLI, and daemon are written in **Go**. The macOS `.app` host and the File Provider Extension are written in **Swift**. The Go engine runs inside the long-running daemon; the Swift targets are thin clients that reach it over JSON-RPC on a Unix-domain socket (see "Swift ↔ Go boundary" below). There is no cgo: the Swift targets link no Go archive.
 
 ## Go libraries
 
@@ -74,16 +74,22 @@ The core library, CLI, and daemon are written in **Go**. The macOS `.app` host a
 - Apple's `FileProvider` framework (built-in).
 - Apple's `os.log` for unified logging that integrates with Console.app.
 
-### Bridge to Go
+### Swift ↔ Go boundary
 
-- cgo's `//export Foo` produces `Foo` symbols callable from C. We generate a header `libofemcore.h` during `go build -buildmode=c-archive`.
-- Swift imports `libofemcore.h` via a bridging header.
-- All callbacks across the boundary use C primitives (`char*`, `int64_t`, opaque pointers) — no Go strings or Swift `String` directly.
+- The daemon owns the Go engine, cache, and blob store and exposes them as
+  JSON-RPC 2.0 methods (`fp.enumerate`, `fp.fetchContents`, `fp.createItem`,
+  …) over a Unix-domain socket in the App Group container.
+- Both Swift targets share `apple/Shared/IPCClient.swift` (the JSON-RPC
+  client) and `apple/Shared/CoreBridge.swift` (typed wrappers + error
+  mapping). No cgo, no static Go archive linked into Swift.
+- File contents cross the boundary through the shared App Group container:
+  a fetch is staged there by the daemon and moved to the macOS-supplied
+  URL; an upload's source is copied in for the daemon to read.
 
 ## Build & release
 
 - [`GoReleaser`](https://goreleaser.com/) builds the Go binaries.
-- A separate `xcodebuild` step builds the Swift `.app` and `.appex`, linking against the Go static library.
+- A separate `xcodebuild` step builds the Swift `.app` and `.appex` (no Go archive to link — they talk to the daemon over IPC).
 - `codesign --force --options runtime --sign "Developer ID Application: …"`.
 - `xcrun notarytool submit … --wait` and `xcrun stapler staple`.
 - DMG via `create-dmg` (Homebrew formula `create-dmg`).
@@ -103,13 +109,12 @@ onelake-explorer-macos/
 │   ├── fabric/              # Fabric REST API client (discovery)
 │   ├── cache/               # SQLite metadata cache, LRU eviction
 │   ├── sync/                # Sync engine, write queue, conflict resolution
+│   ├── fp/                  # File Provider model served to the extension over IPC
+│   ├── daemon/             # Long-running service: owns the engine + IPC server
 │   ├── ipc/                 # Unix socket server + client
 │   ├── telemetry/           # App Insights client
 │   ├── config/              # TOML config loading
 │   └── log/                 # slog setup, lumberjack rotation
-├── core/                    # cgo-exported façade for Swift
-│   ├── core.go              # //export symbols
-│   └── core.h               # generated
 ├── apple/
 │   ├── OneLake.xcodeproj
 │   ├── OneLake/             # host app (Swift)

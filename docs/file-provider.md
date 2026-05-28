@@ -26,41 +26,37 @@ We use the **replication model**, which is what Apple recommends for cloud stora
 ## Three processes, one product
 
 ```
-                      ┌────────────────────────────┐
-                      │   OneLake.app (host)       │
-                      │   - SwiftUI account UI     │
-                      │   - Menu bar status icon   │
-                      │   - Registers domain(s)    │
-                      │   - ChangeWatcher polls    │◄─── long-poll JSON-RPC
-                      └────────────┬───────────────┘     sync.pollChanges
-                                   │                     over Unix socket
-                                   │ signalEnumerator    (ofem.sock)
-                                   │                          │
-       ┌───────────────────────────┴───────────────┐         │
-       │                                           │         │
-       ▼                                           ▼         ▼
-┌────────────────────────────┐     ┌────────────────────────────┐
-│  OneLakeFileProvider.appex │     │  ofem daemon (Go)           │
-│  (Swift, sandboxed)        │     │  - LaunchAgent             │
-│  - NSFileProvider*         │     │  - Adaptive change feed    │
-│  - Calls Go core via FFI   │     │  - Telemetry sender        │
-└────────────┬───────────────┘     │  - IPC for CLI             │
-             │                     └────────────┬───────────────┘
-             │ cgo/C-ABI                        │
-             ▼                                  │
-┌────────────────────────────┐                  │
-│  libofemcore.a (Go)         │ ◄────────────────┘
-│  - Auth (MSAL)             │   shared as static archive
-│  - OneLake DFS client      │
-│  - Cache (SQLite)          │
-│  - Sync engine             │
-└────────────────────────────┘
+   ┌────────────────────────────┐     ┌────────────────────────────┐
+   │   OneLake.app (host)       │     │  OneLakeFileProvider.appex  │
+   │   - SwiftUI account UI     │     │  (Swift, sandboxed)         │
+   │   - Menu bar status icon   │     │  - NSFileProvider*          │
+   │   - Registers domain(s)    │     │  - IPCClient → fp.* methods │
+   │   - ChangeWatcher polls    │     └─────────────┬───────────────┘
+   └────────────┬───────────────┘                   │
+                │  JSON-RPC over the Unix socket     │
+                │  (ofem.sock in the App Group):     │
+                │  account.*, sync.pollChanges,      │
+                │  fp.enumerate/item/fetch/…         │
+                └──────────────────┬─────────────────┘
+                                   ▼
+              ┌────────────────────────────────────┐
+              │  ofem daemon (Go) — LaunchAgent    │
+              │  - IPC server (internal/ipc)       │
+              │  - owns the engine in-process:     │
+              │    auth (MSAL) · OneLake DFS ·     │
+              │    Fabric REST · cache (SQLite +   │
+              │    blobs) · sync · fp              │
+              │  - adaptive change feed, telemetry │
+              └────────────────────────────────────┘
+   The daemon signals the host app's ChangeWatcher (via pollChanges),
+   which calls NSFileProviderManager.signalEnumerator to refresh Finder.
+   The CLI is a fourth client of the same socket.
 ```
 
 What each process does:
-- The **host app** holds the account-management UI, registers File Provider domains, talks to the system browser for auth, and writes to the App Group container.
-- The **File Provider Extension** is sandboxed by Apple. macOS launches it on demand when Finder needs files. It implements the `NSFileProvider*` classes and calls into the Go core via FFI.
-- The **daemon** runs as a LaunchAgent, holds the Unix socket the CLI talks to, batches telemetry, and runs adaptive polling against Fabric.
+- The **host app** holds the account-management UI, registers File Provider domains, talks to the system browser for auth, and polls the daemon for change signals. It is an IPC client of the daemon.
+- The **File Provider Extension** is sandboxed by Apple. macOS launches it on demand when Finder needs files. It implements the `NSFileProvider*` classes and calls the daemon's `fp.*` methods over IPC.
+- The **daemon** runs as a LaunchAgent and is the single owner of the Go engine, cache, and blob store. It holds the Unix socket every other surface (host app, extension, CLI) talks to, batches telemetry, and runs adaptive polling against Fabric.
 
 ## Shared state via App Group
 
@@ -174,7 +170,7 @@ When the user opens a placeholder, macOS calls `fetchContents(for: itemIdentifie
 When the user saves a modified file, macOS calls `createItem` or `modifyItem`. The extension:
 
 1. Resolves the destination OneLake path from `template.parentItemIdentifier` and `template.filename` (create) or `item.itemIdentifier` (modify).
-2. Delegates to `CoreBridge.shared.createItem` / `modifyItem`, which crosses the cgo boundary into `ofem_core_create_item` / `ofem_core_modify_item`.
+2. Delegates to `CoreBridge.shared.createItem` / `modifyItem`, which call the daemon's `fp.createItem` / `fp.modifyItem` over IPC (the staged source file is copied into the App Group container so the daemon can read it).
 3. The Go core streams to OneLake DFS using `PUT ?resource=file` + chunked `PATCH ?action=append` + `PATCH ?action=flush` via `sync.Engine.Put`.
 4. On success, returns the updated `NSFileProviderItem` with the server-assigned etag/mtime from the post-upload HEAD.
 5. On failure (network, throttling, capacity-paused), returns an `NSFileProviderError` macOS understands; macOS surfaces it in the UI and may retry later (we honor `Retry-After`).
@@ -193,7 +189,7 @@ We filter on the **write** path: when macOS asks us to create, modify, or delete
 
 This is implemented at two layers:
 1. `sync.IsMacOSMetadata(path)` is called in `sync.Engine.Put` and `sync.Engine.Delete` so any caller going through the engine is covered automatically.
-2. The cgo bridge additionally short-circuits `ofem_core_create_item` and `ofem_core_delete_item` before reaching the engine, so folder-create paths (which do not go through `Put`) are also filtered.
+2. The same `IsMacOSMetadata` guard covers the create and delete engine entry points the daemon's `fp.createItem` / `fp.deleteItem` call, so folder-create paths (which do not go through `Put`) are also filtered.
 
 Read path: we never read these from OneLake (they would never be there in the first place).
 
@@ -244,15 +240,13 @@ The bundled targets are:
 Both share the App Group `group.dev.debruyn.ofem` and the matching
 Keychain access group.
 
-Both targets statically link the Go core as `libofemcore.a` and
-import its symbols through a Swift bridging header that re-exports
-the generated `libofemcore.h`. `make cgo-build` produces the archive
-+ header pair under `apple/build/cgo/` (gitignored); `make
-apple-build` runs it as a prerequisite, so the Swift binaries always
-link a fresh archive. The cgo exports are deliberately minimal in
-this PR — a version probe and a string logger that prove the FFI
-round-trip — and grow alongside the File Provider implementation in
-subsequent PRs.
+Neither target embeds the Go engine. They share
+`apple/Shared/IPCClient.swift` (a JSON-RPC client over the daemon's Unix
+socket) and `apple/Shared/CoreBridge.swift` (typed wrappers around the
+daemon's `fp.*` methods). The daemon is the single owner of the engine,
+cache, and blob store; file bytes cross the process boundary through the
+shared App Group container. There is no cgo archive and no bridging header
+(both were removed in the SIMPLIFICATION).
 
 ### Signing for local vs release
 
@@ -269,8 +263,7 @@ make apple-build-host
 ```
 
 This target skips the File Provider Extension, so the full mount
-workflow is not exercised, but it confirms the host app compiles and
-the cgo bridge links correctly.
+workflow is not exercised, but it confirms the host app compiles.
 
 Homebrew cask distribution requires:
 - Apple Developer Program enrollment ($99/yr),

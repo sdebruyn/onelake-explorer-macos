@@ -29,30 +29,10 @@ settings:
     # macOS reports the domain as "Sync is not enabled" (FP -2011). We
     # don't use previews, so disable the split for every configuration.
     ENABLE_DEBUG_DYLIB: NO
-# Settings shared by both the host app and the File Provider Extension
-# so they pick up libofemcore.a and the matching bridging header from
-# apple/build/cgo/ (produced by `make cgo-build`).
-#
-# - LIBRARY_SEARCH_PATHS / HEADER_SEARCH_PATHS point at the generated
-#   archive + header.
-# - OTHER_LDFLAGS pulls libofemcore in plus the system frameworks the
-#   Go core's stdlib transitively needs (Security for crypto and
-#   CoreFoundation for runtime).
-# - SWIFT_OBJC_BRIDGING_HEADER references the per-target bridging
-#   header file in each target's source folder; the bridging header
-#   itself just re-exports libofemcore.h.
-settingGroups:
-  cgoBridge:
-    LIBRARY_SEARCH_PATHS:
-      - $(SRCROOT)/build/cgo
-    HEADER_SEARCH_PATHS:
-      - $(SRCROOT)/build/cgo
-    OTHER_LDFLAGS:
-      - -lofemcore
-      - -framework
-      - Security
-      - -framework
-      - CoreFoundation
+# The Go engine and cache live in the long-running daemon. Both Swift
+# targets reach it over the unix-socket IPC (apple/Shared/IPCClient.swift +
+# CoreBridge.swift) — there is no cgo archive to link any more, so no
+# settingGroups / bridging headers are needed. See SIMPLIFICATION.md.
 targets:
   OneLake:
     type: application
@@ -63,16 +43,14 @@ targets:
           - "**/*.xcconfig"
           - "**/Info.plist"
           - "**/*.entitlements"
+      - path: apple/Shared
     settings:
-      groups:
-        - cgoBridge
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem
         PRODUCT_NAME: OneLake
         INFOPLIST_FILE: OneLake/Info.plist
         CODE_SIGN_ENTITLEMENTS: OneLake/OneLake.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        SWIFT_OBJC_BRIDGING_HEADER: OneLake/OneLakeCoreBridge.h
     dependencies:
       - target: OneLakeFileProvider
         embed: true
@@ -86,12 +64,10 @@ targets:
           - "**/*.xcconfig"
           - "**/Info.plist"
           - "**/*.entitlements"
+      - path: apple/Shared
     settings:
-      groups:
-        - cgoBridge
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem.fileprovider
         PRODUCT_NAME: OneLakeFileProvider
         INFOPLIST_FILE: OneLakeFileProvider/Info.plist
         CODE_SIGN_ENTITLEMENTS: OneLakeFileProvider/OneLakeFileProvider.entitlements
-        SWIFT_OBJC_BRIDGING_HEADER: OneLakeFileProvider/OneLakeFileProviderCoreBridge.h

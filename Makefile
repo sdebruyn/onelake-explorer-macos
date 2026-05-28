@@ -138,12 +138,10 @@ apple-gen:
 	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: brew install xcodegen"; exit 1; }
 	xcodegen generate --spec apple/project.yml --project-root . --project apple
 
-# Build the OneLake.app target (Debug, arm64) for local dogfooding.
-# Depends on cgo-build so the Swift targets always link against a
-# fresh libofemcore.a; xcodebuild discovers the archive + header via
-# the LIBRARY_SEARCH_PATHS / HEADER_SEARCH_PATHS settings in
-# apple/project.yml.
-apple-build: cgo-build apple-gen
+# Build the OneLake.app target (Debug, arm64) for local dogfooding. The
+# Swift targets talk to the daemon over IPC; there is no cgo archive to
+# build first.
+apple-build: apple-gen
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLake \
 		-configuration Debug \
@@ -153,7 +151,7 @@ apple-build: cgo-build apple-gen
 
 # Regenerate the host-app-only Xcode project from project-host.yml. The
 # host-only spec omits the OneLakeFileProvider target so contributors on a
-# free Apple ID (Personal Team) can smoke-test the cgo bridge — Personal
+# free Apple ID (Personal Team) can smoke-test the host app — Personal
 # Teams cannot sign macOS app extensions. Drop this target once every
 # contributor is enrolled in the paid Apple Developer Program.
 apple-gen-host:
@@ -163,7 +161,7 @@ apple-gen-host:
 # Build only the OneLake host app (no File Provider Extension). Use this
 # when you don't have a paid Apple Developer Program account yet; see
 # apple/project-host.yml for the why.
-apple-build-host: cgo-build apple-gen-host
+apple-build-host: apple-gen-host
 	xcodebuild -project $(XCODE_PROJECT_HOST) \
 		-scheme OneLake \
 		-configuration Debug \
@@ -176,30 +174,3 @@ apple-build-host: cgo-build apple-gen-host
 # output. Use `make apple-bootstrap` to (re)create it from the .sample.
 apple-clean:
 	rm -rf apple/OneLake.xcodeproj apple/OneLakeHost.xcodeproj apple/OneLake.xcworkspace apple/OneLakeHost.xcworkspace apple/build apple/DerivedData
-
-# --- cgo bridge: libofemcore.a + libofemcore.h ---
-#
-# Builds the static C archive (and matching header) that the Swift
-# host app and File Provider Extension link against. The output lands
-# under apple/build/cgo/ so the Xcode targets can pick it up via the
-# LIBRARY_SEARCH_PATHS / HEADER_SEARCH_PATHS settings in
-# apple/project.yml.
-
-CGO_OUT     := apple/build/cgo
-CGO_ARCHIVE := $(CGO_OUT)/libofemcore.a
-CGO_HEADER  := $(CGO_OUT)/libofemcore.h
-
-.PHONY: cgo-build cgo-clean
-
-cgo-build: $(CGO_ARCHIVE)
-
-$(CGO_ARCHIVE): $(GO_FILES) go.mod go.sum
-	@mkdir -p $(CGO_OUT)
-	CGO_ENABLED=1 go build -buildmode=c-archive \
-		-trimpath \
-		-ldflags '$(LDFLAGS)' \
-		-o $(CGO_ARCHIVE) ./core
-	@echo "Built $(CGO_ARCHIVE) and $(CGO_HEADER)"
-
-cgo-clean:
-	rm -rf $(CGO_OUT)
