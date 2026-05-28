@@ -51,15 +51,24 @@ type Keychain interface {
 
 // NewKeychain returns a file-backed [Keychain] rooted at
 // <ConfigDir>/tokens/ — i.e. inside the shared App Group container at
-// ~/Library/Group Containers/group.dev.debruyn.ofem/tokens/. The
-// directory and every file inside are created with 0700 / 0600
-// permissions so only the current UNIX user can read them.
+// ~/Library/Group Containers/group.dev.debruyn.ofem/tokens/. It resolves
+// the path through config.ResolvePaths, which is correct for the
+// unsandboxed CLI and daemon. Sandboxed callers (host app / File
+// Provider Extension) must use NewKeychainAt with the App Group token
+// dir instead, because os.UserHomeDir returns the per-app sandbox
+// container there rather than the real home.
 func NewKeychain() (Keychain, error) {
 	paths, err := config.ResolvePaths()
 	if err != nil {
 		return nil, fmt.Errorf("keychain: resolve paths: %w", err)
 	}
-	dir := filepath.Join(paths.ConfigDir, "tokens")
+	return NewKeychainAt(filepath.Join(paths.ConfigDir, "tokens"))
+}
+
+// NewKeychainAt returns a file-backed [Keychain] rooted at the supplied
+// directory, creating it (0700) if needed. Use this from sandboxed
+// processes that resolve their App Group container through Apple's API.
+func NewKeychainAt(dir string) (Keychain, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("keychain: create token dir %q: %w", dir, err)
 	}

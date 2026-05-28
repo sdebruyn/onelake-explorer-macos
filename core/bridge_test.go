@@ -490,6 +490,120 @@ func TestBridgeLifecycle(t *testing.T) {
 	// etc.) and by the lock-order analysis in core/bridge.go comments.
 }
 
+// TestListAccountsJSONShape verifies that ofem_core_list_accounts emits all
+// required JSON keys — alias, username, tenantId, tenantName — even when
+// tenantName is empty. This guards against accidental reintroduction of
+// omitempty on the bridgeAccount fields, which would break Swift's JSONDecoder
+// that expects non-optional strings for every key.
+func TestListAccountsJSONShape(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	resetBridgeForTest()
+
+	cdir := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(cdir, 0o700); err != nil {
+		t.Fatalf("mkdir cache: %v", err)
+	}
+	cstore, err := cache.Open(cache.Options{Root: cdir})
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer func() { _ = cstore.Close() }()
+
+	store, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	kc := auth.NewMemoryKeychain()
+	reg := auth.NewRegistry(store, kc, auth.EntraClientID, nil)
+
+	// Add an account that has a non-empty tenantName.
+	err = reg.Add(auth.Account{
+		Alias:      "full",
+		Username:   "user@example.com",
+		TenantID:   "tid-full",
+		TenantName: "Example Org",
+	}, []byte("secret"))
+	if err != nil {
+		t.Fatalf("reg.Add full: %v", err)
+	}
+
+	// Add an account with an intentionally empty tenantName — the PR #50 bug case.
+	err = reg.Add(auth.Account{
+		Alias:      "empty-tenant",
+		Username:   "other@example.com",
+		TenantID:   "tid-empty",
+		TenantName: "",
+	}, []byte("secret2"))
+	if err != nil {
+		t.Fatalf("reg.Add empty-tenant: %v", err)
+	}
+
+	bridgeInitMu.Lock()
+	bridgeCache = cstore
+	bridgeStore = store
+	bridgeReg = reg
+	bridgeEng = &fakeEngine{}
+	bridgeReady.Store(true)
+	bridgeInitMu.Unlock()
+	defer resetBridgeForTest()
+
+	raw := goString(ofem_core_list_accounts())
+
+	// Top-level envelope must carry the accounts key.
+	if !strings.Contains(raw, `"accounts":[`) {
+		t.Fatalf("missing accounts key: %s", raw)
+	}
+
+	// Decode into a generic map so we can assert key presence regardless of
+	// key order in the marshalled output.
+	var envelope struct {
+		Accounts []map[string]interface{} `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(envelope.Accounts) != 2 {
+		t.Fatalf("expected 2 accounts, got %d: %s", len(envelope.Accounts), raw)
+	}
+
+	requiredKeys := []string{"alias", "username", "tenantId", "tenantName"}
+	for i, acc := range envelope.Accounts {
+		for _, key := range requiredKeys {
+			if _, present := acc[key]; !present {
+				t.Errorf("account[%d] missing key %q in: %s", i, key, raw)
+			}
+		}
+	}
+
+	// Find the empty-tenantName account and assert the key is present with
+	// value "" (not absent, which would break Swift's non-optional decoder).
+	foundEmpty := false
+	for _, acc := range envelope.Accounts {
+		if acc["alias"] == "empty-tenant" {
+			foundEmpty = true
+			v, present := acc["tenantName"]
+			if !present {
+				t.Fatalf("empty-tenant: tenantName key absent in: %s", raw)
+			}
+			if v != "" {
+				t.Fatalf("empty-tenant: tenantName = %q, want empty string", v)
+			}
+		}
+	}
+	if !foundEmpty {
+		t.Fatalf("empty-tenant account not found in: %s", raw)
+	}
+
+	// Also assert the raw JSON string explicitly for the empty-tenantName case,
+	// so the test catches omitempty even if the map decode somehow ignores it.
+	if !strings.Contains(raw, `"tenantName":""`) {
+		t.Fatalf("raw JSON missing \"tenantName\":\"\" for empty-tenant account: %s", raw)
+	}
+}
+
 // setupBridgeWithFake wires a fakeEngine and an in-memory cache into the
 // bridge globals. The returned cleanup function tears down the cache and
 // resets the globals. Every write-path test that exercises the bridge

@@ -176,14 +176,26 @@ type Store struct {
 	file  File
 }
 
-// Load reads config.toml from disk. If the file does not exist, it
-// returns a Store seeded with Default(). The caller should persist the
-// store after the first run (which is when InstallID is generated).
+// Load reads config.toml from the canonical paths returned by
+// ResolvePaths. It is the right entry point for the CLI and the daemon,
+// which run unsandboxed and can resolve $HOME directly. Sandboxed
+// callers (the host app / File Provider Extension) must use LoadFrom
+// with an App Group container path instead, because os.UserHomeDir
+// returns the per-app sandbox container there rather than the real home.
 func Load() (*Store, error) {
 	paths, err := ResolvePaths()
 	if err != nil {
 		return nil, err
 	}
+	return LoadFrom(paths)
+}
+
+// LoadFrom reads config.toml from the supplied paths. If the file does
+// not exist, it returns a Store seeded with Default(). The caller should
+// persist the store after the first run (which is when InstallID is
+// generated). Use this from sandboxed processes that resolve their App
+// Group container through Apple's API rather than $HOME.
+func LoadFrom(paths Paths) (*Store, error) {
 	s := &Store{paths: paths, file: Default()}
 
 	data, err := os.ReadFile(paths.ConfigFile)
