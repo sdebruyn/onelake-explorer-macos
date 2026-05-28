@@ -13,7 +13,11 @@ package cache
 //   - v3: add workspace_status so the sync engine can persist
 //     paused-capacity / unreachable-workspace signals and the daemon's
 //     adaptive poller can skip workspaces it knows are unreachable.
-const schemaVersion = 3
+//   - v4: add path_metadata.children_synced_at_ns so the enumerator can
+//     tell a genuinely empty directory (its children were listed, none
+//     found) from one merely seen in its parent's listing but never
+//     descended into — without re-listing empty folders on every read.
+const schemaVersion = 4
 
 // schemaSQL creates every persistent object the cache relies on. It is
 // designed to be safe to execute on every Open: each statement uses
@@ -35,6 +39,7 @@ CREATE TABLE IF NOT EXISTS path_metadata (
     blob_size        INTEGER NOT NULL DEFAULT 0,
     last_accessed_ns INTEGER NOT NULL,
     synced_at_ns     INTEGER NOT NULL,
+    children_synced_at_ns INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (account_alias, workspace_id, item_id, path)
 );
 
