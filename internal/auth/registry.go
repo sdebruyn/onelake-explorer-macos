@@ -223,6 +223,14 @@ func (r *Registry) SetDefault(alias string) error {
 //
 // Unknown aliases return an error wrapping os.ErrNotExist.
 func (r *Registry) Token(ctx context.Context, alias string) (string, error) {
+	return r.TokenForScopes(ctx, alias, OneLakeScopes)
+}
+
+// TokenForScopes acquires an access token for the given audience scopes.
+// OneLake DFS file I/O passes OneLakeScopes; Fabric REST discovery passes
+// FabricScopes. MSAL serves both from one cached refresh token (consented
+// at login via LoginScopes), so no extra interaction is needed per scope.
+func (r *Registry) TokenForScopes(ctx context.Context, alias string, scopes []string) (string, error) {
 	snap := r.store.Snapshot()
 	cfg, ok := snap.Accounts[alias]
 	if !ok {
@@ -239,7 +247,26 @@ func (r *Registry) Token(ctx context.Context, alias string) (string, error) {
 		return "", fmt.Errorf("auth: locate MSAL account for %q: %w", alias, err)
 	}
 
-	return SilentToken(ctx, client, alias, msalAccount)
+	return SilentToken(ctx, client, alias, msalAccount, scopes)
+}
+
+// ScopedProvider returns a TokenProvider that always requests the given
+// audience scopes. Wire the Fabric client with ScopedProvider(FabricScopes)
+// and the OneLake client with the registry directly (OneLakeScopes default)
+// so each upstream gets a token its audience accepts.
+func (r *Registry) ScopedProvider(scopes []string) TokenProvider {
+	return scopedProvider{reg: r, scopes: scopes}
+}
+
+// scopedProvider adapts Registry.TokenForScopes to the TokenProvider
+// interface for a fixed scope set.
+type scopedProvider struct {
+	reg    *Registry
+	scopes []string
+}
+
+func (s scopedProvider) Token(ctx context.Context, alias string) (string, error) {
+	return s.reg.TokenForScopes(ctx, alias, s.scopes)
 }
 
 // clientFor returns the cached MSAL client for the (alias, tenant)

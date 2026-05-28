@@ -327,3 +327,81 @@ func TestRegistryPersistsAcrossReload(t *testing.T) {
 		t.Errorf("DefaultAccount = %q, want work", snap.DefaultAccount)
 	}
 }
+
+// newTestRegistry is a helper that adds a "work" account and returns a
+// Registry wired with a stubMSALClient that the caller can inspect.
+func newTestRegistry(t *testing.T) (*Registry, *stubMSALClient) {
+	t.Helper()
+	store := newTestStore(t)
+	stub := &stubMSALClient{
+		silentResult: public.AuthResult{AccessToken: "scoped-tok"},
+		accounts:     []public.Account{{HomeAccountID: "object-id.work"}},
+	}
+	factory := func(string, string, Keychain, string) (MSALClient, error) {
+		return stub, nil
+	}
+	reg := NewRegistry(store, NewMemoryKeychain(), EntraClientID, factory)
+	if err := reg.Add(sampleAccount("work"), []byte("cache")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	return reg, stub
+}
+
+// TestRegistryTokenForScopesPassesScopes is the direct regression test for
+// the bug that caused Fabric REST calls to receive an OneLake-audience token:
+// TokenForScopes must forward the caller-supplied scopes verbatim to
+// AcquireTokenSilent, not substitute OneLakeScopes.
+func TestRegistryTokenForScopesPassesScopes(t *testing.T) {
+	reg, stub := newTestRegistry(t)
+
+	tok, err := reg.TokenForScopes(context.Background(), "work", FabricScopes)
+	if err != nil {
+		t.Fatalf("TokenForScopes: %v", err)
+	}
+	if tok != "scoped-tok" {
+		t.Errorf("token = %q, want scoped-tok", tok)
+	}
+
+	// The stub must have received FabricScopes, not OneLakeScopes.
+	if len(stub.lastScopes) != len(FabricScopes) {
+		t.Fatalf("lastScopes len = %d, want %d", len(stub.lastScopes), len(FabricScopes))
+	}
+	for i, s := range FabricScopes {
+		if stub.lastScopes[i] != s {
+			t.Errorf("lastScopes[%d] = %q, want %q", i, stub.lastScopes[i], s)
+		}
+	}
+
+	// Confirm Token() (the OneLake default path) passes OneLakeScopes.
+	if _, err := reg.Token(context.Background(), "work"); err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	if len(stub.lastScopes) != len(OneLakeScopes) || stub.lastScopes[0] != OneLakeScopes[0] {
+		t.Errorf("Token() passed scopes %v, want OneLakeScopes %v", stub.lastScopes, OneLakeScopes)
+	}
+}
+
+// TestScopedProviderUsesGivenScopes verifies that ScopedProvider(FabricScopes).Token
+// takes the same code path as TokenForScopes(…, FabricScopes) and that the
+// chosen scopes reach AcquireTokenSilent unchanged.
+func TestScopedProviderUsesGivenScopes(t *testing.T) {
+	reg, stub := newTestRegistry(t)
+
+	provider := reg.ScopedProvider(FabricScopes)
+	tok, err := provider.Token(context.Background(), "work")
+	if err != nil {
+		t.Fatalf("ScopedProvider.Token: %v", err)
+	}
+	if tok != "scoped-tok" {
+		t.Errorf("token = %q, want scoped-tok", tok)
+	}
+
+	if len(stub.lastScopes) != len(FabricScopes) {
+		t.Fatalf("lastScopes len = %d, want %d", len(stub.lastScopes), len(FabricScopes))
+	}
+	for i, s := range FabricScopes {
+		if stub.lastScopes[i] != s {
+			t.Errorf("lastScopes[%d] = %q, want %q", i, stub.lastScopes[i], s)
+		}
+	}
+}

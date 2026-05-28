@@ -192,11 +192,18 @@ func (c *KeychainCache) Export(ctx context.Context, marshaler cache.Marshaler, _
 // If MSAL reports that the user must interact again, SilentToken returns
 // [ErrInteractionRequired] wrapped with the original message so callers
 // can use errors.Is and still log the detail.
-func SilentToken(ctx context.Context, client MSALClient, accountAlias string, msalAccount public.Account) (string, error) {
+func SilentToken(ctx context.Context, client MSALClient, accountAlias string, msalAccount public.Account, scopes []string) (string, error) {
 	if client == nil {
 		return "", errors.New("auth: nil MSAL client")
 	}
-	res, err := client.AcquireTokenSilent(ctx, Scopes, msalAccount)
+	if len(scopes) == 0 {
+		// An empty scope set is always a programming error in the caller.
+		// Passing no scopes to MSAL would either fail with a confusing
+		// server-side error or silently acquire a token for the wrong
+		// audience. Fail fast here instead.
+		return "", errors.New("auth: SilentToken requires at least one scope")
+	}
+	res, err := client.AcquireTokenSilent(ctx, scopes, msalAccount)
 	if err != nil {
 		if isInteractionRequired(err) {
 			slog.Info("auth: silent acquisition requires interaction",

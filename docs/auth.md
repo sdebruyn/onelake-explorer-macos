@@ -95,6 +95,35 @@ On `AADSTS50076` / `AADSTS50079` / `interaction_required`, the daemon silently r
 3. Optionally calls Microsoft's `/oauth2/v2.0/logout` (best effort, no error if it fails).
 4. Removes the account's folder from `~/Library/CloudStorage/OneLake-<alias>/` (and the matching Finder sidebar entry `OneLake — <alias>`) after a confirmation prompt (or `--force`).
 
+## Two-audience scope model
+
+OFEM talks to two distinct Microsoft resource APIs that require different token audiences:
+
+| Scope set | Constant | Audience | Used by |
+|---|---|---|---|
+| `OneLakeScopes` | `internal/auth/client.go` | `https://storage.azure.com/` | OneLake ADLS Gen2 DFS file I/O |
+| `FabricScopes` | `internal/auth/client.go` | `https://analysis.windows.net/powerbi/api` | Fabric REST workspace + item discovery |
+
+### Single interactive consent via LoginScopes
+
+`LoginScopes` is the union of both scope sets and is passed during the one-shot interactive or device-code login flow. Microsoft Entra records the user's consent for every resource in a single call. After that first consent:
+
+- `AcquireTokenSilent` for `OneLakeScopes` returns a storage-audience token from the refresh token — no browser pop-up.
+- `AcquireTokenSilent` for `FabricScopes` returns a Power BI-audience token from the same refresh token — also silent.
+
+MSAL Go manages this internally: one `PublicClientApplication` per tenant can silently serve tokens for multiple resources as long as the refresh token carries the necessary consent.
+
+### Wiring in OFEM
+
+The `Registry` implements `TokenProvider` via its `Token` method (uses `OneLakeScopes`). For the Fabric REST client, `Registry.ScopedProvider(FabricScopes)` returns a `TokenProvider` that calls `TokenForScopes` with `FabricScopes`. This ensures each upstream receives a token its audience will accept.
+
+```
+registry.Token(ctx, alias)                         → OneLake DFS token
+registry.ScopedProvider(FabricScopes).Token(ctx, alias) → Fabric REST token
+```
+
+Passing the wrong scope set to a resource results in a 401 from the server; OFEM's `SilentToken` helper returns an explicit error if an empty scope set is supplied, so that caller bugs are caught immediately rather than producing confusing server errors.
+
 ## Sovereign clouds
 
 OFEM targets the Microsoft public cloud. The authority host is kept configurable per account (`authority_host: login.microsoftonline.com` default), so adding US Gov / China / Germany is a config change plus an endpoint mapping.

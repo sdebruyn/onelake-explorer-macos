@@ -171,7 +171,7 @@ func ofem_core_init(groupContainerPath *C.char) C.int { //nolint:revive // C-ABI
 	registry := auth.NewRegistry(store, kc, auth.EntraClientID, nil)
 
 	gates := httpgate.DefaultRegistry()
-	fabricClient := fabric.New(fabric.Options{TokenProvider: registry, Registry: gates})
+	fabricClient := fabric.New(fabric.Options{TokenProvider: registry.ScopedProvider(auth.FabricScopes), Registry: gates})
 	onelakeClient := onelake.New(onelake.Options{TokenProvider: registry, Registry: gates})
 	eng, err := syncpkg.New(syncpkg.Options{
 		Cache:                  c,

@@ -132,16 +132,22 @@ func TestKeychainCachePropagatesUnmarshalError(t *testing.T) {
 // stubMSALClient is a minimal MSALClient that returns canned AcquireTokenSilent
 // results, used by both SilentToken tests below and Registry.Token tests in
 // registry_test.go.
+//
+// lastScopes captures the scopes slice passed to the most recent
+// AcquireTokenSilent call so tests can assert scope-forwarding without
+// reaching into MSAL internals.
 type stubMSALClient struct {
 	silentResult public.AuthResult
 	silentErr    error
 	accounts     []public.Account
 	accountsErr  error
 	silentCalls  int
+	lastScopes   []string
 }
 
-func (s *stubMSALClient) AcquireTokenSilent(_ context.Context, _ []string, _ public.Account) (public.AuthResult, error) {
+func (s *stubMSALClient) AcquireTokenSilent(_ context.Context, scopes []string, _ public.Account) (public.AuthResult, error) {
 	s.silentCalls++
+	s.lastScopes = append([]string{}, scopes...)
 	return s.silentResult, s.silentErr
 }
 
@@ -151,7 +157,7 @@ func (s *stubMSALClient) Accounts(_ context.Context) ([]public.Account, error) {
 
 func TestSilentTokenReturnsAccessToken(t *testing.T) {
 	client := &stubMSALClient{silentResult: public.AuthResult{AccessToken: "abc123"}}
-	token, err := SilentToken(context.Background(), client, "work", public.Account{HomeAccountID: "h.t"})
+	token, err := SilentToken(context.Background(), client, "work", public.Account{HomeAccountID: "h.t"}, OneLakeScopes)
 	if err != nil {
 		t.Fatalf("SilentToken: %v", err)
 	}
@@ -176,7 +182,7 @@ func TestSilentTokenMapsInteractionRequired(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			client := &stubMSALClient{silentErr: tc.err}
-			_, err := SilentToken(context.Background(), client, "work", public.Account{HomeAccountID: "h.t"})
+			_, err := SilentToken(context.Background(), client, "work", public.Account{HomeAccountID: "h.t"}, OneLakeScopes)
 			if !errors.Is(err, ErrInteractionRequired) {
 				t.Errorf("err = %v, want errors.Is ErrInteractionRequired", err)
 			}
@@ -187,7 +193,7 @@ func TestSilentTokenMapsInteractionRequired(t *testing.T) {
 func TestSilentTokenWrapsOtherErrors(t *testing.T) {
 	boom := errors.New("network unreachable")
 	client := &stubMSALClient{silentErr: boom}
-	_, err := SilentToken(context.Background(), client, "work", public.Account{HomeAccountID: "h.t"})
+	_, err := SilentToken(context.Background(), client, "work", public.Account{HomeAccountID: "h.t"}, OneLakeScopes)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -200,7 +206,7 @@ func TestSilentTokenWrapsOtherErrors(t *testing.T) {
 }
 
 func TestSilentTokenRejectsNilClient(t *testing.T) {
-	if _, err := SilentToken(context.Background(), nil, "work", public.Account{}); err == nil {
+	if _, err := SilentToken(context.Background(), nil, "work", public.Account{}, OneLakeScopes); err == nil {
 		t.Fatal("expected error for nil client")
 	}
 }
@@ -245,5 +251,24 @@ func TestDefaultClientFactoryReturnsClient(t *testing.T) {
 	}
 	if len(accs) != 0 {
 		t.Errorf("Accounts() = %v, want empty", accs)
+	}
+}
+
+func TestSilentTokenRejectsEmptyScopes(t *testing.T) {
+	client := &stubMSALClient{silentResult: public.AuthResult{AccessToken: "tok"}}
+	_, err := SilentToken(context.Background(), client, "work", public.Account{HomeAccountID: "h.t"}, nil)
+	if err == nil {
+		t.Fatal("expected error for nil scopes")
+	}
+	if client.silentCalls != 0 {
+		t.Errorf("AcquireTokenSilent called %d times, want 0 (error before network call)", client.silentCalls)
+	}
+
+	_, err = SilentToken(context.Background(), client, "work", public.Account{HomeAccountID: "h.t"}, []string{})
+	if err == nil {
+		t.Fatal("expected error for empty scopes slice")
+	}
+	if client.silentCalls != 0 {
+		t.Errorf("AcquireTokenSilent called %d times, want 0 (error before network call)", client.silentCalls)
 	}
 }

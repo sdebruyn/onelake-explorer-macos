@@ -179,7 +179,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// the same token provider and feed both into the engine alongside
 	// the cache and telemetry client. New only errors when a required
 	// dependency is missing, which would be a programmer error here.
-	fabricClient := fabric.New(fabric.Options{TokenProvider: registry, Registry: gates})
+	fabricClient := fabric.New(fabric.Options{TokenProvider: registry.ScopedProvider(auth.FabricScopes), Registry: gates})
 	onelakeClient := onelake.New(onelake.Options{TokenProvider: registry, Registry: gates})
 	engine, err := sync.New(sync.Options{
 		Cache:                  c,

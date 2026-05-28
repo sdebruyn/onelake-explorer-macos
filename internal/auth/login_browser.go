@@ -55,7 +55,7 @@ func LoginInteractive(ctx context.Context, clientID, tenantHint string, kc Keych
 	// MSAL Go's interactive flow already manages the localhost redirect
 	// server and PKCE end to end. Passing "http://localhost:0" lets it
 	// pick a free port, which matches the docs/auth.md design.
-	res, err := client.AcquireTokenInteractive(ctx, Scopes,
+	res, err := client.AcquireTokenInteractive(ctx, LoginScopes,
 		public.WithRedirectURI("http://localhost:0"),
 	)
 	if err != nil {

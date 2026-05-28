@@ -8,9 +8,36 @@ package auth
 // API permission is Azure Storage / user_impersonation.
 const EntraClientID = "939b4a06-cc18-49eb-9674-a1fc041489f6"
 
-// Scopes is the set of OAuth scopes OFEM requests. The single scope
-// covers both Fabric REST and OneLake DFS (audience storage.azure.com).
-var Scopes = []string{"https://storage.azure.com/user_impersonation"}
+// OneLakeScopes is the delegated scope for OneLake ADLS Gen2 DFS file
+// I/O (audience https://storage.azure.com/). Used by the OneLake client.
+var OneLakeScopes = []string{"https://storage.azure.com/user_impersonation"}
+
+// FabricScopes are the delegated scopes for the Microsoft Fabric REST
+// API (workspace + item discovery). The Fabric REST API authenticates
+// against the Power BI Service resource, so the token audience is
+// https://analysis.windows.net/powerbi/api — which api.fabric.microsoft.com
+// accepts. These delegated permissions (Workspace.Read.All, Item.Read.All
+// on the Power BI Service) must be granted on the OFEM app registration.
+//
+// OFEM uses Fabric REST for read-only discovery only; all file I/O goes
+// through OneLake DFS, so no ReadWrite scope is requested here.
+var FabricScopes = []string{
+	"https://analysis.windows.net/powerbi/api/Workspace.Read.All",
+	"https://analysis.windows.net/powerbi/api/Item.Read.All",
+}
+
+// LoginScopes is the union requested during interactive / device-code
+// sign-in so a single consent covers both OneLake DFS and Fabric REST.
+// MSAL then serves per-resource tokens silently from the cached refresh
+// token without further interaction.
+var LoginScopes = append(append([]string{}, OneLakeScopes...), FabricScopes...)
+
+// Scopes is retained for callers that have not migrated to the
+// audience-specific variants.
+//
+// Deprecated: use OneLakeScopes or FabricScopes explicitly. It equals
+// OneLakeScopes and will be removed once all call sites migrate.
+var Scopes = append([]string{}, OneLakeScopes...)
 
 // AuthorityHostPublicCloud is the public-cloud Microsoft Entra authority
 // host. Sovereign clouds (US Gov, China, Germany) are out of scope for
