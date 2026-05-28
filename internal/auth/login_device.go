@@ -45,7 +45,7 @@ func LoginDeviceCode(ctx context.Context, clientID, tenantHint string, kc Keycha
 		"authority", authority,
 	)
 
-	dc, err := client.AcquireTokenByDeviceCode(ctx, Scopes)
+	dc, err := client.AcquireTokenByDeviceCode(ctx, LoginScopes)
 	if err != nil {
 		return Account{}, public.Account{}, nil, fmt.Errorf("auth: start device code: %w", err)
 	}

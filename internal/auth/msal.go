@@ -192,11 +192,14 @@ func (c *KeychainCache) Export(ctx context.Context, marshaler cache.Marshaler, _
 // If MSAL reports that the user must interact again, SilentToken returns
 // [ErrInteractionRequired] wrapped with the original message so callers
 // can use errors.Is and still log the detail.
-func SilentToken(ctx context.Context, client MSALClient, accountAlias string, msalAccount public.Account) (string, error) {
+func SilentToken(ctx context.Context, client MSALClient, accountAlias string, msalAccount public.Account, scopes []string) (string, error) {
 	if client == nil {
 		return "", errors.New("auth: nil MSAL client")
 	}
-	res, err := client.AcquireTokenSilent(ctx, Scopes, msalAccount)
+	if len(scopes) == 0 {
+		scopes = OneLakeScopes
+	}
+	res, err := client.AcquireTokenSilent(ctx, scopes, msalAccount)
 	if err != nil {
 		if isInteractionRequired(err) {
 			slog.Info("auth: silent acquisition requires interaction",
