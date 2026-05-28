@@ -13,6 +13,7 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/fp"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/ipc"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/sync"
@@ -54,6 +55,13 @@ type Handlers struct {
 	feed      *Changefeed
 	startedAt time.Time
 	version   string
+
+	// fp serves the File Provider Extension's enumerate / item / fetch /
+	// create / modify / delete over IPC. nil when the daemon was built
+	// without a full *sync.Engine (e.g. unit tests with a stub refresher);
+	// the fp.* handlers then return ErrEngineNotWired.
+	fp   *fp.Service
+	fpOK bool
 }
 
 // NewHandlers builds a Handlers wired to the given dependencies. All of
@@ -64,7 +72,7 @@ type Handlers struct {
 // when nil, sync.pollChanges returns an empty result.
 func NewHandlers(store *config.Store, registry *auth.Registry, cache *cache.Cache, engine syncRefresher, gates *httpgate.Registry, feed *Changefeed) *Handlers {
 	off, _ := engine.(offlineReporter)
-	return &Handlers{
+	h := &Handlers{
 		store:     store,
 		registry:  registry,
 		cache:     cache,
@@ -75,6 +83,14 @@ func NewHandlers(store *config.Store, registry *auth.Registry, cache *cache.Cach
 		startedAt: time.Now().UTC(),
 		version:   buildinfo.Version,
 	}
+	// Wire the File Provider service only when the daemon owns a full
+	// engine (production). The narrow syncRefresher stub used in tests does
+	// not satisfy fp.Engine, leaving fp nil so the handlers fail cleanly.
+	if fpEng, ok := engine.(fp.Engine); ok && cache != nil {
+		h.fp = &fp.Service{Engine: fpEng, Cache: cache}
+		h.fpOK = true
+	}
+	return h
 }
 
 // Register installs every IPC method this daemon exposes on srv. Calls
@@ -88,6 +104,14 @@ func (h *Handlers) Register(srv *ipc.Server) {
 	srv.Register("sync.refresh", h.handleSyncRefresh)
 	srv.Register("sync.pollChanges", h.handleSyncPollChanges)
 	srv.Register("mount.list", h.handleMountList)
+
+	// File Provider Extension surface (replaces the cgo bridge).
+	srv.Register("fp.enumerate", h.handleFPEnumerate)
+	srv.Register("fp.item", h.handleFPItem)
+	srv.Register("fp.fetchContents", h.handleFPFetchContents)
+	srv.Register("fp.createItem", h.handleFPCreateItem)
+	srv.Register("fp.modifyItem", h.handleFPModifyItem)
+	srv.Register("fp.deleteItem", h.handleFPDeleteItem)
 }
 
 // StatusResponse is the payload returned by the "status" method.
