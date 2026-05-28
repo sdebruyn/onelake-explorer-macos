@@ -143,9 +143,16 @@ func (c *Cache) migrate(ctx context.Context) error {
 	case existing.Int64 == schemaVersion:
 		// Already at the latest version; nothing to do.
 	case existing.Int64 < schemaVersion:
-		// Placeholder for future numbered migrations. As of v1 nothing
-		// to do, but we keep the branch so adding v2 is a one-line
-		// change here.
+		// Numbered migrations for an existing database. CREATE TABLE IF
+		// NOT EXISTS above is a no-op on tables that already exist, so any
+		// ADD COLUMN must be applied explicitly here. addColumnIfMissing is
+		// idempotent, so re-running this branch is harmless.
+		if err := addColumnIfMissing(ctx, tx,
+			"path_metadata", "children_synced_at_ns",
+			"INTEGER NOT NULL DEFAULT 0",
+		); err != nil {
+			return fmt.Errorf("migrate v4 children_synced_at_ns: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT OR REPLACE INTO schema_version (version) VALUES (?)`,
 			schemaVersion,
@@ -158,6 +165,45 @@ func (c *Cache) migrate(ctx context.Context) error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+// addColumnIfMissing adds "<column> <columnDef>" to table when it is not
+// already present. SQLite cannot parameterise identifiers in PRAGMA /
+// ALTER statements, so table and column are interpolated into the SQL —
+// they are compile-time constants supplied by migrate, never user input.
+// Idempotent: a no-op when the column already exists, so re-running a
+// migration branch can never fail with "duplicate column name".
+func addColumnIfMissing(ctx context.Context, tx *sql.Tx, table, column, columnDef string) error {
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("table_info(%s): %w", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notnull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("scan table_info: %w", err)
+		}
+		if name == column {
+			return nil // already present
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("table_info rows: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, columnDef),
+	); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
 	}
 	return nil
 }

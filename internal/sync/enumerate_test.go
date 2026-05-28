@@ -428,3 +428,78 @@ func TestIsDirectChild(t *testing.T) {
 		}
 	}
 }
+
+// TestEnumerate_EmptyFolderCachedAfterRefresh is the regression test for
+// the empty-folder enumeration cost: once a genuinely empty folder has
+// been listed, a second Enumerate within the TTL must serve the empty
+// listing from cache WITHOUT another DFS round-trip. Before the
+// ChildrenSyncedAt marker, an empty folder re-listed on every read.
+func TestEnumerate_EmptyFolderCachedAfterRefresh(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+
+	httpmock.RegisterResponder("GET", "=~^"+testOneLakeBase+"/"+testWorkspaceID+`\?.*$`,
+		httpmock.NewStringResponder(200, `{"paths":[]}`))
+
+	empty := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/empty"}
+
+	// First Enumerate lists the (empty) folder and stamps ChildrenSyncedAt.
+	if got, err := f.engine.Enumerate(ctx, empty); err != nil {
+		t.Fatalf("first Enumerate: %v", err)
+	} else if len(got) != 0 {
+		t.Fatalf("first Enumerate entries = %d, want 0", len(got))
+	}
+	afterFirst := httpmock.GetTotalCallCount()
+	if afterFirst == 0 {
+		t.Fatal("expected the first Enumerate to hit the network")
+	}
+
+	// Second Enumerate within the TTL must be served from cache: still
+	// empty, and no additional HTTP call.
+	got, err := f.engine.Enumerate(ctx, empty)
+	if err != nil {
+		t.Fatalf("second Enumerate: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("second Enumerate entries = %d, want 0", len(got))
+	}
+	if now := httpmock.GetTotalCallCount(); now != afterFirst {
+		t.Errorf("empty folder re-listed on cache hit: HTTP calls %d -> %d", afterFirst, now)
+	}
+}
+
+// TestEnumerate_DirSeenViaParentRefreshes verifies a directory that was
+// only written as a child of its parent's listing (ChildrenSyncedAt == 0)
+// is refreshed when first enumerated, rather than reported as empty from
+// a SyncedAt that merely reflects the parent listing.
+func TestEnumerate_DirSeenViaParentRefreshes(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+
+	httpmock.RegisterResponder("GET", "=~^"+testOneLakeBase+"/"+testWorkspaceID+`\?.*$`,
+		func(_ *http.Request) (*http.Response, error) {
+			return httpmock.NewJsonResponse(200, map[string]any{
+				"paths": []map[string]any{
+					{"name": testItemID + "/Files/sub", "isDirectory": "true"},
+				},
+			})
+		})
+
+	// Refresh the parent: this writes the "Files/sub" row with
+	// ChildrenSyncedAt == 0 (seen, but never descended into).
+	parent := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files"}
+	if _, err := f.engine.Enumerate(ctx, parent); err != nil {
+		t.Fatalf("parent Enumerate: %v", err)
+	}
+	beforeSub := httpmock.GetTotalCallCount()
+
+	// Enumerating the child must refresh (ChildrenSyncedAt == 0), not serve
+	// a stale-empty listing.
+	sub := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/sub"}
+	if _, err := f.engine.Enumerate(ctx, sub); err != nil {
+		t.Fatalf("sub Enumerate: %v", err)
+	}
+	if now := httpmock.GetTotalCallCount(); now == beforeSub {
+		t.Errorf("child dir seen via parent was not refreshed on first enumerate (HTTP calls stayed at %d)", beforeSub)
+	}
+}

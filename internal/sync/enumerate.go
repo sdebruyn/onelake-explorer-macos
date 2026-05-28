@@ -31,9 +31,10 @@ func (d Diff) Total() int { return d.Added + d.Updated + d.Removed }
 
 // Enumerate returns the children of a OneLake folder.
 //
-// When the parent row's SyncedAt timestamp is fresher than
-// RecentFolderTTL, the cached rows are returned without contacting
-// OneLake. Otherwise the folder is refreshed via RefreshFolder first.
+// When the folder's own children were last listed (ChildrenSyncedAt)
+// within RecentFolderTTL, the cached rows are returned without contacting
+// OneLake — including an empty listing for a genuinely empty folder.
+// Otherwise the folder is refreshed via RefreshFolder first.
 //
 // Telemetry: emits folder_list with success and durationMs.
 func (e *Engine) Enumerate(ctx context.Context, k cache.Key) ([]cache.Entry, error) {
@@ -96,25 +97,23 @@ func (e *Engine) enumerateFromCache(ctx context.Context, k cache.Key) (bool, []c
 	if !parent.IsDir {
 		return false, nil, fmt.Errorf("sync.Enumerate: %s is not a directory", k.Path)
 	}
-	age := e.now().Sub(parent.SyncedAt)
-	if parent.SyncedAt.IsZero() || age > e.recentFolderTTL {
+	// Freshness is governed by ChildrenSyncedAt — when THIS directory's
+	// own children were last listed — not SyncedAt, which is also stamped
+	// when the row is written as a child of its parent and so cannot tell
+	// "children fetched" from "merely seen in the parent's listing". A
+	// directory whose children were fetched within the TTL serves its
+	// cached listing even when empty, so a genuinely empty folder no
+	// longer triggers a redundant DFS round-trip on every read. When
+	// ChildrenSyncedAt is zero (never descended into, e.g. a folder only
+	// seen via its parent, or a row migrated from an older schema) we
+	// refresh to fetch the real contents.
+	age := e.now().Sub(parent.ChildrenSyncedAt)
+	if parent.ChildrenSyncedAt.IsZero() || age > e.recentFolderTTL {
 		return false, nil, nil
 	}
 	entries, err := e.cache.Children(ctx, k)
 	if err != nil {
 		return false, nil, fmt.Errorf("sync.Enumerate: read cache: %w", err)
-	}
-	// A directory row is stamped with SyncedAt when its PARENT is
-	// enumerated (it is written as one of the parent's children), but
-	// that does not mean its OWN children were ever fetched. So a
-	// "fresh" directory with zero cached children is ambiguous: it may be
-	// genuinely empty, or simply never descended into. Force a refresh to
-	// disambiguate rather than report it empty — a truly empty folder
-	// costs one DFS round-trip, which is acceptable. Without this, opening
-	// a folder right after its parent was listed shows no contents until
-	// the TTL lapses.
-	if len(entries) == 0 {
-		return false, nil, nil
 	}
 	return true, entries, nil
 }
@@ -197,7 +196,12 @@ func (e *Engine) RefreshFolder(ctx context.Context, k cache.Key) (Diff, error) {
 			Etag:          entry.ETag,
 			LastModified:  entry.LastModified,
 			SyncedAt:      now,
-			LastAccessed:  cur.LastAccessed, // preserve LRU history
+			// Preserve the child's own children-fetched marker: writing it
+			// as a child of this listing must NOT look like its contents
+			// were just fetched. Zero for a brand-new child (never
+			// descended into), unchanged for one we have descended into.
+			ChildrenSyncedAt: cur.ChildrenSyncedAt,
+			LastAccessed:     cur.LastAccessed, // preserve LRU history
 		}
 		// Carry over blob linkage when the etag still matches; otherwise
 		// drop it so the next Open re-downloads.
@@ -260,12 +264,16 @@ func (e *Engine) RefreshFolder(ctx context.Context, k cache.Key) (Diff, error) {
 		parentLastAccessed = now
 	}
 	parent := cache.Entry{
-		Key:          k,
-		ParentPath:   parentPath(k.Path),
-		Name:         baseName(k.Path),
-		IsDir:        true,
-		SyncedAt:     now,
-		LastAccessed: parentLastAccessed,
+		Key:        k,
+		ParentPath: parentPath(k.Path),
+		Name:       baseName(k.Path),
+		IsDir:      true,
+		SyncedAt:   now,
+		// This is the one place ChildrenSyncedAt is advanced: we have just
+		// listed k's own children, so future enumerations can trust the
+		// cached listing (even an empty one) until the TTL lapses.
+		ChildrenSyncedAt: now,
+		LastAccessed:     parentLastAccessed,
 	}
 	if err := e.cache.Put(ctx, parent); err != nil {
 		return Diff{}, fmt.Errorf("sync.RefreshFolder: stamp parent: %w", err)

@@ -68,9 +68,22 @@ type Entry struct {
 	// against this entry. Used for LRU eviction of blob-bearing rows.
 	LastAccessed time.Time
 
-	// SyncedAt is the wall-clock timestamp at which the metadata was last
-	// reconciled with the remote.
+	// SyncedAt is the wall-clock timestamp at which this row's metadata
+	// was last reconciled with the remote. It is stamped both when the
+	// row is written as a child of its parent's listing AND when the row
+	// is the directory whose own contents were just listed, so on its own
+	// it cannot tell those two cases apart.
 	SyncedAt time.Time
+
+	// ChildrenSyncedAt is the wall-clock timestamp at which this
+	// directory's OWN children were last listed from the remote. Unlike
+	// SyncedAt it is set ONLY when the directory itself is refreshed, never
+	// when it is written as a child of its parent. Zero means "this
+	// directory's contents have never been fetched" — which lets the
+	// enumerator tell a genuinely empty folder (children fetched, none
+	// found) apart from one that was merely seen in its parent's listing
+	// but never descended into. Always zero for non-directory rows.
+	ChildrenSyncedAt time.Time
 }
 
 // Options configures a [Cache] at construction time.

@@ -38,13 +38,13 @@ INSERT INTO path_metadata (
     parent_path, name, is_dir,
     content_length, etag, last_modified_ns, content_type,
     blob_sha256, blob_size,
-    last_accessed_ns, synced_at_ns
+    last_accessed_ns, synced_at_ns, children_synced_at_ns
 ) VALUES (
     ?, ?, ?, ?,
     ?, ?, ?,
     ?, ?, ?, ?,
     ?, ?,
-    ?, ?
+    ?, ?, ?
 )
 ON CONFLICT (account_alias, workspace_id, item_id, path) DO UPDATE SET
     parent_path     = excluded.parent_path,
@@ -57,14 +57,15 @@ ON CONFLICT (account_alias, workspace_id, item_id, path) DO UPDATE SET
     blob_sha256     = excluded.blob_sha256,
     blob_size       = excluded.blob_size,
     last_accessed_ns = excluded.last_accessed_ns,
-    synced_at_ns    = excluded.synced_at_ns
+    synced_at_ns    = excluded.synced_at_ns,
+    children_synced_at_ns = excluded.children_synced_at_ns
 `
 	if _, err := tx.ExecContext(ctx, stmt,
 		e.AccountAlias, e.WorkspaceID, e.ItemID, e.Path,
 		e.ParentPath, e.Name, boolToInt(e.IsDir),
 		e.ContentLength, e.Etag, timeToNs(e.LastModified), e.ContentType,
 		e.BlobSHA256, e.BlobSize,
-		timeToNs(e.LastAccessed), timeToNs(e.SyncedAt),
+		timeToNs(e.LastAccessed), timeToNs(e.SyncedAt), timeToNs(e.ChildrenSyncedAt),
 	); err != nil {
 		return fmt.Errorf("cache.Put: exec: %w", err)
 	}
@@ -313,7 +314,7 @@ const selectColumns = `account_alias, workspace_id, item_id, path,
     parent_path, name, is_dir,
     content_length, etag, last_modified_ns, content_type,
     blob_sha256, blob_size,
-    last_accessed_ns, synced_at_ns`
+    last_accessed_ns, synced_at_ns, children_synced_at_ns`
 
 // selectByKeySQL fetches a single row by primary key.
 const selectByKeySQL = `SELECT ` + selectColumns + `
@@ -345,18 +346,19 @@ type scannable interface {
 // nanosecond Unix timestamps and converted to UTC.
 func scanEntry(s scannable) (Entry, error) {
 	var (
-		e              Entry
-		isDir          int64
-		lastModifiedNs int64
-		lastAccessedNs int64
-		syncedAtNs     int64
+		e                Entry
+		isDir            int64
+		lastModifiedNs   int64
+		lastAccessedNs   int64
+		syncedAtNs       int64
+		childrenSyncedNs int64
 	)
 	err := s.Scan(
 		&e.AccountAlias, &e.WorkspaceID, &e.ItemID, &e.Path,
 		&e.ParentPath, &e.Name, &isDir,
 		&e.ContentLength, &e.Etag, &lastModifiedNs, &e.ContentType,
 		&e.BlobSHA256, &e.BlobSize,
-		&lastAccessedNs, &syncedAtNs,
+		&lastAccessedNs, &syncedAtNs, &childrenSyncedNs,
 	)
 	if err != nil {
 		return Entry{}, err
@@ -365,5 +367,6 @@ func scanEntry(s scannable) (Entry, error) {
 	e.LastModified = nsToTime(lastModifiedNs)
 	e.LastAccessed = nsToTime(lastAccessedNs)
 	e.SyncedAt = nsToTime(syncedAtNs)
+	e.ChildrenSyncedAt = nsToTime(childrenSyncedNs)
 	return e, nil
 }
