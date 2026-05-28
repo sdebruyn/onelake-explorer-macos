@@ -29,11 +29,12 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "cloud.fill")
+            // Use the app's own icon (the OneLake droplets) rather than a
+            // generic SF Symbol so the landing screen carries our brand.
+            Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .scaledToFit()
-                .frame(width: 64, height: 64)
-                .foregroundStyle(.tint)
+                .frame(width: 96, height: 96)
                 .accessibilityHidden(true)
 
             Text("OneLake Explorer for macOS")
