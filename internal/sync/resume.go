@@ -37,10 +37,22 @@ const partialsDirName = "ofem-download-partials"
 
 // partialFor returns the canonical on-disk path for the partial-spill
 // of one cache key under the engine's scratch directory. Same key ->
-// same path so two Open calls on the same file from different processes
-// (which share a ScratchDir) rendezvous on the same partial (the
-// operations are still serialised through the per-account download
-// semaphore, but cross-process callers also benefit).
+// same path.
+//
+// Concurrency caveat: within a single process, two Open calls on the
+// same key are serialised by the per-account download semaphore
+// ([Engine.downloadSem]), so they cannot interleave writes into the
+// spill file. Across processes there is NO such lock. The scratch dir
+// is shared cross-process (daemon, CLI, and the sandboxed extension all
+// use <cacheDir>/partials), so two same-key downloads from different
+// processes could interleave their writes into the same spill file.
+//
+// In Phase 1 this window is narrow: the daemon only refreshes folder
+// metadata (it never calls Open / fetches file contents), so the File
+// Provider extension is the only routine fetcher. The realistic
+// collision is therefore a manual `ofem debug cat` racing a Finder open
+// of the same uncached file. Closing the window (per-process spill
+// filenames or an flock) is a deliberate fast-follow, not done here.
 func (e *Engine) partialFor(k cache.Key) string {
 	h := sha256.Sum256([]byte(k.AccountAlias + "\x00" + k.WorkspaceID + "\x00" + k.ItemID + "\x00" + k.Path))
 	name := hex.EncodeToString(h[:]) + ".partial"
