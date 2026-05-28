@@ -849,6 +849,14 @@ func enumerateScope(ctx context.Context, eng bridgeEngine, alias string, sc scop
 		}
 		out := make([]bridgeItem, 0, len(items))
 		for _, it := range items {
+			// Skip the SQL analytics endpoint Fabric auto-creates next
+			// to every Lakehouse: it carries the Lakehouse's display
+			// name (so it collides in Finder) but exposes no OneLake
+			// file tree, so enumerating it 404s. It is a query endpoint,
+			// not a file store, and has no place in a file browser.
+			if it.Type == "SQLEndpoint" {
+				continue
+			}
 			out = append(out, itemToBridgeItem(it))
 		}
 		return out, nil
