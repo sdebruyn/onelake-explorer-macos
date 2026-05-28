@@ -118,7 +118,15 @@ XCODE_PROJECT      := apple/OneLake.xcodeproj
 XCODE_PROJECT_HOST := apple/OneLakeHost.xcodeproj
 APPLE_CONFIG       := apple/Local.xcconfig
 
-.PHONY: apple-bootstrap apple-gen apple-gen-host apple-build apple-build-host apple-clean
+.PHONY: apple-bootstrap apple-gen apple-gen-host apple-build apple-build-host apple-build-ci apple-test apple-clean
+
+# Signing knobs that turn a normal build into an unsigned compile-only
+# build. CI has no Developer ID identity, so it must NOT pass
+# -allowProvisioningUpdates (that reaches Apple for a profile and fails);
+# instead it disables code signing entirely. The output is not runnable,
+# but it proves the Swift app + .appex still compile — see CODE_REVIEW.md
+# M-8.
+APPLE_UNSIGNED := CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
 
 # First-time setup: copy the xcconfig sample if it's missing and tell the
 # user to fill in their team ID.
@@ -148,6 +156,30 @@ apple-build: apple-gen
 		-derivedDataPath apple/DerivedData \
 		-allowProvisioningUpdates \
 		build
+
+# Compile the app + .appex unsigned (no signing identity, no provisioning
+# round-trip). This is the CI build gate: it catches Swift compile
+# regressions on every PR without needing a Developer ID. The product is
+# not runnable. See CODE_REVIEW.md M-8.
+apple-build-ci: apple-gen
+	xcodebuild -project $(XCODE_PROJECT) \
+		-scheme OneLake \
+		-configuration Debug \
+		-destination 'platform=macOS,arch=arm64' \
+		-derivedDataPath apple/DerivedData \
+		$(APPLE_UNSIGNED) \
+		build
+
+# Run the host-less smoke XCTest bundle unsigned. Pure logic tests
+# (identifier grammar) — no daemon, no signing, no host app launch.
+apple-test: apple-gen
+	xcodebuild -project $(XCODE_PROJECT) \
+		-scheme OneLakeTests \
+		-configuration Debug \
+		-destination 'platform=macOS,arch=arm64' \
+		-derivedDataPath apple/DerivedData \
+		$(APPLE_UNSIGNED) \
+		test
 
 # Regenerate the host-app-only Xcode project from project-host.yml. The
 # host-only spec omits the OneLakeFileProvider target so contributors on a
