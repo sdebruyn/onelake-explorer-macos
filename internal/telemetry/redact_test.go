@@ -64,18 +64,18 @@ func TestScrubProperty(t *testing.T) {
 		in   string
 		want string
 	}{
-		"empty":            {"", ""},
-		"tenant-guid":      {"9064c167-4885-40ef-9f34-1853218aea86", "9064c167-4885-40ef-9f34-1853218aea86"},
-		"alias-hash":       {"a1b2c3d4", "a1b2c3d4"},
-		"event-name":       {"folder_list", "folder_list"},
-		"bool":             {"true", "true"},
-		"dotted":           {"2026.05.1", "2026.05.1"},
-		"file-path":        {"Files/raw/sales-2026.csv", "redacted"},
-		"windows-path":     {"C:\\Users\\sam", "redacted"},
-		"upn":              {"sam@debruyn.dev", "redacted"},
-		"workspace-name":   {"My Workspace", "redacted"},
-		"non-ascii":        {"wörkspace", "redacted"},
-		"over-max":         {"012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678", "redacted"},
+		"empty":          {"", ""},
+		"tenant-guid":    {"9064c167-4885-40ef-9f34-1853218aea86", "9064c167-4885-40ef-9f34-1853218aea86"},
+		"alias-hash":     {"a1b2c3d4", "a1b2c3d4"},
+		"event-name":     {"folder_list", "folder_list"},
+		"bool":           {"true", "true"},
+		"dotted":         {"2026.05.1", "2026.05.1"},
+		"file-path":      {"Files/raw/sales-2026.csv", "redacted"},
+		"windows-path":   {"C:\\Users\\sam", "redacted"},
+		"upn":            {"sam@debruyn.dev", "redacted"},
+		"workspace-name": {"My Workspace", "redacted"},
+		"non-ascii":      {"wörkspace", "redacted"},
+		"over-max":       {"012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678", "redacted"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

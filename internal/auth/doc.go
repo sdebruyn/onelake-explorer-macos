@@ -5,8 +5,9 @@
 //     codebase uses to obtain OneLake-audience access tokens.
 //   - The [Account] value type plus [ValidateAlias], the canonical
 //     representation of a signed-in OneLake account.
-//   - A [Keychain] abstraction backed by github.com/zalando/go-keyring on
-//     macOS, with [MemoryKeychain] for tests.
+//   - A [Keychain] abstraction backed by a file-backed secret store under
+//     the OFEM config directory (`<configDir>/tokens`), with
+//     [MemoryKeychain] for tests.
 //   - A Keychain-backed MSAL token cache via [KeychainCache], which
 //     adapts our [Keychain] to MSAL Go's cache.ExportReplace.
 //   - The [Registry], which persists accounts to the OFEM TOML config and

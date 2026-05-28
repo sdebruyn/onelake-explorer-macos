@@ -63,6 +63,32 @@ func TestRenderLaunchAgentPlistContainsExpectedFields(t *testing.T) {
 	}
 }
 
+// TestRenderLaunchAgentPlistEscapesXML guards against a path containing XML
+// metacharacters (legal in a macOS file path) producing malformed XML that
+// launchd silently rejects. The '&' must be entity-escaped and the raw form
+// must NOT appear.
+func TestRenderLaunchAgentPlistEscapesXML(t *testing.T) {
+	t.Parallel()
+
+	params := LaunchAgentParams{
+		Label:          "dev.debruyn.ofem.daemon",
+		ExecutablePath: "/Users/a&b/<weird>/ofem",
+		StdoutPath:     "/tmp/out.log",
+		StderrPath:     "/tmp/err.log",
+	}
+	got, err := RenderLaunchAgentPlist(params)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "/Users/a&amp;b/&lt;weird&gt;/ofem") {
+		t.Errorf("path not XML-escaped\n--- plist ---\n%s", s)
+	}
+	if strings.Contains(s, "a&b") || strings.Contains(s, "<weird>") {
+		t.Errorf("raw XML metacharacters leaked into plist\n--- plist ---\n%s", s)
+	}
+}
+
 func TestInstallLaunchAgentWritesPlistAndBootstraps(t *testing.T) {
 	// No t.Parallel(): launchctlRunner is a process-wide global that
 	// these tests swap. Running them in parallel races on that global.
