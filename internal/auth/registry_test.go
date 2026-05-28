@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -423,5 +425,38 @@ func TestFindMSALAccount_RejectsEmptyHomeAccountID(t *testing.T) {
 	}
 	if _, err := reg.findMSALAccount(context.Background(), stub, "work", "real-id"); !errors.Is(err, ErrInteractionRequired) {
 		t.Errorf("real id vs empty-ID cache entry: err = %v, want ErrInteractionRequired", err)
+	}
+}
+
+// TestRegistryAdd_ConcurrentSameAliasOneWinner covers M-2: writeMu must
+// serialise Add so that N concurrent Add("work") calls produce exactly one
+// winner (no clobbered keychain secret, no diverged config). Run under
+// -race, it also asserts the shared store/keychain access is race-free.
+func TestRegistryAdd_ConcurrentSameAliasOneWinner(t *testing.T) {
+	store := newTestStore(t)
+	reg := NewRegistry(store, NewMemoryKeychain(), EntraClientID,
+		func(string, string, Keychain, string) (MSALClient, error) {
+			return &stubMSALClient{}, nil
+		})
+
+	const n = 8
+	var wg sync.WaitGroup
+	var successes atomic.Int32
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := reg.Add(sampleAccount("work"), []byte("secret")); err == nil {
+				successes.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := successes.Load(); got != 1 {
+		t.Errorf("concurrent Add of same alias: %d succeeded, want exactly 1", got)
+	}
+	if _, _, err := reg.Get("work"); err != nil {
+		t.Errorf("account missing after concurrent Add: %v", err)
 	}
 }

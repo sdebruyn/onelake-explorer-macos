@@ -357,11 +357,29 @@ func (e *Engine) recoverOfflineQueue() error {
 // startup before opening the IPC socket. See [Engine.recoverOfflineQueue].
 func (e *Engine) RecoverOfflineQueue() error { return e.recoverOfflineQueue() }
 
+// drainingCtxKey marks a context as belonging to an offline-queue drain.
+// [Engine.Put] consults it via [isDraining] so a replay that hits offline
+// again surfaces the error instead of re-spooling the bytes. Without this,
+// the replay would rewrite the very spool file the drain is about to
+// unlink (the spool path is deterministic per key) and coalesce the queue
+// head away — losing the upload under flapping connectivity.
+type drainingCtxKey struct{}
+
+func withDraining(ctx context.Context) context.Context {
+	return context.WithValue(ctx, drainingCtxKey{}, true)
+}
+
+func isDraining(ctx context.Context) bool {
+	v, _ := ctx.Value(drainingCtxKey{}).(bool)
+	return v
+}
+
 // drainOfflineQueue replays every queued upload in FIFO order using
-// the standard Put path. Stops on the first failure so the queue
-// stays ordered and the engine backs off naturally if the network is
-// still flaky. Successful items are removed from the queue and their
-// spool file is unlinked.
+// the standard Put path (in draining mode, so a replay that hits offline
+// surfaces the error rather than re-queueing). Stops on the first failure
+// so the queue stays ordered and the engine backs off naturally if the
+// network is still flaky. Successful items are removed from the queue and
+// their spool file is unlinked.
 //
 // Drains are serialised: a second caller that arrives while a drain
 // is in progress returns immediately. The in-progress drain already
@@ -389,7 +407,7 @@ func (e *Engine) drainOfflineQueue(ctx context.Context) {
 			e.dropQueueHead(q.body)
 			continue
 		}
-		if err := e.Put(ctx, q.key, f, q.size); err != nil {
+		if err := e.Put(withDraining(ctx), q.key, f, q.size); err != nil {
 			_ = f.Close()
 			e.logger.Warn("drain queue: replay failed; keeping rest in queue",
 				slog.String("path", q.key.Path), slog.Any("err", err))

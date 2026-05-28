@@ -124,6 +124,59 @@ func TestPut_OfflineEnqueuesAndDrains(t *testing.T) {
 	}
 }
 
+// TestDrainOfflineQueue_StillOfflineKeepsEntry is the C-5 regression: a
+// drain that runs while the host is STILL offline must not lose the queued
+// upload. Before the fix, the replay re-spooled to the same deterministic
+// path and coalesced the head away, then the drain unlinked that very
+// spool — losing the bytes. Now the replay surfaces the offline error, the
+// drain stops, and the entry + spool survive for the next online window.
+func TestDrainOfflineQueue_StillOfflineKeepsEntry(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+
+	var shouldFail atomic.Bool
+	shouldFail.Store(true)
+	httpmock.RegisterResponder("PUT", "=~^"+testOneLakeBase+`.*`,
+		func(_ *http.Request) (*http.Response, error) {
+			if shouldFail.Load() {
+				return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+			}
+			return httpmock.NewStringResponse(201, ""), nil
+		})
+	httpmock.RegisterResponder("PATCH", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(202, ""))
+	httpmock.RegisterResponder("HEAD", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(200, ""))
+
+	k := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/flap.txt"}
+	if err := f.engine.Put(ctx, k, strings.NewReader("flap"), 4); err != nil {
+		t.Fatalf("Put under offline: want nil (queued), got %v", err)
+	}
+	if got := f.engine.queueDepth(); got != 1 {
+		t.Fatalf("queue depth = %d, want 1", got)
+	}
+	spool := filepath.Join(f.engine.cache.Root(), offlineQueueDirName, spoolNameForKey(k))
+
+	// Drain while STILL offline: the entry and its spool must survive.
+	f.engine.drainOfflineQueue(ctx)
+	if got := f.engine.queueDepth(); got != 1 {
+		t.Fatalf("queue depth after offline drain = %d, want 1 (entry must survive)", got)
+	}
+	if _, err := os.Stat(spool); err != nil {
+		t.Fatalf("spool removed during an offline drain (data loss): %v", err)
+	}
+
+	// Network recovers: the drain now completes and empties the queue.
+	shouldFail.Store(false)
+	f.engine.drainOfflineQueue(ctx)
+	if got := f.engine.queueDepth(); got != 0 {
+		t.Errorf("queue depth after online drain = %d, want 0", got)
+	}
+	if _, err := os.Stat(spool); !os.IsNotExist(err) {
+		t.Errorf("spool not cleaned after successful drain: %v", err)
+	}
+}
+
 // TestSpoolNameForKey_RoundTrip verifies that the filename-encoded
 // cache.Key survives a base32 round-trip without losing any of the
 // four fields (including a Path with special characters).

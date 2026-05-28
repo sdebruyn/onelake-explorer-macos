@@ -41,9 +41,12 @@ func IsMacOSMetadata(p string) bool {
 // we just sent are also stored in the local blob store so the next Open
 // is a cache hit without round-tripping the lake again.
 //
-// Last-write-wins: even if the cache's etag is older than the remote's
-// we still issue the PUT/PATCH chain. This matches docs/auth.md and
-// docs/file-provider.md — no conflict copies, no client-side merge.
+// Last-write-wins (blind): we issue the PUT/PATCH chain unconditionally,
+// with no If-Match precondition, so the local bytes overwrite whatever is
+// on the lake. This matches docs/auth.md and docs/file-provider.md — no
+// conflict detection, no conflict copies, no client-side merge. The
+// product decision is deliberate: the server is the source of truth and
+// the user's most recent save wins.
 //
 // macOS metadata filter: when k.Path matches the macOS-metadata pattern
 // (e.g. ".DS_Store", "._foo", "Spotlight-V100"), Put returns nil
@@ -76,9 +79,10 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 
 	start := e.now()
 
-	// Buffer the upload bytes into a spill file so the last-write-wins
-	// retry loop can replay them on a 412 without re-reading the
-	// (often one-shot) caller-provided reader. The spill lives in the
+	// Buffer the upload bytes into a spill file so they can be replayed
+	// after the network write: once to queue offline if the host is
+	// unreachable, and once to seed the local blob store on success
+	// (the caller's reader is often one-shot). The spill lives in the
 	// engine's scratch dir (the App Group container in production) — NOT
 	// the global OS tempdir, which the sandboxed File Provider extension
 	// cannot write to. On success it is consumed by StoreBlob, on failure
@@ -96,7 +100,10 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 		return fmt.Errorf("sync.Put: spill rewind: %w", err)
 	}
 
-	writeErr := e.uploadWithLastWriteWins(ctx, k, tmp.file, size, tmp.rewind)
+	// Blind last-write-wins: a single unconditional PUT/PATCH chain, no
+	// If-Match. A precondition 412 is therefore not expected; if the
+	// server returns one anyway it is surfaced as a plain write error.
+	writeErr := e.onelake.Write(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, tmp.file, size)
 	e.observeNetworkResult(writeErr)
 	if writeErr != nil {
 		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, writeErr) {
@@ -110,8 +117,13 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 			return fmt.Errorf("sync.Put: %w", ErrWorkspacePaused)
 		}
 		// Network unreachable: rewind the spill and queue the bytes so
-		// the daemon can drain them on the next online window.
-		if IsOfflineError(writeErr) {
+		// the daemon can drain them on the next online window. Skip this
+		// when we are ALREADY draining the queue — re-queueing would
+		// rewrite the spool the drain is replaying (the spool path is
+		// deterministic per key) and coalesce the queue head away, losing
+		// the upload. In draining mode we surface the offline error so the
+		// drain stops and keeps the entry for the next online window.
+		if IsOfflineError(writeErr) && !isDraining(ctx) {
 			if rerr := tmp.rewind(); rerr != nil {
 				// Cheap diagnostic: without this an operator has no way
 				// to tell that queuing was even attempted, only that
@@ -138,16 +150,12 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 					slog.String("path", k.Path), slog.Any("err", qerr))
 			}
 		}
-		errCode := "write_failed"
-		if errors.Is(writeErr, ErrLastWriteWinsExhausted) {
-			errCode = "lww_exhausted"
-		}
 		e.track(telemetry.Event{
 			Name:             "file_upload",
 			AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
 			DurationMs:       elapsedMs(start, e.now),
 			Success:          boolPtr(false),
-			ErrorCode:        telemetry.SafeErrorCode(errCode),
+			ErrorCode:        telemetry.SafeErrorCode("write_failed"),
 		})
 		return fmt.Errorf("sync.Put: write: %w", writeErr)
 	}

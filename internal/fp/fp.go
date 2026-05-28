@@ -595,8 +595,6 @@ func Classify(err error) ErrorCode {
 		errors.Is(err, httpretry.ErrNotFound),
 		errors.Is(err, httpretry.ErrGone):
 		return CodeNoSuchItem
-	case errors.Is(err, syncpkg.ErrLastWriteWinsExhausted):
-		return CodeCannotSynchronize
 	case errors.Is(err, httpretry.ErrUnauthorized),
 		errors.Is(err, httpretry.ErrForbidden):
 		return CodeNotAuthenticated
