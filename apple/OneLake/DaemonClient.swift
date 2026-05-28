@@ -84,6 +84,13 @@ final class DaemonClient {
 
     private static let maxFrameSize = 1 << 20  // 1 MiB, matching ipc.MaxFrameSize
 
+    /// Upper bound on a single sync.pollChanges round-trip. The daemon
+    /// answers from its in-memory changefeed, so the real latency is
+    /// sub-millisecond; this is purely a liveness guard so a daemon that
+    /// dies mid-frame cannot suspend the poll loop forever. Generous
+    /// enough never to fire under normal scheduling load.
+    private static let pollTimeout: TimeInterval = 10
+
     private let socketPath: String
     private var connection: NWConnection?
     private var connectionState: ConnectionState = .disconnected
@@ -189,9 +196,15 @@ final class DaemonClient {
             "id": requestID,
         ]
         let requestData = try JSONSerialization.data(withJSONObject: requestDict)
-        try await writeFrame(requestData)
 
-        let responseData = try await readFrame()
+        // The daemon answers sync.pollChanges immediately (it just reads its
+        // in-memory changefeed). Bound the write+read so a daemon that sends
+        // a header then stalls cannot suspend this continuation forever and
+        // silently freeze ChangeWatcher's poll loop.
+        let responseData = try await Self.withTimeout(seconds: Self.pollTimeout) {
+            try await self.writeFrame(requestData)
+            return try await self.readFrame()
+        }
         let response = try decoder.decode(RPCResponse.self, from: responseData)
 
         if let err = response.error {
@@ -265,5 +278,32 @@ final class DaemonClient {
             throw DaemonClientError.protocolError("short frame body: got \(payload.count), want \(length)")
         }
         return payload
+    }
+
+    // MARK: - Timeout
+
+    /// Run `op` with a wall-clock ceiling. Whichever finishes first wins;
+    /// the loser is cancelled. The NWConnection receive/send callbacks are
+    /// not cancellation-aware, so on timeout the in-flight continuation is
+    /// abandoned — the caller is expected to `disconnect()` (which cancels
+    /// the connection and lets the stalled callback resume with an error)
+    /// and discard this client, which ChangeWatcher already does on any
+    /// poll failure.
+    private static func withTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        _ op: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw DaemonClientError.protocolError("IPC timed out after \(seconds)s")
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw DaemonClientError.protocolError("IPC task group produced no result")
+            }
+            return first
+        }
     }
 }

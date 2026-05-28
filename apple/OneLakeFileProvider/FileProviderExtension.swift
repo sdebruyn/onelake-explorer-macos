@@ -80,17 +80,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         request _: NSFileProviderRequest,
         completionHandler: @escaping (NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
-        let progress = Progress(totalUnitCount: 1)
+        // Indeterminate progress: the work runs on a background queue and
+        // NSProgress is not safe to mutate there while the framework reads
+        // it, so we never touch completedUnitCount. Completion is signalled
+        // by the completion handler, which is the framework's real done
+        // signal. (Same pattern in every method below.)
+        let progress = Progress(totalUnitCount: -1)
         let scope: EnumScope
         do {
             scope = try ItemIdentifierParser.parse(identifier)
         } catch let error as BridgeError {
             completionHandler(nil, error.nsFileProviderError)
-            progress.completedUnitCount = 1
             return progress
         } catch {
             completionHandler(nil, error)
-            progress.completedUnitCount = 1
             return progress
         }
 
@@ -101,7 +104,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         switch scope {
         case .workingSet, .trashContainer:
             completionHandler(nil, NSFileProviderError(.noSuchItem))
-            progress.completedUnitCount = 1
             return progress
         default:
             break
@@ -124,7 +126,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 )
                 completionHandler(nil, error)
             }
-            progress.completedUnitCount = 1
         }
         return progress
     }
@@ -137,17 +138,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         request _: NSFileProviderRequest,
         completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
-        let progress = Progress(totalUnitCount: 1)
+        let progress = Progress(totalUnitCount: -1)
         let scope: EnumScope
         do {
             scope = try ItemIdentifierParser.parse(itemIdentifier)
         } catch let error as BridgeError {
             completionHandler(nil, nil, error.nsFileProviderError)
-            progress.completedUnitCount = 1
             return progress
         } catch {
             completionHandler(nil, nil, error)
-            progress.completedUnitCount = 1
             return progress
         }
 
@@ -156,7 +155,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         switch scope {
         case .rootContainer, .workingSet, .trashContainer:
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
-            progress.completedUnitCount = 1
             return progress
         default:
             break
@@ -184,7 +182,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 "fetchContents: temp dir resolution failed: \(error.localizedDescription, privacy: .public)"
             )
             completionHandler(nil, nil, error)
-            progress.completedUnitCount = 1
             return progress
         }
 
@@ -207,7 +204,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 )
                 completionHandler(nil, nil, error)
             }
-            progress.completedUnitCount = 1
         }
         return progress
     }
@@ -224,7 +220,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?
         ) -> Void
     ) -> Progress {
-        let progress = Progress(totalUnitCount: 1)
+        let progress = Progress(totalUnitCount: -1)
         let aliasCopy = self.alias
 
         let parentScope: EnumScope
@@ -232,11 +228,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             parentScope = try ItemIdentifierParser.parse(template.parentItemIdentifier)
         } catch let error as BridgeError {
             completionHandler(nil, [], false, error.nsFileProviderError)
-            progress.completedUnitCount = 1
             return progress
         } catch {
             completionHandler(nil, [], false, error)
-            progress.completedUnitCount = 1
             return progress
         }
         let parentBridgeId = ItemIdentifierParser.bridgeIdentifier(for: parentScope)
@@ -268,7 +262,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 )
                 completionHandler(nil, [], false, error)
             }
-            progress.completedUnitCount = 1
         }
         return progress
     }
@@ -284,7 +277,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?
         ) -> Void
     ) -> Progress {
-        let progress = Progress(totalUnitCount: 1)
+        let progress = Progress(totalUnitCount: -1)
 
         // Phase 1 handles content-bearing modifications only. Metadata-only
         // changes (rename, reparent, xattr) come back as NSFeatureUnsupportedError
@@ -299,7 +292,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 nil, [], false,
                 NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)
             )
-            progress.completedUnitCount = 1
             return progress
         }
 
@@ -309,11 +301,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             scope = try ItemIdentifierParser.parse(item.itemIdentifier)
         } catch let error as BridgeError {
             completionHandler(nil, [], false, error.nsFileProviderError)
-            progress.completedUnitCount = 1
             return progress
         } catch {
             completionHandler(nil, [], false, error)
-            progress.completedUnitCount = 1
             return progress
         }
         let identifier = ItemIdentifierParser.bridgeIdentifier(for: scope)
@@ -339,7 +329,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 )
                 completionHandler(nil, [], false, error)
             }
-            progress.completedUnitCount = 1
         }
         return progress
     }
@@ -351,18 +340,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         request _: NSFileProviderRequest,
         completionHandler: @escaping (Error?) -> Void
     ) -> Progress {
-        let progress = Progress(totalUnitCount: 1)
+        let progress = Progress(totalUnitCount: -1)
         let aliasCopy = self.alias
         let scope: EnumScope
         do {
             scope = try ItemIdentifierParser.parse(identifier)
         } catch let error as BridgeError {
             completionHandler(error.nsFileProviderError)
-            progress.completedUnitCount = 1
             return progress
         } catch {
             completionHandler(error)
-            progress.completedUnitCount = 1
             return progress
         }
         let rawId = ItemIdentifierParser.bridgeIdentifier(for: scope)
@@ -384,7 +371,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 )
                 completionHandler(error)
             }
-            progress.completedUnitCount = 1
         }
         return progress
     }
