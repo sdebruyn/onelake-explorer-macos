@@ -37,11 +37,10 @@
 //  1. Per-account caps (this package, see concurrency.go). A
 //     perAccountSemaphore caps in-flight Put / Open calls per account
 //     alias. The slot is held for the entire logical operation —
-//     including the chunked PUT/PATCH chain, the LWW retry loop, and
-//     the partial-download resume retries — and released via deferred
-//     `release` exactly once at function exit, even on error paths
-//     (412 storm, ErrLastWriteWinsExhausted, …). This is fairness
-//     between accounts: a misbehaving account cannot starve others.
+//     including the chunked PUT/PATCH chain and the partial-download
+//     resume retries — and released via deferred `release` exactly once
+//     at function exit, even on error paths. This is fairness between
+//     accounts: a misbehaving account cannot starve others.
 //
 //  2. Per-host caps (internal/httpgate, see PR #39). A per-host token
 //     bucket caps the raw HTTP requests OFEM emits against a single

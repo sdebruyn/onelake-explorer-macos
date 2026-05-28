@@ -164,27 +164,23 @@ func TestOpen_DownloadConcurrencyCap(t *testing.T) {
 	}
 }
 
-// TestPut_412StormReleasesAccountSlot covers the per-account / per-
-// host composition concern from MEDIUM-6: a 412 LWW storm on a Put
-// must not lock the per-account upload slot indefinitely. After the
-// LWW cycles exhaust (ErrLastWriteWinsExhausted), the deferred slot
-// release must fire so a subsequent Put on the same account can run.
+// TestPut_WriteErrorReleasesAccountSlot covers the per-account / per-host
+// composition concern: a failed upload must not lock the per-account
+// upload slot indefinitely. The deferred release must fire on the error
+// path so a subsequent Put on the same account can run.
 //
-// Without this, a long 412 retry loop on one item starves every
-// other write to that account. We assert this by running two Puts
-// in series against cap=1: the first must exhaust LWW and return an
-// error, the second must complete promptly (the slot was released).
-func TestPut_412StormReleasesAccountSlot(t *testing.T) {
+// We assert this by running two Puts in series against cap=1: the first
+// fails on a write error and the second must complete promptly (the slot
+// was released).
+func TestPut_WriteErrorReleasesAccountSlot(t *testing.T) {
 	f := newEngine(t, func(o *Options) { o.MaxConcurrentUploads = 1 })
 	ctx := context.Background()
 
 	var puts atomic.Int32
 	httpmock.RegisterResponder("PUT", "=~^"+testOneLakeBase+`.*`,
 		func(_ *http.Request) (*http.Response, error) {
-			n := puts.Add(1)
-			// First N requests are part of the 412 storm; once exhausted
-			// the second Put's request follows and must succeed.
-			if n <= int32(maxLastWriteWinsCycles+1) {
+			// The first Put's PUT fails; the second Put's PUT succeeds.
+			if puts.Add(1) == 1 {
 				return httpmock.NewStringResponse(412, "etag conflict"), nil
 			}
 			return httpmock.NewStringResponse(201, ""), nil
