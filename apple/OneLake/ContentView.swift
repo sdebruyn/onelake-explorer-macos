@@ -20,12 +20,13 @@ struct ContentView: View {
         Bundle.main.bundleIdentifier ?? "<unknown>"
     }
 
-    /// The Go core build version, fetched on view construction by
-    /// calling `ofem_core_version()` through the cgo bridge. We copy
-    /// the returned C string into a Swift `String` and immediately
-    /// hand the buffer back to Go via `ofem_core_string_free` so
-    /// nothing leaks across the FFI boundary.
-    private let coreVersion: String = Self.loadCoreVersion()
+    /// The app's marketing version from the bundle. The Go engine now
+    /// lives in the daemon (reached over IPC), so there is no in-process
+    /// core version to read; the bundle version is the meaningful thing
+    /// to surface on the landing screen.
+    private let appVersion: String = {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }()
 
     var body: some View {
         VStack(spacing: 16) {
@@ -49,10 +50,10 @@ struct ContentView: View {
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.tertiary)
 
-            Text("core \(coreVersion)")
+            Text("v\(appVersion)")
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.tertiary)
-                .accessibilityLabel("OneLake core version \(coreVersion)")
+                .accessibilityLabel("OneLake version \(appVersion)")
 
             Button {
                 openFinderMount()
@@ -90,18 +91,6 @@ struct ContentView: View {
         if !opened {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
-    }
-
-    /// Calls into the Go core via the cgo bridge to read the linked
-    /// `libofemcore.a` build version. Returns `"<unknown>"` if the
-    /// bridge somehow hands back a NULL pointer (it shouldn't).
-    private static func loadCoreVersion() -> String {
-        guard let cString = ofem_core_version() else {
-            log.error("ofem_core_version returned NULL")
-            return "<unknown>"
-        }
-        defer { ofem_core_string_free(cString) }
-        return String(cString: cString)
     }
 }
 

@@ -147,40 +147,6 @@ jobs:
       - name: Verify project.pbxproj exists
         run: test -f apple/OneLake.xcodeproj/project.pbxproj
 
-  cgo-build:
-    name: cgo bridge archive
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Build libofemcore.a + libofemcore.h
-        run: make cgo-build
-
-      - name: Verify archive and header exist
-        run: |
-          test -f apple/build/cgo/libofemcore.a
-          test -f apple/build/cgo/libofemcore.h
-          file apple/build/cgo/libofemcore.a | grep -qi 'ar archive'
-
-      - name: Verify exported symbols
-        # The cgo //export directives must end up as global text
-        # symbols in the archive — otherwise Swift won't be able to
-        # link them. Fail loudly if any of the three smoke-API
-        # symbols are missing.
-        run: |
-          symbols=$(nm apple/build/cgo/libofemcore.a 2>/dev/null | grep -E '^[0-9a-f]+ T _ofem_core_' | awk '{print $3}' | sort -u)
-          echo "Found exported symbols:"
-          echo "$symbols"
-          for sym in _ofem_core_version _ofem_core_string_free _ofem_core_log_message; do
-            echo "$symbols" | grep -qx "$sym" || { echo "missing symbol: $sym"; exit 1; }
-          done
-
   vulncheck:
     name: govulncheck
     runs-on: ubuntu-latest
