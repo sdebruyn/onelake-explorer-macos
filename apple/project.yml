@@ -22,6 +22,13 @@ settings:
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
     GENERATE_INFOPLIST_FILE: NO
+    # Xcode 16+ splits Debug builds into a separate `.debug.dylib` for
+    # SwiftUI previews. A sandboxed File Provider Extension runs with
+    # hardened runtime + library validation, which refuses to load that
+    # externally-signed dylib — the extension then never launches and
+    # macOS reports the domain as "Sync is not enabled" (FP -2011). We
+    # don't use previews, so disable the split for every configuration.
+    ENABLE_DEBUG_DYLIB: NO
 # Settings shared by both the host app and the File Provider Extension
 # so they pick up libofemcore.a and the matching bridging header from
 # apple/build/cgo/ (produced by `make cgo-build`).

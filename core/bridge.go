@@ -140,7 +140,7 @@ func ofem_core_init(groupContainerPath *C.char) C.int { //nolint:revive // C-ABI
 		return 1
 	}
 
-	store, err := config.Load()
+	store, err := config.LoadFrom(paths)
 	if err != nil {
 		logger.Error("bridge init: load config failed", slog.Any("err", err))
 		return 2
@@ -161,7 +161,7 @@ func ofem_core_init(groupContainerPath *C.char) C.int { //nolint:revive // C-ABI
 		return 4
 	}
 
-	kc, err := auth.NewKeychain()
+	kc, err := auth.NewKeychainAt(path.Join(paths.ConfigDir, "tokens"))
 	if err != nil {
 		_ = c.Close()
 		logger.Error("bridge init: open keychain failed", slog.Any("err", err))
@@ -983,11 +983,16 @@ type envelope struct {
 // bridgeAccount is what list_accounts returns per row. Username is
 // display-only; we deliberately do not include the home_account_id
 // because the Swift side never needs it.
+//
+// No omitempty: the Swift Account struct decodes these as non-optional
+// strings, so an account with (say) an empty tenantName must still emit
+// the key as "". Dropping the field would fail Swift's JSONDecoder with
+// "data missing".
 type bridgeAccount struct {
 	Alias      string `json:"alias"`
-	Username   string `json:"username,omitempty"`
-	TenantID   string `json:"tenantId,omitempty"`
-	TenantName string `json:"tenantName,omitempty"`
+	Username   string `json:"username"`
+	TenantID   string `json:"tenantId"`
+	TenantName string `json:"tenantName"`
 }
 
 // bridgeItem is the JSON shape Swift turns into an NSFileProviderItem.
