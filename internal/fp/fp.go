@@ -567,6 +567,7 @@ func rfc3339OrEmpty(t time.Time) string {
 // NSFileProviderError without parsing the message.
 type ErrorCode string
 
+// The fixed set of error codes the extension maps onto NSFileProviderError.
 const (
 	CodeNoSuchItem        ErrorCode = "noSuchItem"
 	CodeNotAuthenticated  ErrorCode = "notAuthenticated"
