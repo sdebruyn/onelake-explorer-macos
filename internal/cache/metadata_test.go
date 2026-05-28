@@ -217,6 +217,39 @@ func TestChildren_DirectOnly(t *testing.T) {
 	}
 }
 
+// TestChildren_RootRowNotItsOwnChild guards against the item/workspace/
+// domain root listing itself as a phantom child. The root row has both
+// path == "" and parent_path == "", so a naive "WHERE parent_path = ''"
+// query matches the root itself — Finder then shows a nameless "/" entry.
+func TestChildren_RootRowNotItsOwnChild(t *testing.T) {
+	t.Parallel()
+	c := newCache(t)
+	ctx := context.Background()
+
+	base := Key{AccountAlias: "work", WorkspaceID: "ws", ItemID: "it"}
+	// The self-referencing root row (path == parent_path == "") plus two
+	// real children under it.
+	mustPut(t, c, ctx, Entry{Key: keyAt(base, ""), ParentPath: "", Name: "", IsDir: true})
+	mustPut(t, c, ctx, Entry{Key: keyAt(base, "Files"), ParentPath: "", Name: "Files", IsDir: true})
+	mustPut(t, c, ctx, Entry{Key: keyAt(base, "Tables"), ParentPath: "", Name: "Tables", IsDir: true})
+
+	got, err := c.Children(ctx, base) // base.Path == ""
+	if err != nil {
+		t.Fatalf("Children: %v", err)
+	}
+	names := make([]string, 0, len(got))
+	for _, e := range got {
+		names = append(names, e.Name)
+		if e.Path == "" {
+			t.Errorf("root row returned as its own child (path=%q name=%q)", e.Path, e.Name)
+		}
+	}
+	sort.Strings(names)
+	if len(names) != 2 || names[0] != "Files" || names[1] != "Tables" {
+		t.Fatalf("root children = %v, want [Files Tables]", names)
+	}
+}
+
 func TestTouch_BumpsLastAccessed(t *testing.T) {
 	t.Parallel()
 	c := newCache(t)
