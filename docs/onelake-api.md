@@ -5,7 +5,12 @@ Two API families together give us everything we need:
 1. **Fabric REST API** (`https://api.fabric.microsoft.com`) — for discovery: workspaces, items, metadata.
 2. **OneLake DFS API** (`https://onelake.dfs.fabric.microsoft.com`) — for file I/O, ADLS Gen2–compatible.
 
-Both accept the same token audience: `https://storage.azure.com/`. For the Fabric REST API the audience `https://api.fabric.microsoft.com/.default` also works, but `storage.azure.com` is sufficient for both listing and data I/O via DFS.
+The two APIs require **different** token audiences — a single audience does not cover both:
+
+- **OneLake DFS** uses `https://storage.azure.com/` (`OneLakeScopes`).
+- **Fabric REST** uses the Power BI Service audience `https://analysis.windows.net/powerbi/api` (`FabricScopes`); `api.fabric.microsoft.com` accepts it. A `storage.azure.com` token returns **401 InvalidToken** on Fabric REST.
+
+OFEM acquires the OneLake token interactively at sign-in and the Fabric token silently from the same refresh token. See `docs/auth.md` "Two-audience scope model" and `internal/auth/client.go`.
 
 ## URI shapes
 
