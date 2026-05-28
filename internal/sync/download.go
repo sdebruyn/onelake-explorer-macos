@@ -146,7 +146,7 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 			e.logger.Info("resume etag changed; discarding partial and restarting",
 				slog.String("path", k.Path),
 				slog.String("pinned_etag", pinnedEtag))
-			discardPartial(k)
+			e.discardPartial(k)
 			rangeStart = 0
 			partial = false
 			body, props, err = e.onelake.ReadWithIfMatch(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, 0, -1, "")
@@ -179,7 +179,7 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 	// write fails, partialRangeStart will refuse the next resume and we
 	// just re-download from offset 0 — safer than a silent stitch.
 	if !partial && props != nil && props.ETag != "" {
-		if serr := storePartialEtag(k, props.ETag); serr != nil {
+		if serr := e.storePartialEtag(k, props.ETag); serr != nil {
 			e.logger.Debug("could not write partial etag sidecar",
 				slog.String("path", k.Path), slog.Any("err", serr))
 		}

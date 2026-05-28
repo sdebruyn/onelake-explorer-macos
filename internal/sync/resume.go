@@ -31,34 +31,35 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 )
 
-// partialsDirName is the leaf directory under os.TempDir() where
-// in-flight download spill files live. It is created on demand.
+// partialsDirName is the default leaf directory under os.TempDir() used
+// when no [Options.ScratchDir] is configured. It is created on demand.
 const partialsDirName = "ofem-download-partials"
 
 // partialFor returns the canonical on-disk path for the partial-spill
-// of one cache key. Same key -> same path so two Open calls on the same
-// file from different processes will rendezvous on the same partial
-// (the operations are still serialised through the per-account
-// download semaphore, but cross-process callers also benefit).
-func partialFor(k cache.Key) string {
+// of one cache key under the engine's scratch directory. Same key ->
+// same path so two Open calls on the same file from different processes
+// (which share a ScratchDir) rendezvous on the same partial (the
+// operations are still serialised through the per-account download
+// semaphore, but cross-process callers also benefit).
+func (e *Engine) partialFor(k cache.Key) string {
 	h := sha256.Sum256([]byte(k.AccountAlias + "\x00" + k.WorkspaceID + "\x00" + k.ItemID + "\x00" + k.Path))
 	name := hex.EncodeToString(h[:]) + ".partial"
-	return filepath.Join(os.TempDir(), partialsDirName, name)
+	return filepath.Join(e.scratchDir, name)
 }
 
 // partialEtagFor returns the sidecar path that records the ETag the
 // partial spill was started against. Same naming convention as
-// [partialFor] so a stale partial and its sidecar are easy to spot
-// and remove as a pair.
-func partialEtagFor(k cache.Key) string { return partialFor(k) + ".etag" }
+// [Engine.partialFor] so a stale partial and its sidecar are easy to
+// spot and remove as a pair.
+func (e *Engine) partialEtagFor(k cache.Key) string { return e.partialFor(k) + ".etag" }
 
 // loadPartialEtag returns the ETag recorded for the current partial,
 // or "" when no sidecar exists or it cannot be read. Treating missing
 // or unreadable sidecars as "" is intentional — we then either skip
 // the resume entirely (when an etag would have been required) or
 // start a fresh download.
-func loadPartialEtag(k cache.Key) string {
-	bs, err := os.ReadFile(partialEtagFor(k)) // #nosec G304 -- path is SHA over our own key.
+func (e *Engine) loadPartialEtag(k cache.Key) string {
+	bs, err := os.ReadFile(e.partialEtagFor(k)) // #nosec G304 -- path is SHA over our own key.
 	if err != nil {
 		return ""
 	}
@@ -68,25 +69,25 @@ func loadPartialEtag(k cache.Key) string {
 // storePartialEtag writes the etag sidecar for k. Empty etag deletes
 // the sidecar so a follow-up resume that cannot match the etag falls
 // through to a fresh download.
-func storePartialEtag(k cache.Key, etag string) error {
+func (e *Engine) storePartialEtag(k cache.Key, etag string) error {
 	if etag == "" {
-		err := os.Remove(partialEtagFor(k))
+		err := os.Remove(e.partialEtagFor(k))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(partialEtagFor(k)), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(e.partialEtagFor(k)), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(partialEtagFor(k), []byte(etag), 0o600)
+	return os.WriteFile(e.partialEtagFor(k), []byte(etag), 0o600)
 }
 
 // discardPartial removes the spill file and its etag sidecar. Best-
 // effort: missing files are ignored.
-func discardPartial(k cache.Key) {
-	_ = os.Remove(partialFor(k))
-	_ = os.Remove(partialEtagFor(k))
+func (e *Engine) discardPartial(k cache.Key) {
+	_ = os.Remove(e.partialFor(k))
+	_ = os.Remove(e.partialEtagFor(k))
 }
 
 // partialRangeStart returns the byte offset Open should pass in a
@@ -107,25 +108,25 @@ func (e *Engine) partialRangeStart(_ context.Context, cached cache.Entry) (int64
 	if cached.ContentLength <= 0 {
 		return 0, "", false
 	}
-	info, err := os.Stat(partialFor(cached.Key))
+	info, err := os.Stat(e.partialFor(cached.Key))
 	if err != nil {
 		return 0, "", false
 	}
 	if info.Size() <= 0 || info.Size() >= cached.ContentLength {
 		return 0, "", false
 	}
-	etag := loadPartialEtag(cached.Key)
+	etag := e.loadPartialEtag(cached.Key)
 	if etag == "" {
 		// No etag binding: refuse to resume. Discard now so a follow-
 		// up retry doesn't keep trying to seek into the stale partial.
-		discardPartial(cached.Key)
+		e.discardPartial(cached.Key)
 		return 0, "", false
 	}
 	// If we know the cached row's etag, it must match the sidecar —
 	// otherwise the remote moved on between the partial download and
 	// this attempt.
 	if cached.Etag != "" && cached.Etag != etag {
-		discardPartial(cached.Key)
+		e.discardPartial(cached.Key)
 		return 0, "", false
 	}
 	return info.Size(), etag, true
@@ -145,7 +146,7 @@ func (e *Engine) partialRangeStart(_ context.Context, cached cache.Entry) (int64
 // successful StoreBlob the partial-spill and its etag sidecar are
 // removed together.
 func (e *Engine) finalisePartial(ctx context.Context, k cache.Key, body io.Reader, expectedTotal int64, rangeStart int64, expectedSHA string) (sha string, size int64, err error) {
-	partialPath := partialFor(k)
+	partialPath := e.partialFor(k)
 	if err := os.MkdirAll(filepath.Dir(partialPath), 0o700); err != nil {
 		return "", 0, fmt.Errorf("sync.finalisePartial: mkdir partials: %w", err)
 	}
@@ -186,7 +187,7 @@ func (e *Engine) finalisePartial(ctx context.Context, k cache.Key, body io.Reade
 		// (the server gave us more than the cached Content-Length, so
 		// something fundamentally changed and we want to restart clean).
 		if totalWritten > expectedTotal {
-			discardPartial(k)
+			e.discardPartial(k)
 		}
 		return "", 0, fmt.Errorf("sync.finalisePartial: size mismatch: got %d, want %d", totalWritten, expectedTotal)
 	}
@@ -208,7 +209,7 @@ func (e *Engine) finalisePartial(ctx context.Context, k cache.Key, body io.Reade
 		got := hex.EncodeToString(h.Sum(nil))
 		if got != expectedSHA {
 			_ = f.Close()
-			discardPartial(k)
+			e.discardPartial(k)
 			return "", 0, fmt.Errorf("sync.finalisePartial: sha mismatch: got %s, want %s", got, expectedSHA)
 		}
 	}
@@ -226,7 +227,7 @@ func (e *Engine) finalisePartial(ctx context.Context, k cache.Key, body io.Reade
 	if expectedTotal > 0 && size != expectedTotal {
 		// StoreBlob already deduped or short-circuited; treat as a
 		// mismatch and rewind the next attempt.
-		discardPartial(k)
+		e.discardPartial(k)
 		return "", 0, fmt.Errorf("sync.finalisePartial: stored %d bytes, expected %d", size, expectedTotal)
 	}
 	// Success: drop the partial-spill and its etag sidecar.
@@ -234,9 +235,9 @@ func (e *Engine) finalisePartial(ctx context.Context, k cache.Key, body io.Reade
 		e.logger.Debug("could not remove partial after success",
 			slog.String("path", partialPath), slog.Any("err", err))
 	}
-	if err := os.Remove(partialEtagFor(k)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(e.partialEtagFor(k)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		e.logger.Debug("could not remove partial etag after success",
-			slog.String("path", partialEtagFor(k)), slog.Any("err", err))
+			slog.String("path", e.partialEtagFor(k)), slog.Any("err", err))
 	}
 	return sha, size, nil
 }

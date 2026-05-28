@@ -181,6 +181,10 @@ func ofem_core_init(groupContainerPath *C.char) C.int { //nolint:revive // C-ABI
 		Logger:                 logger,
 		MaxConcurrentUploads:   cfg.Net.MaxConcurrentUploadsPerAccount,
 		MaxConcurrentDownloads: cfg.Net.MaxConcurrentDownloadsPerAccount,
+		// The File Provider Extension is sandboxed and cannot write to
+		// the global temp dir; keep download spill files inside the App
+		// Group cache directory, which the sandbox grants us.
+		ScratchDir: filepath.Join(paths.CacheDir, "partials"),
 	})
 	if err != nil {
 		_ = c.Close()

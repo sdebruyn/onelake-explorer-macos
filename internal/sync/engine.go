@@ -63,6 +63,8 @@ package sync
 import (
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -148,6 +150,15 @@ type Options struct {
 
 	// Now overrides time.Now for tests. Production callers leave it nil.
 	Now func() time.Time
+
+	// ScratchDir is the directory where in-flight download spill files
+	// (and their etag sidecars) are written. It MUST be writable by the
+	// process running the engine. The sandboxed File Provider Extension
+	// cannot write to the global os.TempDir(), so production callers pass
+	// a path inside the App Group container (e.g. <cacheDir>/partials).
+	// Defaults to <os.TempDir()>/ofem-download-partials when empty, which
+	// suits the unsandboxed CLI, daemon, and tests.
+	ScratchDir string
 }
 
 // Engine reconciles a remote OneLake item with the local cache. See the
@@ -170,6 +181,7 @@ type Engine struct {
 	queue               []queuedUpload
 	drainMu             sync.Mutex
 	now                 func() time.Time
+	scratchDir          string
 }
 
 // New constructs an Engine from Options. It returns an error if any of
@@ -217,6 +229,11 @@ func New(opts Options) (*Engine, error) {
 		uploads = DefaultMaxConcurrentUploads
 	}
 
+	scratchDir := opts.ScratchDir
+	if scratchDir == "" {
+		scratchDir = filepath.Join(os.TempDir(), partialsDirName)
+	}
+
 	return &Engine{
 		cache:               opts.Cache,
 		fabric:              opts.Fabric,
@@ -232,6 +249,7 @@ func New(opts Options) (*Engine, error) {
 		uploadSem:           newPerAccountSemaphore(uploads),
 		offline:             newOfflineState(),
 		now:                 now,
+		scratchDir:          scratchDir,
 	}, nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -103,6 +104,9 @@ func newDebugEngine() (*debugEngine, error) {
 		Fabric:  fabric.New(fabric.Options{TokenProvider: registry.ScopedProvider(auth.FabricScopes), Registry: gates}),
 		OneLake: onelake.New(onelake.Options{TokenProvider: registry, Registry: gates}),
 		Tenants: registry,
+		// Match the daemon and extension so all three rendezvous on the
+		// same download spill files inside the App Group cache dir.
+		ScratchDir: filepath.Join(paths.CacheDir, "partials"),
 	})
 	if err != nil {
 		_ = c.Close()
