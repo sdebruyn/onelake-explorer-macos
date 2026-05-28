@@ -117,8 +117,13 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 			return fmt.Errorf("sync.Put: %w", ErrWorkspacePaused)
 		}
 		// Network unreachable: rewind the spill and queue the bytes so
-		// the daemon can drain them on the next online window.
-		if IsOfflineError(writeErr) {
+		// the daemon can drain them on the next online window. Skip this
+		// when we are ALREADY draining the queue — re-queueing would
+		// rewrite the spool the drain is replaying (the spool path is
+		// deterministic per key) and coalesce the queue head away, losing
+		// the upload. In draining mode we surface the offline error so the
+		// drain stops and keeps the entry for the next online window.
+		if IsOfflineError(writeErr) && !isDraining(ctx) {
 			if rerr := tmp.rewind(); rerr != nil {
 				// Cheap diagnostic: without this an operator has no way
 				// to tell that queuing was even attempted, only that
