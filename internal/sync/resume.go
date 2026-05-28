@@ -63,6 +63,13 @@ func (e *Engine) partialFor(k cache.Key) string {
 // unreadable entry, or racing removal is ignored — a leftover spill dir
 // only wastes a little disk until the next process sweeps it. Called once
 // from [New].
+//
+// There is a narrow PID-reuse race: a dead PID's dir could be recycled by
+// a freshly started process between the liveness check and RemoveAll, so
+// we might delete a spill that process is actively writing. It fails safe
+// — a half-written spill that disappears just makes that download restart
+// from offset 0 (finalisePartial re-creates it), never corruption — so a
+// lock would be more machinery than the failure mode warrants.
 func reapStalePartialDirs(base string) {
 	entries, err := os.ReadDir(base)
 	if err != nil {
