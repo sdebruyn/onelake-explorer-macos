@@ -231,6 +231,11 @@ func (s *Server) reclaimSocketPath(path string) error {
 	if fi.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("ipc: refusing to reclaim symlink at socket path %q", path)
 	}
+	// On darwin (OFEM's only target) FileInfo.Sys() is always a
+	// *syscall.Stat_t, so the assertion never fails in practice; the
+	// comma-ok form just keeps us from panicking on a hypothetical
+	// non-Unix FileInfo rather than silently skipping the owner check on a
+	// platform we ship to.
 	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Geteuid() {
 		return fmt.Errorf("ipc: refusing to reclaim socket path %q owned by uid %d", path, st.Uid)
 	}

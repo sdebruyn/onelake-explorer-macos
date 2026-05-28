@@ -238,7 +238,7 @@ final class DaemonClient {
         header[3] = UInt8(length & 0xFF)
 
         let frame = header + data
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+        try await withConnectionCancellation(conn) { (cont: CheckedContinuation<Void, Error>) in
             conn.send(content: frame, completion: .contentProcessed { err in
                 if let err = err {
                     cont.resume(throwing: err)
@@ -253,7 +253,7 @@ final class DaemonClient {
         guard let conn = connection else { throw DaemonClientError.notConnected }
 
         // Read 4-byte header.
-        let header: Data = try await withCheckedThrowingContinuation { cont in
+        let header: Data = try await withConnectionCancellation(conn) { cont in
             conn.receive(minimumIncompleteLength: 4, maximumLength: 4) { data, _, _, err in
                 if let err = err { cont.resume(throwing: err); return }
                 cont.resume(returning: data ?? Data())
@@ -268,7 +268,7 @@ final class DaemonClient {
         }
 
         // Read payload.
-        let payload: Data = try await withCheckedThrowingContinuation { cont in
+        let payload: Data = try await withConnectionCancellation(conn) { cont in
             conn.receive(minimumIncompleteLength: length, maximumLength: length) { data, _, _, err in
                 if let err = err { cont.resume(throwing: err); return }
                 cont.resume(returning: data ?? Data())
@@ -280,15 +280,42 @@ final class DaemonClient {
         return payload
     }
 
+    /// Bridge a continuation-style NWConnection send/receive into async
+    /// such that task cancellation actually unblocks it. NWConnection's
+    /// completion handlers are NOT cancellation-aware: a stalled peer
+    /// never fires them, so a bare `withCheckedThrowingContinuation` would
+    /// suspend forever even after the surrounding task is cancelled — which
+    /// is exactly what made the withTimeout below ineffective. Cancelling
+    /// the connection forces the pending callback to fire with an error,
+    /// which resumes the continuation and lets the cancelled (e.g.
+    /// timed-out) operation unwind. The connection is single-use per call
+    /// here, so cancelling it on timeout is correct; the caller discards
+    /// the client afterwards.
+    private func withConnectionCancellation<T>(
+        _ conn: NWConnection,
+        _ body: @escaping (CheckedContinuation<T, Error>) -> Void
+    ) async throws -> T {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation(body)
+        } onCancel: {
+            conn.cancel()
+        }
+    }
+
     // MARK: - Timeout
 
-    /// Run `op` with a wall-clock ceiling. Whichever finishes first wins;
-    /// the loser is cancelled. The NWConnection receive/send callbacks are
-    /// not cancellation-aware, so on timeout the in-flight continuation is
-    /// abandoned — the caller is expected to `disconnect()` (which cancels
-    /// the connection and lets the stalled callback resume with an error)
-    /// and discard this client, which ChangeWatcher already does on any
-    /// poll failure.
+    /// Run `op` with a wall-clock ceiling. Two children race: `op` and a
+    /// sleeper that throws on expiry. `group.next()` rethrows whichever
+    /// finishes first, and the throwing/return then cancels the loser.
+    ///
+    /// This only actually fires because `op`'s frame I/O is wrapped in
+    /// `withConnectionCancellation`: a throwing task-group body must await
+    /// (drain) its remaining children before unwinding, so if `op` were
+    /// stuck in a non-cancellable NWConnection receive the group could
+    /// never return and the timeout would be a no-op. With the cancellation
+    /// handler in place, cancelling `op` cancels the connection, the
+    /// pending receive resumes with an error, `op` unwinds, the group
+    /// drains, and the timeout error surfaces.
     private static func withTimeout<T: Sendable>(
         seconds: TimeInterval,
         _ op: @escaping @Sendable () async throws -> T
