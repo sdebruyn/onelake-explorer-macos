@@ -65,6 +65,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -229,10 +230,22 @@ func New(opts Options) (*Engine, error) {
 		uploads = DefaultMaxConcurrentUploads
 	}
 
-	scratchDir := opts.ScratchDir
-	if scratchDir == "" {
-		scratchDir = filepath.Join(os.TempDir(), partialsDirName)
+	// Download spill files live under a PER-PROCESS subdirectory of the
+	// configured scratch dir. The dir is shared cross-process (daemon,
+	// CLI, sandboxed extension), but a spill file must never be written
+	// by two processes at once: finalisePartial opens it O_RDWR|O_CREATE
+	// and, on a fresh download, skips SHA verification (expectedSHA ==
+	// ""), so interleaved writes would be content-addressed as a silently
+	// corrupt blob. Scoping by PID makes cross-process collisions
+	// impossible while keeping in-process resume (the per-account
+	// download semaphore still serialises same-key downloads within one
+	// process). Spills left behind by a crashed process are reaped here.
+	scratchBase := opts.ScratchDir
+	if scratchBase == "" {
+		scratchBase = filepath.Join(os.TempDir(), partialsDirName)
 	}
+	reapStalePartialDirs(scratchBase)
+	scratchDir := filepath.Join(scratchBase, strconv.Itoa(os.Getpid()))
 
 	return &Engine{
 		cache:               opts.Cache,

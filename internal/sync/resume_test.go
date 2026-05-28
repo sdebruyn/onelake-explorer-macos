@@ -321,3 +321,59 @@ func TestOpen_PartialDownloadFreshStart(t *testing.T) {
 		t.Errorf("GET calls = %d, want 1", got)
 	}
 }
+
+// TestProcessAlive checks the liveness probe used to reap stale spill
+// dirs: our own PID is alive, an absurd PID is not, and 0 is rejected.
+func TestProcessAlive(t *testing.T) {
+	if !processAlive(os.Getpid()) {
+		t.Error("processAlive(self) = false, want true")
+	}
+	// macOS PIDs top out well below this; treat as reliably dead.
+	if processAlive(999999) {
+		t.Error("processAlive(999999) = true, want false")
+	}
+	if processAlive(0) {
+		t.Error("processAlive(0) = true, want false")
+	}
+}
+
+// TestReapStalePartialDirs verifies the per-process spill dirs of dead
+// processes are removed while our own dir and non-PID entries survive.
+func TestReapStalePartialDirs(t *testing.T) {
+	base := t.TempDir()
+	self := strconv.Itoa(os.Getpid())
+	dead := "999999"
+	notPid := "keep-me"
+	for _, d := range []string{self, dead, notPid} {
+		if err := os.MkdirAll(filepath.Join(base, d), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+		if err := os.WriteFile(filepath.Join(base, d, "x.partial"), []byte("x"), 0o600); err != nil {
+			t.Fatalf("seed %s: %v", d, err)
+		}
+	}
+
+	reapStalePartialDirs(base)
+
+	if _, err := os.Stat(filepath.Join(base, dead)); !os.IsNotExist(err) {
+		t.Errorf("dead-PID dir survived reap: stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, self)); err != nil {
+		t.Errorf("own-PID dir was reaped: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, notPid)); err != nil {
+		t.Errorf("non-PID dir was reaped: %v", err)
+	}
+}
+
+// TestPartialForIsProcessScoped confirms spill paths are namespaced by
+// PID so two processes never target the same spill file.
+func TestPartialForIsProcessScoped(t *testing.T) {
+	f := newEngine(t)
+	k := cache.Key{AccountAlias: "a", WorkspaceID: "w", ItemID: "i", Path: "Files/x.bin"}
+	p := f.engine.partialFor(k)
+	wantSeg := string(filepath.Separator) + strconv.Itoa(os.Getpid()) + string(filepath.Separator)
+	if !strings.Contains(p, wantSeg) {
+		t.Errorf("partialFor path %q does not contain PID segment %q", p, wantSeg)
+	}
+}

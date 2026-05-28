@@ -27,36 +27,73 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"syscall"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 )
 
-// partialsDirName is the default leaf directory under os.TempDir() used
-// when no [Options.ScratchDir] is configured. It is created on demand.
+// partialsDirName is the default base directory under os.TempDir() used
+// when no [Options.ScratchDir] is configured. Per-process subdirectories
+// are created beneath it on demand (see [New]).
 const partialsDirName = "ofem-download-partials"
 
-// partialFor returns the canonical on-disk path for the partial-spill
-// of one cache key under the engine's scratch directory. Same key ->
-// same path.
+// partialFor returns the canonical on-disk path for the partial-spill of
+// one cache key. e.scratchDir is per-process (a <base>/<pid> directory,
+// see [New]), so the same key maps to the same path within a process but
+// to different paths across processes.
 //
-// Concurrency caveat: within a single process, two Open calls on the
-// same key are serialised by the per-account download semaphore
-// ([Engine.downloadSem]), so they cannot interleave writes into the
-// spill file. Across processes there is NO such lock. The scratch dir
-// is shared cross-process (daemon, CLI, and the sandboxed extension all
-// use <cacheDir>/partials), so two same-key downloads from different
-// processes could interleave their writes into the same spill file.
-//
-// In Phase 1 this window is narrow: the daemon only refreshes folder
-// metadata (it never calls Open / fetches file contents), so the File
-// Provider extension is the only routine fetcher. The realistic
-// collision is therefore a manual `ofem debug cat` racing a Finder open
-// of the same uncached file. Closing the window (per-process spill
-// filenames or an flock) is a deliberate fast-follow, not done here.
+// This gives two layers of write-safety: within a process the per-account
+// download semaphore ([Engine.downloadSem]) serialises same-key downloads,
+// and across processes the PID-scoped path means two processes never open
+// the same spill file at all. Without the cross-process scoping a fresh
+// download (which skips SHA verification, expectedSHA == "") could have
+// its bytes interleaved with another process's and be content-addressed
+// as a silently corrupt blob. The trade-off is that resume does not carry
+// across processes or across a process restart — acceptable, since a
+// dropped partial just re-downloads from offset 0.
 func (e *Engine) partialFor(k cache.Key) string {
 	h := sha256.Sum256([]byte(k.AccountAlias + "\x00" + k.WorkspaceID + "\x00" + k.ItemID + "\x00" + k.Path))
 	name := hex.EncodeToString(h[:]) + ".partial"
 	return filepath.Join(e.scratchDir, name)
+}
+
+// reapStalePartialDirs removes per-process spill subdirectories under base
+// whose owning process is no longer running. Best-effort: a missing base,
+// unreadable entry, or racing removal is ignored — a leftover spill dir
+// only wastes a little disk until the next process sweeps it. Called once
+// from [New].
+func reapStalePartialDirs(base string) {
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return
+	}
+	self := os.Getpid()
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		pid, perr := strconv.Atoi(ent.Name())
+		if perr != nil || pid == self {
+			continue // not a pid-named dir, or our own
+		}
+		if processAlive(pid) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(base, ent.Name()))
+	}
+}
+
+// processAlive reports whether a process with the given PID currently
+// exists. Signal 0 does the kernel's permission/existence check without
+// delivering a signal: nil (alive, ours) or EPERM (alive, not ours) both
+// mean alive; ESRCH means no such process.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // partialEtagFor returns the sidecar path that records the ETag the
