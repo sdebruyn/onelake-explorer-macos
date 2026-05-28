@@ -219,7 +219,7 @@ func TestChildren_DirectOnly(t *testing.T) {
 
 // TestChildren_RootRowNotItsOwnChild guards against the item/workspace/
 // domain root listing itself as a phantom child. The root row has both
-// path == "" and parent_path == "", so a naive "WHERE parent_path = ''"
+// path == "" and parent_path == "", so a naive "WHERE parent_path = ”"
 // query matches the root itself — Finder then shows a nameless "/" entry.
 func TestChildren_RootRowNotItsOwnChild(t *testing.T) {
 	t.Parallel()
