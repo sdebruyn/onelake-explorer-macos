@@ -132,16 +132,22 @@ func TestKeychainCachePropagatesUnmarshalError(t *testing.T) {
 // stubMSALClient is a minimal MSALClient that returns canned AcquireTokenSilent
 // results, used by both SilentToken tests below and Registry.Token tests in
 // registry_test.go.
+//
+// lastScopes captures the scopes slice passed to the most recent
+// AcquireTokenSilent call so tests can assert scope-forwarding without
+// reaching into MSAL internals.
 type stubMSALClient struct {
 	silentResult public.AuthResult
 	silentErr    error
 	accounts     []public.Account
 	accountsErr  error
 	silentCalls  int
+	lastScopes   []string
 }
 
-func (s *stubMSALClient) AcquireTokenSilent(_ context.Context, _ []string, _ public.Account) (public.AuthResult, error) {
+func (s *stubMSALClient) AcquireTokenSilent(_ context.Context, scopes []string, _ public.Account) (public.AuthResult, error) {
 	s.silentCalls++
+	s.lastScopes = append([]string{}, scopes...)
 	return s.silentResult, s.silentErr
 }
 
@@ -245,5 +251,24 @@ func TestDefaultClientFactoryReturnsClient(t *testing.T) {
 	}
 	if len(accs) != 0 {
 		t.Errorf("Accounts() = %v, want empty", accs)
+	}
+}
+
+func TestSilentTokenRejectsEmptyScopes(t *testing.T) {
+	client := &stubMSALClient{silentResult: public.AuthResult{AccessToken: "tok"}}
+	_, err := SilentToken(context.Background(), client, "work", public.Account{HomeAccountID: "h.t"}, nil)
+	if err == nil {
+		t.Fatal("expected error for nil scopes")
+	}
+	if client.silentCalls != 0 {
+		t.Errorf("AcquireTokenSilent called %d times, want 0 (error before network call)", client.silentCalls)
+	}
+
+	_, err = SilentToken(context.Background(), client, "work", public.Account{HomeAccountID: "h.t"}, []string{})
+	if err == nil {
+		t.Fatal("expected error for empty scopes slice")
+	}
+	if client.silentCalls != 0 {
+		t.Errorf("AcquireTokenSilent called %d times, want 0 (error before network call)", client.silentCalls)
 	}
 }

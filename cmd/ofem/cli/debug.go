@@ -32,6 +32,10 @@ type debugRef struct {
 // parseDebugRef splits `alias:/workspace/item/path/...` into its parts.
 // The scheme separator is the first ':'; everything after the leading
 // '/' is the slash-separated workspace / item / path triple.
+//
+// A double slash after the colon (e.g. `alias://workspace`) is rejected
+// because it silently produces an empty first segment that would be
+// interpreted as a missing workspace name, masking the caller's typo.
 func parseDebugRef(s string) (debugRef, error) {
 	colon := strings.IndexByte(s, ':')
 	if colon <= 0 {
@@ -43,6 +47,11 @@ func parseDebugRef(s string) (debugRef, error) {
 		return ref, nil
 	}
 	parts := strings.SplitN(rest, "/", 3)
+	// A leading double slash ("alias://workspace") strips one '/' but
+	// leaves the first segment empty. Treat this as a malformed reference.
+	if parts[0] == "" {
+		return debugRef{}, fmt.Errorf("malformed reference %q: unexpected double slash after colon", s)
+	}
 	ref.workspace = parts[0]
 	if len(parts) > 1 {
 		ref.item = parts[1]

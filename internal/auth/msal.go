@@ -197,7 +197,11 @@ func SilentToken(ctx context.Context, client MSALClient, accountAlias string, ms
 		return "", errors.New("auth: nil MSAL client")
 	}
 	if len(scopes) == 0 {
-		scopes = OneLakeScopes
+		// An empty scope set is always a programming error in the caller.
+		// Passing no scopes to MSAL would either fail with a confusing
+		// server-side error or silently acquire a token for the wrong
+		// audience. Fail fast here instead.
+		return "", errors.New("auth: SilentToken requires at least one scope")
 	}
 	res, err := client.AcquireTokenSilent(ctx, scopes, msalAccount)
 	if err != nil {

@@ -37,7 +37,7 @@ var LoginScopes = append(append([]string{}, OneLakeScopes...), FabricScopes...)
 //
 // Deprecated: use OneLakeScopes or FabricScopes explicitly. It equals
 // OneLakeScopes and will be removed once all call sites migrate.
-var Scopes = OneLakeScopes
+var Scopes = append([]string{}, OneLakeScopes...)
 
 // AuthorityHostPublicCloud is the public-cloud Microsoft Entra authority
 // host. Sovereign clouds (US Gov, China, Germany) are out of scope for
