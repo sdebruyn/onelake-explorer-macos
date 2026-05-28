@@ -29,8 +29,11 @@ const DefaultPausedProbeInterval = 2 * time.Minute
 // Phrases come from docs/onelake-api.md and the Microsoft Learn
 // troubleshooting pages: "Fabric capacity is currently paused",
 // "Capacity Not Active", "capacity is paused", "capacity is not active".
+// A paused capacity is also surfaced on OneLake DFS as an HTTP 404 whose
+// body reads "this Fabric capacity <guid> is currently not available" —
+// hence the trailing "not available" alternatives.
 var pausedCapacityRE = regexp.MustCompile(
-	`(?i)(capacity\s+not\s+active|capacity\s+is\s+not\s+active|fabric\s+capacity\s+is\s+(currently\s+)?paused|capacity\s+is\s+(currently\s+)?paused|capacity\s+suspended|capacity\s+has\s+been\s+paused)`,
+	`(?i)(capacity\s+not\s+active|capacity\s+is\s+not\s+active|fabric\s+capacity\s+is\s+(currently\s+)?paused|capacity\s+is\s+(currently\s+)?paused|capacity\s+suspended|capacity\s+has\s+been\s+paused|capacity\s+\S+\s+is\s+currently\s+not\s+available|capacity\s+is\s+(currently\s+)?not\s+available)`,
 )
 
 // pausedErrorCodes lists the stable Fabric REST `errorCode` values that

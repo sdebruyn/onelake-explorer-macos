@@ -1206,16 +1206,20 @@ func errorPayloadFromGo(err error) *errorPayload {
 // not get silently miscategorised.
 func classifyError(err error) string {
 	switch {
+	// Paused capacity first: Fabric surfaces it as a 404 (OneLake DFS) or
+	// 403 (Fabric REST), so it must be matched before the generic
+	// ErrNotFound arm below — otherwise a paused capacity reads as a
+	// missing item instead of a transient "server busy" state.
+	case errors.Is(err, syncpkg.ErrWorkspacePaused),
+		errors.Is(err, httpretry.ErrThrottled),
+		syncpkg.IsPausedCapacityError(err):
+		return "serverBusy"
 	case errors.Is(err, os.ErrNotExist),
 		errors.Is(err, httpretry.ErrNotFound),
 		errors.Is(err, httpretry.ErrGone):
 		return "noSuchItem"
 	case errors.Is(err, syncpkg.ErrLastWriteWinsExhausted):
 		return "cannotSynchronize"
-	case errors.Is(err, syncpkg.ErrWorkspacePaused),
-		errors.Is(err, httpretry.ErrThrottled),
-		syncpkg.IsPausedCapacityError(err):
-		return "serverBusy"
 	case errors.Is(err, httpretry.ErrUnauthorized),
 		errors.Is(err, httpretry.ErrForbidden):
 		return "notAuthenticated"
