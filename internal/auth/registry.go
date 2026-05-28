@@ -27,6 +27,13 @@ type Registry struct {
 	clientID string
 	factory  ClientFactory
 
+	// writeMu serialises the multi-step account mutations (Add / Remove /
+	// SetDefault). Each spans a duplicate check, a keychain write, and a
+	// config write that are not individually atomic; without this lock two
+	// concurrent Add("work") could both pass the existence check and the
+	// second would clobber the first's keychain secret (M-2).
+	writeMu sync.Mutex
+
 	clientsMu sync.Mutex
 	clients   map[string]MSALClient // keyed by tenantID|alias
 }
@@ -64,6 +71,9 @@ func (r *Registry) Add(account Account, secret []byte) error {
 		return err
 	}
 
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+
 	snap := r.store.Snapshot()
 	if _, exists := snap.Accounts[account.Alias]; exists {
 		return fmt.Errorf("auth: account %q already exists", account.Alias)
@@ -73,24 +83,21 @@ func (r *Registry) Add(account Account, secret []byte) error {
 		return fmt.Errorf("auth: store secret for %q: %w", account.Alias, err)
 	}
 
-	r.store.Update(func(f *config.File) {
+	if err := r.store.UpdateAndSave(func(f *config.File) {
 		if f.Accounts == nil {
 			f.Accounts = map[string]config.Account{}
 		}
 		f.Accounts[account.Alias] = toConfigAccount(account)
-	})
-
-	if err := r.store.Save(); err != nil {
+	}); err != nil {
 		// Roll back the keychain so we do not leak orphan secrets, then
 		// revert the in-memory config and persist the reverted state so
-		// disk and memory stay in sync. The rollback Save is
-		// best-effort: if it also fails there is nothing more we can do
-		// from this layer, so we log it and return the original error.
+		// disk and memory stay in sync. The rollback is best-effort: if it
+		// also fails there is nothing more we can do from this layer, so we
+		// log it and return the original error.
 		_ = r.kc.Delete(account.Alias)
-		r.store.Update(func(f *config.File) {
+		if rerr := r.store.UpdateAndSave(func(f *config.File) {
 			delete(f.Accounts, account.Alias)
-		})
-		if rerr := r.store.Save(); rerr != nil {
+		}); rerr != nil {
 			slog.Warn("auth: rollback save after failed Add also failed; in-memory and disk state may diverge",
 				"alias", account.Alias,
 				"original_err", err,
@@ -106,6 +113,9 @@ func (r *Registry) Add(account Account, secret []byte) error {
 // removed account was the configured default it is also cleared.
 // Removing a missing alias returns an error wrapping os.ErrNotExist.
 func (r *Registry) Remove(alias string) error {
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+
 	snap := r.store.Snapshot()
 	if _, ok := snap.Accounts[alias]; !ok {
 		return fmt.Errorf("auth: account %q: %w", alias, os.ErrNotExist)
@@ -115,14 +125,12 @@ func (r *Registry) Remove(alias string) error {
 		return fmt.Errorf("auth: delete keychain entry for %q: %w", alias, err)
 	}
 
-	r.store.Update(func(f *config.File) {
+	if err := r.store.UpdateAndSave(func(f *config.File) {
 		delete(f.Accounts, alias)
 		if f.DefaultAccount == alias {
 			f.DefaultAccount = ""
 		}
-	})
-
-	if err := r.store.Save(); err != nil {
+	}); err != nil {
 		return fmt.Errorf("auth: save config: %w", err)
 	}
 	return nil
@@ -200,14 +208,16 @@ func (r *Registry) TenantID(alias string) (string, bool) {
 // SetDefault sets the default account alias. It rejects unknown aliases
 // with an error wrapping os.ErrNotExist.
 func (r *Registry) SetDefault(alias string) error {
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+
 	snap := r.store.Snapshot()
 	if _, ok := snap.Accounts[alias]; !ok {
 		return fmt.Errorf("auth: account %q: %w", alias, os.ErrNotExist)
 	}
-	r.store.Update(func(f *config.File) {
+	if err := r.store.UpdateAndSave(func(f *config.File) {
 		f.DefaultAccount = alias
-	})
-	if err := r.store.Save(); err != nil {
+	}); err != nil {
 		return fmt.Errorf("auth: save config: %w", err)
 	}
 	return nil
