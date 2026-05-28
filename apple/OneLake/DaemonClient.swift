@@ -84,6 +84,13 @@ final class DaemonClient {
 
     private static let maxFrameSize = 1 << 20  // 1 MiB, matching ipc.MaxFrameSize
 
+    /// Upper bound on a single sync.pollChanges round-trip. The daemon
+    /// answers from its in-memory changefeed, so the real latency is
+    /// sub-millisecond; this is purely a liveness guard so a daemon that
+    /// dies mid-frame cannot suspend the poll loop forever. Generous
+    /// enough never to fire under normal scheduling load.
+    private static let pollTimeout: TimeInterval = 10
+
     private let socketPath: String
     private var connection: NWConnection?
     private var connectionState: ConnectionState = .disconnected
@@ -189,9 +196,15 @@ final class DaemonClient {
             "id": requestID,
         ]
         let requestData = try JSONSerialization.data(withJSONObject: requestDict)
-        try await writeFrame(requestData)
 
-        let responseData = try await readFrame()
+        // The daemon answers sync.pollChanges immediately (it just reads its
+        // in-memory changefeed). Bound the write+read so a daemon that sends
+        // a header then stalls cannot suspend this continuation forever and
+        // silently freeze ChangeWatcher's poll loop.
+        let responseData = try await Self.withTimeout(seconds: Self.pollTimeout) {
+            try await self.writeFrame(requestData)
+            return try await self.readFrame()
+        }
         let response = try decoder.decode(RPCResponse.self, from: responseData)
 
         if let err = response.error {
@@ -225,7 +238,7 @@ final class DaemonClient {
         header[3] = UInt8(length & 0xFF)
 
         let frame = header + data
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+        try await withConnectionCancellation(conn) { (cont: CheckedContinuation<Void, Error>) in
             conn.send(content: frame, completion: .contentProcessed { err in
                 if let err = err {
                     cont.resume(throwing: err)
@@ -240,7 +253,7 @@ final class DaemonClient {
         guard let conn = connection else { throw DaemonClientError.notConnected }
 
         // Read 4-byte header.
-        let header: Data = try await withCheckedThrowingContinuation { cont in
+        let header: Data = try await withConnectionCancellation(conn) { cont in
             conn.receive(minimumIncompleteLength: 4, maximumLength: 4) { data, _, _, err in
                 if let err = err { cont.resume(throwing: err); return }
                 cont.resume(returning: data ?? Data())
@@ -255,7 +268,7 @@ final class DaemonClient {
         }
 
         // Read payload.
-        let payload: Data = try await withCheckedThrowingContinuation { cont in
+        let payload: Data = try await withConnectionCancellation(conn) { cont in
             conn.receive(minimumIncompleteLength: length, maximumLength: length) { data, _, _, err in
                 if let err = err { cont.resume(throwing: err); return }
                 cont.resume(returning: data ?? Data())
@@ -265,5 +278,59 @@ final class DaemonClient {
             throw DaemonClientError.protocolError("short frame body: got \(payload.count), want \(length)")
         }
         return payload
+    }
+
+    /// Bridge a continuation-style NWConnection send/receive into async
+    /// such that task cancellation actually unblocks it. NWConnection's
+    /// completion handlers are NOT cancellation-aware: a stalled peer
+    /// never fires them, so a bare `withCheckedThrowingContinuation` would
+    /// suspend forever even after the surrounding task is cancelled — which
+    /// is exactly what made the withTimeout below ineffective. Cancelling
+    /// the connection forces the pending callback to fire with an error,
+    /// which resumes the continuation and lets the cancelled (e.g.
+    /// timed-out) operation unwind. The connection is single-use per call
+    /// here, so cancelling it on timeout is correct; the caller discards
+    /// the client afterwards.
+    private func withConnectionCancellation<T>(
+        _ conn: NWConnection,
+        _ body: @escaping (CheckedContinuation<T, Error>) -> Void
+    ) async throws -> T {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation(body)
+        } onCancel: {
+            conn.cancel()
+        }
+    }
+
+    // MARK: - Timeout
+
+    /// Run `op` with a wall-clock ceiling. Two children race: `op` and a
+    /// sleeper that throws on expiry. `group.next()` rethrows whichever
+    /// finishes first, and the throwing/return then cancels the loser.
+    ///
+    /// This only actually fires because `op`'s frame I/O is wrapped in
+    /// `withConnectionCancellation`: a throwing task-group body must await
+    /// (drain) its remaining children before unwinding, so if `op` were
+    /// stuck in a non-cancellable NWConnection receive the group could
+    /// never return and the timeout would be a no-op. With the cancellation
+    /// handler in place, cancelling `op` cancels the connection, the
+    /// pending receive resumes with an error, `op` unwinds, the group
+    /// drains, and the timeout error surfaces.
+    private static func withTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        _ op: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw DaemonClientError.protocolError("IPC timed out after \(seconds)s")
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw DaemonClientError.protocolError("IPC task group produced no result")
+            }
+            return first
+        }
     }
 }

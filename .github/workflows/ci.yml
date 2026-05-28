@@ -119,8 +119,8 @@ jobs:
             exit 1
           fi
 
-  apple-gen:
-    name: Apple project generation
+  apple-build:
+    name: Apple build + smoke tests
     runs-on: macos-15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -137,8 +137,9 @@ jobs:
         run: brew install xcodegen
 
       - name: Bootstrap local xcconfig
-        # CI has no signing identity yet; the sample file is enough to
-        # let xcodegen reference DEVELOPMENT_TEAM without erroring.
+        # CI has no signing identity; the sample file's placeholder
+        # DEVELOPMENT_TEAM is harmless because every xcodebuild invocation
+        # below disables code signing (CODE_SIGNING_ALLOWED=NO).
         run: make apple-bootstrap
 
       - name: Generate Xcode project
@@ -146,6 +147,19 @@ jobs:
 
       - name: Verify project.pbxproj exists
         run: test -f apple/OneLake.xcodeproj/project.pbxproj
+
+      - name: Smoke tests (unsigned, host-less)
+        # Pure logic tests of the File Provider identifier grammar. Runs
+        # first because it is fast and catches the most common Swift
+        # regressions before the slower full app build.
+        run: make apple-test
+
+      - name: Build app + extension (unsigned)
+        # Compiles the OneLake app and the File Provider .appex with code
+        # signing disabled. Catches Swift compile regressions on every PR
+        # so they no longer surface for the first time on a release tag.
+        # See CODE_REVIEW.md M-8.
+        run: make apple-build-ci
 
   vulncheck:
     name: govulncheck

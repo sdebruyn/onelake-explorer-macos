@@ -429,3 +429,47 @@ func TestClientCallOnClosed(t *testing.T) {
 		t.Fatalf("expected error on Call after Close")
 	}
 }
+
+// TestReclaimSocketPath_RefusesSymlink covers M-3: reclaimSocketPath must
+// never unlink a symlink sitting at the socket path (it could redirect the
+// removal), and must leave it in place.
+func TestReclaimSocketPath_RefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("important"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(dir, "ofem.sock")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	s := NewServer(nil)
+	if err := s.reclaimSocketPath(link); err == nil {
+		t.Error("reclaimSocketPath on a symlink: want error, got nil")
+	}
+	// The symlink and its target must both survive.
+	if _, err := os.Lstat(link); err != nil {
+		t.Errorf("symlink was removed: %v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Errorf("symlink target was removed: %v", err)
+	}
+}
+
+// TestReclaimSocketPath_RemovesStaleRegularFile confirms a plain stale file
+// we own is still reclaimed (the common post-crash case).
+func TestReclaimSocketPath_RemovesStaleRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "ofem.sock")
+	if err := os.WriteFile(stale, nil, 0o600); err != nil {
+		t.Fatalf("write stale: %v", err)
+	}
+	s := NewServer(nil)
+	if err := s.reclaimSocketPath(stale); err != nil {
+		t.Fatalf("reclaim stale regular file: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale file not removed: %v", err)
+	}
+}

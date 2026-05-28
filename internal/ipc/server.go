@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -209,14 +210,34 @@ func (s *Server) listen(ctx context.Context, path string) error {
 // subsequent net.Listen will then fail with EADDRINUSE and the caller
 // surfaces that error normally.
 func (s *Server) reclaimSocketPath(path string) error {
-	if _, err := os.Stat(path); err != nil {
+	// Lstat (not Stat) so we inspect the path itself, never a symlink
+	// target — we must never be tricked into unlinking something the
+	// symlink points at.
+	fi, err := os.Lstat(path)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		// Surface other Stat errors (e.g. permission denied on the
+		// Surface other lstat errors (e.g. permission denied on the
 		// parent dir) so a misconfiguration is visible instead of
 		// silently retried.
-		return fmt.Errorf("ipc: stat socket path: %w", err)
+		return fmt.Errorf("ipc: lstat socket path: %w", err)
+	}
+	// A genuine stale OFEM socket is a socket file we own. Refuse to
+	// reclaim anything else: a symlink (could redirect the unlink) or a
+	// file owned by another uid. The socket lives in the owner-only App
+	// Group container, so this is defense in depth against a local
+	// pre-creation/symlink-swap attempt.
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("ipc: refusing to reclaim symlink at socket path %q", path)
+	}
+	// On darwin (OFEM's only target) FileInfo.Sys() is always a
+	// *syscall.Stat_t, so the assertion never fails in practice; the
+	// comma-ok form just keeps us from panicking on a hypothetical
+	// non-Unix FileInfo rather than silently skipping the owner check on a
+	// platform we ship to.
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Geteuid() {
+		return fmt.Errorf("ipc: refusing to reclaim socket path %q owned by uid %d", path, st.Uid)
 	}
 
 	conn, dialErr := net.DialTimeout("unix", path, peerProbeTimeout)
