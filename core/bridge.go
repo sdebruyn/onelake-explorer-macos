@@ -31,6 +31,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	gosync "sync"
 	"sync/atomic"
@@ -161,7 +162,7 @@ func ofem_core_init(groupContainerPath *C.char) C.int { //nolint:revive // C-ABI
 		return 4
 	}
 
-	kc, err := auth.NewKeychainAt(path.Join(paths.ConfigDir, "tokens"))
+	kc, err := auth.NewKeychainAt(filepath.Join(paths.ConfigDir, "tokens"))
 	if err != nil {
 		_ = c.Close()
 		logger.Error("bridge init: open keychain failed", slog.Any("err", err))
@@ -216,10 +217,10 @@ func resolveBridgePaths(groupContainerPath *C.char) (config.Paths, error) {
 	// hands us) share the same files on disk.
 	return config.Paths{
 		ConfigDir:  provided,
-		ConfigFile: path.Join(provided, "config.toml"),
-		CacheDir:   path.Join(provided, "cache"),
-		LogDir:     path.Join(provided, "log"),
-		SocketPath: path.Join(provided, "ofem.sock"),
+		ConfigFile: filepath.Join(provided, "config.toml"),
+		CacheDir:   filepath.Join(provided, "cache"),
+		LogDir:     filepath.Join(provided, "log"),
+		SocketPath: filepath.Join(provided, "ofem.sock"),
 	}, nil
 }
 
