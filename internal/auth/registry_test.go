@@ -405,3 +405,23 @@ func TestScopedProviderUsesGivenScopes(t *testing.T) {
 		}
 	}
 }
+
+// TestFindMSALAccount_RejectsEmptyHomeAccountID covers H-1: an empty
+// HomeAccountID must never match an MSAL cache entry (which could itself
+// have an empty ID), or the registry would hand back a token for the wrong
+// identity. Both an empty query and a real query against an empty-ID cache
+// entry must fail closed with ErrInteractionRequired.
+func TestFindMSALAccount_RejectsEmptyHomeAccountID(t *testing.T) {
+	reg := NewRegistry(newTestStore(t), NewMemoryKeychain(), EntraClientID,
+		func(string, string, Keychain, string) (MSALClient, error) {
+			return &stubMSALClient{}, nil
+		})
+	stub := &stubMSALClient{accounts: []public.Account{{HomeAccountID: ""}}}
+
+	if _, err := reg.findMSALAccount(context.Background(), stub, "work", ""); !errors.Is(err, ErrInteractionRequired) {
+		t.Errorf("empty homeAccountID: err = %v, want ErrInteractionRequired", err)
+	}
+	if _, err := reg.findMSALAccount(context.Background(), stub, "work", "real-id"); !errors.Is(err, ErrInteractionRequired) {
+		t.Errorf("real id vs empty-ID cache entry: err = %v, want ErrInteractionRequired", err)
+	}
+}
