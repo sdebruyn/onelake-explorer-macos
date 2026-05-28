@@ -44,6 +44,32 @@ type Policy struct {
 	// Logger receives one warn line per retry. Defaults to slog.Default
 	// with a "component=httpretry" attribute.
 	Logger *slog.Logger
+
+	// Idempotent declares that this request may be safely replayed after a
+	// MID-FLIGHT TRANSPORT error — one where the connection dropped and we
+	// cannot know whether the server already applied the request. Retrying
+	// such a request can duplicate a side effect, so for non-idempotent
+	// methods (POST, PATCH) we only retry a transport error when the caller
+	// sets this true. GET/HEAD/PUT/DELETE are idempotent by definition and
+	// are always retried regardless of this flag. (A retriable STATUS code
+	// such as 429/503 means the server rejected the request without
+	// applying it, so that retry is always safe and not gated here.)
+	Idempotent bool
+}
+
+// canRetryTransport reports whether a request may be replayed after a
+// transport error. Idempotent methods are always safe; other methods
+// require the caller to assert Idempotent.
+func (p Policy) canRetryTransport(req *http.Request) bool {
+	if p.Idempotent {
+		return true
+	}
+	switch req.Method {
+	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
 }
 
 // defaulted returns a copy of p with zero fields filled in from the
@@ -113,7 +139,7 @@ func Do(ctx context.Context, client *http.Client, req *http.Request, p Policy) (
 
 		switch {
 		case err != nil:
-			if !isRetriableTransport(err) {
+			if !isRetriableTransport(err) || !p.canRetryTransport(req) {
 				return nil, err
 			}
 			lastErr = err

@@ -499,5 +499,11 @@ func (c *Client) doRequest(ctx context.Context, alias, method, pathAndQuery stri
 		return nil, err
 	}
 	slog.Debug("onelake: request", "method", method, "path", pathAndQuery)
-	return httpretry.Do(ctx, c.http, req, httpretry.Policy{MaxAttempts: c.maxAttempts})
+	// Idempotent: true — every OneLake DFS operation we issue is safe to
+	// replay after a mid-flight transport error: reads are GETs, create is
+	// a zero-length PUT, append/flush are position-addressed PATCHes (a
+	// replay rewrites the same bytes at the same offset), and delete is a
+	// DELETE. This authorises httpretry to retry the PATCH writes, which it
+	// would otherwise refuse as a non-idempotent method.
+	return httpretry.Do(ctx, c.http, req, httpretry.Policy{MaxAttempts: c.maxAttempts, Idempotent: true})
 }

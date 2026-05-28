@@ -321,3 +321,56 @@ func TestDo_DefaultsApplied(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 }
+
+// closeOnceServer hijacks and drops the connection on the first request
+// (a mid-flight transport error) and returns 200 afterwards.
+func closeOnceServer(t *testing.T, calls *int32) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(calls, 1) < 2 {
+			hj, _ := w.(http.Hijacker)
+			conn, _, _ := hj.Hijack()
+			_ = conn.Close()
+			return
+		}
+		w.WriteHeader(200)
+	}))
+}
+
+// TestDo_NonIdempotentTransportErrorNotRetried covers M-4: a transport
+// error on a non-idempotent method (POST/PATCH) must NOT be replayed
+// unless the caller asserts Idempotent — replaying could duplicate a
+// write the server already applied before the connection dropped.
+func TestDo_NonIdempotentTransportErrorNotRetried(t *testing.T) {
+	var calls int32
+	srv := closeOnceServer(t, &calls)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader("x"))
+	if _, err := Do(context.Background(), srv.Client(), req, fastPolicy(3)); err == nil {
+		t.Fatal("POST transport error: want error (no replay), got nil")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("calls = %d, want 1 (non-idempotent POST must not be replayed)", got)
+	}
+}
+
+// TestDo_IdempotentFlagAllowsTransportRetry verifies the opt-in: with
+// Idempotent set, a POST transport error IS retried.
+func TestDo_IdempotentFlagAllowsTransportRetry(t *testing.T) {
+	var calls int32
+	srv := closeOnceServer(t, &calls)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader("x"))
+	p := fastPolicy(3)
+	p.Idempotent = true
+	resp, err := Do(context.Background(), srv.Client(), req, p)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	_ = resp.Body.Close()
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("calls = %d, want 2 (Idempotent POST should retry)", got)
+	}
+}
