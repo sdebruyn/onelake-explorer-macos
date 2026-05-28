@@ -79,9 +79,11 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 	// Buffer the upload bytes into a spill file so the last-write-wins
 	// retry loop can replay them on a 412 without re-reading the
 	// (often one-shot) caller-provided reader. The spill lives in the
-	// OS tempdir; on success it is consumed by StoreBlob, on failure
+	// engine's scratch dir (the App Group container in production) — NOT
+	// the global OS tempdir, which the sandboxed File Provider extension
+	// cannot write to. On success it is consumed by StoreBlob, on failure
 	// it is cleaned up by the deferred call.
-	tmp, err := newSpillFile()
+	tmp, err := newSpillFile(e.scratchDir)
 	if err != nil {
 		return fmt.Errorf("sync.Put: spill temp: %w", err)
 	}
@@ -214,9 +216,15 @@ type spillFile struct {
 	path string
 }
 
-// newSpillFile creates an empty temp file with permissions 0o600.
-func newSpillFile() (*spillFile, error) {
-	f, err := os.CreateTemp("", "ofem-sync-spill-*")
+// newSpillFile creates an empty temp file (mode 0o600) inside dir, which
+// is created if missing. dir must be a location the calling process can
+// write — the engine passes its per-process scratch dir so the sandboxed
+// extension does not fall foul of the global tempdir it cannot touch.
+func newSpillFile(dir string) (*spillFile, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("sync: create spill dir: %w", err)
+	}
+	f, err := os.CreateTemp(dir, "ofem-sync-spill-*")
 	if err != nil {
 		return nil, fmt.Errorf("sync: create spill: %w", err)
 	}

@@ -4,7 +4,7 @@
 
 - Authenticate end users (never service principals) against Microsoft Entra ID.
 - Support **multiple accounts in multiple tenants simultaneously**.
-- Get tokens with the audience that OneLake DFS and the Fabric REST API both accept: `https://storage.azure.com/`.
+- Get tokens with the right audience for each resource: OneLake DFS file I/O uses `https://storage.azure.com/`, while the Fabric REST API uses the Power BI Service audience (`https://analysis.windows.net/powerbi/api`). See "Two-audience scope model" below — a single audience does **not** cover both (it returns 401 on Fabric REST).
 - Cache tokens persistently across daemon restarts using the macOS Keychain.
 - Handle token refresh transparently; surface re-auth requests through a quiet menu bar indicator rather than system notifications.
 - Microsoft public cloud only.
@@ -19,7 +19,7 @@ We register a **multi-tenant public client application** in our own tenant:
 | Supported account types | Accounts in any organizational directory (multi-tenant) |
 | Redirect URI | `http://localhost` (Public client/native) |
 | Allow public client flows | **Yes** |
-| API permissions | `https://storage.azure.com/user_impersonation` (delegated). Optionally Fabric Service for admin-search endpoints. |
+| API permissions | `https://storage.azure.com/user_impersonation` (Azure Storage, delegated) **and** Power BI Service `Workspace.Read.All` + `Item.Read.All` (delegated, admin-consented) for Fabric REST discovery. |
 
 The client ID lives in `internal/auth/client.go` as a constant — it is a public identifier, not a secret.
 

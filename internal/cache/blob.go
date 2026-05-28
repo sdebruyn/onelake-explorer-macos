@@ -324,16 +324,21 @@ WHERE blob_sha256 != ''
 	return count, bytes, nil
 }
 
-// BlobBytes returns the total size, in bytes, of every blob currently
-// linked to a metadata row. It does NOT walk the filesystem; it sums
-// blob_size in the database. Use it together with [Options.MaxBlobBytes]
-// to decide whether eviction is needed.
+// BlobBytes returns the on-disk size, in bytes, of the blobs currently
+// linked to metadata rows. It does NOT walk the filesystem; it sums
+// blob_size in the database, but over DISTINCT blob_sha256 so a blob
+// shared by N metadata rows (one physical file, N links) counts once.
+// Summing per-row would report N×size against a disk holding 1×size and
+// make [EvictToLimit] over-evict. Use it with [Options.MaxBlobBytes] to
+// decide whether eviction is needed.
 func (c *Cache) BlobBytes(ctx context.Context) (int64, error) {
 	var total sql.NullInt64
 	if err := c.db.QueryRowContext(ctx, `
-SELECT COALESCE(SUM(blob_size), 0)
-FROM path_metadata
-WHERE blob_sha256 != ''
+SELECT COALESCE(SUM(blob_size), 0) FROM (
+    SELECT blob_size FROM path_metadata
+    WHERE blob_sha256 != ''
+    GROUP BY blob_sha256
+)
 `).Scan(&total); err != nil {
 		return 0, fmt.Errorf("cache.BlobBytes: %w", err)
 	}

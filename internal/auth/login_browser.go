@@ -71,10 +71,11 @@ func LoginInteractive(ctx context.Context, clientID, tenantHint string, kc Keych
 		// subsequent token request will need a fresh interactive login.
 		return Account{}, public.Account{}, nil, fmt.Errorf("auth: read scratch cache: %w", kErr)
 	}
+	// HomeAccountID embeds the user's per-tenant objectId; keep it out of
+	// the log to match findMSALAccount's policy (it logs only the alias).
 	slog.Info("auth: interactive login succeeded",
 		"username", acc.Username,
 		"tenant_id", acc.TenantID,
-		"home_account_id", acc.HomeAccountID,
 		"cache_bytes", len(cacheBytes),
 	)
 	return acc, res.Account, cacheBytes, nil

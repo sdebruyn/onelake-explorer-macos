@@ -4,25 +4,32 @@ import "strconv"
 
 // splitFields converts an Event into the App Insights properties +
 // measurements split. String values go into properties, numeric values
-// into measurements. The merged CommonProps are copied verbatim into
-// properties so the sink does not need to know about them.
+// into measurements.
+//
+// Every property value is routed through [scrubProperty] (and the error
+// code through [SafeErrorCode]) here, at the single boundary where an
+// Event becomes sink-bound data. That makes the privacy promise — no UPN,
+// path, workspace, or file name leaves the device — structural: a careless
+// or future caller that stuffs a path into CommonProps cannot leak it,
+// because this function is the only producer of the property map the sink
+// sends.
 func splitFields(ev Event) (props map[string]string, meas map[string]float64) {
 	props = make(map[string]string, len(ev.CommonProps)+4)
 	for k, v := range ev.CommonProps {
 		if v == "" {
 			continue
 		}
-		props[k] = v
+		props[k] = scrubProperty(v)
 	}
-	props["event"] = ev.Name
+	props["event"] = scrubProperty(ev.Name)
 	if ev.TenantID != "" {
-		props["tenantId"] = ev.TenantID
+		props["tenantId"] = scrubProperty(ev.TenantID)
 	}
 	if ev.AccountAliasHash != "" {
-		props["accountAliasHash"] = ev.AccountAliasHash
+		props["accountAliasHash"] = scrubProperty(ev.AccountAliasHash)
 	}
 	if ev.ErrorCode != "" {
-		props["errorCode"] = ev.ErrorCode
+		props["errorCode"] = SafeErrorCode(ev.ErrorCode)
 	}
 	if ev.Success != nil {
 		props["success"] = strconv.FormatBool(*ev.Success)

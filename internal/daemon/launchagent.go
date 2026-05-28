@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"os"
@@ -49,10 +50,10 @@ const launchAgentTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{{ .Label }}</string>
+    <string>{{ xml .Label }}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{{ .ExecutablePath }}</string>
+        <string>{{ xml .ExecutablePath }}</string>
         <string>daemon</string>
         <string>run</string>
     </array>
@@ -61,9 +62,9 @@ const launchAgentTemplate = `<?xml version="1.0" encoding="UTF-8"?>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>{{ .StdoutPath }}</string>
+    <string>{{ xml .StdoutPath }}</string>
     <key>StandardErrorPath</key>
-    <string>{{ .StderrPath }}</string>
+    <string>{{ xml .StderrPath }}</string>
     <key>ProcessType</key>
     <string>Background</string>
 </dict>
@@ -98,7 +99,10 @@ func ResolveLaunchAgentParams(paths config.Paths, execPath string) (LaunchAgentP
 // is deterministic so install can compare against an already-installed
 // plist and decide whether to skip the write.
 func RenderLaunchAgentPlist(params LaunchAgentParams) ([]byte, error) {
-	tmpl, err := template.New("plist").Parse(launchAgentTemplate)
+	// Every interpolated field is piped through `xml` so a path containing
+	// '&', '<', or '>' (legal in a macOS file path) produces well-formed
+	// XML instead of a plist launchd silently rejects.
+	tmpl, err := template.New("plist").Funcs(template.FuncMap{"xml": xmlEscape}).Parse(launchAgentTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("parse plist template: %w", err)
 	}
@@ -107,6 +111,19 @@ func RenderLaunchAgentPlist(params LaunchAgentParams) ([]byte, error) {
 		return nil, fmt.Errorf("render plist: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// xmlEscape returns s with XML metacharacters (&, <, >, quotes, and
+// control chars) replaced by entity references, safe to embed in a plist
+// <string> element.
+func xmlEscape(s string) string {
+	var b strings.Builder
+	if err := xml.EscapeText(&b, []byte(s)); err != nil {
+		// EscapeText only fails if the writer fails; strings.Builder never
+		// does. Fall back to the raw value rather than dropping it.
+		return s
+	}
+	return b.String()
 }
 
 // LaunchAgentPlistDir is the per-user directory macOS scans for

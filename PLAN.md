@@ -15,7 +15,7 @@ The Go core under `internal/` and `core/` is the shared engine for every surface
 - **IPC (`internal/ipc`)**: JSON-RPC 2.0 over a Unix-domain socket for CLI ↔ daemon and daemon ↔ extension traffic.
 - **cgo façade (`core/`)**: C-ABI exports and generated header so Swift can link `libofemcore.a`.
 
-Unit tests cover every internal package; integration tests gated by `OFEM_INTEGRATION=1` run against a real Fabric workspace. Coverage target on `internal/*` is >80%. CI runs `golangci-lint`, `go test`, commitlint, and a build verify.
+Unit tests cover every internal package; integration tests gated by `OFEM_INTEGRATION=1` run against a real Fabric workspace. CI enforces a total-coverage **floor** (currently 60%, ratcheted up as coverage climbs) and prints the percentage on every run; 80% remains the aspiration, not yet the gate. CI runs `golangci-lint`, `go test -race`, `govulncheck`, commitlint, and build verifies.
 
 ## CLI
 
@@ -82,7 +82,7 @@ Cross-cutting concerns that span every component.
 
 - **Documentation**: `docs/` markdown is authoritative; the docs site at `https://ofem.debruyn.dev` is rendered from it. Significant behavior changes update README.
 - **Telemetry analysis**: App Insights reviewed weekly for top errors, adoption by tenant, version uptake. Informs roadmap prioritization.
-- **Security**: GitHub Private Security Advisories triaged within 72 hours. Quarterly dependency audit via `govulncheck` and `gh dependabot alerts`.
+- **Security**: GitHub Private Security Advisories triaged within 72 hours. `govulncheck` runs on every CI build; Dependabot (`.github/dependabot.yml`) opens weekly update PRs for Go modules and GitHub Actions. GitHub Actions are SHA-pinned with a tracked version comment.
 - **Releases**: tag-based via GitHub Actions, CalVer `YYYY.MM.PATCH`, no fixed cadence — released when meaningful change has accumulated.
 - **Issue triage**: weekly. Issues are the public roadmap (chosen over a separate roadmap doc).
 - **Localization**: English-only for code, comments, docs, commits, and PR descriptions, so anyone can contribute.

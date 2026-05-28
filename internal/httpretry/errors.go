@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
 )
 
 // Sentinel errors mapped from HTTP status codes. Callers use [errors.Is]
@@ -149,25 +150,20 @@ func isRetryAfterStatus(status int) bool {
 	return status == http.StatusTooManyRequests || status >= 500
 }
 
-// parseRetryAfter parses the Retry-After header. Per RFC 7231 the value
-// is either a non-negative integer of seconds or an HTTP-date. Returns
-// zero for an empty or unparsable header.
+// parseRetryAfter parses the Retry-After header into a relative delay,
+// returning zero for an empty or unparsable header. It delegates to the
+// single RFC 7231 implementation in [httpgate.ParseRetryAfter] (which
+// returns an absolute deadline) so the two packages cannot drift.
 func parseRetryAfter(v string) time.Duration {
-	v = strings.TrimSpace(v)
-	if v == "" {
+	// Capture now once and reuse it for the delta so an integer
+	// delta-seconds value round-trips exactly (a second time.Now() via
+	// time.Until would shave off a few microseconds).
+	now := time.Now()
+	deadline, ok := httpgate.ParseRetryAfter(v, now)
+	if !ok {
 		return 0
 	}
-	if secs, err := strconv.Atoi(v); err == nil {
-		if secs < 0 {
-			return 0
-		}
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(v); err == nil {
-		d := time.Until(t)
-		if d < 0 {
-			return 0
-		}
+	if d := deadline.Sub(now); d > 0 {
 		return d
 	}
 	return 0

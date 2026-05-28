@@ -293,11 +293,25 @@ func (r *Registry) clientFor(alias, tenantID string) (MSALClient, error) {
 // the user's per-tenant objectId which docs/telemetry.md keeps out of
 // any log destination the user can't easily inspect.
 func (r *Registry) findMSALAccount(ctx context.Context, client MSALClient, alias, homeAccountID string) (public.Account, error) {
+	// A config account persisted with an empty HomeAccountID (malformed or
+	// hand-edited TOML, or a future login path that fails to populate it)
+	// must never match. Without this guard, "" would match the first MSAL
+	// cache entry whose ID is also "" — handing back a token for the WRONG
+	// identity in a tool whose whole job is juggling multiple accounts.
+	if homeAccountID == "" {
+		slog.Warn("auth: account has no HomeAccountID; re-auth required",
+			"alias", alias,
+		)
+		return public.Account{}, ErrInteractionRequired
+	}
 	accounts, err := client.Accounts(ctx)
 	if err != nil {
 		return public.Account{}, err
 	}
 	for _, a := range accounts {
+		if a.HomeAccountID == "" {
+			continue // never match on an empty cache-entry ID either
+		}
 		if a.HomeAccountID == homeAccountID {
 			return a, nil
 		}

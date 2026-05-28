@@ -164,23 +164,15 @@ func TestEvictToLimit_ZeroLimitIsNoop(t *testing.T) {
 	}
 }
 
-func TestEvictToLimit_PreservesSharedBlobOnDisk(t *testing.T) {
-	t.Parallel()
-	c, err := Open(Options{Root: t.TempDir(), MaxBlobBytes: 0})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = c.Close() })
+// storeSharedBlob seeds two rows (a older, b newer) that link the same
+// physical blob of the given size and returns its sha.
+func storeSharedBlob(t *testing.T, c *Cache, size int) (sha string, n int64) {
+	t.Helper()
 	ctx := context.Background()
-
-	// Two rows share a sha; once we evict one the file must remain
-	// because the other still references it.
 	base := Key{AccountAlias: "work", WorkspaceID: "ws", ItemID: "it"}
 	a := Entry{Key: keyAt(base, "a.bin"), Name: "a.bin", LastAccessed: time.Now().Add(-time.Hour)}
 	b := Entry{Key: keyAt(base, "b.bin"), Name: "b.bin", LastAccessed: time.Now()}
-
-	data := make([]byte, 4096)
-	sha, n, err := c.StoreBlob(ctx, bytes.NewReader(data))
+	sha, n, err := c.StoreBlob(ctx, bytes.NewReader(make([]byte, size)))
 	if err != nil {
 		t.Fatalf("StoreBlob: %v", err)
 	}
@@ -192,22 +184,73 @@ func TestEvictToLimit_PreservesSharedBlobOnDisk(t *testing.T) {
 	if err := c.Put(ctx, b); err != nil {
 		t.Fatalf("Put b: %v", err)
 	}
+	return sha, n
+}
 
-	// Force a single eviction by switching the limit just below the
-	// per-row size and re-opening.
-	c.opts.MaxBlobBytes = int64(n) // exactly one blob worth → drop one ref
-	evicted, _, err := c.EvictToLimit(ctx)
+// TestEvictToLimit_DedupAccounting covers C-3: two metadata rows sharing
+// one physical blob count as ONE blob's worth, not two. With the budget set
+// to exactly that size, usage is at the limit, so nothing is evicted and
+// the file stays. (The pre-fix accounting summed blob_size per row = 2×size,
+// over-evicted a row, and a prior test asserted that wrong behaviour.)
+func TestEvictToLimit_DedupAccounting(t *testing.T) {
+	t.Parallel()
+	c, err := Open(Options{Root: t.TempDir(), MaxBlobBytes: 0})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := context.Background()
+
+	sha, n := storeSharedBlob(t, c, 4096)
+
+	if got, err := c.BlobBytes(ctx); err != nil || got != n {
+		t.Fatalf("BlobBytes = %d (err %v), want %d (distinct sha counted once)", got, err, n)
+	}
+
+	c.opts.MaxBlobBytes = n // exactly one blob's worth → already at the limit
+	evicted, reclaimed, err := c.EvictToLimit(ctx)
 	if err != nil {
 		t.Fatalf("EvictToLimit: %v", err)
 	}
-	if evicted != 1 {
-		t.Fatalf("evicted = %d, want 1", evicted)
+	if evicted != 0 || reclaimed != 0 {
+		t.Fatalf("evicted=%d reclaimed=%d, want 0/0 (dedup usage is at the limit)", evicted, reclaimed)
 	}
-
-	// The blob file must still be present because the surviving row
-	// keeps a reference.
 	_, p := blobShardPath(c.blobRoot, sha)
 	if _, err := os.Stat(p); err != nil {
-		t.Fatalf("shared blob removed prematurely: %v", err)
+		t.Fatalf("shared blob removed though usage was within the limit: %v", err)
+	}
+}
+
+// TestEvictOldest_SharedBlobFilePreserved checks the lower-level invariant:
+// evicting one of two rows that share a blob clears that row's link but must
+// NOT unlink the file, because the other row still references it. freed must
+// be false in that case.
+func TestEvictOldest_SharedBlobFilePreserved(t *testing.T) {
+	t.Parallel()
+	c, err := Open(Options{Root: t.TempDir(), MaxBlobBytes: 0})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := context.Background()
+
+	sha, _ := storeSharedBlob(t, c, 4096)
+
+	k, _, gotSha, freed, ok, err := c.evictOldest(ctx)
+	if err != nil || !ok {
+		t.Fatalf("evictOldest: ok=%v err=%v", ok, err)
+	}
+	if gotSha != sha {
+		t.Errorf("evicted sha = %q, want %q", gotSha, sha)
+	}
+	if freed {
+		t.Error("freed = true, want false: blob is still referenced by the other row")
+	}
+	if k.Path != "a.bin" {
+		t.Errorf("evicted oldest = %q, want a.bin", k.Path)
+	}
+	_, p := blobShardPath(c.blobRoot, sha)
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("shared blob removed though a second row still references it: %v", err)
 	}
 }

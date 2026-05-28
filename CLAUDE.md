@@ -22,7 +22,7 @@ OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fa
 - Phasing: `PLAN.md` — Phase 0 internal core, Phase 1 MVP signed `.app` with File Provider Extension, Phase 2 host app GUI, Phase 3 polish.
 - Mount mechanism: File Provider Extension, never FUSE-T. See `docs/macos-mount.md` for the rejected alternatives.
 - Auth: `docs/auth.md` — MSAL Go, own multi-tenant Entra App Registration, Keychain-backed cache, per-account `PublicClientApplication`.
-- OneLake API: `docs/onelake-api.md` — ADLS Gen2 DFS endpoint for I/O, Fabric REST for discovery, audience `https://storage.azure.com/`.
+- OneLake API: `docs/onelake-api.md` — ADLS Gen2 DFS endpoint for I/O (audience `https://storage.azure.com/`), Fabric REST for discovery (Power BI Service audience `https://analysis.windows.net/powerbi/api`). Two distinct audiences — a single one returns 401 on Fabric REST. See `docs/auth.md`.
 - Tech stack: `docs/tech-stack.md` — Go for core + CLI, Swift for `.app` and `.appex`, cgo C-ABI bridge.
 - Telemetry: `docs/telemetry.md` — opt-out, App Insights free tier, tenant IDs collected but never UPN / workspace / file names.
 - Packaging: `docs/packaging-homebrew.md` — GoReleaser + xcodebuild + notarytool, DMG via Homebrew cask.

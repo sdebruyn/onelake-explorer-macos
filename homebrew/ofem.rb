@@ -39,19 +39,20 @@ cask "ofem" do
   app "OneLake.app"
   binary "#{appdir}/OneLake.app/Contents/Resources/bin/ofem"
 
-  uninstall launchctl: "dev.debruyn.ofem",
-            quit:      "dev.debruyn.ofem"
+  # Keep these stanzas in lockstep with homebrew/Casks/ofem.rb.tmpl (the
+  # template GoReleaser ships). This dummy only validates the tap pipeline,
+  # but stale uninstall/zap rules here would mislead anyone reading it.
+  uninstall launchctl: "dev.debruyn.ofem.daemon",
+            quit:      "dev.debruyn.ofem.app",
+            delete:    [
+              "~/Library/LaunchAgents/dev.debruyn.ofem.daemon.plist",
+            ]
 
   zap trash: [
-    "~/Library/Application Support/dev.debruyn.ofem",
-    "~/Library/Caches/dev.debruyn.ofem",
-    # Each OneLake account materialises as its own File Provider domain
-    # under `~/Library/CloudStorage/OneLake-<alias>/` and may contain
-    # pending uploads. Only trashed on explicit `brew uninstall --zap` —
-    # never on a plain `brew uninstall`.
-    "~/Library/CloudStorage/OneLake-*",
-    "~/Library/LaunchAgents/dev.debruyn.ofem.plist",
-    "~/Library/Logs/OFEM",
+    "~/Library/Group Containers/group.dev.debruyn.ofem",
     "~/Library/Preferences/dev.debruyn.ofem.plist",
+    # Each account materialises as its own File Provider domain.
+    # Zapped only on explicit `brew uninstall --zap` to avoid data loss.
+    "~/Library/CloudStorage/OneLake-*",
   ]
 end
