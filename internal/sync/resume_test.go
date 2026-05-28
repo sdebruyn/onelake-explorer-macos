@@ -53,19 +53,19 @@ func TestOpen_PartialDownloadResume(t *testing.T) {
 	// Pre-stage a partial-spill on disk equal to the first half, plus
 	// an etag sidecar pinning it to the same etag the cache row has.
 	// Without the sidecar, partialRangeStart would refuse to resume.
-	partialPath := partialFor(k)
+	partialPath := f.engine.partialFor(k)
 	if err := os.MkdirAll(filepath.Dir(partialPath), 0o700); err != nil {
 		t.Fatalf("mkdir partials: %v", err)
 	}
 	if err := os.WriteFile(partialPath, full[:half], 0o600); err != nil {
 		t.Fatalf("write partial: %v", err)
 	}
-	if err := storePartialEtag(k, "etag-1"); err != nil {
+	if err := f.engine.storePartialEtag(k, "etag-1"); err != nil {
 		t.Fatalf("store partial etag: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = os.Remove(partialPath)
-		_ = os.Remove(partialEtagFor(k))
+		_ = os.Remove(f.engine.partialEtagFor(k))
 	})
 
 	// HEAD: return the same etag so the engine falls into the cache-
@@ -159,19 +159,19 @@ func TestOpen_PartialResume_EtagChanged(t *testing.T) {
 
 	// Stage a partial pinned to etag-1 with the OLD bytes (zeros).
 	old := bytes.Repeat([]byte{0xAA}, int(half))
-	partialPath := partialFor(k)
+	partialPath := f.engine.partialFor(k)
 	if err := os.MkdirAll(filepath.Dir(partialPath), 0o700); err != nil {
 		t.Fatalf("mkdir partials: %v", err)
 	}
 	if err := os.WriteFile(partialPath, old, 0o600); err != nil {
 		t.Fatalf("write partial: %v", err)
 	}
-	if err := storePartialEtag(k, "etag-1"); err != nil {
+	if err := f.engine.storePartialEtag(k, "etag-1"); err != nil {
 		t.Fatalf("store partial etag: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = os.Remove(partialPath)
-		_ = os.Remove(partialEtagFor(k))
+		_ = os.Remove(f.engine.partialEtagFor(k))
 	})
 
 	httpmock.RegisterResponder("HEAD", "=~^"+testOneLakeBase+`.*`,
@@ -240,7 +240,7 @@ func TestOpen_PartialResume_EtagChanged(t *testing.T) {
 	if _, err := os.Stat(partialPath); !os.IsNotExist(err) {
 		t.Errorf("partial-spill survived: stat err = %v", err)
 	}
-	if _, err := os.Stat(partialEtagFor(k)); !os.IsNotExist(err) {
+	if _, err := os.Stat(f.engine.partialEtagFor(k)); !os.IsNotExist(err) {
 		t.Errorf("partial-spill etag survived: stat err = %v", err)
 	}
 }
@@ -257,16 +257,16 @@ func TestFinalisePartial_SHAMismatchDiscardsAll(t *testing.T) {
 	k := cache.Key{AccountAlias: "a", WorkspaceID: "w", ItemID: "i", Path: "Files/sha.bin"}
 
 	// Stage spill + etag sidecar so we can assert they get cleaned up.
-	if err := os.MkdirAll(filepath.Dir(partialFor(k)), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(f.engine.partialFor(k)), 0o700); err != nil {
 		t.Fatalf("mkdir partials: %v", err)
 	}
-	if err := os.WriteFile(partialFor(k), []byte("HALF"), 0o600); err != nil {
+	if err := os.WriteFile(f.engine.partialFor(k), []byte("HALF"), 0o600); err != nil {
 		t.Fatalf("write spill: %v", err)
 	}
-	if err := storePartialEtag(k, "etag-x"); err != nil {
+	if err := f.engine.storePartialEtag(k, "etag-x"); err != nil {
 		t.Fatalf("store etag: %v", err)
 	}
-	t.Cleanup(func() { discardPartial(k) })
+	t.Cleanup(func() { f.engine.discardPartial(k) })
 
 	// We tell finalisePartial to append "rest" (4 bytes) so the total
 	// matches expectedTotal=8. expectedSHA is a wrong hash → must fail.
@@ -277,10 +277,10 @@ func TestFinalisePartial_SHAMismatchDiscardsAll(t *testing.T) {
 	if !strings.Contains(err.Error(), "sha mismatch") {
 		t.Errorf("err = %v, want sha mismatch", err)
 	}
-	if _, serr := os.Stat(partialFor(k)); !os.IsNotExist(serr) {
+	if _, serr := os.Stat(f.engine.partialFor(k)); !os.IsNotExist(serr) {
 		t.Errorf("partial spill survived SHA mismatch: stat err = %v", serr)
 	}
-	if _, serr := os.Stat(partialEtagFor(k)); !os.IsNotExist(serr) {
+	if _, serr := os.Stat(f.engine.partialEtagFor(k)); !os.IsNotExist(serr) {
 		t.Errorf("partial etag sidecar survived SHA mismatch: stat err = %v", serr)
 	}
 }

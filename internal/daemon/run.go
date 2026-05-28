@@ -190,6 +190,11 @@ func Run(ctx context.Context, opts RunOptions) error {
 		Logger:                 logger,
 		MaxConcurrentUploads:   cfg.Net.MaxConcurrentUploadsPerAccount,
 		MaxConcurrentDownloads: cfg.Net.MaxConcurrentDownloadsPerAccount,
+		// Share the App Group cache dir for download spill files so the
+		// daemon, CLI, and sandboxed extension rendezvous on the same
+		// partials (and the extension, which cannot write to the global
+		// temp dir, has a writable location).
+		ScratchDir: filepath.Join(paths.CacheDir, "partials"),
 	})
 	if err != nil {
 		return fmt.Errorf("daemon: build sync engine: %w", err)

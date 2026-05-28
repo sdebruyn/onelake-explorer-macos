@@ -52,6 +52,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         }
     }
 
+    /// Directory for staging fetched file contents before handing the
+    /// URL back to the system. We use the framework-managed per-domain
+    /// temporary directory: files written here are imported and then
+    /// reaped by the system, so the extension never deletes them itself
+    /// (deleting races the system's asynchronous import and yields a
+    /// POSIX ENOENT materialization failure).
+    private func fetchScratchDirectory() throws -> URL {
+        guard let manager = NSFileProviderManager(for: domain) else {
+            throw NSError(domain: NSCocoaErrorDomain, code: NSFileNoSuchFileError)
+        }
+        return try manager.temporaryDirectoryURL()
+    }
+
     /// Called when macOS is done with this extension instance. The
     /// completion handler must be invoked exactly once.
     func invalidate() {
@@ -156,18 +169,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         // then atomically moves it into its own replicated store
         // once we hand the URL back.
         let dest: URL
-        let tmpDir: URL
         do {
-            tmpDir = try FileManager.default.url(
-                for: .itemReplacementDirectory,
-                in: .userDomainMask,
-                appropriateFor: FileManager.default.temporaryDirectory,
-                create: true
-            )
+            // The system takes ownership of the file we hand back: it
+            // imports the bytes asynchronously AFTER the completion
+            // handler returns. We must NOT delete the file (or its parent)
+            // ourselves — doing so races the import and the system then
+            // sees POSIX ENOENT and fails materialization. We therefore
+            // write into the per-domain temporary directory the framework
+            // manages and reaps for exactly this purpose.
+            let tmpDir = try fetchScratchDirectory()
             dest = tmpDir.appendingPathComponent(UUID().uuidString)
         } catch {
             FileProviderExtension.log.error(
-                "fetchContents: temp dir creation failed: \(error.localizedDescription, privacy: .public)"
+                "fetchContents: temp dir resolution failed: \(error.localizedDescription, privacy: .public)"
             )
             completionHandler(nil, nil, error)
             progress.completedUnitCount = 1
@@ -175,12 +189,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         }
 
         Task.detached {
-            // Apple's contract: macOS moves the file out of tmpDir into
-            // its replicated store, but the parent directory itself is
-            // our responsibility to clean up after the completion handler
-            // returns. Defer removal so it happens whether we succeed or
-            // fail (the framework has already moved the file by then).
-            defer { try? FileManager.default.removeItem(at: tmpDir) }
             do {
                 let item = try await CoreBridge.shared.fetchContents(
                     alias: aliasCopy,

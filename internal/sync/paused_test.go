@@ -29,7 +29,14 @@ func TestIsPausedCapacityError(t *testing.T) {
 		{"fabric_errorCode_notactive", `{"errorCode":"CapacityNotActive"}`, true},
 		{"dfs_phrase_paused", `Unable to complete the action because this Fabric capacity is currently paused.`, true},
 		{"dfs_phrase_notactive", `The capacity is not active.`, true},
+		// Exact real-tenant DFS body (GUID inlined between "capacity" and
+		// "is currently not available"). Regression guard so the regex
+		// keeps matching the production phrasing verbatim.
+		{"dfs_phrase_guid_notavailable", `Unable to complete the action because this Fabric capacity FA06CF31-BBD6-497B-9E6A-8E688BFEDB92 is currently not available. Contact the capacity administrator for help.`, true},
 		{"benign_403", `{"errorCode":"InsufficientPrivileges","message":"You do not have permission"}`, false},
+		// Negative guard: a benign "not available" sentence that is not
+		// about a paused capacity must not over-match.
+		{"benign_not_available", `The requested file is currently not available because it was deleted.`, false},
 		{"empty", "", false},
 	}
 	for _, c := range cases {

@@ -104,6 +104,18 @@ func (e *Engine) enumerateFromCache(ctx context.Context, k cache.Key) (bool, []c
 	if err != nil {
 		return false, nil, fmt.Errorf("sync.Enumerate: read cache: %w", err)
 	}
+	// A directory row is stamped with SyncedAt when its PARENT is
+	// enumerated (it is written as one of the parent's children), but
+	// that does not mean its OWN children were ever fetched. So a
+	// "fresh" directory with zero cached children is ambiguous: it may be
+	// genuinely empty, or simply never descended into. Force a refresh to
+	// disambiguate rather than report it empty — a truly empty folder
+	// costs one DFS round-trip, which is acceptable. Without this, opening
+	// a folder right after its parent was listed shows no contents until
+	// the TTL lapses.
+	if len(entries) == 0 {
+		return false, nil, nil
+	}
 	return true, entries, nil
 }
 

@@ -31,19 +31,15 @@ final class OneLakeItem: NSObject, NSFileProviderItem {
     let itemVersion: NSFileProviderItemVersion
 
     init(from b: BridgeItem) {
-        // Root-of-alias is conventionally signalled by an empty
-        // identifier on the bridge; the framework expects the
-        // well-known `.rootContainer` constant for that case.
-        if b.identifier.isEmpty {
-            self.itemIdentifier = .rootContainer
-        } else {
-            self.itemIdentifier = NSFileProviderItemIdentifier(b.identifier)
-        }
-        if let parent = b.parentIdentifier, !parent.isEmpty {
-            self.parentItemIdentifier = NSFileProviderItemIdentifier(parent)
-        } else {
-            self.parentItemIdentifier = .rootContainer
-        }
+        // Map a bridge identifier string to the framework identifier.
+        // The Go core signals the alias root either as "" or as its
+        // wire sentinel ".rootContainer"; both must become the
+        // well-known `NSFileProviderItemIdentifier.rootContainer`
+        // constant, otherwise macOS rejects the item with
+        // itemMismatch(expected: .root, received: .rootContainer) and
+        // never proceeds to enumeration.
+        self.itemIdentifier = Self.fpIdentifier(b.identifier)
+        self.parentItemIdentifier = Self.fpIdentifier(b.parentIdentifier ?? "")
         self.filename = b.filename
 
         // Resolve UTType. Directories map to `.folder`; everything
@@ -119,5 +115,20 @@ final class OneLakeItem: NSObject, NSFileProviderItem {
         )
 
         super.init()
+    }
+
+    /// Translate a bridge identifier string to the framework
+    /// identifier. An empty string, the Go core's ".rootContainer" wire
+    /// sentinel, and the framework's own rootContainer raw value all
+    /// resolve to `NSFileProviderItemIdentifier.rootContainer` so the
+    /// root item and any child's parent pointer use the exact constant
+    /// macOS compares against.
+    private static func fpIdentifier(_ s: String) -> NSFileProviderItemIdentifier {
+        if s.isEmpty
+            || s == ".rootContainer"
+            || s == NSFileProviderItemIdentifier.rootContainer.rawValue {
+            return .rootContainer
+        }
+        return NSFileProviderItemIdentifier(s)
     }
 }

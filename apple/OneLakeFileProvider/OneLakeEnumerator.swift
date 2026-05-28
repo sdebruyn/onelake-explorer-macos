@@ -17,16 +17,18 @@ import os.log
 /// rename only has to happen in two places.
 let ofemDomainIdentifierPrefix = "ofem."
 
-/// Single-anchor sync token. Phase 1 always returns a zero-byte
-/// anchor and an empty change set — macOS therefore treats every
-/// enumeration as authoritative without ever asking us for diffs.
-/// This keeps the Phase 1 surface tiny; real sync anchors land when
-/// the daemon's change-detection ships.
+/// Single-anchor sync token. Phase 1 does not track real anchors, so
+/// `currentSyncAnchor` hands back a fixed zero-byte value and
+/// `enumerateChanges` never computes a diff.
 ///
-/// The zero-byte value means macOS will call `enumerateChanges` with
-/// this anchor and we will always respond "no changes, moreComing=false",
-/// causing a full re-enumeration on every refresh. That is correct and
-/// intentional for Phase 1.
+/// Crucially, `enumerateChanges` does NOT answer "no changes": that
+/// would tell macOS its cached listing is authoritative, so macOS
+/// would keep the first enumeration of every container forever and
+/// never call `enumerateItems` again — a folder seen empty once would
+/// stay empty even after its contents appeared server-side. Instead we
+/// answer `.syncAnchorExpired`, which makes macOS discard its cache and
+/// re-run `enumerateItems`. The Go core's own metadata-cache TTL keeps
+/// that cheap, so this is the right read-only behaviour for Phase 1.
 ///
 /// TODO(phase-2): replace with MAX(SyncedAt) from the cache so the
 /// daemon's change-detection path can emit real diffs and avoid full
@@ -115,13 +117,16 @@ final class OneLakeEnumerator: NSObject, NSFileProviderEnumerator {
         for observer: NSFileProviderChangeObserver,
         from _: NSFileProviderSyncAnchor
     ) {
-        // Phase 1: no incremental change support. macOS will fall back
-        // to full re-enumeration whenever it needs fresh state, which
-        // is fine for the read-only browsing path.
+        // Phase 1: no incremental change support. Rather than claim
+        // "no changes" (which would freeze macOS on its cached listing
+        // forever), expire the anchor so macOS drops its cache and
+        // re-runs `enumerateItems`. The Go core's metadata-cache TTL
+        // absorbs the cost, so refreshes stay cheap on the read-only
+        // browsing path.
         OneLakeEnumerator.log.debug(
-            "enumerateChanges \(self.alias, privacy: .public)/\(self.containerItemIdentifier.rawValue, privacy: .public) -> no changes"
+            "enumerateChanges \(self.alias, privacy: .public)/\(self.containerItemIdentifier.rawValue, privacy: .public) -> syncAnchorExpired (force re-enumerate)"
         )
-        observer.finishEnumeratingChanges(upTo: phaseOneSyncAnchor, moreComing: false)
+        observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
     }
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {

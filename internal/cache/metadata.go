@@ -322,9 +322,17 @@ WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?`
 
 // selectChildrenSQL fetches every direct child of a parent path. The
 // idx_pm_children index supports it.
+//
+// The `path <> parent_path` guard excludes a directory from its own
+// child list. It matters only for a root row (path = "" and
+// parent_path = ""): without it, enumerating the item / workspace /
+// domain root returns the root itself as a phantom child (a nameless
+// entry Finder shows as "/"). Every non-root entry has path != parent_path
+// by construction, so the guard never drops a real child.
 const selectChildrenSQL = `SELECT ` + selectColumns + `
 FROM path_metadata
 WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND parent_path = ?
+  AND path <> parent_path
 ORDER BY is_dir DESC, name ASC`
 
 // scannable is the subset of *sql.Row and *sql.Rows we need for a single
