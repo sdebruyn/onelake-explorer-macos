@@ -1,41 +1,46 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="OFEM app icon">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#EAF4FB"></stop>
-      <stop offset="1" stop-color="#BCD7EC"></stop>
+      <stop offset="1" stop-color="#CFE6F5"></stop>
     </linearGradient>
-    <radialGradient id="deep" cx="0.3" cy="0.3" r="0.95">
-      <stop offset="0" stop-color="#0078D4"></stop>
-      <stop offset="0.6" stop-color="#1A508B"></stop>
-      <stop offset="1" stop-color="#0F3A6B"></stop>
-    </radialGradient>
-    <radialGradient id="mid" cx="0.3" cy="0.3" r="0.95">
-      <stop offset="0" stop-color="#028FDC"></stop>
-      <stop offset="0.7" stop-color="#0078D4"></stop>
+    <radialGradient id="apple" cx="0.32" cy="0.26" r="0.95">
+      <stop offset="0" stop-color="#5BC5FF"></stop>
+      <stop offset="0.32" stop-color="#028FDC"></stop>
+      <stop offset="0.66" stop-color="#0078D4"></stop>
       <stop offset="1" stop-color="#1A508B"></stop>
     </radialGradient>
-    <radialGradient id="spark" cx="0.4" cy="0.4" r="0.7">
+    <radialGradient id="leaf" cx="0.4" cy="0.3" r="0.9">
       <stop offset="0" stop-color="#A6E0FF"></stop>
       <stop offset="0.6" stop-color="#5BC5FF"></stop>
       <stop offset="1" stop-color="#028FDC"></stop>
     </radialGradient>
+    <linearGradient id="wave1" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#5BC5FF"></stop>
+      <stop offset="0.5" stop-color="#028FDC"></stop>
+      <stop offset="1" stop-color="#0078D4"></stop>
+    </linearGradient>
+    <linearGradient id="wave2" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#028FDC"></stop>
+      <stop offset="0.5" stop-color="#0078D4"></stop>
+      <stop offset="1" stop-color="#1A508B"></stop>
+    </linearGradient>
     <clipPath id="squircle">
-      <path d="M512 40 C 164 40 40 164 40 512 C 40 860 164 984 512 984 C 860 984 984 860 984 512 C 984 164 860 40 512 40 Z"></path>
+      <path d="M512 41 C 164 41 41 164 41 512 C 41 860 164 983 512 983 C 860 983 983 860 983 512 C 983 164 860 41 512 41 Z"></path>
     </clipPath>
+    <clipPath id="above"><rect x="0" y="0" width="200" height="112"></rect></clipPath>
   </defs>
   <g clip-path="url(#squircle)">
-    <rect width="1024" height="1024" fill="url(#bg)"></rect>
-    <g transform="translate(72 184) scale(4.4)">
-      <g transform="translate(-8 28) scale(0.7)">
-        <path d="M100 16 C 100 16 36 92 36 130 A 64 64 0 0 0 164 130 C 164 92 100 16 100 16 Z" fill="url(#deep)"></path>
+    <rect width="1024" height="1024" fill="url(#sky)"></rect>
+    <g transform="scale(5.12)">
+      <g clip-path="url(#above)">
+        <path d="M100 74 C 86 58 60 52 48 72 C 36 94 42 132 66 152 C 79 163 90 160 100 151 C 110 160 121 163 134 152 C 158 132 164 94 152 72 C 140 52 114 58 100 74 Z" fill="url(#apple)"></path>
       </g>
-      <g transform="translate(82 14) scale(0.52)">
-        <path d="M100 16 C 100 16 36 92 36 130 A 64 64 0 0 0 164 130 C 164 92 100 16 100 16 Z" fill="url(#mid)"></path>
-      </g>
-      <g transform="translate(38 102) scale(0.34)">
-        <path d="M100 16 C 100 16 36 92 36 130 A 64 64 0 0 0 164 130 C 164 92 100 16 100 16 Z" fill="url(#spark)"></path>
-      </g>
+      <path d="M100 72 C 101 56 104 48 112 44" stroke="#1A508B" stroke-width="7" stroke-linecap="round" fill="none"></path>
+      <path d="M106 58 C 116 38 140 34 150 46 C 140 64 118 66 106 58 Z" fill="url(#leaf)"></path>
+      <path d="M14 138 Q 45 122 76 138 T 138 138 T 200 138" stroke="url(#wave1)" stroke-width="20" stroke-linecap="round" fill="none"></path>
+      <path d="M14 170 Q 45 154 76 170 T 138 170 T 200 170" stroke="url(#wave2)" stroke-width="20" stroke-linecap="round" fill="none"></path>
     </g>
   </g>
-  <path d="M512 40 C 164 40 40 164 40 512 C 40 860 164 984 512 984 C 860 984 984 860 984 512 C 984 164 860 40 512 40 Z" fill="none" stroke="rgba(0,0,0,0.16)" stroke-width="2"></path>
+  <path d="M512 41 C 164 41 41 164 41 512 C 41 860 164 983 512 983 C 860 983 983 860 983 512 C 983 164 860 41 512 41 Z" fill="none" stroke="rgba(0,0,0,0.16)" stroke-width="2"></path>
 </svg>

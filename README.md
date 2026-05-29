@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/branding/ofem-lockup.svg" alt="OFEM — OneLake Explorer for macOS" width="420" />
+  <img src="assets/branding/ofem-logo.svg" alt="OneLake Explorer for macOS" width="120" />
 </p>
 
 <h3 align="center">OneLake Explorer for macOS</h3>

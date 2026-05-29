@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="OFEM (monochrome dark)">
+  <defs>
+    <clipPath id="above"><rect x="0" y="0" width="200" height="112"></rect></clipPath>
+  </defs>
+  <g fill="#0F1822">
+    <g clip-path="url(#above)">
+      <path d="M100 74 C 86 58 60 52 48 72 C 36 94 42 132 66 152 C 79 163 90 160 100 151 C 110 160 121 163 134 152 C 158 132 164 94 152 72 C 140 52 114 58 100 74 Z"></path>
+    </g>
+    <path d="M106 58 C 116 38 140 34 150 46 C 140 64 118 66 106 58 Z" opacity="0.66"></path>
+  </g>
+  <path d="M100 72 C 101 56 104 48 112 44" stroke="#0F1822" stroke-width="7" stroke-linecap="round" fill="none"></path>
+  <path d="M14 138 Q 45 122 76 138 T 138 138 T 200 138" stroke="#0F1822" stroke-width="20" stroke-linecap="round" fill="none" opacity="0.85"></path>
+  <path d="M14 170 Q 45 154 76 170 T 138 170 T 200 170" stroke="#0F1822" stroke-width="20" stroke-linecap="round" fill="none" opacity="0.55"></path>
+</svg>
