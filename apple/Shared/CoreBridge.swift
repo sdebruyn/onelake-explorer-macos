@@ -112,7 +112,9 @@ private struct ErrorOnlyEnvelope: Decodable {
     let error: BridgeErrorPayload?
 }
 
-private struct BridgeErrorPayload: Decodable {
+// Internal (not private) so StatusTypes.swift (same module) can reference it
+// in the StatusEnvelope and AccountListEnvelope types.
+struct BridgeErrorPayload: Decodable {
     let code: String
     let message: String
 }
@@ -194,6 +196,32 @@ final class CoreBridge {
     }
 
     // MARK: - Reads
+
+    // MARK: Status / account list (consumed by MenuStatusModel)
+
+    /// Fetch the daemon's live status (version, offline flag, cache sizes,
+    /// paused workspaces). Throws BridgeError.serverUnreachable when the
+    /// daemon is not running. StatusInfo / StatusEnvelope are defined in
+    /// apple/Shared/StatusTypes.swift and compile into both targets.
+    func status() async throws -> StatusInfo {
+        let env: StatusEnvelope = try await callAsync("status", [:])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        guard let info = env.statusInfo else {
+            throw BridgeError.decoding("status envelope missing result")
+        }
+        return info
+    }
+
+    /// Fetch the full account list including the default-account alias.
+    /// Supersedes the narrower listAccounts() for menu-bar display use.
+    func accountList() async throws -> AccountListInfo {
+        let env: AccountListEnvelope = try await callAsync("account.list", [:])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        guard let info = env.listInfo else {
+            throw BridgeError.decoding("account.list envelope missing result")
+        }
+        return info
+    }
 
     func listAccounts() async throws -> [Account] {
         let env: AccountsEnvelope = try await callAsync("account.list", [:])
