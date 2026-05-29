@@ -25,6 +25,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
@@ -69,16 +70,19 @@ func init() {
 // that contains ".." after cleaning or that resolves outside those roots.
 // Returns a wrapped sentinel error on rejection so callers can log it
 // without leaking the raw path to cloud storage.
+//
+// When p does not yet exist on disk (e.g. a destination file that will be
+// created by FetchContents), EvalSymlinks fails on p itself. Callers that
+// write to a new path MUST call confineToAllowedRoots again on the PARENT
+// directory after os.MkdirAll — the parent exists at that point, so
+// EvalSymlinks will resolve any symlinks that a race introduced there and
+// the subsequent open must use the resolved parent path with O_NOFOLLOW.
+// See fetchContentsConfineParent for the correct pattern.
 func confineToAllowedRoots(p string) error {
 	if p == "" {
 		return errors.New("fp: empty path")
 	}
 	cleaned := filepath.Clean(p)
-	// EvalSymlinks is best-effort: if the path does not yet exist (e.g.
-	// the destination file before a fetch write), it returns an error that
-	// we ignore and fall back to the cleaned path. This is safe because
-	// the confinement check below is on the cleaned absolute path and a
-	// symlink loop in a not-yet-created path is impossible.
 	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
 		cleaned = resolved
 	}
@@ -88,6 +92,28 @@ func confineToAllowedRoots(p string) error {
 		}
 	}
 	return fmt.Errorf("fp: path outside allowed staging roots: %w", os.ErrPermission)
+}
+
+// fetchContentsConfineParent resolves the parent of destPath (which must
+// already exist after os.MkdirAll) via filepath.EvalSymlinks and verifies
+// that the resolved parent is within an allowed root. Returns the resolved
+// parent so the caller can open the final path without following symlinks.
+//
+// This is the second confinement check for FetchContents: the first
+// (confineToAllowedRoots on the full destPath) is a fast lexical reject for
+// paths that are obviously outside allowed roots; this one catches a
+// race where an adversary creates a symlink at a parent component between
+// the first check and the os.MkdirAll call.
+func fetchContentsConfineParent(destPath string) (resolvedParent string, err error) {
+	parent := filepath.Dir(destPath)
+	resolvedParent, err = filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", fmt.Errorf("fp: resolve dest parent: %w", err)
+	}
+	if confineErr := confineToAllowedRoots(resolvedParent); confineErr != nil {
+		return "", fmt.Errorf("fp: dest parent resolved outside allowed staging roots: %w", os.ErrPermission)
+	}
+	return resolvedParent, nil
 }
 
 // RootContainerID is the sentinel identifier for a domain's root
@@ -406,18 +432,30 @@ func (s Service) FetchContents(ctx context.Context, alias, identifier, destPath 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o700); err != nil {
 		return Item{}, fmt.Errorf("fp.FetchContents: mkdir dest: %w", err)
 	}
-	// #nosec G304 -- path is confined to allowed App Group staging roots above.
-	f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// Second confinement check: the parent directory now exists, so
+	// EvalSymlinks can resolve it. This catches a TOCTOU race where an
+	// adversary inserts a symlink at a parent component between the first
+	// confineToAllowedRoots call above and the os.MkdirAll call just above.
+	// We then open using the resolved parent path + O_NOFOLLOW so that even
+	// the final filename component cannot be redirected via a symlink.
+	resolvedParent, confineErr := fetchContentsConfineParent(destPath)
+	if confineErr != nil {
+		return Item{}, fmt.Errorf("fp.FetchContents: %w", confineErr)
+	}
+	safeDestPath := filepath.Join(resolvedParent, filepath.Base(destPath))
+	// #nosec G304 -- path is confined to allowed App Group staging roots above (two checks).
+	// O_NOFOLLOW prevents the final filename component from being a symlink.
+	f, err := os.OpenFile(safeDestPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return Item{}, fmt.Errorf("fp.FetchContents: open dest: %w", err)
 	}
 	if _, err := io.Copy(f, rc); err != nil {
 		_ = f.Close()
-		_ = os.Remove(destPath)
+		_ = os.Remove(safeDestPath)
 		return Item{}, fmt.Errorf("fp.FetchContents: copy: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(destPath)
+		_ = os.Remove(safeDestPath)
 		return Item{}, fmt.Errorf("fp.FetchContents: close dest: %w", err)
 	}
 

@@ -226,6 +226,61 @@ func TestFetchContents_RejectsOutsideRoot(t *testing.T) {
 	}
 }
 
+// TestFetchContents_RejectsSymlinkInParent is a regression test for the
+// TOCTOU symlink bypass: a parent directory component of destPath that is
+// itself a symlink pointing outside the allowed roots must be caught and
+// rejected even though destPath passes the initial lexical confinement check.
+//
+// The attack scenario: destPath is lexically inside os.TempDir(), so
+// confineToAllowedRoots passes. The caller then races in a symlink at a
+// parent component before os.MkdirAll runs. The fix calls
+// fetchContentsConfineParent after MkdirAll: it resolves the parent via
+// EvalSymlinks (which now succeeds) and re-checks the resolved path against
+// the allowed roots.
+func TestFetchContents_RejectsSymlinkInParent(t *testing.T) {
+	// outer is a real directory inside os.TempDir() — an allowed root.
+	outer := t.TempDir()
+
+	// sensitiveDir is a directory that is NOT inside any allowed root.
+	// We use the user's home directory's parent as a reliable non-temp,
+	// non-AppGroup path. We do NOT write to it; we only point a symlink at
+	// an existing directory and confirm no file appears there.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot determine home dir:", err)
+	}
+	// Use a subdirectory of the home dir that definitely exists and is
+	// outside os.TempDir() and the App Group container.
+	sensitiveDir := home
+
+	// Create outer/staging as a symlink pointing to sensitiveDir.
+	// This simulates the race where an adversary inserts a symlink between
+	// the initial confineToAllowedRoots check and the os.MkdirAll call.
+	symlinkPath := filepath.Join(outer, "staging")
+	if err := os.Symlink(sensitiveDir, symlinkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	// destPath lexically appears inside outer (an allowed root), but its
+	// actual parent (outer/staging) resolves to sensitiveDir (~/).
+	destPath := filepath.Join(outer, "staging", "ofem-toctou-test.bin")
+
+	eng := &stubEngine{openData: "pwned"}
+	svc := newService(eng, stubCache{})
+	_, err = svc.FetchContents(context.Background(), "work", "ws1/lh/Files/x.txt", destPath)
+	if err == nil {
+		// If we somehow succeeded, clean up before failing.
+		_ = os.Remove(filepath.Join(home, "ofem-toctou-test.bin"))
+		t.Fatal("FetchContents should have rejected a destPath whose parent resolves outside allowed roots")
+	}
+
+	// Confirm no file was written to the home directory.
+	if _, statErr := os.Stat(filepath.Join(home, "ofem-toctou-test.bin")); statErr == nil {
+		_ = os.Remove(filepath.Join(home, "ofem-toctou-test.bin"))
+		t.Error("file was written to home dir despite confinement — TOCTOU bypass not fixed")
+	}
+}
+
 func TestCreateItem_RejectsOutsideRoot(t *testing.T) {
 	eng := &stubEngine{}
 	svc := newService(eng, stubCache{err: errors.New("miss")})
