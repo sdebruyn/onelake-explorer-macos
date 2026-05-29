@@ -15,6 +15,7 @@ struct MenuBarView: View {
     // LoginItemManager is a pre-existing singleton — @ObservedObject does not
     // own its lifetime, @StateObject would redundantly wrap the shared ref.
     @ObservedObject private var loginItem = LoginItemManager.shared
+    @Environment(\.openWindow) private var openWindow
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "menubar-view")
 
@@ -58,11 +59,16 @@ struct MenuBarView: View {
     @ViewBuilder
     private var accountRows: some View {
         if model.accounts.isEmpty {
-            Text(model.isRunning
-                 ? "No accounts — add one with `ofem auth login`"
-                 : "Daemon not running")
-                .foregroundStyle(.secondary)
-                .disabled(true)
+            if model.isRunning {
+                // Empty state: guide the user to add their first account.
+                Button("Add Account…") {
+                    openAddAccountWindow()
+                }
+            } else {
+                Text("Daemon not running")
+                    .foregroundStyle(.secondary)
+                    .disabled(true)
+            }
         } else {
             ForEach(model.accounts) { account in
                 Menu {
@@ -78,7 +84,20 @@ struct MenuBarView: View {
                     }
                 }
             }
+            // Always-visible item so existing users can add more accounts
+            // without needing the CLI.
+            Button("Add Account…") {
+                openAddAccountWindow()
+            }
+            .disabled(!model.isRunning)
         }
+    }
+
+    private func openAddAccountWindow() {
+        openWindow(id: "add-account")
+        // Bring the window to the front; LSUIElement apps do not activate
+        // automatically when a window is opened programmatically.
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - Cache submenu

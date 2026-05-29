@@ -87,5 +87,14 @@ struct OneLakeApp: App {
                 .renderingMode(.template)
         }
         .menuBarExtraStyle(.menu)
+
+        // Add Account window — opened from MenuBarView via openWindow(id:).
+        // The Window scene produces a single floating panel; the id matches
+        // the string passed to openWindow. WindowStyle.titleBar is default
+        // (non-resizable by the user); we constrain the frame in the view.
+        Window("Add OneLake Account", id: "add-account") {
+            AddAccountView()
+        }
+        .windowResizability(.contentSize)
     }
 }
