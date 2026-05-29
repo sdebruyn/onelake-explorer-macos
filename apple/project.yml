@@ -133,11 +133,16 @@ targets:
           # binaries without a secure timestamp, even when they are embedded
           # inside a bundle that is later re-sealed. This matches the --timestamp
           # flag used for Resources/bin/ofem and the outer .app in release.yml.
-          if [ "${CODE_SIGNING_ALLOWED:-NO}" = "YES" ] && [ -n "${CODE_SIGN_IDENTITY:-}" ]; then
-            echo "Signing daemon with entitlements: ${ENTITLEMENTS}"
+          if [ "${CODE_SIGNING_ALLOWED:-NO}" = "YES" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
+            echo "Signing daemon as ${EXPANDED_CODE_SIGN_IDENTITY_NAME:-?} with entitlements: ${ENTITLEMENTS}"
+            # Sign with EXPANDED_CODE_SIGN_IDENTITY (the SHA-1 hash Xcode already
+            # resolved for the app), not the generic CODE_SIGN_IDENTITY name
+            # ("Apple Development"), which is ambiguous when the keychain holds
+            # more than one matching certificate. Using the hash also guarantees
+            # the daemon is signed with the same identity as the host app.
             codesign --force --options runtime --timestamp \
               --entitlements "${ENTITLEMENTS}" \
-              --sign "${CODE_SIGN_IDENTITY}" \
+              --sign "${EXPANDED_CODE_SIGN_IDENTITY}" \
               "${DAEMON_DEST}"
           else
             echo "Skipping daemon code signing (CODE_SIGNING_ALLOWED=${CODE_SIGNING_ALLOWED:-NO})"

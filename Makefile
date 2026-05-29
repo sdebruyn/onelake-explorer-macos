@@ -114,11 +114,17 @@ help:
 
 # --- Phase 1: macOS app + File Provider Extension ---
 
-XCODE_PROJECT      := apple/OneLake.xcodeproj
-XCODE_PROJECT_HOST := apple/OneLakeHost.xcodeproj
-APPLE_CONFIG       := apple/Local.xcconfig
+XCODE_PROJECT := apple/OneLake.xcodeproj
+APPLE_CONFIG  := apple/Local.xcconfig
 
-.PHONY: apple-bootstrap apple-gen apple-gen-host apple-build apple-build-host apple-build-ci apple-test apple-clean
+.PHONY: apple-bootstrap apple-gen apple-build apple-build-ci apple-test apple-clean app
+
+# One-shot local build of everything runnable: the ofem CLI (./bin/ofem)
+# plus the signed macOS app (host + File Provider Extension, with the Go
+# daemon bundled and signed). This is THE single build to run after
+# pulling main — `make build` and `apple-build` stay available separately
+# for the fast Go-only loop and CI.
+app: build apple-build ## Build CLI + signed macOS app (everything, ready to run)
 
 # Signing knobs that turn a normal build into an unsigned compile-only
 # build. CI has no Developer ID identity, so it must NOT pass
@@ -181,28 +187,8 @@ apple-test: apple-gen
 		$(APPLE_UNSIGNED) \
 		test
 
-# Regenerate the host-app-only Xcode project from project-host.yml. The
-# host-only spec omits the OneLakeFileProvider target so contributors on a
-# free Apple ID (Personal Team) can smoke-test the host app — Personal
-# Teams cannot sign macOS app extensions. Drop this target once every
-# contributor is enrolled in the paid Apple Developer Program.
-apple-gen-host:
-	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: brew install xcodegen"; exit 1; }
-	xcodegen generate --spec apple/project-host.yml --project-root . --project apple
-
-# Build only the OneLake host app (no File Provider Extension). Use this
-# when you don't have a paid Apple Developer Program account yet; see
-# apple/project-host.yml for the why.
-apple-build-host: apple-gen-host
-	xcodebuild -project $(XCODE_PROJECT_HOST) \
-		-scheme OneLake \
-		-configuration Debug \
-		-derivedDataPath apple/DerivedData \
-		-allowProvisioningUpdates \
-		build
-
 # Removes only generated/build artefacts. apple/Local.xcconfig is intentionally
 # preserved: it holds the per-developer DEVELOPMENT_TEAM and is not a build
 # output. Use `make apple-bootstrap` to (re)create it from the .sample.
 apple-clean:
-	rm -rf apple/OneLake.xcodeproj apple/OneLakeHost.xcodeproj apple/OneLake.xcworkspace apple/OneLakeHost.xcworkspace apple/build apple/DerivedData
+	rm -rf apple/OneLake.xcodeproj apple/OneLake.xcworkspace apple/build apple/DerivedData

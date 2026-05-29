@@ -255,15 +255,13 @@ development path. It provides a real provisioning profile that includes
 the `com.apple.developer.file-provider` entitlement family; no
 `testing-mode` entitlement is needed or used.
 
-External contributors without a paid Developer Program membership can
-still build and smoke-test the host app using a free Personal Team:
+Building the Swift host app and the File Provider Extension requires a paid
+Apple Developer Program membership (a free Personal Team cannot sign the
+extension). With your team set in `apple/Local.xcconfig`, build both with:
 
 ```
-make apple-build-host
+make apple-build
 ```
-
-This target skips the File Provider Extension, so the full mount
-workflow is not exercised, but it confirms the host app compiles.
 
 Homebrew cask distribution requires:
 - Apple Developer Program enrollment ($99/yr),
