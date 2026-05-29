@@ -64,8 +64,10 @@ OFEM_INTEGRATION=1 go test ./...
 # Lint
 golangci-lint run
 
-# Build + run the macOS app (regenerates the Xcode project, builds the
-# host app + File Provider Extension; both talk to the daemon over IPC)
+# Build CLI + signed macOS app in one shot (THE build to run after pulling)
+make app
+
+# Build only the macOS app (Go daemon is compiled inside the Xcode postBuildScript)
 make apple-build
 ```
 

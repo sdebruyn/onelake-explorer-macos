@@ -1,7 +1,8 @@
 # Convenience targets for OFEM development.
 #
 # Day-to-day:
-#   make build       — build the ofem CLI into ./bin/ofem
+#   make app         — CLI + signed macOS app; THE build to run after pulling
+#   make build       — build the ofem CLI into ./bin/ofem (Go-only, fast)
 #   make test        — run unit tests with the race detector
 #   make lint        — run golangci-lint with the repo config
 #   make fmt         — gofmt + goimports (mutates files in place)
