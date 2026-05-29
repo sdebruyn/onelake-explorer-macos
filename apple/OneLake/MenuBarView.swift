@@ -11,7 +11,11 @@ import SwiftUI
 import os.log
 
 struct MenuBarView: View {
-    @StateObject private var model = MenuStatusModel()
+    // The model is owned at the App level (OneLakeApp @StateObject) so
+    // post-action refreshes are visible in both the icon label and the menu
+    // without waiting for the next open. @ObservedObject observes but does
+    // NOT take ownership — lifetime is managed by OneLakeApp.
+    @ObservedObject var model: MenuStatusModel
     // LoginItemManager is a pre-existing singleton — @ObservedObject does not
     // own its lifetime, @StateObject would redundantly wrap the shared ref.
     @ObservedObject private var loginItem = LoginItemManager.shared
@@ -271,8 +275,8 @@ struct MenuBarView: View {
 
 private struct AccountSubmenu: View {
     let account: AccountInfo
-    // Unowned reference to the shared model; the parent MenuBarView owns the
-    // @StateObject so the model's lifetime is tied to the view tree.
+    // Unowned reference to the shared singleton; its lifetime is tied to the
+    // app process (owned by OneLakeApp via @StateObject), so unowned is safe.
     unowned let model: MenuStatusModel
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "menubar-view")
