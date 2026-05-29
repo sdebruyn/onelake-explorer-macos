@@ -27,7 +27,7 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © $(CURRENT_YEAR) Sam Debruyn. MIT licensed.</string>
+	<string>Copyright © $(CURRENT_YEAR) Debruyn Consultancy BV. MIT licensed.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>
