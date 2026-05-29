@@ -47,11 +47,7 @@ func IsOfflineError(err error) bool {
 			return true
 		}
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "no such host") ||
-		strings.Contains(msg, "network is unreachable") ||
-		strings.Contains(msg, "no route to host") ||
-		strings.Contains(msg, "connection refused")
+	return false
 }
 
 // offlineState tracks whether the engine recently observed an offline-

@@ -16,8 +16,8 @@ import (
 // constant keeps that invariant satisfied while staying obviously
 // distinct from a real GUID.
 //
-// Exported so the cgo bridge in core/bridge.go can reference the same
-// value without duplicating the string literal (drift risk).
+// Exported so the fp package (and any future consumer) can reference
+// the same value without duplicating the string literal.
 const VirtualWorkspaceID = "__workspaces__"
 
 // VirtualItemID mirrors VirtualWorkspaceID for the cache rows backing
@@ -46,6 +46,7 @@ func (e *Engine) ListWorkspaces(ctx context.Context, alias string) ([]fabric.Wor
 	start := e.now()
 
 	ws, err := e.fabric.ListWorkspaces(ctx, alias)
+	e.observeNetworkResult(err)
 	if err != nil {
 		e.track(telemetry.Event{
 			Name:             "workspace_list",
@@ -120,6 +121,7 @@ func (e *Engine) ListItems(ctx context.Context, alias, workspaceID string) ([]fa
 	start := e.now()
 
 	items, err := e.fabric.ListItems(ctx, alias, workspaceID)
+	e.observeNetworkResult(err)
 	if err != nil {
 		e.track(telemetry.Event{
 			Name:             "item_list",

@@ -74,8 +74,8 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 			// OneDrive/Dropbox behaviour and is the asymmetric mirror
 			// of the offline upload queue: we won't lose the user's
 			// edits, we also won't gate their reads on connectivity.
+			e.observeNetworkResult(err)
 			if IsOfflineError(err) {
-				e.observeNetworkResult(err)
 				rc, oerr := e.cache.OpenBlob(ctx, cached.BlobSHA256)
 				if oerr == nil {
 					_ = e.cache.Touch(ctx, k)
@@ -98,6 +98,7 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 			}
 			return nil, err
 		case fresh:
+			e.observeNetworkResult(nil) // successful HEAD cleared the offline flag
 			rc, err := e.cache.OpenBlob(ctx, cached.BlobSHA256)
 			if err != nil {
 				// Blob row says we have it but the file is gone; fall
@@ -115,6 +116,7 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 				return rc, nil
 			}
 		default:
+			e.observeNetworkResult(nil) // successful HEAD (etag mismatch → stale, but still a round-trip)
 			// Remote moved on: prep cached entry with the new metadata so
 			// the post-download upsert lands on the latest values.
 			if props != nil {
@@ -153,6 +155,7 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 		}
 	}
 	if err != nil {
+		e.observeNetworkResult(err)
 		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, err) {
 			e.track(telemetry.Event{
 				Name:             "file_download",
@@ -172,6 +175,7 @@ func (e *Engine) Open(ctx context.Context, k cache.Key) (io.ReadCloser, error) {
 		})
 		return nil, fmt.Errorf("sync.Open: remote read: %w", err)
 	}
+	e.observeNetworkResult(nil) // successful GET
 	defer func() { _ = body.Close() }()
 
 	// Pin the partial to the response etag so a follow-up resume can

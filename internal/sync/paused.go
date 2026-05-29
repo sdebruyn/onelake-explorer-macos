@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"regexp"
@@ -65,58 +66,39 @@ func IsPausedCapacityError(err error) bool {
 	// (OneLake DFS), but the service has been observed to use other 4xx
 	// codes too. Decide on the body, not the status, so a server-side
 	// change of HTTP code does not silently break the detector.
-	body := strings.ToLower(string(ae.Body))
-	if pausedCapacityRE.MatchString(body) {
+	body := string(ae.Body)
+	if pausedCapacityRE.MatchString(body) { // regex is (?i) — no pre-lowercasing needed
 		return true
 	}
-	// Extract a JSON `errorCode` value without parsing the entire body —
-	// fabric error responses always wrap it in double quotes so a small
-	// substring scan is enough and avoids pulling encoding/json into the
-	// retry hot path.
+	// Parse the JSON errorCode field (case-insensitive key lookup, lowercased
+	// value returned). extractErrorCode handles malformed/non-JSON bodies.
 	if code := extractErrorCode(body); code != "" {
-		if _, ok := pausedErrorCodes[strings.ToLower(code)]; ok {
+		if _, ok := pausedErrorCodes[code]; ok {
 			return true
 		}
 	}
 	return false
 }
 
-// extractErrorCode pulls the value of a JSON `"errorCode": "<v>"` field
-// from body. It tolerates extra whitespace and the surrounding object.
-// Returns "" when the field is absent.
-//
-// The function lowercases its input on entry so callers do not have to
-// preserve a "lowercase the body first" contract — a future caller
-// that forgets the convention would otherwise miss the JSON key.
+// extractErrorCode pulls the value of the `errorCode` field from a Fabric
+// JSON error body and returns it lowercased. The lookup is case-insensitive
+// to tolerate any casing variation across API endpoints. Returns "" when the
+// body is not valid JSON or the field is absent.
 func extractErrorCode(body string) string {
-	body = strings.ToLower(body)
-	const key = `"errorcode"`
-	idx := strings.Index(body, key)
-	if idx < 0 {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
 		return ""
 	}
-	tail := body[idx+len(key):]
-	// Skip whitespace then a colon.
-	i := 0
-	for i < len(tail) && (tail[i] == ' ' || tail[i] == '\t') {
-		i++
+	for k, v := range raw {
+		if strings.EqualFold(k, "errorCode") {
+			var code string
+			if err := json.Unmarshal(v, &code); err != nil {
+				return ""
+			}
+			return strings.ToLower(code)
+		}
 	}
-	if i >= len(tail) || tail[i] != ':' {
-		return ""
-	}
-	i++
-	for i < len(tail) && (tail[i] == ' ' || tail[i] == '\t') {
-		i++
-	}
-	if i >= len(tail) || tail[i] != '"' {
-		return ""
-	}
-	i++
-	end := strings.IndexByte(tail[i:], '"')
-	if end < 0 {
-		return ""
-	}
-	return tail[i : i+end]
+	return ""
 }
 
 // pausedTracker memoises in-flight recovery probes so concurrent
