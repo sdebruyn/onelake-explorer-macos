@@ -39,7 +39,6 @@ func newConfigListCmd() *cobra.Command {
 			fmt.Fprintf(out, "default_account                 = %q\n", f.DefaultAccount)
 			fmt.Fprintf(out, "cache.max_size_bytes            = %d\n", f.Cache.MaxSizeBytes)
 			fmt.Fprintf(out, "cache.max_size                  = %s   # alias of cache.max_size_bytes, accepts 10GiB / 500MB / etc.\n", humanBytes(f.Cache.MaxSizeBytes))
-			fmt.Fprintf(out, "net.max_concurrency_per_account = %d\n", f.Net.MaxConcurrencyPerAccount)
 			fmt.Fprintf(out, "log.level                       = %q\n", f.Log.Level)
 			return nil
 		},
@@ -78,13 +77,11 @@ func newConfigSetCmd() *cobra.Command {
 				return err
 			}
 			var setErr error
-			store.Update(func(f *config.File) {
+			if err := store.UpdateAndSave(func(f *config.File) {
 				setErr = applyConfig(f, key, value)
-			})
-			if setErr != nil {
+			}); setErr != nil {
 				return setErr
-			}
-			if err := store.Save(); err != nil {
+			} else if err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s = %s\n", key, value)
@@ -103,8 +100,6 @@ func lookupConfig(f config.File, key string) (string, bool) {
 		return strconv.FormatInt(f.Cache.MaxSizeBytes, 10), true
 	case "cache.max_size":
 		return humanBytes(f.Cache.MaxSizeBytes), true
-	case "net.max_concurrency_per_account":
-		return strconv.Itoa(f.Net.MaxConcurrencyPerAccount), true
 	case "log.level":
 		return f.Log.Level, true
 	}
@@ -135,12 +130,6 @@ func applyConfig(f *config.File, key, value string) error {
 			return fmt.Errorf("%s: %w", normalizeKey(key), err)
 		}
 		f.Cache.MaxSizeBytes = n
-	case "net.max_concurrency_per_account":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 || n > 32 {
-			return fmt.Errorf("net.max_concurrency_per_account must be between 1 and 32")
-		}
-		f.Net.MaxConcurrencyPerAccount = n
 	case "log.level":
 		switch strings.ToLower(value) {
 		case "debug", "info", "warn", "error":

@@ -244,20 +244,16 @@ func TestOpen_StaleEtagRedownloads(t *testing.T) {
 
 	k := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/a.csv"}
 
-	// Seed the cache with an old version manually.
-	if err := f.cache.Put(ctx, cache.Entry{
-		Key: k, Name: "a.csv", ParentPath: "Files", ContentLength: 2,
-		Etag: "old-etag",
-	}); err != nil {
-		t.Fatalf("seed Put: %v", err)
-	}
-	// Store a fake blob so the cached.BlobSHA256 path is exercised.
+	// Store a fake blob and seed the cache row with blob link inline.
 	sha, _, err := f.cache.StoreBlob(ctx, stringReader("v1"))
 	if err != nil {
 		t.Fatalf("StoreBlob: %v", err)
 	}
-	if err := f.cache.LinkBlob(ctx, k, sha, 2); err != nil {
-		t.Fatalf("LinkBlob: %v", err)
+	if err := f.cache.Put(ctx, cache.Entry{
+		Key: k, Name: "a.csv", ParentPath: "Files", ContentLength: 2,
+		Etag: "old-etag", BlobSHA256: sha, BlobSize: 2,
+	}); err != nil {
+		t.Fatalf("seed Put: %v", err)
 	}
 
 	rc, err := f.engine.Open(ctx, k)

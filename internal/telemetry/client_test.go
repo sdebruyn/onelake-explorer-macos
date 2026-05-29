@@ -337,6 +337,56 @@ func TestClient_TrackDoesNotMutateCallerCommonProps(t *testing.T) {
 	}
 }
 
+// TestClient_TrackDropsUnknownCommonPropKeys verifies the allowlist: keys
+// not in allowedCommonPropKeys must be silently dropped while known keys
+// survive, so a careless caller cannot smuggle a workspace name or path
+// through as a property key even if the value passes the charset check.
+func TestClient_TrackDropsUnknownCommonPropKeys(t *testing.T) {
+	t.Parallel()
+	sink := &MemorySink{}
+	c := New(Options{
+		AppVersion: "2026.05.1",
+		InstallID:  "install-xyz",
+		Sink:       sink,
+		Platform:   "darwin",
+		Arch:       "arm64",
+		OSVersion:  "14.5.1",
+	})
+
+	c.Track(Event{
+		Name: "error",
+		CommonProps: map[string]string{
+			"failedOp":      "file_download", // allowed
+			"unknownKey":    "some-value",    // NOT in allowlist — must be dropped
+			"workspaceName": "SalesData",     // NOT in allowlist — must be dropped
+		},
+	})
+	if err := c.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	events := sink.Drain()
+	if len(events) != 1 {
+		t.Fatalf("event count = %d, want 1", len(events))
+	}
+	props := events[0].CommonProps
+
+	// Known key must survive.
+	if props["failedOp"] != "file_download" {
+		t.Errorf("failedOp = %q, want file_download", props["failedOp"])
+	}
+	// Common props injected by the client must survive.
+	if props["installId"] != "install-xyz" {
+		t.Errorf("installId = %q, want install-xyz", props["installId"])
+	}
+	// Unknown keys must be absent.
+	if _, ok := props["unknownKey"]; ok {
+		t.Errorf("unknownKey survived allowlist filter: %v", props)
+	}
+	if _, ok := props["workspaceName"]; ok {
+		t.Errorf("workspaceName survived allowlist filter: %v", props)
+	}
+}
+
 // TestClient_FlushContextCancel verifies that a cancelled context
 // causes Send to fail with a wrapped ctx error and that the events are
 // re-queued for a future Flush.
