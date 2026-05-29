@@ -20,8 +20,10 @@ func (e *Engine) Mkdir(ctx context.Context, k cache.Key) error {
 		return err
 	}
 
-	if err := e.onelake.CreateDirectory(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path); err != nil {
-		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, err) {
+	mkdirErr := e.onelake.CreateDirectory(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path)
+	e.observeNetworkResult(mkdirErr)
+	if mkdirErr != nil {
+		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, mkdirErr) {
 			e.track(telemetry.Event{
 				Name:             "folder_create",
 				AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
@@ -38,7 +40,7 @@ func (e *Engine) Mkdir(ctx context.Context, k cache.Key) error {
 			Success:          boolPtr(false),
 			ErrorCode:        telemetry.SafeErrorCode("mkdir_failed"),
 		})
-		return fmt.Errorf("sync.Mkdir: remote: %w", err)
+		return fmt.Errorf("sync.Mkdir: remote: %w", mkdirErr)
 	}
 
 	now := e.now()

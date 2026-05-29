@@ -142,6 +142,7 @@ func (e *Engine) RefreshFolder(ctx context.Context, k cache.Key) (Diff, error) {
 		return Diff{}, err
 	}
 	result, err := e.onelake.ListPath(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, false)
+	e.observeNetworkResult(err)
 	if err != nil {
 		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, err) {
 			return Diff{}, fmt.Errorf("sync.RefreshFolder: %w", ErrWorkspacePaused)

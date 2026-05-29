@@ -61,8 +61,10 @@ func (e *Engine) Delete(ctx context.Context, k cache.Key) error {
 	if err := e.guardPausedWorkspace(ctx, k.AccountAlias, k.WorkspaceID); err != nil {
 		return err
 	}
-	if err := e.onelake.Delete(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, recursive); err != nil {
-		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, err) {
+	remoteErr := e.onelake.Delete(ctx, k.AccountAlias, k.WorkspaceID, k.ItemID, k.Path, recursive)
+	e.observeNetworkResult(remoteErr)
+	if remoteErr != nil {
+		if e.markPausedIfNeeded(ctx, k.AccountAlias, k.WorkspaceID, remoteErr) {
 			e.track(telemetry.Event{
 				Name:             eventName,
 				AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
@@ -79,7 +81,7 @@ func (e *Engine) Delete(ctx context.Context, k cache.Key) error {
 			Success:          boolPtr(false),
 			ErrorCode:        telemetry.SafeErrorCode("delete_failed"),
 		})
-		return fmt.Errorf("sync.Delete: remote delete: %w", err)
+		return fmt.Errorf("sync.Delete: remote delete: %w", remoteErr)
 	}
 
 	if err := e.cache.Delete(ctx, k); err != nil {

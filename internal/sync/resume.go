@@ -1,16 +1,20 @@
 // Resume support for downloads: a per-Open partial-blob spill file in
-// the OS tempdir that survives the lifetime of a single Open call and
-// lets a transport-level retry pick up where the previous attempt
-// stopped.
+// a per-process scratch directory that persists across retries within
+// the same process lifetime and lets a transport-level retry pick up
+// where the previous attempt stopped.
 //
-// The partial-blob file lives in os.TempDir() under a deterministic
-// name derived from the cache.Key, so a follow-up Open started after a
-// kernel hand-off still finds it. Each partial carries a sidecar
-// "<partial>.etag" file recording the ETag of the GET it was started
-// against; on resume the caller pins the request to that ETag via
-// If-Match so a server-side mutation can never cause us to stitch
-// incompatible byte ranges. When cached.BlobSHA256 is known, the
-// assembled bytes are also SHA-verified before commit.
+// The partial-blob file lives in a PID-scoped subdirectory of the
+// engine's scratchDir (see [Engine.scratchDir]). Partials do NOT
+// survive a process restart: each process uses its own directory, and
+// [reapStalePartialDirs] removes directories whose owning process is
+// no longer running. A dropped partial just causes the next Open to
+// re-download from offset 0.
+//
+// Each partial carries a sidecar "<partial>.etag" file recording the
+// ETag of the GET it was started against; on resume the caller pins the
+// request to that ETag via If-Match so a server-side mutation can never
+// cause us to stitch incompatible byte ranges. When cached.BlobSHA256
+// is known, the assembled bytes are also SHA-verified before commit.
 //
 // On any failure the partial is left in place; on completion it is
 // consumed by cache.StoreBlob and removed.

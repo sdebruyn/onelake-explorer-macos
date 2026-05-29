@@ -19,6 +19,13 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 )
 
+// timeoutErr implements net.Error with Timeout() == true for test use.
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
 func TestIsOfflineError(t *testing.T) {
 	cases := []struct {
 		name string
@@ -29,9 +36,18 @@ func TestIsOfflineError(t *testing.T) {
 		{"context canceled", context.Canceled, false},
 		{"context deadline", context.DeadlineExceeded, false},
 		{"random", errors.New("boom"), false},
+		// Plain string errors are no longer treated as offline; only typed
+		// net.DNSError / net.OpError values are. The Go network stack always
+		// wraps in typed errors so this is the right trade-off.
+		{"plain string no such host", fmt.Errorf("Get: dial tcp: no such host"), false},
+		{"plain string connection refused", fmt.Errorf("dial tcp: connection refused"), false},
 		{"dns error", &net.DNSError{Err: "no such host", IsNotFound: true}, true},
-		{"no such host msg", fmt.Errorf("Get: dial tcp: no such host"), true},
-		{"connection refused msg", fmt.Errorf("dial tcp: connection refused"), true},
+		// OpError without timeout (e.g. connection refused, network unreachable):
+		// non-timeout OpErrors are treated as offline.
+		{"op error non-timeout", &net.OpError{Op: "dial", Net: "tcp", Err: fmt.Errorf("connection refused")}, true},
+		// OpError that is a timeout is NOT treated as offline (e.g. a read
+		// deadline exceeded is a liveness issue, not a connectivity failure).
+		{"op error timeout", &net.OpError{Op: "read", Net: "tcp", Err: timeoutErr{}}, false},
 	}
 	for _, c := range cases {
 		c := c
@@ -338,5 +354,70 @@ func TestEnqueueOfflineUpload_Coalesces(t *testing.T) {
 	body, _ := os.ReadFile(filepath.Join(f.cache.Root(), offlineQueueDirName, entries[0].Name()))
 	if string(body) != "secondsecond" {
 		t.Errorf("on-disk body = %q, want %q", string(body), "secondsecond")
+	}
+}
+
+// TestEnumerate_SuccessDuringOfflineWindowClearsFlagAndDrains proves that
+// a successful RefreshFolder call made while the offline flag is set:
+//  1. clears the offline flag (the engine reports Offline() == false), and
+//  2. triggers the queued-write drain so any pending uploads go out.
+//
+// Before the Task 1 fix, RefreshFolder did not call observeNetworkResult,
+// so a browsing session during an offline window would neither flip the
+// engine back online nor drain the upload queue.
+func TestEnumerate_SuccessDuringOfflineWindowClearsFlagAndDrains(t *testing.T) {
+	f := newEngine(t)
+	ctx := context.Background()
+
+	// Register a PUT that always fails (DNS-class), so a Put call enqueues.
+	httpmock.RegisterResponder("PUT", "=~^"+testOneLakeBase+`.*`,
+		func(_ *http.Request) (*http.Response, error) {
+			return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+		})
+	httpmock.RegisterResponder("PATCH", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(202, ""))
+	httpmock.RegisterResponder("HEAD", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(200, ""))
+
+	// Enqueue an upload by forcing an offline Put.
+	k := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files/pending.txt"}
+	if err := f.engine.Put(ctx, k, strings.NewReader("pending"), 7); err != nil {
+		t.Fatalf("Put while offline: %v", err)
+	}
+	if !f.engine.Offline() {
+		t.Fatal("engine must be offline after DNS failure")
+	}
+	if got := f.engine.queueDepth(); got != 1 {
+		t.Fatalf("queue depth = %d, want 1", got)
+	}
+
+	// Re-register PUT to succeed so the drain can replay the queued upload.
+	httpmock.RegisterResponder("PUT", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(201, ""))
+
+	// Now a successful enumerate (RefreshFolder) must clear the offline flag
+	// via observeNetworkResult and kick off the drain.
+	httpmock.RegisterResponder("GET", "=~^"+testOneLakeBase+`.*`,
+		httpmock.NewStringResponder(200, `{"paths":[]}`))
+	parent := cache.Key{AccountAlias: testAlias, WorkspaceID: testWorkspaceID, ItemID: testItemID, Path: "Files"}
+	if _, err := f.engine.RefreshFolder(ctx, parent); err != nil {
+		t.Fatalf("RefreshFolder: %v", err)
+	}
+
+	if f.engine.Offline() {
+		t.Error("engine must be online after a successful RefreshFolder")
+	}
+
+	// The drain goroutine runs asynchronously; give it a moment and then
+	// poll briefly. In practice on any modern machine it completes in <1 ms.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.engine.queueDepth() == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := f.engine.queueDepth(); got != 0 {
+		t.Errorf("queue depth after successful enumerate = %d, want 0 (drain must have run)", got)
 	}
 }
