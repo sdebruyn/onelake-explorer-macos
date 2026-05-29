@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -323,12 +324,19 @@ func isRetriableStatus(status int) bool {
 // worth retrying. We retry on the kernel- and DNS-class failures that
 // typically resolve themselves on the next attempt:
 //
-//   - net.Error.Timeout()
-//   - net.DNSError
-//   - net.OpError with a generic syscall failure
-//   - io.EOF and io.ErrUnexpectedEOF surfacing mid-body
+//   - net.Error.Timeout() (includes context-deadline errors on the
+//     transport level)
+//   - net.DNSError where IsTemporary is true (transient resolver
+//     hiccup); a permanent DNS-not-found (IsNotFound / !IsTemporary)
+//     is not retried — a misconfigured endpoint would burn the full
+//     attempt budget before the caller sees the error.
+//   - net.OpError wrapping a temporary syscall error; permanent errors
+//     such as ECONNREFUSED (wrong port, service not running) are not
+//     retried — the caller's configuration is wrong, not the network.
+//   - io.EOF and io.ErrUnexpectedEOF surfacing mid-body (server closed
+//     the connection before we finished reading).
 //   - "connection reset" / "broken pipe" (substring match — the stdlib
-//     does not export a stable error sentinel for these on every OS).
+//     does not export a stable sentinel for these on every OS).
 //
 // We deliberately do NOT retry on context cancellation: that's a
 // caller-driven stop signal and must propagate immediately.
@@ -339,26 +347,52 @@ func isRetriableTransport(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
+	// Timeout check first: covers net.Error, url.Error, and op-level
+	// timeouts all in one pass.
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
 	}
+	// DNS errors: only retry transient failures, not permanent not-found.
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		return true
+		// IsNotFound is a permanent NXDOMAIN — retrying won't help.
+		if dnsErr.IsNotFound {
+			return false
+		}
+		return dnsErr.IsTemporary || dnsErr.IsTimeout
 	}
+	// Syscall-level errors wrapped in net.OpError: use typed errno checks
+	// so that a permanently-wrong destination (ECONNREFUSED) is not
+	// retried, while transient kernel errors are.
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
-		return true
+		var errno syscall.Errno
+		if errors.As(opErr.Err, &errno) {
+			switch errno {
+			case syscall.ECONNREFUSED, syscall.ECONNRESET, syscall.EPIPE,
+				syscall.ENOENT, syscall.EACCES:
+				// ECONNREFUSED: nothing listening at that address.
+				// ECONNRESET / EPIPE: already handled by the
+				//   "connection reset" / "broken pipe" string match below
+				//   but classified here explicitly for clarity.
+				// ENOENT / EACCES: unix-socket path missing or no
+				//   permission — permanent.
+				return errno == syscall.ECONNRESET || errno == syscall.EPIPE
+			}
+			// Treat unknown errno as non-retriable to avoid burning the
+			// full retry budget on a permanently bad address.
+			return false
+		}
+		// opErr.Err is not a raw errno (e.g. it is a poll.TimeoutError or
+		// another net.Error); fall through to the string checks below.
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
 	msg := err.Error()
 	if strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "no such host") {
+		strings.Contains(msg, "broken pipe") {
 		return true
 	}
 	return false

@@ -15,8 +15,11 @@ import (
 // to detect categories without needing to type-assert [APIError]. The
 // retry helper unwraps these to decide whether to retry.
 var (
-	// ErrUnauthorized maps to HTTP 401. The token expired or is invalid;
-	// the caller should refresh the token and retry once.
+	// ErrUnauthorized maps to HTTP 401. It signals that the token is
+	// missing, expired, or invalid and surfaces a re-authentication
+	// requirement to the caller (e.g. the File Provider re-auth surface).
+	// The http retry layer does NOT retry 401 — token refresh and a
+	// second attempt are the caller's responsibility.
 	ErrUnauthorized = errors.New("httpretry: unauthorized (401)")
 	// ErrForbidden maps to HTTP 403.
 	ErrForbidden = errors.New("httpretry: forbidden (403)")

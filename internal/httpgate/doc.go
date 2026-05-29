@@ -31,6 +31,13 @@
 // Concurrency safety: every exported method on [Gate] and [Registry] is
 // safe for concurrent use.
 //
+// # Package dependency
+//
+// internal/httpretry imports internal/httpgate (for [ParseRetryAfter] —
+// single source of truth for Retry-After parsing). internal/httpgate does
+// NOT import internal/httpretry. The dependency is one-way:
+// httpretry → httpgate.
+//
 // # Interaction with internal/api.Do
 //
 // The retry layer in internal/api.Do composes with — and does not

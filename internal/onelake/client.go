@@ -167,7 +167,7 @@ func (c *Client) ListPath(ctx context.Context, alias, workspaceGUID, itemGUID, d
 
 		// DFS list is rooted at the filesystem (= workspace).
 		u := "/" + url.PathEscape(workspaceGUID) + "?" + q.Encode()
-		resp, err := c.doRequest(ctx, alias, http.MethodGet, u, nil, nil)
+		resp, err := c.doRequest(ctx, alias, http.MethodGet, u, nil, nil, true)
 		if err != nil {
 			return nil, err
 		}
@@ -230,7 +230,7 @@ func (c *Client) GetProperties(ctx context.Context, alias, workspaceGUID, itemGU
 		return nil, fmt.Errorf("onelake: workspaceGUID and itemGUID required")
 	}
 	u := pathURL(workspaceGUID, itemGUID, path, nil)
-	resp, err := c.doRequest(ctx, alias, http.MethodHead, u, nil, nil)
+	resp, err := c.doRequest(ctx, alias, http.MethodHead, u, nil, nil, true)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +278,7 @@ func (c *Client) ReadWithIfMatch(ctx context.Context, alias, workspaceGUID, item
 			extra.Set("If-Match", ifMatch)
 		}
 	}
-	resp, err := c.doRequest(ctx, alias, http.MethodGet, u, nil, extra)
+	resp, err := c.doRequest(ctx, alias, http.MethodGet, u, nil, extra, true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -329,9 +329,10 @@ func (c *Client) Write(ctx context.Context, alias, workspaceGUID, itemGUID, path
 		return fmt.Errorf("onelake: size must be >= 0")
 	}
 
-	// 1. create file (no content yet).
+	// 1. create file (no content yet). PUT is idempotent: a retry
+	// re-creates the (still empty) file at the same path.
 	createURL := pathURL(workspaceGUID, itemGUID, path, url.Values{"resource": []string{"file"}})
-	resp, err := c.doRequest(ctx, alias, http.MethodPut, createURL, nil, nil)
+	resp, err := c.doRequest(ctx, alias, http.MethodPut, createURL, nil, nil, true)
 	if err != nil {
 		return fmt.Errorf("onelake: create file: %w", err)
 	}
@@ -362,8 +363,14 @@ func (c *Client) Write(ctx context.Context, alias, workspaceGUID, itemGUID, path
 		// net/http sets Content-Length automatically for *bytes.Reader
 		// (it implements Len()), so passing it explicitly is redundant
 		// and will be overwritten by the transport.
+		//
+		// Append is idempotent: the position parameter pins the write
+		// offset, so a transport-level retry rewrites the same bytes at
+		// the same position. *bytes.Reader implements Len() which causes
+		// net/http to set GetBody, so the body is replayable without any
+		// extra buffering in httpretry.
 		body := bytes.NewReader(buf[:n])
-		resp, err := c.doRequest(ctx, alias, http.MethodPatch, appendURL, body, nil)
+		resp, err := c.doRequest(ctx, alias, http.MethodPatch, appendURL, body, nil, true)
 		if err != nil {
 			return fmt.Errorf("onelake: append at %d: %w", pos, err)
 		}
@@ -373,13 +380,13 @@ func (c *Client) Write(ctx context.Context, alias, workspaceGUID, itemGUID, path
 		remaining -= int64(n)
 	}
 
-	// 3. flush.
+	// 3. flush. Position-addressed, so a retry is idempotent.
 	flushQ := url.Values{
 		"action":   []string{"flush"},
 		"position": []string{strconv.FormatInt(size, 10)},
 	}
 	flushURL := pathURL(workspaceGUID, itemGUID, path, flushQ)
-	resp, err = c.doRequest(ctx, alias, http.MethodPatch, flushURL, nil, nil)
+	resp, err = c.doRequest(ctx, alias, http.MethodPatch, flushURL, nil, nil, true)
 	if err != nil {
 		return fmt.Errorf("onelake: flush: %w", err)
 	}
@@ -396,7 +403,7 @@ func (c *Client) CreateDirectory(ctx context.Context, alias, workspaceGUID, item
 		return fmt.Errorf("onelake: path required")
 	}
 	u := pathURL(workspaceGUID, itemGUID, path, url.Values{"resource": []string{"directory"}})
-	resp, err := c.doRequest(ctx, alias, http.MethodPut, u, nil, nil)
+	resp, err := c.doRequest(ctx, alias, http.MethodPut, u, nil, nil, true)
 	if err != nil {
 		return err
 	}
@@ -419,7 +426,7 @@ func (c *Client) Delete(ctx context.Context, alias, workspaceGUID, itemGUID, pat
 		q.Set("recursive", "true")
 	}
 	u := pathURL(workspaceGUID, itemGUID, path, q)
-	resp, err := c.doRequest(ctx, alias, http.MethodDelete, u, nil, nil)
+	resp, err := c.doRequest(ctx, alias, http.MethodDelete, u, nil, nil, true)
 	if err != nil {
 		return err
 	}
@@ -483,7 +490,13 @@ func defaultHTTPClient() *http.Client {
 // doRequest builds a request against the DFS base, injects the token,
 // then runs it through [httpretry.Do]. The caller owns the response
 // body and must close it.
-func (c *Client) doRequest(ctx context.Context, alias, method, pathAndQuery string, body io.Reader, extraHeaders http.Header) (*http.Response, error) {
+//
+// idempotent must be true only when a mid-flight transport retry cannot
+// produce a duplicate side-effect. GET/HEAD/PUT/DELETE are always safe;
+// position-addressed PATCH (append, flush) is safe because a replay
+// rewrites the same bytes at the same offset. A future non-addressed
+// PATCH (e.g. a metadata update) must pass false.
+func (c *Client) doRequest(ctx context.Context, alias, method, pathAndQuery string, body io.Reader, extraHeaders http.Header, idempotent bool) (*http.Response, error) {
 	full := c.baseURL + pathAndQuery
 	req, err := http.NewRequestWithContext(ctx, method, full, body)
 	if err != nil {
@@ -499,11 +512,5 @@ func (c *Client) doRequest(ctx context.Context, alias, method, pathAndQuery stri
 		return nil, err
 	}
 	slog.Debug("onelake: request", "method", method, "path", pathAndQuery)
-	// Idempotent: true — every OneLake DFS operation we issue is safe to
-	// replay after a mid-flight transport error: reads are GETs, create is
-	// a zero-length PUT, append/flush are position-addressed PATCHes (a
-	// replay rewrites the same bytes at the same offset), and delete is a
-	// DELETE. This authorises httpretry to retry the PATCH writes, which it
-	// would otherwise refuse as a non-idempotent method.
-	return httpretry.Do(ctx, c.http, req, httpretry.Policy{MaxAttempts: c.maxAttempts, Idempotent: true})
+	return httpretry.Do(ctx, c.http, req, httpretry.Policy{MaxAttempts: c.maxAttempts, Idempotent: idempotent})
 }
