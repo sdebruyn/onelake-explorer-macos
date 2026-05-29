@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the bundled ofem daemon helper.
+
+  The daemon is NOT sandboxed (com.apple.security.app-sandbox is absent).
+  Running as an SMAppService LaunchAgent helper, it must access:
+
+    • ~/Library/Group Containers/group.dev.debruyn.ofem/ — shared state with
+      the host app and File Provider Extension (config, cache, socket).
+      app-groups covers this at the kernel level.
+    • The unix-domain socket (ofem.sock) it creates in the group container.
+      network.server is required for the socket listener; network.client
+      for outbound HTTPS to OneLake / Entra.
+    • The Keychain: keychain-access-groups lets it share the MSAL token
+      cache with the host app. This entitlement requires a paid Developer
+      Program team — it is a no-op in unsigned dev builds.
+    • Phase 3 auth: an interactive browser loopback redirect (localhost) is
+      the "browser" auth flow. network.server covers that listener.
+
+  Sandboxing would block: launchctl, ~/Library/LaunchAgents writes, the
+  App Group container path (until the container exists), and arbitrary
+  filesystem access for the blob cache. These are all daemon-only needs
+  that the sandboxed host app delegates to the daemon via IPC.
+
+  The daemon binary must be separately code-signed from the host app with
+  THESE entitlements. See docs/packaging-homebrew.md and the Makefile
+  apple-build target comments for the release codesign step.
+-->
+<plist version="1.0">
+<dict>
+    <!-- App Group shared container (config, cache, socket) -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.dev.debruyn.ofem</string>
+    </array>
+    <!-- Outbound HTTPS to OneLake / Entra ID -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <!-- Unix-domain socket listener (IPC) + Phase 3 localhost loopback for auth -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <!-- Shared MSAL Keychain token cache (requires paid Developer Program team) -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)group.dev.debruyn.ofem</string>
+    </array>
+</dict>
+</plist>

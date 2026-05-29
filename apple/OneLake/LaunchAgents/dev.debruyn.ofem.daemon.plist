@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Bundled LaunchAgent for the OFEM daemon.
+
+  SMAppService (ServiceManagement) requires this plist to live at
+  Contents/Library/LaunchAgents/<Label>.plist inside the app bundle.
+  The Label key must match the plist filename (without .plist).
+
+  The daemon binary lives at Contents/Helpers/ofem so it can be
+  separately code-signed (daemon entitlements differ from the host app).
+  The path below uses @executable_path/../Helpers/ofem. For SMAppService
+  bundled LaunchAgents, launchd expands @executable_path relative to the
+  app bundle's executable directory (Contents/MacOS/), so the resolved
+  path is Contents/MacOS/../Helpers/ofem = Contents/Helpers/ofem.
+
+  Stdout/stderr are left unset intentionally: when launched by launchd
+  via SMAppService the daemon writes to the unified log (os_log) and its
+  log dir under the App Group container. If you need file-level logging
+  during development add StandardOutPath/StandardErrorPath here.
+
+  ProcessType Background tells launchd this is a long-lived helper, not
+  an interactive process, which keeps it off the CPU-throttle front-end
+  bucket. KeepAlive=true means launchd restarts the daemon if it exits
+  unexpectedly (respawn). RunAtLoad=true means launchd starts it as soon
+  as SMAppService.register() succeeds (i.e. at next login and immediately
+  on the first registration call).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.debruyn.ofem.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@executable_path/../Helpers/ofem</string>
+        <string>daemon</string>
+        <string>run</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

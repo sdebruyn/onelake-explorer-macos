@@ -4,6 +4,7 @@
 // Phase 0: status header + per-account submenus (Open in Finder), About, Quit.
 // Phase 2 additions: Set as Default, Sign Out, Cache submenu, Telemetry toggle,
 //                    Open Logs Folder, Open Config File.
+// Phase 1 addition: Open at Login toggle (SMAppService daemon LaunchAgent).
 
 import AppKit
 import SwiftUI
@@ -11,6 +12,9 @@ import os.log
 
 struct MenuBarView: View {
     @StateObject private var model = MenuStatusModel()
+    // LoginItemManager is a pre-existing singleton — @ObservedObject does not
+    // own its lifetime, @StateObject would redundantly wrap the shared ref.
+    @ObservedObject private var loginItem = LoginItemManager.shared
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "menubar-view")
 
@@ -24,6 +28,7 @@ struct MenuBarView: View {
             cacheSubmenu
             Divider()
             telemetryToggle
+            openAtLoginToggle
             Divider()
             openLogsItem
             openConfigItem
@@ -34,6 +39,7 @@ struct MenuBarView: View {
         }
         .onAppear {
             model.refresh()
+            loginItem.refresh()
         }
     }
 
@@ -140,6 +146,24 @@ struct MenuBarView: View {
             }
         }
         .disabled(!model.isRunning)
+    }
+
+    // MARK: - Open at Login
+
+    /// Toggle the daemon LaunchAgent registration via SMAppService.
+    /// The checkmark reflects whether the daemon is registered for login
+    /// (not whether it is currently running — isRunning tracks that separately).
+    @ViewBuilder
+    private var openAtLoginToggle: some View {
+        Button {
+            loginItem.toggle()
+        } label: {
+            if loginItem.isRegistered {
+                Label("Open at Login", systemImage: "checkmark")
+            } else {
+                Text("Open at Login")
+            }
+        }
     }
 
     // MARK: - Open Logs / Config
