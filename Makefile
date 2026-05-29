@@ -188,8 +188,17 @@ apple-test: apple-gen
 		$(APPLE_UNSIGNED) \
 		test
 
-# Removes only generated/build artefacts. apple/Local.xcconfig is intentionally
-# preserved: it holds the per-developer DEVELOPMENT_TEAM and is not a build
-# output. Use `make apple-bootstrap` to (re)create it from the .sample.
+# Removes generated/build artefacts AND unregisters the built app from
+# LaunchServices. apple/Local.xcconfig is preserved (per-developer
+# DEVELOPMENT_TEAM, not a build output) — use `make apple-bootstrap` to recreate.
+#
+# The unregister matters: building the .app in multiple locations (e.g.
+# throwaway git worktrees) registers duplicate File Provider providers for the
+# same bundle id, after which macOS returns NSFileProviderError.providerNotFound
+# (-2001) and the Finder mount never appears. Always run `make apple-clean`
+# before removing a worktree you built the app in.
 apple-clean:
+	@app="$(PWD)/apple/DerivedData/Build/Products/Debug/OneLake.app"; \
+	lsreg="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"; \
+	if [ -d "$$app" ] && [ -x "$$lsreg" ]; then "$$lsreg" -u "$$app" 2>/dev/null || true; fi
 	rm -rf apple/OneLake.xcodeproj apple/OneLake.xcworkspace apple/build apple/DerivedData
