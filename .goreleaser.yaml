@@ -10,8 +10,9 @@
 #     uploads it to the GitHub Release as an extra artifact, then updates
 #     the Homebrew cask in the homebrew-ofem tap.
 #   - Job B (ubuntu-latest): runs GoReleaser to compile the standalone CLI
-#     tarball, attach checksums, and publish the GitHub Release notes.
-#     The Homebrew cask (Casks/ofem.rb) is pushed by a separate workflow step.
+#     tarball, attach checksums, publish the GitHub Release notes, and push
+#     the ofem-cli Cask entry to the tap. The full-app cask (Casks/ofem.rb)
+#     is pushed by a separate workflow step after the DMG SHA-256 is known.
 version: 2
 
 project_name: ofem
@@ -97,8 +98,35 @@ release:
   extra_files:
     - glob: ./dist-app/OneLake-*.dmg
 
-# The Homebrew cask is a single cask (Casks/ofem.rb) that ships the full
-# .app DMG. It is rendered from homebrew/Casks/ofem.rb.tmpl and committed
-# to sdebruyn/homebrew-ofem by the `Update Homebrew cask` step in the
-# release workflow after the DMG SHA-256 is known. GoReleaser does not
-# manage the cask because it does not build the .app.
+# Publish the standalone CLI entry to sdebruyn/homebrew-ofem.
+# homebrew_casks wraps the darwin/arm64 CLI tarball produced above,
+# letting users run `brew install sdebruyn/ofem/ofem-cli` to get only
+# the CLI binary without the full .app.
+# The main Homebrew *cask* (Casks/ofem.rb) installs the full .app DMG
+# and is managed separately: rendered from homebrew/Casks/ofem.rb.tmpl
+# and pushed to the tap by the `Update Homebrew cask` workflow step after
+# the DMG SHA-256 is known — GoReleaser does not manage the .app cask.
+homebrew_casks:
+  - name: ofem-cli
+    ids:
+      - ofem-cli
+    repository:
+      owner: sdebruyn
+      name: homebrew-ofem
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GH_TOKEN }}"
+      pull_request:
+        enabled: false
+    commit_author:
+      name: ofem-release-bot
+      email: noreply@debruyn.dev
+    commit_msg_template: "chore(cask): bump ofem-cli to v{{ .Version }}"
+    directory: Casks
+    url:
+      verified: github.com/sdebruyn/onelake-explorer-macos
+    homepage: "https://ofem.debruyn.dev"
+    description: "Browse Microsoft Fabric OneLake from the macOS Finder (CLI only)"
+    license: "MIT"
+    # Only stable CalVer tags (no hyphen) get pushed to the tap.
+    # Pre-release tags (e.g. v2026.05.0-rc.1) are skipped.
+    skip_upload: auto

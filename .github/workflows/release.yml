@@ -15,8 +15,8 @@
 #   APPLE_API_KEY_ID        The 10-character key identifier, also present inside APPLE_API_KEY_JSON.
 #   APPLE_API_ISSUER_ID     The issuer UUID, also present inside APPLE_API_KEY_JSON.
 #   HOMEBREW_TAP_GH_TOKEN        Fine-grained GitHub PAT with Contents: write on sdebruyn/homebrew-ofem.
-#                           Needed so GoReleaser can push the CLI formula and so the cask update
-#                           step can commit the updated cask.
+#                           Used by GoReleaser to push the CLI-only Cask entry (ofem-cli) and by
+#                           the `Update Homebrew cask` step to commit the full-app cask (ofem).
 
 name: Release
 
@@ -276,8 +276,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Job B: compile the CLI tarball via GoReleaser, publish the GitHub Release
-  # notes + CLI archive, push CLI formula to homebrew-ofem, and update cask.
-  # Runs on ubuntu-latest because GoReleaser + git push does not need macOS.
+  # notes + CLI archive, push ofem-cli Cask to homebrew-ofem, and update the
+  # full-app cask. Runs on ubuntu-latest (no macOS tools needed here).
   # ---------------------------------------------------------------------------
   release-cli-and-cask:
     name: Publish CLI release and update cask
@@ -331,9 +331,9 @@ jobs:
             -e "s/{{ \.DMGSHA256 }}/$DMG_SHA256/g" \
             homebrew/Casks/ofem.rb.tmpl > /tmp/ofem.rb
 
-          # Clone the tap, commit the new cask, push.
-          # `git pull --rebase` before push handles any commit GoReleaser may
-          # have added to the tap in the preceding step.
+          # Clone the tap, commit the new full-app cask, push.
+          # `git pull --rebase` before push handles the ofem-cli Cask commit
+          # that GoReleaser added to the tap in the preceding step.
           git clone \
             "https://x-access-token:$HOMEBREW_TAP_GH_TOKEN@github.com/sdebruyn/homebrew-ofem.git" \
             /tmp/homebrew-ofem
