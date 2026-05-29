@@ -54,14 +54,13 @@ struct MenuBarView: View {
                 Menu {
                     AccountSubmenu(account: account)
                 } label: {
-                    HStack {
-                        // em-dash as separator between alias and default-mark,
-                        // matching the Finder sidebar style.
+                    // In a classic menu style, Spacer() has no effect — menu
+                    // items don't stretch to fill the menu width. Append the
+                    // default marker inline so it appears right after the alias.
+                    if account.alias == model.defaultAccount {
+                        Label(account.alias, systemImage: "checkmark")
+                    } else {
                         Text(account.alias)
-                        if account.alias == model.defaultAccount {
-                            Spacer()
-                            Text("✓")
-                        }
                     }
                 }
             }

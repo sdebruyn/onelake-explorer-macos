@@ -7,8 +7,9 @@
 //
 // Refresh strategy (Phase 0):
 //   - Triggered manually when the menu opens (see MenuBarView.onAppear).
-//   - A lightweight timer fires every 10 s while the menu is shown so
-//     the header line stays fresh without a dedicated push channel.
+//     No background timer: one fetch per open is sufficient for a status
+//     display; a polling timer would be added in a later phase if live
+//     updates are needed while the menu stays open.
 //   - On daemon-unreachable the model publishes isRunning = false so the
 //     menu shows "Not running" instead of stale data.
 
