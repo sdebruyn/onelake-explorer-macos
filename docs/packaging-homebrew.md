@@ -209,38 +209,35 @@ renders the cask template and pushes the updated `Casks/ofem.rb` to
 ## GoReleaser config (`.goreleaser.yaml`)
 
 GoReleaser handles the Go CLI binary part and attaches it (plus checksums) to
-the GitHub Release. It does **not** manage the Homebrew cask — the cask is
-rendered from `homebrew/Casks/ofem.rb.tmpl` and committed to the tap by the
-`Update Homebrew cask` workflow step after the DMG SHA-256 is known.
+the GitHub Release. It also manages the CLI-only cask entry (`ofem-cli`)
+via the `homebrew_casks:` block. It does **not** manage the full-app Homebrew
+cask — the cask is rendered from `homebrew/Casks/ofem.rb.tmpl` and committed to
+the tap by the `Update Homebrew cask` workflow step after the DMG SHA-256 is known.
+
+Key config blocks (abbreviated):
 
 ```yaml
 project_name: ofem
-before:
-  hooks:
-    - go mod tidy
 builds:
   - id: ofem
-    main: ./cmd/ofem
-    binary: ofem
-    env:
-      - CGO_ENABLED=0
-    goos: [darwin]
-    goarch: [arm64]
-    flags:
-      - -trimpath
-    ldflags:
-      - -s -w
-      - -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Version={{ .Version }}
-      - -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Commit={{ .Commit }}
-      - -X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Date={{ .Date }}
-release:
-  github:
-    owner: sdebruyn
-    name: onelake-explorer-macos
-  prerelease: auto
-  extra_files:
-    - glob: ./dist-app/OneLake-*.dmg
+    binary: ofem   # binary name inside the archive
+    ...
+archives:
+  - id: ofem-cli
+    ids: [ofem]
+    ...
+homebrew_casks:
+  - name: ofem-cli              # installs as: brew install sdebruyn/ofem/ofem-cli
+    ids: [ofem-cli]
+    directory: Casks            # lands in Casks/ofem-cli.rb in the tap
+    binaries: [ofem]            # "ofem" matches the binary name inside the archive
+    skip_upload: auto           # skips pre-release tags (e.g. v2026.05.0-rc.1)
+    ...
 ```
+
+Note: `homebrew_casks:` is GoReleaser v2's current key for publishing a binary
+distribution to a Homebrew tap. The older `brews:` key (Homebrew Formula) is
+deprecated as of GoReleaser v2.10+.
 
 ## Pre-release / beta channel
 

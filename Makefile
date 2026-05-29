@@ -40,15 +40,15 @@ $(BIN): $(GO_FILES) go.mod go.sum
 	@mkdir -p $(BIN_DIR)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/ofem
 
-build: $(BIN)
+build: $(BIN) ## Build the ofem CLI into ./bin/ofem
 
-test:
+test: ## Run unit tests with the race detector
 	go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
-lint:
+lint: ## Run golangci-lint with the repo config
 	golangci-lint run --config .golangci.yml ./...
 
-fmt:
+fmt: ## Reformat Go files with gofmt + goimports (mutates files)
 	gofmt -w .
 	@if command -v goimports >/dev/null 2>&1; then \
 		goimports -w -local github.com/sdebruyn/onelake-explorer-macos .; \
@@ -56,7 +56,7 @@ fmt:
 		echo "goimports not installed; run 'go install golang.org/x/tools/cmd/goimports@latest'"; \
 	fi
 
-fmt-check:
+fmt-check: ## Check formatting (read-only; fails on unformatted files)
 	@unformatted=$$(gofmt -l .); \
 	if [ -n "$$unformatted" ]; then \
 		echo "The following files need gofmt (run 'make fmt'):"; \
@@ -64,22 +64,22 @@ fmt-check:
 		exit 1; \
 	fi
 
-vet:
+vet: ## Run go vet
 	go vet ./...
 
-tidy:
+tidy: ## Run go mod tidy
 	go mod tidy
 
-smoke: build
+smoke: build ## Build then run --version + status smoke test
 	@$(BIN) --version
 	@$(BIN) status
 
-ci: tidy fmt-check vet lint test build smoke
+ci: tidy fmt-check vet lint test build smoke ## Full local CI gate (run before pushing)
 
-clean:
-	rm -rf $(BIN_DIR) build dist dist-app coverage.out $(CGO_OUT)
+clean: ## Remove build artifacts
+	rm -rf $(BIN_DIR) build dist dist-app coverage.out
 
-release-snapshot:
+release-snapshot: ## Run goreleaser locally to validate the config (snapshot)
 	goreleaser release --snapshot --clean
 
 # --- Docs site (zensical → ofem.debruyn.dev) ---
