@@ -2,7 +2,7 @@
 // front of every HTTP round trip to Fabric and OneLake.
 //
 // It composes with — but does not replace — the per-call retry layer in
-// internal/api (and internal/httpretry once it lands). The retry layer
+// internal/api and internal/httpretry. The retry layer
 // decides whether to retry a single in-flight call after it returns.
 // httpgate decides whether the call is allowed to leave the local
 // process at all, given:

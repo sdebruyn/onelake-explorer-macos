@@ -455,3 +455,34 @@ func TestIsRetriableTransport_ContextCanceledNotRetried(t *testing.T) {
 		t.Error("context.Canceled MUST NOT be retriable")
 	}
 }
+
+// TestIsRetriableTransport_EPIPERetried verifies that a broken-pipe error
+// (e.g. the server closed the write side while we were sending) is
+// retriable. The errno branch returns true directly without falling
+// through to the string-match path.
+func TestIsRetriableTransport_EPIPERetried(t *testing.T) {
+	err := wrapOpErr("write", syscall.EPIPE)
+	if !isRetriableTransport(err) {
+		t.Error("EPIPE SHOULD be retriable")
+	}
+}
+
+// TestIsRetriableTransport_ENOENTNotRetried verifies that a missing
+// unix-socket path (ENOENT) is never retried — the daemon is not
+// running, and retrying will not create the socket.
+func TestIsRetriableTransport_ENOENTNotRetried(t *testing.T) {
+	err := wrapOpErr("dial", syscall.ENOENT)
+	if isRetriableTransport(err) {
+		t.Error("ENOENT should NOT be retriable")
+	}
+}
+
+// TestIsRetriableTransport_EACCESNotRetried verifies that a permission
+// error on a unix-socket path (EACCES) is never retried — no amount of
+// retrying will grant the missing permission.
+func TestIsRetriableTransport_EACCESNotRetried(t *testing.T) {
+	err := wrapOpErr("dial", syscall.EACCES)
+	if isRetriableTransport(err) {
+		t.Error("EACCES should NOT be retriable")
+	}
+}

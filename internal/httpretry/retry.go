@@ -372,12 +372,12 @@ func isRetriableTransport(err error) bool {
 			switch errno {
 			case syscall.ECONNREFUSED, syscall.ECONNRESET, syscall.EPIPE,
 				syscall.ENOENT, syscall.EACCES:
-				// ECONNREFUSED: nothing listening at that address.
-				// ECONNRESET / EPIPE: already handled by the
-				//   "connection reset" / "broken pipe" string match below
-				//   but classified here explicitly for clarity.
-				// ENOENT / EACCES: unix-socket path missing or no
-				//   permission — permanent.
+				// ECONNREFUSED: nothing listening at that address — permanent.
+				// ECONNRESET / EPIPE: server-side reset or broken write pipe;
+				//   retriable (the string-fallback below does NOT fire in this
+				//   branch because we return here directly).
+				// ENOENT / EACCES: unix-socket path missing or no permission
+				//   — permanent configuration error.
 				return errno == syscall.ECONNRESET || errno == syscall.EPIPE
 			}
 			// Treat unknown errno as non-retriable to avoid burning the
