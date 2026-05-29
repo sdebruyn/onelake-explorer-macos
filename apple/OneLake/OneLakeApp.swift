@@ -31,8 +31,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try await DomainSyncManager.shared.reconcile()
             } catch {
+                let nsErr = error as NSError
                 AppDelegate.log.error(
-                    "Initial domain reconcile failed: \(error.localizedDescription, privacy: .public)"
+                    "Initial domain reconcile failed: \(error.localizedDescription, privacy: .public) [\(nsErr.domain, privacy: .public) \(nsErr.code)]"
                 )
             }
             ChangeWatcher.shared.start()
@@ -56,8 +57,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try await DomainSyncManager.shared.reconcile()
             } catch {
+                let nsErr = error as NSError
                 AppDelegate.log.error(
-                    "Domain reconcile (becameActive) failed: \(error.localizedDescription, privacy: .public)"
+                    "Domain reconcile (becameActive) failed: \(error.localizedDescription, privacy: .public) [\(nsErr.domain, privacy: .public) \(nsErr.code)]"
                 )
             }
         }

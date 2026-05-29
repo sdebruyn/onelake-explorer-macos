@@ -390,7 +390,13 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 			continue
 		}
 
+		start := time.Now()
 		result, hErr := s.invoke(connCtx, handler, req.Params)
+		elapsed := time.Since(start)
+		s.logger.Debug("ipc request handled",
+			slog.String("method", req.Method),
+			slog.Duration("elapsed", elapsed),
+		)
 		if hErr != nil {
 			s.writeError(conn, req.ID, CodeHandlerError, hErr.Error())
 			continue

@@ -495,6 +495,61 @@ func TestAcceptLoopCloseRace(t *testing.T) {
 	}
 }
 
+// TestServerRequestDebugLog verifies that each handled request emits a
+// debug-level "ipc request handled" log line with a non-empty method name
+// and a non-negative elapsed duration. This is the diagnosability win from
+// issue #88: ofem.log shows each request at debug level so IPC misbehaviour
+// can be traced without spamming production logs at info level.
+func TestServerRequestDebugLog(t *testing.T) {
+	t.Parallel()
+
+	// Capture log output at debug level so we can assert on the entries.
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	sockPath := shortSocketPath(t)
+	srv := NewServer(logger)
+	srv.Register("ping", func(_ context.Context, _ json.RawMessage) (any, error) {
+		return "pong", nil
+	})
+
+	listenErr := make(chan error, 1)
+	go func() { listenErr <- srv.Listen(context.Background(), sockPath) }()
+	select {
+	case <-srv.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatalf("server did not bind in time")
+	}
+	t.Cleanup(func() {
+		_ = srv.Close()
+		<-listenErr
+	})
+
+	c, err := Dial(sockPath)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var out string
+	if err := c.Call(ctx, "ping", nil, &out); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	log := buf.String()
+	if !strings.Contains(log, "ipc request handled") {
+		t.Errorf("expected 'ipc request handled' in debug log; got:\n%s", log)
+	}
+	if !strings.Contains(log, "method=ping") {
+		t.Errorf("expected method=ping in debug log; got:\n%s", log)
+	}
+	if !strings.Contains(log, "elapsed=") {
+		t.Errorf("expected elapsed= in debug log; got:\n%s", log)
+	}
+}
+
 // TestReclaimSocketPath_RemovesStaleRegularFile confirms a plain stale file
 // we own is still reclaimed (the common post-crash case).
 func TestReclaimSocketPath_RemovesStaleRegularFile(t *testing.T) {
