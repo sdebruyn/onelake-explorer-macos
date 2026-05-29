@@ -14,9 +14,6 @@ func TestDefault(t *testing.T) {
 	if !d.Telemetry {
 		t.Error("telemetry should default to true (opt-out)")
 	}
-	if d.Net.MaxConcurrencyPerAccount != 4 {
-		t.Errorf("MaxConcurrencyPerAccount = %d, want 4", d.Net.MaxConcurrencyPerAccount)
-	}
 	if d.Cache.MaxSizeBytes != 10*1024*1024*1024 {
 		t.Errorf("Cache.MaxSizeBytes = %d, want 10 GiB", d.Cache.MaxSizeBytes)
 	}

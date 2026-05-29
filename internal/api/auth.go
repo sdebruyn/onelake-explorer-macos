@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+
+	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 )
 
 // InjectBearer fetches a token from tp for the given alias and sets the
 // Authorization header on req. It returns the token-provider error
 // unwrapped so callers can errors.Is against their own auth errors.
-func InjectBearer(ctx context.Context, req *http.Request, tp TokenProvider, alias string) error {
+func InjectBearer(ctx context.Context, req *http.Request, tp auth.TokenProvider, alias string) error {
 	if tp == nil {
 		return fmt.Errorf("api: nil TokenProvider")
 	}

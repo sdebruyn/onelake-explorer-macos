@@ -15,6 +15,25 @@ const (
 	defaultMaxBufferSize = 1000
 )
 
+// allowedCommonPropKeys is the exhaustive list of keys that may appear in
+// Event.CommonProps. Any key not in this set is silently dropped at the
+// Track merge step so a future caller cannot inadvertently smuggle a
+// workspace name, file path, or UPN through as a property key even if its
+// value passes the safePropertyByte charset check.
+//
+// Currently-used keys:
+//   - "installId", "appVersion", "platform", "arch", "osVersion" —
+//     injected by Client.New from Options fields.
+//   - "failedOp" — injected by TrackError.
+var allowedCommonPropKeys = map[string]struct{}{
+	"installId":  {},
+	"appVersion": {},
+	"platform":   {},
+	"arch":       {},
+	"osVersion":  {},
+	"failedOp":   {},
+}
+
 // Options configures New. AppVersion and InstallID are always merged
 // into every event as common properties. Sink must be non-nil; pass
 // NoopSink{} for the disabled state.
@@ -148,12 +167,16 @@ func (c *Client) Track(event Event) {
 	if event.Time.IsZero() {
 		event.Time = time.Now().UTC()
 	}
-	// Clone the caller-supplied CommonProps before merging so we never
-	// mutate a map the caller still holds a reference to.
+	// Clone the caller-supplied CommonProps before merging, applying the
+	// allowedCommonPropKeys allowlist. Unknown keys are silently dropped so
+	// a future call site cannot smuggle a workspace name, path, or UPN as a
+	// property key even if its value passes the charset check.
 	src := event.CommonProps
-	merged := make(map[string]string, len(src)+len(c.commonProps))
+	merged := make(map[string]string, len(allowedCommonPropKeys))
 	for k, v := range src {
-		merged[k] = v
+		if _, allowed := allowedCommonPropKeys[k]; allowed {
+			merged[k] = v
+		}
 	}
 	for k, v := range c.commonProps {
 		if _, ok := merged[k]; ok {

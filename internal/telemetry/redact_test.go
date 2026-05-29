@@ -86,9 +86,11 @@ func TestScrubProperty(t *testing.T) {
 	}
 }
 
-// TestSplitFields_RedactsLeakedValues is the boundary guarantee: even when
-// a caller stuffs a file path, UPN, or workspace name into CommonProps or
-// the error code, splitFields must not emit it verbatim.
+// TestSplitFields_RedactsLeakedValues is the boundary guarantee for
+// splitFields: even if CommonProps somehow contains a PII value, it must
+// not be emitted verbatim. Note that in the real call path Track's key
+// allowlist drops unknown keys before they reach splitFields; this test
+// exercises the value-scrub layer independently as defense-in-depth.
 func TestSplitFields_RedactsLeakedValues(t *testing.T) {
 	t.Parallel()
 	ev := Event{
@@ -96,6 +98,7 @@ func TestSplitFields_RedactsLeakedValues(t *testing.T) {
 		TenantID:         "9064c167-4885-40ef-9f34-1853218aea86",
 		AccountAliasHash: "a1b2c3d4",
 		ErrorCode:        "Sales/budget_2026.csv",
+		// Simulate a hypothetical bypass of the allowlist at Track level.
 		CommonProps: map[string]string{
 			"leakedPath":      "Files/raw/sales-2026.csv",
 			"leakedUPN":       "sam@debruyn.dev",
@@ -111,8 +114,12 @@ func TestSplitFields_RedactsLeakedValues(t *testing.T) {
 	if props["event"] != "file_download" {
 		t.Errorf("event = %q, want file_download", props["event"])
 	}
-	// Anything carrying a separator / space / '@' is redacted.
-	for _, k := range []string{"errorCode", "leakedPath", "leakedUPN", "leakedWorkspace"} {
+	// The error code carries a path separator and must be redacted.
+	if props["errorCode"] != "redacted" {
+		t.Errorf("props[errorCode] = %q, want \"redacted\"", props["errorCode"])
+	}
+	// CommonProps values with separators / spaces / '@' must be redacted.
+	for _, k := range []string{"leakedPath", "leakedUPN", "leakedWorkspace"} {
 		if props[k] != "redacted" {
 			t.Errorf("props[%q] = %q, want \"redacted\"", k, props[k])
 		}

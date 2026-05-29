@@ -99,10 +99,9 @@ func newAccountDefaultCmd() *cobra.Command {
 			if _, ok := snap.Accounts[alias]; !ok {
 				return fmt.Errorf("no account with alias %q (try `ofem account list`)", alias)
 			}
-			store.Update(func(f *config.File) {
+			if err := store.UpdateAndSave(func(f *config.File) {
 				f.DefaultAccount = alias
-			})
-			if err := store.Save(); err != nil {
+			}); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Default account is now %q\n", alias)

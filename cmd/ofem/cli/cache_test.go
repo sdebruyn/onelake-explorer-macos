@@ -187,18 +187,20 @@ func TestCacheEvict_TrimsToLimit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StoreBlob %d: %v", i, err)
 		}
-		// Link to a metadata row so EvictToLimit has something to walk.
+		// Attach the blob via Put so EvictToLimit has something to walk.
 		k := cache.Key{
 			AccountAlias: "work",
 			WorkspaceID:  "ws",
 			ItemID:       "it",
 			Path:         string(rune('a' + i)),
 		}
-		if err := c.Put(ctx, cache.Entry{Key: k, Name: string(rune('a' + i))}); err != nil {
+		if err := c.Put(ctx, cache.Entry{
+			Key:        k,
+			Name:       string(rune('a' + i)),
+			BlobSHA256: sha,
+			BlobSize:   n,
+		}); err != nil {
 			t.Fatalf("Put %d: %v", i, err)
-		}
-		if err := c.LinkBlob(ctx, k, sha, n); err != nil {
-			t.Fatalf("LinkBlob %d: %v", i, err)
 		}
 	}
 	_ = c.Close()
