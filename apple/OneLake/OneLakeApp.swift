@@ -38,10 +38,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ChangeWatcher.shared.start()
         }
 
-        // Kick off an initial status fetch so the icon reflects state
-        // immediately on launch rather than waiting for the first menu open.
+        // Start periodic status polling so the icon + menu reflect daemon
+        // state immediately on launch and stay current — MenuBarExtra(.menu)
+        // does not fire SwiftUI .onAppear on menu open, so a timer (not the
+        // menu lifecycle) is what keeps the state fresh and self-healing.
         Task { @MainActor in
-            MenuStatusModel.shared.refresh()
+            MenuStatusModel.shared.startAutoRefresh()
         }
     }
 

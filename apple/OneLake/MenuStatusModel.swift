@@ -103,6 +103,7 @@ final class MenuStatusModel: ObservableObject {
 
     private let bridge = CoreBridge.shared
     private var refreshTask: Task<Void, Never>?
+    private var autoRefreshTask: Task<Void, Never>?
 
     // MARK: - Refresh
 
@@ -112,6 +113,22 @@ final class MenuStatusModel: ObservableObject {
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             await self?.doRefresh()
+        }
+    }
+
+    /// Refresh now, then repeatedly every `interval`. MenuBarExtra(.menu) does
+    /// not deliver SwiftUI lifecycle callbacks (.onAppear) when the menu opens,
+    /// so a light timer is the reliable way to keep both the menu contents and
+    /// the menu-bar icon current — and to recover automatically once the daemon
+    /// becomes reachable after a transient outage. A status round-trip over the
+    /// local unix socket is cheap.
+    func startAutoRefresh(interval: Duration = .seconds(5)) {
+        autoRefreshTask?.cancel()
+        autoRefreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                self?.refresh()
+                try? await Task.sleep(for: interval)
+            }
         }
     }
 
