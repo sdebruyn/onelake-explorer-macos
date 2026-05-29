@@ -135,7 +135,11 @@ struct AddAccountView: View {
     // MARK: - Helpers
 
     private var canSignIn: Bool {
-        !alias.trimmingCharacters(in: .whitespaces).isEmpty && phase != .waiting
+        guard !alias.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        switch phase {
+        case .idle, .failure: return true
+        case .waiting, .success: return false
+        }
     }
 
     private func startLogin() {
@@ -192,7 +196,11 @@ struct AddAccountView: View {
             case .serverUnreachable(let m): return "Daemon unreachable: \(m)"
             case .serverBusy(let m): return "Daemon busy: \(m)"
             case .notBootstrapped: return "Daemon not running — start it first."
-            default: return error.localizedDescription
+            case .decoding(let m): return "Unexpected response: \(m)"
+            case .cannotSynchronize(let m): return "Sign-in failed: \(m)"
+            case .noSuchItem(let m): return "Sign-in failed: \(m)"
+            case .insufficientQuota(let m): return "Sign-in failed: \(m)"
+            case .nullPointer(let m): return "Internal error: \(m)"
             }
         }
         return error.localizedDescription
