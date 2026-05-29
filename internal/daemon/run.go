@@ -177,7 +177,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 
 	// IPC server.
 	srv := ipc.NewServer(logger)
-	NewHandlers(store, registry, c, eng, gates, feed).Register(srv)
+	NewHandlers(store, registry, comps.Keychain, c, eng, gates, feed).Register(srv)
 
 	sockPath := opts.SocketPath
 	if sockPath == "" {

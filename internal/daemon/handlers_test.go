@@ -62,7 +62,7 @@ func newTestHandlers(t *testing.T) *Handlers {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 
-	return NewHandlers(store, reg, c, nil, nil, nil)
+	return NewHandlers(store, reg, kc, c, nil, nil, nil)
 }
 
 func TestHandleStatus(t *testing.T) {
@@ -570,6 +570,230 @@ func TestHandleSyncPollChangesMalformedSinceErrors(t *testing.T) {
 	_, err := h.handleSyncPollChanges(context.Background(), badParams)
 	if err == nil {
 		t.Fatal("expected error for malformed anchor, got nil")
+	}
+}
+
+// TestHandleAccountSetDefault verifies that account.setDefault persists the
+// alias and that a subsequent account.list reflects it.
+func TestHandleAccountSetDefault(t *testing.T) {
+	h := newTestHandlers(t)
+	// Add two accounts first.
+	for _, alias := range []string{"work", "personal"} {
+		if _, err := h.handleAccountAdd(context.Background(), mustJSON(t, AccountAddRequest{
+			Alias:     alias,
+			SecretB64: base64.StdEncoding.EncodeToString([]byte("x")),
+			Account:   AccountPayload{Alias: alias, HomeAccountID: "h", Username: "u", TenantID: "t"},
+		})); err != nil {
+			t.Fatalf("add %q: %v", alias, err)
+		}
+	}
+
+	res, err := h.handleAccountSetDefault(context.Background(), mustJSON(t, AccountSetDefaultRequest{Alias: "work"}))
+	if err != nil {
+		t.Fatalf("setDefault: %v", err)
+	}
+	r, ok := res.(AccountSetDefaultResponse)
+	if !ok || r.DefaultAccount != "work" {
+		t.Fatalf("response: %+v", res)
+	}
+
+	listed, err := h.handleAccountList(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if lr := listed.(AccountListResponse); lr.DefaultAccount != "work" {
+		t.Errorf("DefaultAccount = %q, want %q", lr.DefaultAccount, "work")
+	}
+}
+
+// TestHandleAccountSetDefaultUnknownErrors verifies that setting the default
+// to an alias that does not exist returns an error.
+func TestHandleAccountSetDefaultUnknownErrors(t *testing.T) {
+	h := newTestHandlers(t)
+	_, err := h.handleAccountSetDefault(context.Background(), mustJSON(t, AccountSetDefaultRequest{Alias: "ghost"}))
+	if err == nil {
+		t.Fatal("expected error for unknown alias")
+	}
+}
+
+// TestHandleAccountSetDefaultEmptyAliasErrors verifies that an empty alias
+// returns an error before touching the registry.
+func TestHandleAccountSetDefaultEmptyAliasErrors(t *testing.T) {
+	h := newTestHandlers(t)
+	_, err := h.handleAccountSetDefault(context.Background(), mustJSON(t, AccountSetDefaultRequest{}))
+	if err == nil {
+		t.Fatal("expected error for empty alias")
+	}
+}
+
+// TestHandleCacheEvictReturnsBytes verifies that cache.evict returns the
+// post-eviction byte total (may be 0 on an empty cache).
+func TestHandleCacheEvictReturnsBytes(t *testing.T) {
+	h := newTestHandlers(t)
+	res, err := h.handleCacheEvict(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("cache.evict: %v", err)
+	}
+	r, ok := res.(CacheEvictResponse)
+	if !ok {
+		t.Fatalf("type: got %T", res)
+	}
+	if r.CacheBytes < 0 {
+		t.Errorf("CacheBytes = %d, want >= 0", r.CacheBytes)
+	}
+}
+
+// TestHandleCacheClearReturnZero verifies that cache.clear always returns 0
+// as the post-clear byte total.
+func TestHandleCacheClearReturnsZero(t *testing.T) {
+	h := newTestHandlers(t)
+	res, err := h.handleCacheClear(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("cache.clear: %v", err)
+	}
+	r, ok := res.(CacheClearResponse)
+	if !ok {
+		t.Fatalf("type: got %T", res)
+	}
+	if r.CacheBytes != 0 {
+		t.Errorf("CacheBytes = %d, want 0", r.CacheBytes)
+	}
+}
+
+// TestHandleConfigSetTelemetry verifies that config.set can toggle
+// telemetry and that the normalised key+value are echoed back.
+func TestHandleConfigSetTelemetry(t *testing.T) {
+	h := newTestHandlers(t)
+
+	res, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: "telemetry", Value: "off"}))
+	if err != nil {
+		t.Fatalf("config.set telemetry=off: %v", err)
+	}
+	r, ok := res.(ConfigSetResponse)
+	if !ok {
+		t.Fatalf("type: got %T", res)
+	}
+	if r.Key != "telemetry" {
+		t.Errorf("key = %q, want %q", r.Key, "telemetry")
+	}
+	if h.store.Snapshot().Telemetry {
+		t.Errorf("telemetry should be false after config.set telemetry=off")
+	}
+}
+
+// TestHandleConfigSetCacheMaxSize verifies that the human-friendly size alias
+// (cache.max_size) is accepted and resolves to the same backing field as the
+// raw bytes key (cache.max_size_bytes).
+func TestHandleConfigSetCacheMaxSize(t *testing.T) {
+	h := newTestHandlers(t)
+	res, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: "cache.max_size", Value: "1GiB"}))
+	if err != nil {
+		t.Fatalf("config.set cache.max_size=1GiB: %v", err)
+	}
+	if _, ok := res.(ConfigSetResponse); !ok {
+		t.Fatalf("type: got %T", res)
+	}
+	if got := h.store.Snapshot().Cache.MaxSizeBytes; got != 1<<30 {
+		t.Errorf("MaxSizeBytes = %d, want %d", got, int64(1<<30))
+	}
+}
+
+// TestHandleConfigSetUnknownKeyErrors verifies that an unknown key returns
+// an error without mutating the config.
+func TestHandleConfigSetUnknownKeyErrors(t *testing.T) {
+	h := newTestHandlers(t)
+	_, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: "does.not.exist", Value: "x"}))
+	if err == nil {
+		t.Fatal("expected error for unknown key")
+	}
+}
+
+// TestHandleConfigSetKeyNormalization verifies that dash-separated key
+// variants are accepted (e.g. "cache.max-size" == "cache.max_size").
+func TestHandleConfigSetKeyNormalization(t *testing.T) {
+	h := newTestHandlers(t)
+	_, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: "cache.max-size", Value: "512MB"}))
+	if err != nil {
+		t.Fatalf("config.set cache.max-size: %v", err)
+	}
+	// 512 MB decimal = 512 * 1_000_000
+	if got := h.store.Snapshot().Cache.MaxSizeBytes; got != 512*1_000_000 {
+		t.Errorf("MaxSizeBytes = %d, want %d", got, int64(512*1_000_000))
+	}
+}
+
+// TestHandleStatusIncludesPaths verifies the status response carries
+// the config file, cache directory, and log directory paths.
+func TestHandleStatusIncludesPaths(t *testing.T) {
+	h := newTestHandlers(t)
+	got, err := h.handleStatus(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+	resp := got.(StatusResponse)
+	if resp.Paths.ConfigFile == "" {
+		t.Error("Paths.ConfigFile should be set")
+	}
+	if resp.Paths.CacheDir == "" {
+		t.Error("Paths.CacheDir should be set")
+	}
+	if resp.Paths.LogDir == "" {
+		t.Error("Paths.LogDir should be set")
+	}
+}
+
+// TestHandleAuthLoginNilKeychainErrors verifies that auth.login returns a
+// descriptive error when the handler was constructed without a keychain
+// (i.e. in a test that did not wire a full engine).
+func TestHandleAuthLoginNilKeychainErrors(t *testing.T) {
+	h := newTestHandlers(t)
+	h.kc = nil // simulate a daemon built without a keychain
+	_, err := h.handleAuthLogin(context.Background(), mustJSON(t, AuthLoginRequest{Alias: "work"}))
+	if err == nil {
+		t.Fatal("expected error when kc is nil")
+	}
+}
+
+// TestHandleAuthLoginInvalidAliasErrors verifies that auth.login validates
+// the alias before attempting any network I/O.
+func TestHandleAuthLoginInvalidAliasErrors(t *testing.T) {
+	h := newTestHandlers(t)
+	cases := []string{
+		"",          // empty
+		"-leading",  // starts with dash
+		".leading",  // starts with dot
+		"has space", // disallowed character
+		"has/slash", // disallowed character
+	}
+	for _, alias := range cases {
+		_, err := h.handleAuthLogin(context.Background(), mustJSON(t, AuthLoginRequest{Alias: alias}))
+		if err == nil {
+			t.Errorf("alias=%q: expected error, got nil", alias)
+		}
+	}
+}
+
+// TestHandleAuthLoginCancelledContextErrors verifies that a cancelled context
+// causes auth.login to return promptly with an error rather than hanging.
+// This exercises the ctx-forwarding path through LoginInteractive.
+func TestHandleAuthLoginCancelledContextErrors(t *testing.T) {
+	h := newTestHandlers(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled before the call
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.handleAuthLogin(ctx, mustJSON(t, AuthLoginRequest{Alias: "work"}))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected error for cancelled context, got nil")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("auth.login did not return within 15s after ctx cancel")
 	}
 }
 

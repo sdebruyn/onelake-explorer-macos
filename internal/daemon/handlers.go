@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
@@ -44,8 +45,12 @@ type offlineReporter interface {
 // Handlers is constructed by [Run] (or by tests via [NewHandlers]) and
 // has no public mutator methods — its state is read-only after wiring.
 type Handlers struct {
-	store     *config.Store
-	registry  *auth.Registry
+	store    *config.Store
+	registry *auth.Registry
+	// kc is the keychain used by the registry. Needed by auth.login to
+	// pass the same keychain instance to LoginInteractive / LoginDeviceCode
+	// without opening a second file-backed store.
+	kc        auth.Keychain
 	cache     *cache.Cache
 	engine    syncRefresher
 	offline   offlineReporter
@@ -63,16 +68,17 @@ type Handlers struct {
 }
 
 // NewHandlers builds a Handlers wired to the given dependencies. All of
-// store, registry and cache are required; engine may be nil for tests
-// that don't exercise sync.refresh, in which case the method returns an
-// error indicating the engine is not wired. gates may be nil for tests;
-// when nil, status returns an empty Gates list. feed may be nil for tests;
-// when nil, sync.pollChanges returns an empty result.
-func NewHandlers(store *config.Store, registry *auth.Registry, cache *cache.Cache, engine syncRefresher, gates *httpgate.Registry, feed *Changefeed) *Handlers {
+// store, registry and cache are required; kc may be nil for tests that
+// don't exercise auth.login (the handler returns an error when kc is nil).
+// engine may be nil for tests that don't exercise sync.refresh; gates may
+// be nil for tests (status returns an empty Gates list); feed may be nil
+// for tests (sync.pollChanges returns an empty result).
+func NewHandlers(store *config.Store, registry *auth.Registry, kc auth.Keychain, cache *cache.Cache, engine syncRefresher, gates *httpgate.Registry, feed *Changefeed) *Handlers {
 	off, _ := engine.(offlineReporter)
 	h := &Handlers{
 		store:     store,
 		registry:  registry,
+		kc:        kc,
 		cache:     cache,
 		engine:    engine,
 		offline:   off,
@@ -98,7 +104,12 @@ func (h *Handlers) Register(srv *ipc.Server) {
 	srv.Register("account.list", h.handleAccountList)
 	srv.Register("account.add", h.handleAccountAdd)
 	srv.Register("account.remove", h.handleAccountRemove)
+	srv.Register("account.setDefault", h.handleAccountSetDefault)
 	srv.Register("config.snapshot", h.handleConfigSnapshot)
+	srv.Register("config.set", h.handleConfigSet)
+	srv.Register("cache.evict", h.handleCacheEvict)
+	srv.Register("cache.clear", h.handleCacheClear)
+	srv.Register("auth.login", h.handleAuthLogin)
 	srv.Register("sync.refresh", h.handleSyncRefresh)
 	srv.Register("sync.pollChanges", h.handleSyncPollChanges)
 	srv.Register("mount.list", h.handleMountList)
@@ -110,6 +121,14 @@ func (h *Handlers) Register(srv *ipc.Server) {
 	srv.Register("fp.createItem", h.handleFPCreateItem)
 	srv.Register("fp.modifyItem", h.handleFPModifyItem)
 	srv.Register("fp.deleteItem", h.handleFPDeleteItem)
+}
+
+// StatusPaths contains the canonical on-disk locations the menu-bar app
+// can surface to the user via "Reveal in Finder" actions.
+type StatusPaths struct {
+	ConfigFile string `json:"configFile"`
+	CacheDir   string `json:"cacheDir"`
+	LogDir     string `json:"logDir"`
 }
 
 // StatusResponse is the payload returned by the "status" method.
@@ -140,6 +159,9 @@ type StatusResponse struct {
 	// (DNS / network-unreachable on the last outbound attempt). When
 	// true, writes are queued locally for later drain.
 	Offline bool `json:"offline"`
+	// Paths contains the canonical file-system locations the menu-bar
+	// app can expose via "Reveal in Finder" actions.
+	Paths StatusPaths `json:"paths"`
 }
 
 // PausedWorkspace is the JSON-friendly view of one paused workspace.
@@ -194,6 +216,7 @@ func (h *Handlers) handleStatus(ctx context.Context, _ json.RawMessage) (any, er
 		offline = h.offline.Offline()
 	}
 
+	p := h.store.Paths()
 	return StatusResponse{
 		DaemonVersion:    h.version,
 		StartedAt:        h.startedAt,
@@ -203,6 +226,11 @@ func (h *Handlers) handleStatus(ctx context.Context, _ json.RawMessage) (any, er
 		Gates:            gates,
 		PausedWorkspaces: paused,
 		Offline:          offline,
+		Paths: StatusPaths{
+			ConfigFile: p.ConfigFile,
+			CacheDir:   p.CacheDir,
+			LogDir:     p.LogDir,
+		},
 	}, nil
 }
 
@@ -495,6 +523,195 @@ func (h *Handlers) handleMountList(_ context.Context, _ json.RawMessage) (any, e
 	}
 	sortDomains(domains)
 	return MountListResponse{Domains: domains}, nil
+}
+
+// AccountSetDefaultRequest is the payload accepted by "account.setDefault".
+type AccountSetDefaultRequest struct {
+	Alias string `json:"alias"`
+}
+
+// AccountSetDefaultResponse is the payload returned by "account.setDefault".
+type AccountSetDefaultResponse struct {
+	DefaultAccount string `json:"defaultAccount"`
+}
+
+func (h *Handlers) handleAccountSetDefault(_ context.Context, params json.RawMessage) (any, error) {
+	var req AccountSetDefaultRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("decode params: %w", err)
+	}
+	if req.Alias == "" {
+		return nil, fmt.Errorf("alias is required")
+	}
+	if err := h.registry.SetDefault(req.Alias); err != nil {
+		return nil, err
+	}
+	return AccountSetDefaultResponse{DefaultAccount: req.Alias}, nil
+}
+
+// CacheEvictRequest is the (empty) payload accepted by "cache.evict".
+type CacheEvictRequest struct{}
+
+// CacheEvictResponse is the payload returned by "cache.evict".
+type CacheEvictResponse struct {
+	// CacheBytes is the deduped blob byte total AFTER eviction.
+	CacheBytes int64 `json:"cacheBytes"`
+}
+
+func (h *Handlers) handleCacheEvict(ctx context.Context, _ json.RawMessage) (any, error) {
+	if h.cache == nil {
+		return nil, fmt.Errorf("cache not initialised")
+	}
+	if _, _, err := h.cache.EvictToLimit(ctx); err != nil {
+		return nil, fmt.Errorf("evict: %w", err)
+	}
+	remaining, err := h.cache.BlobBytes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("measure cache: %w", err)
+	}
+	slog.Info("cache.evict via IPC", slog.Int64("bytes_after", remaining))
+	return CacheEvictResponse{CacheBytes: remaining}, nil
+}
+
+// CacheClearRequest is the (empty) payload accepted by "cache.clear".
+type CacheClearRequest struct{}
+
+// CacheClearResponse is the payload returned by "cache.clear".
+// CacheBytes will be 0 after a successful clear.
+type CacheClearResponse struct {
+	CacheBytes int64 `json:"cacheBytes"`
+}
+
+func (h *Handlers) handleCacheClear(ctx context.Context, _ json.RawMessage) (any, error) {
+	if h.cache == nil {
+		return nil, fmt.Errorf("cache not initialised")
+	}
+	if _, _, err := h.cache.Wipe(ctx); err != nil {
+		return nil, fmt.Errorf("clear cache: %w", err)
+	}
+	slog.Info("cache.clear via IPC")
+	return CacheClearResponse{CacheBytes: 0}, nil
+}
+
+// ConfigSetRequest is the payload accepted by "config.set".
+type ConfigSetRequest struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// ConfigSetResponse echoes back the normalised key and value that was persisted.
+type ConfigSetResponse struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+func (h *Handlers) handleConfigSet(_ context.Context, params json.RawMessage) (any, error) {
+	var req ConfigSetRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("decode params: %w", err)
+	}
+	if req.Key == "" {
+		return nil, fmt.Errorf("key is required")
+	}
+	var applyErr error
+	saveErr := h.store.UpdateAndSave(func(f *config.File) {
+		applyErr = config.ApplyConfig(f, req.Key, req.Value)
+	})
+	if applyErr != nil {
+		return nil, applyErr
+	}
+	if saveErr != nil {
+		return nil, fmt.Errorf("save config: %w", saveErr)
+	}
+	return ConfigSetResponse{
+		Key:   config.NormalizeConfigKey(req.Key),
+		Value: req.Value,
+	}, nil
+}
+
+// AuthLoginRequest is the payload accepted by "auth.login".
+type AuthLoginRequest struct {
+	// Alias is the user-chosen short name for the new account (required).
+	Alias string `json:"alias"`
+	// Tenant is an optional tenant GUID or domain hint. When empty, MSAL
+	// picks the tenant from the user's home directory at sign-in time.
+	Tenant string `json:"tenant,omitempty"`
+	// DeviceCode selects the device-code flow instead of the interactive
+	// browser flow. Default false (interactive browser).
+	DeviceCode bool `json:"deviceCode,omitempty"`
+}
+
+// AuthLoginResponse is the payload returned by "auth.login".
+type AuthLoginResponse struct {
+	Alias      string `json:"alias"`
+	Username   string `json:"username"`
+	TenantID   string `json:"tenantId"`
+	TenantName string `json:"tenantName,omitempty"`
+}
+
+// handleAuthLogin runs the MSAL interactive-browser or device-code login
+// flow in-process and persists the account via the registry.
+//
+// This handler is long-running (the user interacts with a browser or a
+// device-code prompt). Context cancellation is forwarded all the way into
+// the MSAL library so the caller can abort by closing the IPC connection.
+// Concurrent calls on OTHER connections (e.g. "status") proceed normally
+// because the IPC server handles each connection in its own goroutine.
+//
+// NOTE for packaging: the interactive (loopback redirect) flow binds a
+// temporary localhost HTTP server. The daemon binary therefore needs the
+// com.apple.security.network.server entitlement — handled in the sibling
+// Swift/signing PR, not here.
+func (h *Handlers) handleAuthLogin(ctx context.Context, params json.RawMessage) (any, error) {
+	var req AuthLoginRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("decode params: %w", err)
+	}
+	if req.Alias == "" {
+		return nil, fmt.Errorf("alias is required")
+	}
+	if err := auth.ValidateAlias(req.Alias); err != nil {
+		return nil, err
+	}
+	if h.kc == nil {
+		return nil, fmt.Errorf("keychain not wired (daemon built without full engine)")
+	}
+
+	var (
+		account    auth.Account
+		cacheBytes []byte
+		err        error
+	)
+	if req.DeviceCode {
+		// Device-code: the prompt text is logged rather than returned; the
+		// menu-bar app should not use this flow (no terminal to display it).
+		// It is wired for completeness and CI headless-auth scenarios.
+		account, _, cacheBytes, err = auth.LoginDeviceCode(ctx, auth.EntraClientID, req.Tenant, h.kc,
+			func(verificationURL, userCode string, _ time.Time) {
+				slog.Info("auth.login device-code prompt",
+					slog.String("verification_url", verificationURL),
+					slog.String("user_code", userCode),
+				)
+			},
+		)
+	} else {
+		account, _, cacheBytes, err = auth.LoginInteractive(ctx, auth.EntraClientID, req.Tenant, h.kc)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sign in: %w", err)
+	}
+
+	account.Alias = req.Alias
+	if err := h.registry.Add(account, cacheBytes); err != nil {
+		return nil, fmt.Errorf("register account: %w", err)
+	}
+
+	return AuthLoginResponse{
+		Alias:      account.Alias,
+		Username:   account.Username,
+		TenantID:   account.TenantID,
+		TenantName: account.TenantName,
+	}, nil
 }
 
 // --- small helpers kept private so they don't pollute the package API.
