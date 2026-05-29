@@ -15,13 +15,10 @@ import (
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo"
-	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
-	"github.com/sdebruyn/onelake-explorer-macos/internal/fabric"
-	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/engine"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/ipc"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/logging"
-	"github.com/sdebruyn/onelake-explorer-macos/internal/onelake"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/sync"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/telemetry"
 )
@@ -113,33 +110,6 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}
 	logger = logger.With(slog.String("component", "daemon"))
 
-	// Cache next so handler wiring can use it.
-	if err := os.MkdirAll(paths.CacheDir, 0o700); err != nil {
-		return fmt.Errorf("daemon: create cache dir: %w", err)
-	}
-	c, err := cache.Open(cache.Options{
-		Root:         paths.CacheDir,
-		MaxBlobBytes: cfg.Cache.MaxSizeBytes,
-	})
-	if err != nil {
-		return fmt.Errorf("daemon: open cache: %w", err)
-	}
-	defer func() { _ = c.Close() }()
-
-	// Auth registry. We pass it the same store so the daemon and CLI
-	// stay in sync — both read and mutate config.toml under the same
-	// lock. The registry implements [auth.TokenProvider] directly, so
-	// the Fabric and OneLake clients can consume it without an adapter.
-	kc := opts.KeychainOverride
-	if kc == nil {
-		built, err := auth.NewKeychain()
-		if err != nil {
-			return fmt.Errorf("open keychain: %w", err)
-		}
-		kc = built
-	}
-	registry := auth.NewRegistry(store, kc, auth.EntraClientID, nil)
-
 	// Telemetry. Init returns a no-op client whenever telemetry is
 	// disabled (env, config flag, or unset connection string) so the
 	// rest of the wiring can call Track unconditionally. On unexpected
@@ -169,36 +139,27 @@ func Run(ctx context.Context, opts RunOptions) error {
 	}()
 	tel.Track(telemetry.Event{Name: "app_start"})
 
-	// Per-host request gate. One process-wide registry is shared between
-	// the Fabric and OneLake clients so a 429 on either upstream pauses
-	// every in-flight retry on that host - see internal/httpgate for
-	// the rationale.
-	gates := httpgate.DefaultRegistry()
-
-	// Sync engine. Stitch the Fabric REST and OneLake DFS clients to
-	// the same token provider and feed both into the engine alongside
-	// the cache and telemetry client. New only errors when a required
-	// dependency is missing, which would be a programmer error here.
-	fabricClient := fabric.New(fabric.Options{TokenProvider: registry.ScopedProvider(auth.FabricScopes), Registry: gates})
-	onelakeClient := onelake.New(onelake.Options{TokenProvider: registry, Registry: gates})
-	engine, err := sync.New(sync.Options{
-		Cache:                  c,
-		Fabric:                 fabricClient,
-		OneLake:                onelakeClient,
-		Telemetry:              tel,
-		Tenants:                registry,
-		Logger:                 logger,
-		MaxConcurrentUploads:   cfg.Net.MaxConcurrentUploadsPerAccount,
-		MaxConcurrentDownloads: cfg.Net.MaxConcurrentDownloadsPerAccount,
-		// Share the App Group cache dir for download spill files so the
-		// daemon, CLI, and sandboxed extension rendezvous on the same
-		// partials (and the extension, which cannot write to the global
-		// temp dir, has a writable location).
-		ScratchDir: filepath.Join(paths.CacheDir, "partials"),
+	// Engine. Build wires cache → auth registry → Fabric/OneLake clients
+	// → sync.Engine. The daemon-specific sync.Options (Telemetry, Logger,
+	// concurrency caps) are passed in so Build can forward them to sync.New.
+	comps, err := engine.Build(engine.Options{
+		Store:            store,
+		KeychainOverride: opts.KeychainOverride,
+		SyncOptions: sync.Options{
+			Telemetry:              tel,
+			Logger:                 logger,
+			MaxConcurrentUploads:   cfg.Net.MaxConcurrentUploadsPerAccount,
+			MaxConcurrentDownloads: cfg.Net.MaxConcurrentDownloadsPerAccount,
+		},
 	})
 	if err != nil {
-		return fmt.Errorf("daemon: build sync engine: %w", err)
+		return fmt.Errorf("daemon: %w", err)
 	}
+	defer comps.Close()
+	c := comps.Cache
+	registry := comps.Registry
+	gates := comps.Gates
+	eng := comps.Engine
 
 	// Rebuild the offline-upload queue from spool files left behind by
 	// a previous daemon process. Without this, a daemon crash between
@@ -206,7 +167,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// bytes — see internal/sync/offline.go for the spool format. Errors
 	// are logged but non-fatal: the worst case is a queued upload that
 	// won't drain until the user re-saves the file.
-	if rerr := engine.RecoverOfflineQueue(); rerr != nil {
+	if rerr := eng.RecoverOfflineQueue(); rerr != nil {
 		logger.Warn("offline queue recovery failed", slog.Any("err", rerr))
 	}
 
@@ -216,7 +177,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 
 	// IPC server.
 	srv := ipc.NewServer(logger)
-	NewHandlers(store, registry, c, engine, gates, feed).Register(srv)
+	NewHandlers(store, registry, c, eng, gates, feed).Register(srv)
 
 	sockPath := opts.SocketPath
 	if sockPath == "" {
@@ -254,7 +215,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	pollerDone := make(chan struct{})
 	go func() {
 		defer close(pollerDone)
-		runAdaptivePoller(runCtx, c, engine, logger, engine.RecentFolderTTL(), pollerHotWindow, feed)
+		runAdaptivePoller(runCtx, c, eng, logger, eng.RecentFolderTTL(), pollerHotWindow, feed)
 	}()
 
 	// Block until either signal cancellation or the listener exits

@@ -5,18 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/engine"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/fabric"
-	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
-	"github.com/sdebruyn/onelake-explorer-macos/internal/onelake"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/sync"
 )
 
@@ -63,56 +60,30 @@ func parseDebugRef(s string) (debugRef, error) {
 	return ref, nil
 }
 
-// debugEngine bundles a fully-wired sync.Engine with its cache so the
-// debug commands can close the cache when done.
+// debugEngine bundles a fully-wired sync.Engine with its Components so
+// the debug commands can close the cache when done.
 type debugEngine struct {
 	engine *sync.Engine
-	cache  *cache.Cache
+	comps  *engine.Components
 }
 
-func (d *debugEngine) close() { _ = d.cache.Close() }
+func (d *debugEngine) close() { d.comps.Close() }
 
 // newDebugEngine wires cache + auth registry + Fabric/OneLake clients +
-// sync.Engine exactly like the daemon does, but for a one-shot CLI
-// invocation. The CLI is unsandboxed, so config.Load / auth.NewKeychain
-// resolve the real home correctly.
+// sync.Engine via engine.Build for a one-shot CLI invocation. The CLI
+// is unsandboxed, so config.Load / auth.NewKeychain resolve the real
+// home correctly. No daemon-specific options (Telemetry, Logger,
+// concurrency caps) are set; sync.New's own defaults apply.
 func newDebugEngine() (*debugEngine, error) {
 	store, err := config.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
-	paths := store.Paths()
-	kc, err := auth.NewKeychain()
+	comps, err := engine.Build(engine.Options{Store: store})
 	if err != nil {
-		return nil, fmt.Errorf("open keychain: %w", err)
+		return nil, err
 	}
-	registry := auth.NewRegistry(store, kc, auth.EntraClientID, nil)
-
-	c, err := cache.Open(cache.Options{
-		Root:         paths.CacheDir,
-		MaxBlobBytes: store.Snapshot().Cache.MaxSizeBytes,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("open cache: %w", err)
-	}
-
-	gates := httpgate.DefaultRegistry()
-	engine, err := sync.New(sync.Options{
-		Cache: c,
-		// Fabric REST needs a Power BI-audience token; OneLake DFS needs
-		// the storage-audience token the registry serves by default.
-		Fabric:  fabric.New(fabric.Options{TokenProvider: registry.ScopedProvider(auth.FabricScopes), Registry: gates}),
-		OneLake: onelake.New(onelake.Options{TokenProvider: registry, Registry: gates}),
-		Tenants: registry,
-		// Match the daemon and extension so all three rendezvous on the
-		// same download spill files inside the App Group cache dir.
-		ScratchDir: filepath.Join(paths.CacheDir, "partials"),
-	})
-	if err != nil {
-		_ = c.Close()
-		return nil, fmt.Errorf("build sync engine: %w", err)
-	}
-	return &debugEngine{engine: engine, cache: c}, nil
+	return &debugEngine{engine: comps.Engine, comps: comps}, nil
 }
 
 // resolveWorkspaceID maps a display name or GUID to a workspace GUID by
