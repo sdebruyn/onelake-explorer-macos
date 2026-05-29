@@ -154,8 +154,7 @@ We need:
 
 Note: `com.apple.developer.file-provider.testing-mode` is **not** used. The paid
 Developer ID team provides a provisioning profile that grants the required File
-Provider entitlements directly. Contributors using a free Personal Team can build
-the host app only (`make apple-build-host`); the extension requires a paid team.
+Provider entitlements directly.
 
 ## GitHub Secrets
 
@@ -264,8 +263,8 @@ For pre-release dogfooding, build the app manually:
 # Generate the Xcode project from project.yml
 make apple-gen
 
-# Build the host app (ad-hoc or with your local Developer ID cert)
-make apple-build-host
+# Build the host app + File Provider Extension with your Developer ID cert
+make apple-build
 ```
 
 The resulting app lands in `build/Export/OneLake.app`. Drag it into
