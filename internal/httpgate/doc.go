@@ -2,7 +2,7 @@
 // front of every HTTP round trip to Fabric and OneLake.
 //
 // It composes with — but does not replace — the per-call retry layer in
-// internal/api (and internal/httpretry once it lands). The retry layer
+// internal/api and internal/httpretry. The retry layer
 // decides whether to retry a single in-flight call after it returns.
 // httpgate decides whether the call is allowed to leave the local
 // process at all, given:
@@ -30,6 +30,13 @@
 //
 // Concurrency safety: every exported method on [Gate] and [Registry] is
 // safe for concurrent use.
+//
+// # Package dependency
+//
+// internal/httpretry imports internal/httpgate (for [ParseRetryAfter] —
+// single source of truth for Retry-After parsing). internal/httpgate does
+// NOT import internal/httpretry. The dependency is one-way:
+// httpretry → httpgate.
 //
 // # Interaction with internal/api.Do
 //

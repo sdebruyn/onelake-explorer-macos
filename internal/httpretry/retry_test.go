@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -372,5 +374,115 @@ func TestDo_IdempotentFlagAllowsTransportRetry(t *testing.T) {
 	_ = resp.Body.Close()
 	if got := atomic.LoadInt32(&calls); got != 2 {
 		t.Errorf("calls = %d, want 2 (Idempotent POST should retry)", got)
+	}
+}
+
+// TestIsRetriableTransport_* cover the typed-error classification
+// introduced in Task 2. Tests are unit-level (call isRetriableTransport
+// directly) so they don't require a live network.
+
+func wrapOpErr(op string, err error) *net.OpError {
+	return &net.OpError{Op: op, Net: "tcp", Err: err}
+}
+
+// TestIsRetriableTransport_ECONNREFUSEDNotRetried verifies that a
+// connection-refused error is never retried. The remote address is
+// wrong or the service is down — retrying burns the full budget for no
+// gain.
+func TestIsRetriableTransport_ECONNREFUSEDNotRetried(t *testing.T) {
+	err := wrapOpErr("connect", syscall.ECONNREFUSED)
+	if isRetriableTransport(err) {
+		t.Error("ECONNREFUSED should NOT be retriable")
+	}
+}
+
+// TestIsRetriableTransport_DNSNotFoundNotRetried ensures that a
+// permanent NXDOMAIN (IsNotFound=true) is not retried — a bad hostname
+// will never resolve on the next attempt.
+func TestIsRetriableTransport_DNSNotFoundNotRetried(t *testing.T) {
+	err := &net.DNSError{
+		Err:         "no such host",
+		Name:        "does-not-exist.example.invalid",
+		IsNotFound:  true,
+		IsTemporary: false,
+	}
+	if isRetriableTransport(err) {
+		t.Error("DNS not-found (NXDOMAIN) should NOT be retriable")
+	}
+}
+
+// TestIsRetriableTransport_DNSTemporaryRetried verifies that a
+// transient DNS failure (e.g. resolver timeout) is still retried.
+func TestIsRetriableTransport_DNSTemporaryRetried(t *testing.T) {
+	err := &net.DNSError{
+		Err:         "temporary failure in name resolution",
+		Name:        "onelake.dfs.fabric.microsoft.com",
+		IsTemporary: true,
+	}
+	if !isRetriableTransport(err) {
+		t.Error("temporary DNS error SHOULD be retriable")
+	}
+}
+
+// TestIsRetriableTransport_TimeoutRetried verifies that a net.Error
+// with Timeout()=true (covers both read/write deadlines and dial
+// timeouts) is retried.
+func TestIsRetriableTransport_TimeoutRetried(t *testing.T) {
+	err := &net.DNSError{
+		Err:       "i/o timeout",
+		Name:      "onelake.dfs.fabric.microsoft.com",
+		IsTimeout: true,
+	}
+	if !isRetriableTransport(err) {
+		t.Error("timeout error SHOULD be retriable")
+	}
+}
+
+// TestIsRetriableTransport_ConnectionResetRetried verifies that
+// "connection reset by peer" surfaces as retriable via the string
+// fallback (ECONNRESET is also caught explicitly by the errno branch).
+func TestIsRetriableTransport_ConnectionResetRetried(t *testing.T) {
+	err := wrapOpErr("read", syscall.ECONNRESET)
+	if !isRetriableTransport(err) {
+		t.Error("ECONNRESET SHOULD be retriable")
+	}
+}
+
+// TestIsRetriableTransport_ContextCanceledNotRetried confirms that a
+// context.Canceled error is never retried, regardless of wrapping.
+func TestIsRetriableTransport_ContextCanceledNotRetried(t *testing.T) {
+	if isRetriableTransport(context.Canceled) {
+		t.Error("context.Canceled MUST NOT be retriable")
+	}
+}
+
+// TestIsRetriableTransport_EPIPERetried verifies that a broken-pipe error
+// (e.g. the server closed the write side while we were sending) is
+// retriable. The errno branch returns true directly without falling
+// through to the string-match path.
+func TestIsRetriableTransport_EPIPERetried(t *testing.T) {
+	err := wrapOpErr("write", syscall.EPIPE)
+	if !isRetriableTransport(err) {
+		t.Error("EPIPE SHOULD be retriable")
+	}
+}
+
+// TestIsRetriableTransport_ENOENTNotRetried verifies that a missing
+// unix-socket path (ENOENT) is never retried — the daemon is not
+// running, and retrying will not create the socket.
+func TestIsRetriableTransport_ENOENTNotRetried(t *testing.T) {
+	err := wrapOpErr("dial", syscall.ENOENT)
+	if isRetriableTransport(err) {
+		t.Error("ENOENT should NOT be retriable")
+	}
+}
+
+// TestIsRetriableTransport_EACCESNotRetried verifies that a permission
+// error on a unix-socket path (EACCES) is never retried — no amount of
+// retrying will grant the missing permission.
+func TestIsRetriableTransport_EACCESNotRetried(t *testing.T) {
+	err := wrapOpErr("dial", syscall.EACCES)
+	if isRetriableTransport(err) {
+		t.Error("EACCES should NOT be retriable")
 	}
 }
