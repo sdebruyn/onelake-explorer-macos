@@ -99,11 +99,28 @@ targets:
 
           mkdir -p "${HELPERS_DIR}" "${LA_DIR}"
 
+          # Resolve the go binary. Xcode's build-phase PATH is restricted and
+          # does not include the setup-go toolchain directory from CI, nor
+          # Homebrew when Xcode is launched from the Dock. Resolution order:
+          #   1. $GOROOT/bin/go — set by setup-go in CI and `go env GOROOT`
+          #      in terminal builds.
+          #   2. /opt/homebrew/bin/go — Homebrew-installed Go for developers
+          #      launching Xcode from the Dock (arm64 Macs).
+          #   3. bare `go` — fallback for any other setup (e.g. custom PATH).
+          if [ -n "${GOROOT:-}" ] && [ -x "${GOROOT}/bin/go" ]; then
+            GO="${GOROOT}/bin/go"
+          elif [ -x "/opt/homebrew/bin/go" ]; then
+            GO="/opt/homebrew/bin/go"
+          else
+            GO="go"
+          fi
+          echo "Using Go: ${GO} ($(${GO} version))"
+
           # Build the daemon binary. CGO_ENABLED=0 produces a fully static
           # arm64 binary — no dependency on system libs or Go runtime.dylib.
           echo "Building ofem daemon..."
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
-            go build -o "${DAEMON_DEST}" "${REPO_ROOT}/cmd/ofem"
+            "${GO}" build -o "${DAEMON_DEST}" "${REPO_ROOT}/cmd/ofem"
 
           echo "Copying LaunchAgent plist..."
           cp "${PLIST_SRC}" "${PLIST_DEST}"
@@ -111,9 +128,14 @@ targets:
           # Sign the daemon binary with the daemon entitlements when the build
           # is configured for signing. CODE_SIGN_IDENTITY is set by Xcode to
           # the actual signing identity ("-" for ad-hoc, "" when signing is off).
+          #
+          # --timestamp is required: Apple notarytool rejects hardened-runtime
+          # binaries without a secure timestamp, even when they are embedded
+          # inside a bundle that is later re-sealed. This matches the --timestamp
+          # flag used for Resources/bin/ofem and the outer .app in release.yml.
           if [ "${CODE_SIGNING_ALLOWED:-NO}" = "YES" ] && [ -n "${CODE_SIGN_IDENTITY:-}" ]; then
             echo "Signing daemon with entitlements: ${ENTITLEMENTS}"
-            codesign --force --options runtime \
+            codesign --force --options runtime --timestamp \
               --entitlements "${ENTITLEMENTS}" \
               --sign "${CODE_SIGN_IDENTITY}" \
               "${DAEMON_DEST}"

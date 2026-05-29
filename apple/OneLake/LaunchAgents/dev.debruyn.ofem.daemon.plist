@@ -9,8 +9,10 @@
 
   The daemon binary lives at Contents/Helpers/ofem so it can be
   separately code-signed (daemon entitlements differ from the host app).
-  The path below uses @executable_path/../Helpers/ofem which launchd
-  expands relative to the plist's location inside the bundle.
+  The path below uses @executable_path/../Helpers/ofem. For SMAppService
+  bundled LaunchAgents, launchd expands @executable_path relative to the
+  app bundle's executable directory (Contents/MacOS/), so the resolved
+  path is Contents/MacOS/../Helpers/ofem = Contents/Helpers/ofem.
 
   Stdout/stderr are left unset intentionally: when launched by launchd
   via SMAppService the daemon writes to the unified log (os_log) and its
