@@ -43,6 +43,7 @@ targets:
           - "**/*.xcconfig"
           - "**/Info.plist"
           - "**/*.entitlements"
+          - "**/LaunchAgents/**"
       - path: apple/Shared
     settings:
       base:
@@ -51,10 +52,76 @@ targets:
         INFOPLIST_FILE: OneLake/Info.plist
         CODE_SIGN_ENTITLEMENTS: OneLake/OneLake.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Path to the daemon entitlements used when signing the bundled helper.
+        # The build script reads OFEM_DAEMON_ENTITLEMENTS to locate this file.
+        # PROJECT_DIR is the apple/ directory; OneLakeDaemon.entitlements is next to it.
+        OFEM_DAEMON_ENTITLEMENTS: $(PROJECT_DIR)/OneLakeDaemon.entitlements
     dependencies:
       - target: OneLakeFileProvider
         embed: true
         codeSign: true
+    postBuildScripts:
+      # Bundle the ofem daemon binary and its LaunchAgent plist.
+      #
+      # The daemon lives at Contents/Helpers/ofem (the macOS convention for
+      # helper executables that are separately signed). The LaunchAgent plist
+      # lives at Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.plist —
+      # exactly where SMAppService.agent(plistName:) looks for it.
+      #
+      # Code signing:
+      #   • When CODE_SIGNING_ALLOWED=YES (local dev / release): the daemon is
+      #     signed with OneLakeDaemon.entitlements and the same team identity as
+      #     the host app. The entitlements grant app-groups, network.client,
+      #     network.server, and keychain-access-groups — but NOT app-sandbox, so
+      #     the daemon can access the filesystem freely (blob cache, sockets).
+      #   • When CODE_SIGNING_ALLOWED=NO (CI unsigned build): signing is skipped.
+      #     The binary is still copied so the build succeeds; the plist path is
+      #     still valid. Only runtime registration (SMAppService.register) needs
+      #     a signed+installed app and is not exercised in CI.
+      #
+      # The Go build produces a statically-linked arm64 binary (CGO_ENABLED=0).
+      # No extra linker flags from the Makefile LDFLAGS are applied here; those
+      # inject version/commit metadata that is only meaningful in release builds.
+      - name: "Bundle ofem daemon helper"
+        script: |
+          set -euo pipefail
+
+          # PROJECT_DIR is the apple/ directory containing OneLake.xcodeproj.
+          # The repo root (where cmd/ofem lives) is one level up.
+          REPO_ROOT="${PROJECT_DIR}/.."
+
+          HELPERS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Helpers"
+          LA_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/LaunchAgents"
+          DAEMON_DEST="${HELPERS_DIR}/ofem"
+          PLIST_SRC="${PROJECT_DIR}/OneLake/LaunchAgents/dev.debruyn.ofem.daemon.plist"
+          PLIST_DEST="${LA_DIR}/dev.debruyn.ofem.daemon.plist"
+          ENTITLEMENTS="${OFEM_DAEMON_ENTITLEMENTS:-${PROJECT_DIR}/OneLakeDaemon.entitlements}"
+
+          mkdir -p "${HELPERS_DIR}" "${LA_DIR}"
+
+          # Build the daemon binary. CGO_ENABLED=0 produces a fully static
+          # arm64 binary — no dependency on system libs or Go runtime.dylib.
+          echo "Building ofem daemon..."
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
+            go build -o "${DAEMON_DEST}" "${REPO_ROOT}/cmd/ofem"
+
+          echo "Copying LaunchAgent plist..."
+          cp "${PLIST_SRC}" "${PLIST_DEST}"
+
+          # Sign the daemon binary with the daemon entitlements when the build
+          # is configured for signing. CODE_SIGN_IDENTITY is set by Xcode to
+          # the actual signing identity ("-" for ad-hoc, "" when signing is off).
+          if [ "${CODE_SIGNING_ALLOWED:-NO}" = "YES" ] && [ -n "${CODE_SIGN_IDENTITY:-}" ]; then
+            echo "Signing daemon with entitlements: ${ENTITLEMENTS}"
+            codesign --force --options runtime \
+              --entitlements "${ENTITLEMENTS}" \
+              --sign "${CODE_SIGN_IDENTITY}" \
+              "${DAEMON_DEST}"
+          else
+            echo "Skipping daemon code signing (CODE_SIGNING_ALLOWED=${CODE_SIGNING_ALLOWED:-NO})"
+          fi
+        shell: /bin/bash
+        basedOnDependencyAnalysis: false
   OneLakeFileProvider:
     type: app-extension
     platform: macOS
