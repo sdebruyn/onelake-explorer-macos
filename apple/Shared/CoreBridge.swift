@@ -265,18 +265,16 @@ final class CoreBridge {
     /// domain list — call DomainSyncManager.shared.reconcile() if needed.
     /// Response field "defaultAccount" is ignored; callers should refresh().
     func setDefaultAccount(alias: String) async throws {
-        // Response: {"defaultAccount": string} — we only care about errors.
-        let _: AccountSetDefaultEnvelope = try await callAsync("account.setDefault", ["alias": alias])
-        // Error check is skipped here because the envelope type does its own
-        // check in the generic callAsync; BridgeError.cannotSynchronize is
-        // thrown on any rpc-level failure.
+        let env: AccountSetDefaultEnvelope = try await callAsync("account.setDefault", ["alias": alias])
+        if let payload = env.error { throw BridgeError(payload: payload) }
     }
 
     /// Remove the account identified by `alias`. Deletes stored tokens and
     /// cache entries in the daemon. After this returns the caller should call
     /// DomainSyncManager.shared.reconcile() to drop the unmounted domain.
     func removeAccount(alias: String) async throws {
-        let _: AccountRemoveEnvelope = try await callAsync("account.remove", ["alias": alias])
+        let env: AccountRemoveEnvelope = try await callAsync("account.remove", ["alias": alias])
+        if let payload = env.error { throw BridgeError(payload: payload) }
     }
 
     // MARK: - Cache actions
@@ -302,7 +300,8 @@ final class CoreBridge {
     /// Persist a config key/value pair on the daemon.
     /// The telemetry key accepts values "on" / "off".
     func configSet(key: String, value: String) async throws {
-        let _: ConfigSetEnvelope = try await callAsync("config.set", ["key": key, "value": value])
+        let env: ConfigSetEnvelope = try await callAsync("config.set", ["key": key, "value": value])
+        if let payload = env.error { throw BridgeError(payload: payload) }
     }
 
     func listAccounts() async throws -> [Account] {

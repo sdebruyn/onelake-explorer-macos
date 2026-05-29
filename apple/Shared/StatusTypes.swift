@@ -186,20 +186,12 @@ public struct ConfigInfo: Decodable {
     }
 
     private struct CachePayload: Decodable {
-        // Go toml:"max_size_bytes" serialises to snake_case JSON from Go
-        // encoding/json only when there is an explicit json tag. The daemon
-        // uses the toml tag but Go's encoding/json ignores toml tags —
-        // it lowercases the field name. Actual key on the wire: "maxSizeBytes"
-        // (camelCase, because Go lowercases the exported field name without a
-        // json tag producing "maxSizeBytes" is NOT correct; Go encoding/json
-        // lowercases only the first rune → "maxSizeBytes"). Check real Go
-        // behaviour: CacheConfig.MaxSizeBytes without a json tag → "MaxSizeBytes".
-        // But the daemon registers json tags via config.go — look up the real tag.
         let maxSizeBytes: Int64
 
         private enum CodingKeys: String, CodingKey {
-            // config.CacheConfig has toml:"max_size_bytes" but no json tag,
-            // so Go encoding/json emits the struct field name as-is: "MaxSizeBytes".
+            // config.CacheConfig.MaxSizeBytes carries only a toml tag, no json
+            // tag. Go's encoding/json emits exported field names verbatim when
+            // no json: tag is present, so the wire key is "MaxSizeBytes".
             case maxSizeBytes = "MaxSizeBytes"
         }
     }
