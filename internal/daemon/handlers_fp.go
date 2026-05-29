@@ -21,6 +21,18 @@ import (
 type fpEnumerateRequest struct {
 	Alias      string `json:"alias"`
 	Identifier string `json:"identifier"`
+	// Cursor is the opaque pagination token from a previous fp.enumerate
+	// response. Empty or absent means "start from the beginning".
+	Cursor string `json:"cursor,omitempty"`
+}
+
+// fpEnumerateResponse carries the items for one page and the cursor to fetch
+// the next page. NextCursor is empty when this is the final page. The JSON
+// field names are part of the IPC contract with the Swift File Provider
+// Extension; do not rename them without a matching Swift-side update.
+type fpEnumerateResponse struct {
+	Items      []fp.Item `json:"items"`
+	NextCursor string    `json:"nextCursor"`
 }
 
 type fpItemRequest struct {
@@ -75,11 +87,15 @@ func (h *Handlers) handleFPEnumerate(ctx context.Context, params json.RawMessage
 	if !ok {
 		return fp.ErrorEnvelope(ErrEngineNotWired), nil
 	}
-	items, err := svc.Enumerate(ctx, req.Alias, req.Identifier)
+	page, err := svc.EnumeratePaged(ctx, req.Alias, req.Identifier, req.Cursor)
 	if err != nil {
 		return fp.ErrorEnvelope(err), nil
 	}
-	return fp.Envelope{Items: items}, nil
+	items := page.Items
+	if items == nil {
+		items = []fp.Item{}
+	}
+	return fpEnumerateResponse{Items: items, NextCursor: page.NextCursor}, nil
 }
 
 func (h *Handlers) handleFPItem(ctx context.Context, params json.RawMessage) (any, error) {

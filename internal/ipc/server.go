@@ -280,6 +280,18 @@ func (s *Server) acceptLoop(ctx context.Context, ln net.Listener) {
 			s.logger.Warn("ipc accept error", slog.Any("err", err))
 			continue
 		}
+		// Guard against a race where Close() has already called
+		// connWG.Wait() by the time we call Add(1). The closing channel
+		// is closed by Close() before it calls Wait(), so selecting on it
+		// here provides a happens-before guarantee: if we see it closed,
+		// Wait() has either started or will start imminently, and calling
+		// Add(1) after Wait() is a panic. Drop the connection instead.
+		select {
+		case <-s.closing:
+			_ = conn.Close()
+			return
+		default:
+		}
 		s.connWG.Add(1)
 		go func(c net.Conn) {
 			defer s.connWG.Done()
