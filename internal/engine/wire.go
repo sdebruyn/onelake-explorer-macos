@@ -56,10 +56,9 @@ type Options struct {
 // clients to it, and constructs the sync.Engine. On failure any
 // partially-opened resources are closed before the error is returned.
 //
-// The concrete ScratchDir is always derived from config.Paths.CacheDir
-// so the daemon, CLI, and sandboxed File Provider Extension rendezvous
-// on the same partial-download files inside the App Group cache dir.
-// Callers must not override SyncOptions.ScratchDir.
+// Build always derives and overwrites [sync.Options].Cache, .Fabric,
+// .OneLake, .Tenants, and .ScratchDir from the loaded config; callers
+// must not set those fields in opts.SyncOptions.
 //
 // Callers that want additional sync.Options fields (Telemetry, Logger,
 // MaxConcurrent*) should set them in opts.SyncOptions before calling.
