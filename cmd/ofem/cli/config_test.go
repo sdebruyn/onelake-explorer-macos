@@ -48,13 +48,13 @@ func TestParseSize_Accepted(t *testing.T) {
 		{"1024mb", 1024 * 1000 * 1000},
 	}
 	for _, tc := range cases {
-		got, err := parseSize(tc.in)
+		got, err := config.ParseConfigSize(tc.in)
 		if err != nil {
-			t.Errorf("parseSize(%q) error: %v", tc.in, err)
+			t.Errorf("ParseConfigSize(%q) error: %v", tc.in, err)
 			continue
 		}
 		if got != tc.want {
-			t.Errorf("parseSize(%q) = %d, want %d", tc.in, got, tc.want)
+			t.Errorf("ParseConfigSize(%q) = %d, want %d", tc.in, got, tc.want)
 		}
 	}
 }
@@ -80,8 +80,8 @@ func TestParseSize_Rejected(t *testing.T) {
 		{"9999999PiB", "overflow with suffix"},
 	}
 	for _, tc := range cases {
-		if _, err := parseSize(tc.in); err == nil {
-			t.Errorf("parseSize(%q) succeeded; expected error (%s)", tc.in, tc.reason)
+		if _, err := config.ParseConfigSize(tc.in); err == nil {
+			t.Errorf("ParseConfigSize(%q) succeeded; expected error (%s)", tc.in, tc.reason)
 		}
 	}
 }
@@ -91,8 +91,8 @@ func TestParseSize_Rejected(t *testing.T) {
 // raw and friendly keys both round-trip the same value.
 func TestApplyConfig_CacheMaxSizeAcceptsHumanInput(t *testing.T) {
 	f := config.Default()
-	if err := applyConfig(&f, "cache.max_size", "10GiB"); err != nil {
-		t.Fatalf("applyConfig: %v", err)
+	if err := config.ApplyConfig(&f, "cache.max_size", "10GiB"); err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
 	}
 	if f.Cache.MaxSizeBytes != 10*(1<<30) {
 		t.Fatalf("MaxSizeBytes = %d, want %d", f.Cache.MaxSizeBytes, 10*(1<<30))
@@ -114,8 +114,8 @@ func TestApplyConfig_CacheMaxSizeAcceptsHumanInput(t *testing.T) {
 // compatibility: a raw int via cache.max_size_bytes parses as before.
 func TestApplyConfig_CacheMaxSizeRawStillWorks(t *testing.T) {
 	f := config.Default()
-	if err := applyConfig(&f, "cache.max_size_bytes", "21474836480"); err != nil {
-		t.Fatalf("applyConfig: %v", err)
+	if err := config.ApplyConfig(&f, "cache.max_size_bytes", "21474836480"); err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
 	}
 	if f.Cache.MaxSizeBytes != 21474836480 {
 		t.Errorf("MaxSizeBytes = %d, want 21474836480", f.Cache.MaxSizeBytes)
@@ -126,8 +126,8 @@ func TestApplyConfig_CacheMaxSizeRawStillWorks(t *testing.T) {
 // hyphen normalises to the same key as max_size with an underscore.
 func TestApplyConfig_CacheMaxSizeKebabCase(t *testing.T) {
 	f := config.Default()
-	if err := applyConfig(&f, "cache.max-size", "1GiB"); err != nil {
-		t.Fatalf("applyConfig: %v", err)
+	if err := config.ApplyConfig(&f, "cache.max-size", "1GiB"); err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
 	}
 	if f.Cache.MaxSizeBytes != 1<<30 {
 		t.Errorf("MaxSizeBytes = %d, want %d", f.Cache.MaxSizeBytes, 1<<30)
@@ -135,10 +135,10 @@ func TestApplyConfig_CacheMaxSizeKebabCase(t *testing.T) {
 }
 
 // TestApplyConfig_CacheMaxSizeRejectsInvalid confirms the error message
-// surfaces parseSize's diagnostic.
+// surfaces ParseConfigSize's diagnostic.
 func TestApplyConfig_CacheMaxSizeRejectsInvalid(t *testing.T) {
 	f := config.Default()
-	err := applyConfig(&f, "cache.max_size", "10XB")
+	err := config.ApplyConfig(&f, "cache.max_size", "10XB")
 	if err == nil {
 		t.Fatal("expected error for invalid suffix")
 	}

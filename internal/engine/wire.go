@@ -28,6 +28,10 @@ type Components struct {
 	Cache    *cache.Cache
 	Registry *auth.Registry
 	Gates    *httpgate.Registry
+	// Keychain is the per-account secret store used by Registry. Exposed so
+	// the daemon's auth.login IPC handler can pass it to LoginInteractive /
+	// LoginDeviceCode without opening a second keychain instance.
+	Keychain auth.Keychain
 }
 
 // Close releases resources owned by the engine. It is safe to call
@@ -128,5 +132,6 @@ func Build(opts Options) (*Components, error) {
 		Cache:    c,
 		Registry: registry,
 		Gates:    gates,
+		Keychain: kc,
 	}, nil
 }
