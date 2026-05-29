@@ -124,6 +124,32 @@ private struct AccountRemoveEnvelope: Decodable {
     let error: BridgeErrorPayload?
 }
 
+/// auth.login → {"alias": string, "username": string, "tenantId": string, "tenantName": string}
+/// Probed on "username" because the daemon always includes it on success.
+private struct AuthLoginEnvelope: Decodable {
+    let accountInfo: AccountInfo?
+    let error: BridgeErrorPayload?
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: ProbingKey.self)
+        if c.contains(ProbingKey("username")) {
+            accountInfo = try AccountInfo(from: decoder)
+            error = nil
+        } else {
+            accountInfo = nil
+            error = try c.decodeIfPresent(BridgeErrorPayload.self, forKey: ProbingKey("error"))
+        }
+    }
+
+    private struct ProbingKey: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init(_ s: String) { stringValue = s }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+}
+
 /// cache.evict / cache.clear → {"cacheBytes": int64}
 private struct CacheBytesEnvelope: Decodable {
     let cacheBytes: Int64?
@@ -275,6 +301,46 @@ final class CoreBridge {
     func removeAccount(alias: String) async throws {
         let env: AccountRemoveEnvelope = try await callAsync("account.remove", ["alias": alias])
         if let payload = env.error { throw BridgeError(payload: payload) }
+    }
+
+    // MARK: - Authentication
+
+    /// Open an interactive browser-loopback sign-in for `alias`.
+    ///
+    /// This call is intentionally long-running: the daemon opens the system
+    /// browser, waits for the OAuth redirect, and only then returns the token.
+    /// A real human may take several minutes to complete the browser flow, so
+    /// we bypass the normal per-call IPCClient.withTimeout wrapper and drive
+    /// the connection directly — the only cap here is Swift Task cancellation
+    /// from the caller (i.e. the user hitting Cancel in the UI).
+    ///
+    /// Note: cancelling the Swift Task dismisses the in-app wait, but does NOT
+    /// abort the daemon-side MSAL flow. The daemon's connection handler is
+    /// synchronous per connection; it will keep waiting for the OAuth callback
+    /// until MSAL's own session timeout fires (typically ~5 minutes). This is
+    /// acceptable: no credentials are persisted for the incomplete login, and
+    /// the daemon simply drops the connection once the task is done or the
+    /// client disconnects.
+    func login(alias: String, tenant: String?) async throws -> AccountInfo {
+        guard let client = client else { throw BridgeError.notBootstrapped }
+        var params: [String: Any] = ["alias": alias, "deviceCode": false]
+        if let tenant = tenant, !tenant.isEmpty {
+            params["tenant"] = tenant
+        }
+        let data: Data
+        do {
+            // Call directly without the withTimeout wrapper: the browser
+            // redirect can legitimately take minutes.
+            data = try await client.call(method: "auth.login", params: params)
+        } catch let e as IPCError {
+            throw BridgeError(ipc: e)
+        }
+        let env: AuthLoginEnvelope = try decode(data)
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        guard let info = env.accountInfo else {
+            throw BridgeError.decoding("auth.login envelope missing both result and error")
+        }
+        return info
     }
 
     // MARK: - Cache actions
