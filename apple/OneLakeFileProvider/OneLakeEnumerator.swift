@@ -118,7 +118,7 @@ final class OneLakeEnumerator: NSObject, NSFileProviderEnumerator {
                 )
                 let provided = result.items.map { OneLakeItem(from: $0) }
                 OneLakeEnumerator.log.debug(
-                    "enumerateItems \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public) cursor='\(cursor, privacy: .public)' -> \(provided.count, privacy: .public) items nextCursor='\(result.nextCursor, privacy: .public)'"
+                    "enumerateItems \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public) cursor='\(cursor, privacy: .private)' -> \(provided.count, privacy: .public) items nextCursor='\(result.nextCursor, privacy: .private)'"
                 )
                 observer.didEnumerate(provided)
                 // Signal the next page when the daemon provides a cursor,

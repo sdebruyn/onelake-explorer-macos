@@ -22,6 +22,7 @@
 
 import Foundation
 import Network
+import os
 import os.log
 
 /// App Group identifier shared by host app, extension, and daemon.
@@ -132,7 +133,7 @@ final class IPCClient {
         let conn = try await openConnection()
         defer { conn.cancel() }
 
-        try await writeFrame(conn, requestData)
+        try await writeFrameOnConn(conn, requestData)
         let responseData = try await readFrame(conn)
 
         guard let obj = try JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
@@ -214,19 +215,24 @@ final class IPCClient {
     private func openConnection() async throws -> NWConnection {
         let ep = NWEndpoint.unix(path: socketPath)
         let conn = NWConnection(to: ep, using: NWParameters(tls: nil))
+        // stateUpdateHandler fires on the NW queue — a different executor from
+        // the Swift concurrency runtime. Guard the one-shot resume with a lock
+        // rather than a captured `var`, which would be a data race in Swift 6.
+        let resumed = OSAllocatedUnfairLock(initialState: false)
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            var didResume = false
             conn.stateUpdateHandler = { state in
-                guard !didResume else { return }
+                let alreadyResumed = resumed.withLock { flag -> Bool in
+                    if flag { return true }
+                    flag = true
+                    return false
+                }
+                guard !alreadyResumed else { return }
                 switch state {
                 case .ready:
-                    didResume = true
                     cont.resume()
                 case .failed(let err):
-                    didResume = true
                     cont.resume(throwing: IPCError.unreachable(err.localizedDescription))
                 case .waiting(let err):
-                    didResume = true
                     cont.resume(throwing: IPCError.unreachable(err.localizedDescription))
                 default:
                     break
@@ -239,12 +245,8 @@ final class IPCClient {
 
     // MARK: - Frame I/O
 
-    private func writeFrame(_ conn: NWConnection, _ data: Data) async throws {
-        try await writeFrameOnConn(conn, data)
-    }
-
-    /// Write a length-prefixed frame on `conn`. Separated so both the
-    /// one-shot `call` and the persistent-conn `pollChanges` path share it.
+    /// Write a length-prefixed frame on `conn`. Used by both the one-shot
+    /// `call` path and the persistent-connection `pollChanges` path.
     private func writeFrameOnConn(_ conn: NWConnection, _ data: Data) async throws {
         var header = Data(count: 4)
         let length = UInt32(data.count)
@@ -294,6 +296,10 @@ final class IPCClient {
         var accumulated = Data()
         while accumulated.count < count {
             let want = count - accumulated.count
+            // Snapshot the count before entering the NW callback so the
+            // closure does not capture the `accumulated` var — that would be
+            // a data race in Swift 6 (NW queue vs. Swift concurrency executor).
+            let soFar = accumulated.count
             let chunk: Data = try await withConnectionCancellation(conn) { cont in
                 conn.receive(
                     minimumIncompleteLength: 1,
@@ -307,7 +313,7 @@ final class IPCClient {
                     if bytes.isEmpty && isComplete {
                         // Peer closed the connection before we got all bytes.
                         cont.resume(throwing: IPCError.protocolError(
-                            "connection closed after \(accumulated.count) of \(count) bytes"
+                            "connection closed after \(soFar) of \(count) bytes"
                         ))
                         return
                     }
