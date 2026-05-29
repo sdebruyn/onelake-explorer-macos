@@ -14,9 +14,15 @@
 // network I/O to OneLake the daemon then performs, so this is the right
 // trade for correctness. The daemon must be running; when it is not,
 // connect fails and the caller surfaces serverUnreachable.
+//
+// Persistent model: `pollChanges` uses a long-lived NWConnection
+// managed by the caller (ChangeWatcher), because it is a one-producer
+// / one-consumer polling loop; each call() is still one connection per
+// call.
 
 import Foundation
 import Network
+import os
 import os.log
 
 /// App Group identifier shared by host app, extension, and daemon.
@@ -34,12 +40,64 @@ enum IPCError: Error {
     case rpc(code: Int, message: String)
 }
 
+// MARK: - Payload shapes for sync.pollChanges
+
+/// One change event returned by the daemon's sync.pollChanges method.
+struct PollChangeEvent: Decodable {
+    let domain: String
+    let containerId: String
+    let occurredAt: Date
+}
+
+private struct PollChangesResponse: Decodable {
+    let events: [PollChangeEvent]
+    let anchor: Date
+    let fullResync: Bool
+}
+
+private struct PollRPCResponse: Decodable {
+    let result: PollChangesResponse?
+    let error: PollRPCError?
+
+    enum CodingKeys: String, CodingKey { case result, error }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        result = try? c.decode(PollChangesResponse.self, forKey: .result)
+        error = try? c.decode(PollRPCError.self, forKey: .error)
+    }
+}
+
+private struct PollRPCError: Decodable, Error {
+    let code: Int
+    let message: String
+}
+
+// MARK: - IPCClient
+
 /// Stateless JSON-RPC client over the daemon's Unix socket.
 final class IPCClient {
     private static let log = Logger(subsystem: "dev.debruyn.ofem.ipc", category: "client")
     private static let maxFrameSize = 1 << 20 // 1 MiB, matching ipc.MaxFrameSize
 
+    /// Upper bound on a single sync.pollChanges round-trip. The daemon
+    /// answers from its in-memory changefeed so real latency is sub-ms;
+    /// this is purely a liveness guard so a daemon that dies mid-frame
+    /// cannot freeze the poll loop.
+    private static let pollTimeout: TimeInterval = 10
+
     private let socketPath: String
+
+    private let pollDecoder: JSONDecoder = {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }()
+    private let pollEncoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .iso8601
+        return e
+    }()
 
     init(socketPath: String) {
         self.socketPath = socketPath
@@ -57,6 +115,8 @@ final class IPCClient {
         return url.appendingPathComponent("ofem.sock").path
     }
 
+    // MARK: - One-shot RPC call
+
     /// Sends a JSON-RPC request for `method` with `params` and returns the
     /// raw bytes of the response's `result` value. Throws [IPCError] on a
     /// transport failure or a JSON-RPC error object.
@@ -73,7 +133,7 @@ final class IPCClient {
         let conn = try await openConnection()
         defer { conn.cancel() }
 
-        try await writeFrame(conn, requestData)
+        try await writeFrameOnConn(conn, requestData)
         let responseData = try await readFrame(conn)
 
         guard let obj = try JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
@@ -90,24 +150,89 @@ final class IPCClient {
         return try JSONSerialization.data(withJSONObject: result)
     }
 
+    // MARK: - Persistent-connection poll call
+
+    /// Open (or reopen) a persistent connection to the daemon socket for use
+    /// by the poll loop. Returns a ready NWConnection; caller owns it and must
+    /// eventually call `conn.cancel()`.
+    func openPersistentConnection() async throws -> NWConnection {
+        try await openConnection()
+    }
+
+    /// Cancel a persistent connection opened by `openPersistentConnection()`.
+    func closePersistentConnection(_ conn: NWConnection) {
+        conn.cancel()
+    }
+
+    /// Poll the daemon for changes since `anchor` using a persistent
+    /// `NWConnection`. The call is bounded by `pollTimeout` seconds so a
+    /// daemon that dies mid-frame cannot freeze the caller forever.
+    ///
+    /// Returns a tuple of events, the new anchor, and a fullResync flag.
+    func pollChanges(
+        conn: NWConnection,
+        since anchor: Date?
+    ) async throws -> (
+        events: [(domainId: String, containerId: String)],
+        anchor: Date,
+        fullResync: Bool
+    ) {
+        struct PollParams: Encodable {
+            let anchor: Date?
+        }
+        let paramsData = try pollEncoder.encode(PollParams(anchor: anchor))
+        // Safe: we just encoded a strongly-typed value.
+        guard let paramsJSON = try JSONSerialization.jsonObject(with: paramsData) as? [String: Any] else {
+            throw IPCError.protocolError("failed to build pollChanges params")
+        }
+        let requestDict: [String: Any] = [
+            "jsonrpc": "2.0",
+            "method": "sync.pollChanges",
+            "params": paramsJSON,
+            "id": UUID().uuidString,
+        ]
+        let requestData = try JSONSerialization.data(withJSONObject: requestDict)
+
+        // Bound the write+read so a hung connection cannot freeze the loop.
+        let responseData = try await Self.withTimeout(seconds: Self.pollTimeout) { [self] in
+            try await self.writeFrameOnConn(conn, requestData)
+            return try await self.readFrame(conn)
+        }
+
+        let response = try pollDecoder.decode(PollRPCResponse.self, from: responseData)
+        if let err = response.error {
+            throw IPCError.rpc(code: err.code, message: err.message)
+        }
+        guard let result = response.result else {
+            throw IPCError.protocolError("missing result in sync.pollChanges response")
+        }
+        let pairs = result.events.map { (domainId: $0.domain, containerId: $0.containerId) }
+        return (events: pairs, anchor: result.anchor, fullResync: result.fullResync)
+    }
+
     // MARK: - Connection
 
     private func openConnection() async throws -> NWConnection {
         let ep = NWEndpoint.unix(path: socketPath)
         let conn = NWConnection(to: ep, using: NWParameters(tls: nil))
+        // stateUpdateHandler fires on the NW queue — a different executor from
+        // the Swift concurrency runtime. Guard the one-shot resume with a lock
+        // rather than a captured `var`, which would be a data race in Swift 6.
+        let resumed = OSAllocatedUnfairLock(initialState: false)
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            var didResume = false
             conn.stateUpdateHandler = { state in
-                guard !didResume else { return }
+                let alreadyResumed = resumed.withLock { flag -> Bool in
+                    if flag { return true }
+                    flag = true
+                    return false
+                }
+                guard !alreadyResumed else { return }
                 switch state {
                 case .ready:
-                    didResume = true
                     cont.resume()
                 case .failed(let err):
-                    didResume = true
                     cont.resume(throwing: IPCError.unreachable(err.localizedDescription))
                 case .waiting(let err):
-                    didResume = true
                     cont.resume(throwing: IPCError.unreachable(err.localizedDescription))
                 default:
                     break
@@ -120,7 +245,9 @@ final class IPCClient {
 
     // MARK: - Frame I/O
 
-    private func writeFrame(_ conn: NWConnection, _ data: Data) async throws {
+    /// Write a length-prefixed frame on `conn`. Used by both the one-shot
+    /// `call` path and the persistent-connection `pollChanges` path.
+    private func writeFrameOnConn(_ conn: NWConnection, _ data: Data) async throws {
         var header = Data(count: 4)
         let length = UInt32(data.count)
         header[0] = UInt8((length >> 24) & 0xFF)
@@ -128,7 +255,7 @@ final class IPCClient {
         header[2] = UInt8((length >> 8) & 0xFF)
         header[3] = UInt8(length & 0xFF)
         let frame = header + data
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+        try await withConnectionCancellation(conn) { (cont: CheckedContinuation<Void, Error>) in
             conn.send(content: frame, completion: .contentProcessed { err in
                 if let err = err {
                     cont.resume(throwing: err)
@@ -139,13 +266,15 @@ final class IPCClient {
         }
     }
 
+    /// Read one length-prefixed frame from `conn`.
+    ///
+    /// NWConnection's receive may deliver fewer bytes than requested at
+    /// EOF/close, so the payload read loops until all `length` bytes are
+    /// accumulated or a real error/EOF occurs — treating a short delivery
+    /// as a hard error would be fragile near the frame cap.
     private func readFrame(_ conn: NWConnection) async throws -> Data {
-        let header: Data = try await withCheckedThrowingContinuation { cont in
-            conn.receive(minimumIncompleteLength: 4, maximumLength: 4) { data, _, _, err in
-                if let err = err { cont.resume(throwing: err); return }
-                cont.resume(returning: data ?? Data())
-            }
-        }
+        // Read 4-byte header.
+        let header = try await receiveExact(conn, count: 4)
         guard header.count == 4 else {
             throw IPCError.protocolError("short frame header: \(header.count) bytes")
         }
@@ -156,15 +285,90 @@ final class IPCClient {
         if length == 0 {
             return Data()
         }
-        let payload: Data = try await withCheckedThrowingContinuation { cont in
-            conn.receive(minimumIncompleteLength: length, maximumLength: length) { data, _, _, err in
-                if let err = err { cont.resume(throwing: err); return }
-                cont.resume(returning: data ?? Data())
+        return try await receiveExact(conn, count: length)
+    }
+
+    /// Accumulate exactly `count` bytes from `conn`, looping over partial
+    /// deliveries. NWConnection may satisfy a receive with fewer bytes than
+    /// requested when the peer sends the data in multiple TCP segments or
+    /// closes the connection mid-frame; looping is the correct fix.
+    private func receiveExact(_ conn: NWConnection, count: Int) async throws -> Data {
+        var accumulated = Data()
+        while accumulated.count < count {
+            let want = count - accumulated.count
+            // Snapshot the count before entering the NW callback so the
+            // closure does not capture the `accumulated` var — that would be
+            // a data race in Swift 6 (NW queue vs. Swift concurrency executor).
+            let soFar = accumulated.count
+            let chunk: Data = try await withConnectionCancellation(conn) { cont in
+                conn.receive(
+                    minimumIncompleteLength: 1,
+                    maximumLength: want
+                ) { data, _, isComplete, err in
+                    if let err = err {
+                        cont.resume(throwing: err)
+                        return
+                    }
+                    let bytes = data ?? Data()
+                    if bytes.isEmpty && isComplete {
+                        // Peer closed the connection before we got all bytes.
+                        cont.resume(throwing: IPCError.protocolError(
+                            "connection closed after \(soFar) of \(count) bytes"
+                        ))
+                        return
+                    }
+                    cont.resume(returning: bytes)
+                }
             }
+            accumulated.append(chunk)
         }
-        guard payload.count == length else {
-            throw IPCError.protocolError("short frame body: got \(payload.count), want \(length)")
+        return accumulated
+    }
+
+    // MARK: - Cancellation bridge
+
+    /// Bridge a continuation-style NWConnection send/receive into async
+    /// such that task cancellation actually unblocks it. NWConnection's
+    /// completion handlers are NOT cancellation-aware: a stalled peer never
+    /// fires them, so a bare `withCheckedThrowingContinuation` would suspend
+    /// forever. Cancelling the connection forces the pending callback to fire
+    /// with an error, which resumes the continuation.
+    private func withConnectionCancellation<T>(
+        _ conn: NWConnection,
+        _ body: @escaping (CheckedContinuation<T, Error>) -> Void
+    ) async throws -> T {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation(body)
+        } onCancel: {
+            conn.cancel()
         }
-        return payload
+    }
+
+    // MARK: - Timeout helper
+
+    /// Run `op` with a wall-clock ceiling. Two children race: `op` and a
+    /// sleeper that throws on expiry. `group.next()` rethrows whichever
+    /// finishes first and cancels the loser.
+    ///
+    /// This fires reliably because the frame I/O inside `op` is wrapped in
+    /// `withConnectionCancellation`: cancelling the task cancels the
+    /// connection, which forces the pending NWConnection receive to complete
+    /// with an error so the task unwinds promptly.
+    static func withTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        _ op: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw IPCError.protocolError("IPC timed out after \(seconds)s")
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw IPCError.protocolError("IPC task group produced no result")
+            }
+            return first
+        }
     }
 }

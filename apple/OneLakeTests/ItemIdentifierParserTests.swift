@@ -48,4 +48,27 @@ final class ItemIdentifierParserTests: XCTestCase {
         XCTAssertThrowsError(try ItemIdentifierParser.parse(NSFileProviderItemIdentifier("/item")))
         XCTAssertThrowsError(try ItemIdentifierParser.parse(NSFileProviderItemIdentifier("ws//item")))
     }
+
+    /// A trailing slash on an identifier that only has two segments (ws/item/)
+    /// must be treated as a malformed path (empty tail component) and rejected.
+    func testRejectsTrailingSlashOnTwoSegmentIdentifier() {
+        // "ws/item/" splits into ["ws", "item", ""] — the empty path segment
+        // is invalid and must throw rather than silently produce
+        // .itemPath(workspaceId:itemId:path:"").
+        XCTAssertThrowsError(try ItemIdentifierParser.parse(NSFileProviderItemIdentifier("ws/item/")))
+    }
+
+    /// Identifiers with more than three slash-delimited components keep all
+    /// segments past the second as-is (the path can contain slashes) and the
+    /// tail must never be empty.
+    func testMoreThanThreeSegmentsWithNonEmptyTail() throws {
+        // Four components: workspace / item / folder / file
+        let parsed = try ItemIdentifierParser.parse(
+            NSFileProviderItemIdentifier("ws-a/item-b/folder/nested.parquet")
+        )
+        XCTAssertEqual(
+            parsed,
+            .itemPath(workspaceId: "ws-a", itemId: "item-b", path: "folder/nested.parquet")
+        )
+    }
 }

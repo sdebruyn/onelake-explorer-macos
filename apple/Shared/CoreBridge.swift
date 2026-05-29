@@ -2,12 +2,12 @@
 // The host app's and File Provider Extension's gateway to the Go core.
 //
 // The Go engine and cache are owned by the long-running daemon; this type
-// is a thin client that talks to it over the unix-socket IPC (see
+// is a thin async client that talks to it over the unix-socket IPC (see
 // IPCClient). It replaces the old cgo bridge that compiled a second engine
 // into each Swift target — see SIMPLIFICATION.md.
 //
 // Files cross the process boundary through the shared App Group container:
-// a fetch asks the daemon to write into the container and then copies the
+// a fetch asks the daemon to write into the container and then moves the
 // bytes to the URL macOS handed us; a create/modify copies the staged
 // source into the container so the daemon can read it. Both sides have the
 // App Group entitlement, so these reads/writes are permitted; the engine
@@ -99,6 +99,7 @@ private struct AccountsEnvelope: Decodable {
 
 private struct ItemsEnvelope: Decodable {
     let items: [BridgeItem]?
+    let nextCursor: String?
     let error: BridgeErrorPayload?
 }
 
@@ -194,20 +195,26 @@ final class CoreBridge {
 
     // MARK: - Reads
 
-    func listAccounts() throws -> [Account] {
-        let env: AccountsEnvelope = try callBlocking("account.list", [:])
+    func listAccounts() async throws -> [Account] {
+        let env: AccountsEnvelope = try await callAsync("account.list", [:])
         if let payload = env.error { throw BridgeError(payload: payload) }
         return env.accounts ?? []
     }
 
-    func enumerate(alias: String, identifier: String) throws -> [BridgeItem] {
-        let env: ItemsEnvelope = try callBlocking("fp.enumerate", ["alias": alias, "identifier": identifier])
+    /// Enumerate the children of `identifier` for `alias`. Returns items and
+    /// an optional cursor for the next page (empty string means last page).
+    func enumerate(alias: String, identifier: String, cursor: String = "") async throws -> (items: [BridgeItem], nextCursor: String) {
+        var params: [String: Any] = ["alias": alias, "identifier": identifier]
+        if !cursor.isEmpty {
+            params["cursor"] = cursor
+        }
+        let env: ItemsEnvelope = try await callAsync("fp.enumerate", params)
         if let payload = env.error { throw BridgeError(payload: payload) }
-        return env.items ?? []
+        return (items: env.items ?? [], nextCursor: env.nextCursor ?? "")
     }
 
-    func item(alias: String, identifier: String) throws -> BridgeItem {
-        let env: ItemEnvelope = try callBlocking("fp.item", ["alias": alias, "identifier": identifier])
+    func item(alias: String, identifier: String) async throws -> BridgeItem {
+        let env: ItemEnvelope = try await callAsync("fp.item", ["alias": alias, "identifier": identifier])
         if let payload = env.error { throw BridgeError(payload: payload) }
         guard let item = env.item else {
             throw BridgeError.decoding("fp.item envelope missing both 'item' and 'error'")
@@ -215,9 +222,9 @@ final class CoreBridge {
         return item
     }
 
-    /// Download `identifier` and copy the bytes to `dest`. The daemon
+    /// Download `identifier` and move the bytes to `dest`. The daemon
     /// (which owns the engine and blob store) writes into the App Group
-    /// container; we copy from there to the macOS-supplied `dest` and hand
+    /// container; we move from there to the macOS-supplied `dest` and hand
     /// the container temp back to be cleaned up.
     func fetchContents(alias: String, identifier: String, dest: URL) async throws -> BridgeItem {
         guard let client = client else { throw BridgeError.notBootstrapped }
@@ -246,7 +253,7 @@ final class CoreBridge {
 
     // MARK: - Writes
 
-    func createItem(alias: String, parentIdentifier: String, filename: String, isDir: Bool, srcPath: String?) throws -> BridgeItem {
+    func createItem(alias: String, parentIdentifier: String, filename: String, isDir: Bool, srcPath: String?) async throws -> BridgeItem {
         var daemonSrc = ""
         var stagedCopy: URL?
         defer { if let s = stagedCopy { try? FileManager.default.removeItem(at: s) } }
@@ -256,7 +263,7 @@ final class CoreBridge {
             stagedCopy = staged
             daemonSrc = staged.path
         }
-        let env: ItemEnvelope = try callBlocking("fp.createItem", [
+        let env: ItemEnvelope = try await callAsync("fp.createItem", [
             "alias": alias, "parentIdentifier": parentIdentifier,
             "filename": filename, "isDir": isDir, "srcPath": daemonSrc,
         ])
@@ -267,11 +274,11 @@ final class CoreBridge {
         return item
     }
 
-    func modifyItem(alias: String, identifier: String, srcPath: String) throws -> BridgeItem {
+    func modifyItem(alias: String, identifier: String, srcPath: String) async throws -> BridgeItem {
         let staged = try Self.appGroupTempURL()
         defer { try? FileManager.default.removeItem(at: staged) }
         try FileManager.default.copyItem(at: URL(fileURLWithPath: srcPath), to: staged)
-        let env: ItemEnvelope = try callBlocking("fp.modifyItem", [
+        let env: ItemEnvelope = try await callAsync("fp.modifyItem", [
             "alias": alias, "identifier": identifier, "srcPath": staged.path,
         ])
         if let payload = env.error { throw BridgeError(payload: payload) }
@@ -281,35 +288,18 @@ final class CoreBridge {
         return item
     }
 
-    func deleteItem(alias: String, identifier: String) throws {
-        let env: ErrorOnlyEnvelope = try callBlocking("fp.deleteItem", ["alias": alias, "identifier": identifier])
+    func deleteItem(alias: String, identifier: String) async throws {
+        let env: ErrorOnlyEnvelope = try await callAsync("fp.deleteItem", ["alias": alias, "identifier": identifier])
         if let payload = env.error { throw BridgeError(payload: payload) }
     }
 
     // MARK: - Internals
 
-    /// Runs an async IPC call to completion and blocks the caller until it
-    /// returns. The work runs on a DETACHED task: an unstructured `Task {}`
-    /// would inherit the caller's actor isolation, so a caller on the main
-    /// actor (e.g. the host app's @MainActor DomainSyncManager) would park
-    /// the main thread on the semaphore while the continuation waited for
-    /// that same main actor — a deadlock. Task.detached resumes on a
-    /// background executor, so the signal always lands. Callers should
-    /// still invoke this off the main thread to avoid a UI hitch for the
-    /// IPC round-trip (the host app wraps it in its own detached task).
-    private func callBlocking<T: Decodable>(_ method: String, _ params: [String: Any]) throws -> T {
+    private func callAsync<T: Decodable>(_ method: String, _ params: [String: Any]) async throws -> T {
         guard let client = client else { throw BridgeError.notBootstrapped }
-        let sem = DispatchSemaphore(value: 0)
-        let box = ResultBox<Data>()
-        Task.detached {
-            do { box.result = .success(try await client.call(method: method, params: params)) }
-            catch { box.result = .failure(error) }
-            sem.signal()
-        }
-        sem.wait()
         let data: Data
         do {
-            data = try box.result!.get()
+            data = try await client.call(method: method, params: params)
         } catch let e as IPCError {
             throw BridgeError(ipc: e)
         }
@@ -339,11 +329,4 @@ final class CoreBridge {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent(UUID().uuidString)
     }
-}
-
-/// Minimal box used to ferry an async Result back across a semaphore. The
-/// write happens-before the read (the reader waits on the semaphore the
-/// writer signals), so no additional synchronisation is needed.
-private final class ResultBox<T> {
-    var result: Result<T, Error>?
 }
