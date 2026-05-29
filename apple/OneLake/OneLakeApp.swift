@@ -37,6 +37,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             ChangeWatcher.shared.start()
         }
+
+        // Kick off an initial status fetch so the icon reflects state
+        // immediately on launch rather than waiting for the first menu open.
+        Task { @MainActor in
+            MenuStatusModel.shared.refresh()
+        }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -69,6 +75,12 @@ struct OneLakeApp: App {
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    // Single shared model owned here (app lifetime). MenuBarView receives it
+    // as @ObservedObject so it observes without taking ownership. Owning it
+    // at the App level also lets the MenuBarExtra label view below read the
+    // same published state, so the icon updates live after every action.
+    @StateObject private var statusModel = MenuStatusModel.shared
+
     init() {
         OneLakeApp.log.info("OneLake host app launching")
     }
@@ -77,14 +89,9 @@ struct OneLakeApp: App {
         // Classic dropdown style: renders SwiftUI content as a native menu.
         // Available from macOS 14 (our deployment target).
         MenuBarExtra {
-            MenuBarView()
+            MenuBarView(model: statusModel)
         } label: {
-            // .template rendering mode tells macOS to tint the image to
-            // match the menu-bar appearance (white in dark mode, black in
-            // light mode). This is the SwiftUI equivalent of setting
-            // isTemplate = true on an NSImage.
-            Image(systemName: "externaldrive.connected.to.line.below")
-                .renderingMode(.template)
+            MenuBarIconView(state: statusModel.menuIconState)
         }
         .menuBarExtraStyle(.menu)
 
@@ -96,5 +103,64 @@ struct OneLakeApp: App {
             AddAccountView()
         }
         .windowResizability(.contentSize)
+    }
+}
+
+// MARK: - MenuBarIconView
+
+/// Menu-bar label that shows the brand template image and overlays a small
+/// SF Symbol badge when the daemon state is not normal.
+///
+/// States:
+///   - normal      → plain brand icon (macOS tints it automatically)
+///   - notRunning  → brand icon at reduced opacity (muted / disabled look)
+///   - offline     → brand icon + wifi.slash badge (bottom-trailing)
+///   - paused      → brand icon + pause.fill badge  (bottom-trailing)
+///
+/// The brand image is declared as a Template image in the asset catalogue
+/// (template-rendering-intent = template) so macOS auto-tints it for
+/// light/dark menu bars — no manual color handling needed here.
+private struct MenuBarIconView: View {
+    let state: MenuIconState
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            // Brand mono silhouette — template image, macOS tints it.
+            Image("MenuBarIcon")
+                .renderingMode(.template)
+                .opacity(state == .notRunning ? 0.4 : 1.0)
+
+            // Small badge overlaid at the bottom-trailing corner.
+            // Visible only when the daemon reports a non-normal state.
+            if let badge = badgeSystemName {
+                Image(systemName: badge)
+                    .font(.system(size: 7, weight: .bold))
+                    // Solid fill so the badge reads clearly against the
+                    // menu-bar background in both light and dark mode.
+                    .symbolRenderingMode(.monochrome)
+                    // Shift slightly so the badge overlaps the icon edge
+                    // rather than sitting fully outside it.
+                    .offset(x: 3, y: 3)
+            }
+        }
+        // Accessibility label read by VoiceOver for the menu-bar button.
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var badgeSystemName: String? {
+        switch state {
+        case .normal, .notRunning: return nil
+        case .offline:             return "wifi.slash"
+        case .paused:              return "pause.fill"
+        }
+    }
+
+    private var accessibilityLabel: String {
+        switch state {
+        case .normal:      return "OneLake"
+        case .notRunning:  return "OneLake — not running"
+        case .offline:     return "OneLake — offline"
+        case .paused:      return "OneLake — paused"
+        }
     }
 }

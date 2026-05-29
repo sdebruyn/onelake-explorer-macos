@@ -21,12 +21,37 @@
 import Foundation
 import os.log
 
+// MARK: - MenuIconState
+
+/// The four icon states the menu-bar label can represent.
+/// Used by both the icon view (OneLakeApp) and tests that verify the model logic.
+enum MenuIconState {
+    /// Daemon is reachable, not offline, no paused workspaces.
+    case normal
+    /// Daemon not reachable over IPC.
+    case notRunning
+    /// Daemon reachable but reporting offline (no network / token expired).
+    case offline
+    /// One or more Fabric capacity workspaces are paused.
+    case paused
+}
+
 // MARK: - MenuStatusModel
 
 /// Published state for the menu-bar dropdown.
 /// All mutations happen on the main actor; no locking needed.
+///
+/// Owned as a singleton at the App level so both the MenuBarExtra label
+/// (icon state) and the menu content read from the same instance. Using a
+/// class-level `shared` rather than SwiftUI DI keeps the lifetime explicit
+/// and avoids the `@EnvironmentObject` / optional-unwrap dance across scenes.
 @MainActor
 final class MenuStatusModel: ObservableObject {
+    /// Single shared instance. Owned (via @StateObject) by OneLakeApp so it
+    /// lives for the full process lifetime. MenuBarView receives it as an
+    /// @ObservedObject — it observes but does not own.
+    static let shared = MenuStatusModel()
+
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "menu-status")
 
     // MARK: Published
@@ -45,6 +70,14 @@ final class MenuStatusModel: ObservableObject {
     // MARK: Computed conveniences
 
     var pausedCount: Int { pausedWorkspaces.count }
+
+    /// Icon state for the menu-bar label. Priority: not-running > offline > paused > normal.
+    var menuIconState: MenuIconState {
+        if !isRunning { return .notRunning }
+        if offline    { return .offline }
+        if pausedCount > 0 { return .paused }
+        return .normal
+    }
 
     var headerLabel: String {
         guard isRunning else { return "○ Not running" }
