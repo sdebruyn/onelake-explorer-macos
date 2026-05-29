@@ -457,6 +457,44 @@ func TestReclaimSocketPath_RefusesSymlink(t *testing.T) {
 	}
 }
 
+// TestAcceptLoopCloseRace verifies that Close() does not panic with
+// "WaitGroup misuse: Add after Wait" when called concurrently with an
+// in-flight Accept. The fix in acceptLoop checks the closing channel before
+// calling connWG.Add(1).
+func TestAcceptLoopCloseRace(t *testing.T) {
+	t.Parallel()
+	const iterations = 100
+	for i := 0; i < iterations; i++ {
+		func() {
+			sockPath := shortSocketPath(t)
+			srv := NewServer(quietLogger())
+			srv.Register("ping", func(_ context.Context, _ json.RawMessage) (any, error) {
+				return "pong", nil
+			})
+			listenErr := make(chan error, 1)
+			go func() { listenErr <- srv.Listen(context.Background(), sockPath) }()
+
+			select {
+			case <-srv.Ready():
+			case <-time.After(2 * time.Second):
+				t.Errorf("iteration %d: server not ready in time", i)
+				return
+			}
+
+			// Dial a connection to drive a real Accept, then immediately
+			// close the server. The race window is: Accept returns, we check
+			// closing, then Close calls Wait. Without the guard, Add fires
+			// after Wait and panics.
+			conn, err := net.Dial("unix", sockPath)
+			if err == nil {
+				_ = conn.Close()
+			}
+			_ = srv.Close()
+			<-listenErr
+		}()
+	}
+}
+
 // TestReclaimSocketPath_RemovesStaleRegularFile confirms a plain stale file
 // we own is still reclaimed (the common post-crash case).
 func TestReclaimSocketPath_RemovesStaleRegularFile(t *testing.T) {

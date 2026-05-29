@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
-	"path/filepath"
 	"time"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
@@ -163,7 +161,7 @@ func (h *Handlers) handleStatus(ctx context.Context, _ json.RawMessage) (any, er
 	sortStrings(aliases)
 
 	cacheBytes := int64(-1)
-	if du, err := h.cacheBlobSize(); err == nil {
+	if du, err := h.cacheBlobSize(ctx); err == nil {
 		cacheBytes = du
 	}
 
@@ -208,20 +206,15 @@ func (h *Handlers) handleStatus(ctx context.Context, _ json.RawMessage) (any, er
 	}, nil
 }
 
-// cacheBlobSize walks the cache blob root and returns the total bytes
-// occupied. We do this rather than maintaining a counter because the
-// cache package owns its own eviction bookkeeping and we don't want to
-// duplicate state.
-//
-// The walk is scoped to [cache.Cache.BlobRoot] — never the full
-// [cache.Cache.Root] — so the SQLite metadata file and its WAL sidecars
-// don't inflate the figure we compare against
-// [config.CacheConfig.MaxSizeBytes], which counts blob bytes only.
-func (h *Handlers) cacheBlobSize() (int64, error) {
+// cacheBlobSize returns the deduped byte total for linked blobs by
+// delegating to cache.BlobBytes, which performs a SQL SUM(DISTINCT blob_size)
+// rather than a filesystem walk. This avoids per-call I/O on every status
+// request; see internal/cache/size.go for rationale.
+func (h *Handlers) cacheBlobSize(ctx context.Context) (int64, error) {
 	if h.cache == nil {
 		return 0, fmt.Errorf("cache not initialised")
 	}
-	return walkBlobBytes(h.cache.BlobRoot())
+	return h.cache.BlobBytes(ctx)
 }
 
 // AccountListResponse is the payload returned by "account.list".
@@ -505,36 +498,3 @@ func (h *Handlers) handleMountList(_ context.Context, _ json.RawMessage) (any, e
 }
 
 // --- small helpers kept private so they don't pollute the package API.
-
-// walkBlobBytes sums the sizes of every regular file under root using
-// [filepath.WalkDir] (cheaper than [filepath.Walk] because it works on
-// lazy [fs.DirEntry] values and avoids one stat per entry). Files that
-// vanish mid-walk are skipped silently because the cache eviction logic
-// can race with us.
-func walkBlobBytes(root string) (int64, error) {
-	var total int64
-	err := filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		info, infoErr := d.Info()
-		if infoErr != nil {
-			if errors.Is(infoErr, fs.ErrNotExist) {
-				return nil
-			}
-			return infoErr
-		}
-		total += info.Size()
-		return nil
-	})
-	if err != nil && errors.Is(err, fs.ErrNotExist) {
-		return 0, nil
-	}
-	return total, err
-}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/fabric"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/httpretry"
 	syncpkg "github.com/sdebruyn/onelake-explorer-macos/internal/sync"
 )
 
@@ -173,16 +174,244 @@ func TestDeleteItem(t *testing.T) {
 	}
 }
 
+// --- path confinement tests -------------------------------------------------
+
+func TestConfineToAllowedRoots_InRoot(t *testing.T) {
+	dir := t.TempDir()
+	// A file directly inside an allowed root must pass.
+	if err := confineToAllowedRoots(filepath.Join(dir, "file.bin")); err != nil {
+		t.Errorf("in-root path rejected: %v", err)
+	}
+	// A deeply nested path inside the root must also pass.
+	if err := confineToAllowedRoots(filepath.Join(dir, "a", "b", "c.txt")); err != nil {
+		t.Errorf("nested in-root path rejected: %v", err)
+	}
+}
+
+func TestConfineToAllowedRoots_OutsideRoot(t *testing.T) {
+	cases := []string{
+		"/etc/passwd",
+		"/Users/victim/.ssh/authorized_keys",
+		"/tmp/../etc/shadow",
+	}
+	for _, p := range cases {
+		if err := confineToAllowedRoots(p); err == nil {
+			t.Errorf("outside-root path %q should be rejected, got nil", p)
+		}
+	}
+}
+
+func TestConfineToAllowedRoots_TraversalRejected(t *testing.T) {
+	// Absolute paths outside any allowed root must be rejected regardless of
+	// how they are spelled. filepath.Clean collapses ".." segments before the
+	// prefix check, so these must all fail.
+	cases := []string{
+		"/etc/passwd",
+		"/root/.ssh/authorized_keys",
+		"/usr/local/bin/evil",
+	}
+	for _, p := range cases {
+		if err := confineToAllowedRoots(p); err == nil {
+			t.Errorf("outside-root path %q should be rejected, got nil", p)
+		}
+	}
+}
+
+func TestFetchContents_RejectsOutsideRoot(t *testing.T) {
+	eng := &stubEngine{openData: "data"}
+	svc := newService(eng, stubCache{})
+	_, err := svc.FetchContents(context.Background(), "work", "ws1/lh/Files/x.txt", "/etc/passwd")
+	if err == nil {
+		t.Fatal("expected error for outside-root dest path, got nil")
+	}
+}
+
+// TestFetchContents_RejectsSymlinkInParent is a regression test for the
+// TOCTOU symlink bypass: a parent directory component of destPath that is
+// itself a symlink pointing outside the allowed roots must be caught and
+// rejected even though destPath passes the initial lexical confinement check.
+//
+// The attack scenario: destPath is lexically inside os.TempDir(), so
+// confineToAllowedRoots passes. The caller then races in a symlink at a
+// parent component before os.MkdirAll runs. The fix calls
+// fetchContentsConfineParent after MkdirAll: it resolves the parent via
+// EvalSymlinks (which now succeeds) and re-checks the resolved path against
+// the allowed roots.
+func TestFetchContents_RejectsSymlinkInParent(t *testing.T) {
+	// outer is a real directory inside os.TempDir() — an allowed root.
+	outer := t.TempDir()
+
+	// sensitiveDir is a directory that is NOT inside any allowed root.
+	// We use the user's home directory's parent as a reliable non-temp,
+	// non-AppGroup path. We do NOT write to it; we only point a symlink at
+	// an existing directory and confirm no file appears there.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot determine home dir:", err)
+	}
+	// Use a subdirectory of the home dir that definitely exists and is
+	// outside os.TempDir() and the App Group container.
+	sensitiveDir := home
+
+	// Create outer/staging as a symlink pointing to sensitiveDir.
+	// This simulates the race where an adversary inserts a symlink between
+	// the initial confineToAllowedRoots check and the os.MkdirAll call.
+	symlinkPath := filepath.Join(outer, "staging")
+	if err := os.Symlink(sensitiveDir, symlinkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	// destPath lexically appears inside outer (an allowed root), but its
+	// actual parent (outer/staging) resolves to sensitiveDir (~/).
+	destPath := filepath.Join(outer, "staging", "ofem-toctou-test.bin")
+
+	eng := &stubEngine{openData: "pwned"}
+	svc := newService(eng, stubCache{})
+	_, err = svc.FetchContents(context.Background(), "work", "ws1/lh/Files/x.txt", destPath)
+	if err == nil {
+		// If we somehow succeeded, clean up before failing.
+		_ = os.Remove(filepath.Join(home, "ofem-toctou-test.bin"))
+		t.Fatal("FetchContents should have rejected a destPath whose parent resolves outside allowed roots")
+	}
+
+	// Confirm no file was written to the home directory.
+	if _, statErr := os.Stat(filepath.Join(home, "ofem-toctou-test.bin")); statErr == nil {
+		_ = os.Remove(filepath.Join(home, "ofem-toctou-test.bin"))
+		t.Error("file was written to home dir despite confinement — TOCTOU bypass not fixed")
+	}
+}
+
+func TestCreateItem_RejectsOutsideRoot(t *testing.T) {
+	eng := &stubEngine{}
+	svc := newService(eng, stubCache{err: errors.New("miss")})
+	_, err := svc.CreateItem(context.Background(), "work", "ws1/lh", "f.txt", false, "/etc/passwd")
+	if err == nil {
+		t.Fatal("expected error for outside-root src path, got nil")
+	}
+}
+
+func TestModifyItem_RejectsOutsideRoot(t *testing.T) {
+	eng := &stubEngine{}
+	svc := newService(eng, stubCache{err: errors.New("miss")})
+	_, err := svc.ModifyItem(context.Background(), "work", "ws1/lh/Files/x.txt", "/etc/passwd")
+	if err == nil {
+		t.Fatal("expected error for outside-root src path, got nil")
+	}
+}
+
+// --- cursor paging tests ----------------------------------------------------
+
+// makeEntries returns n stub cache entries with sequential names.
+func makeEntries(n int) []cache.Entry {
+	entries := make([]cache.Entry, n)
+	for i := range entries {
+		entries[i] = cache.Entry{
+			Key:  cache.Key{WorkspaceID: "ws1", ItemID: "lh", Path: strings.Repeat("x", i+1)},
+			Name: strings.Repeat("x", i+1),
+		}
+	}
+	return entries
+}
+
+func TestEnumeratePaged_SinglePage(t *testing.T) {
+	eng := &stubEngine{entries: makeEntries(5)}
+	svc := newService(eng, stubCache{})
+	page, err := svc.EnumeratePaged(context.Background(), "work", "ws1/lh", "")
+	if err != nil {
+		t.Fatalf("EnumeratePaged: %v", err)
+	}
+	if len(page.Items) != 5 {
+		t.Errorf("items = %d, want 5", len(page.Items))
+	}
+	if page.NextCursor != "" {
+		t.Errorf("NextCursor = %q, want empty on last page", page.NextCursor)
+	}
+}
+
+func TestEnumeratePaged_MultiPage(t *testing.T) {
+	// Use more items than enumeratePageSize to force paging.
+	total := enumeratePageSize + 37
+	eng := &stubEngine{entries: makeEntries(total)}
+	svc := newService(eng, stubCache{})
+
+	seen := map[string]bool{}
+	cursor := ""
+	pageCount := 0
+
+	for {
+		page, err := svc.EnumeratePaged(context.Background(), "work", "ws1/lh", cursor)
+		if err != nil {
+			t.Fatalf("EnumeratePaged page %d: %v", pageCount, err)
+		}
+		if len(page.Items) == 0 && page.NextCursor == "" {
+			break
+		}
+		pageCount++
+		for _, item := range page.Items {
+			if seen[item.Identifier] {
+				t.Errorf("duplicate item %q on page %d", item.Identifier, pageCount)
+			}
+			seen[item.Identifier] = true
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+
+	if pageCount != 2 {
+		t.Errorf("pageCount = %d, want 2", pageCount)
+	}
+	if len(seen) != total {
+		t.Errorf("total unique items = %d, want %d", len(seen), total)
+	}
+}
+
+func TestEnumeratePaged_FirstPageHasNextCursor(t *testing.T) {
+	total := enumeratePageSize + 1
+	eng := &stubEngine{entries: makeEntries(total)}
+	svc := newService(eng, stubCache{})
+
+	page, err := svc.EnumeratePaged(context.Background(), "work", "ws1/lh", "")
+	if err != nil {
+		t.Fatalf("EnumeratePaged: %v", err)
+	}
+	if page.NextCursor == "" {
+		t.Error("first page should have a non-empty NextCursor when more items remain")
+	}
+	if len(page.Items) != enumeratePageSize {
+		t.Errorf("first page items = %d, want %d", len(page.Items), enumeratePageSize)
+	}
+
+	// Follow the cursor to get the last page.
+	last, err := svc.EnumeratePaged(context.Background(), "work", "ws1/lh", page.NextCursor)
+	if err != nil {
+		t.Fatalf("EnumeratePaged last page: %v", err)
+	}
+	if last.NextCursor != "" {
+		t.Errorf("last page NextCursor = %q, want empty", last.NextCursor)
+	}
+	if len(last.Items) != 1 {
+		t.Errorf("last page items = %d, want 1", len(last.Items))
+	}
+}
+
 func TestClassify(t *testing.T) {
 	cases := map[string]struct {
 		err  error
 		want ErrorCode
 	}{
-		"not-exist": {os.ErrNotExist, CodeNoSuchItem},
-		"paused":    {syncpkg.ErrWorkspacePaused, CodeServerBusy},
-		"plain-404": {errors.New("HTTP 404 not found"), CodeNoSuchItem},
-		"plain-401": {errors.New("HTTP 401 unauthorized"), CodeNotAuthenticated},
-		"other":     {errors.New("boom"), CodeCannotSynchronize},
+		"not-exist":          {os.ErrNotExist, CodeNoSuchItem},
+		"paused":             {syncpkg.ErrWorkspacePaused, CodeServerBusy},
+		"typed-not-found":    {httpretry.ErrNotFound, CodeNoSuchItem},
+		"typed-unauthorized": {httpretry.ErrUnauthorized, CodeNotAuthenticated},
+		"typed-forbidden":    {httpretry.ErrForbidden, CodeNotAuthenticated},
+		"typed-throttled":    {httpretry.ErrThrottled, CodeServerBusy},
+		"typed-gone":         {httpretry.ErrGone, CodeNoSuchItem},
+		"other":              {errors.New("boom"), CodeCannotSynchronize},
+		// Plain-text errors with status digits must NOT misfire as status
+		// codes — the substring fallback was intentionally removed.
+		"digit-in-filename": {errors.New("file-404.csv not readable"), CodeCannotSynchronize},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

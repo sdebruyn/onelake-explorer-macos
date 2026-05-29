@@ -25,6 +25,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
@@ -32,6 +33,88 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/httpretry"
 	syncpkg "github.com/sdebruyn/onelake-explorer-macos/internal/sync"
 )
+
+// allowedRoots is the set of filesystem root prefixes under which the
+// daemon may read or write files on behalf of IPC callers. It is
+// populated once at init time from the well-known macOS locations shared
+// between the daemon, the CLI, and the sandboxed extension.
+//
+// The App Group container (~/Library/Group Containers/group.dev.debruyn.ofem)
+// is the rendezvous point documented in docs/file-provider.md. Both the
+// daemon's cache/staging area and the extension's per-file staging area
+// live under it. The user's temp dir is also included for test fixtures.
+var allowedRoots []string
+
+func init() {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		candidates := []string{
+			filepath.Join(home, "Library", "Group Containers", "group.dev.debruyn.ofem"),
+			os.TempDir(),
+		}
+		for _, c := range candidates {
+			c = filepath.Clean(c)
+			allowedRoots = append(allowedRoots, c)
+			// Also add the symlink-resolved form so the prefix check in
+			// confineToAllowedRoots works on macOS where /var/folders →
+			// /private/var/folders. Both forms are accepted.
+			if resolved, err := filepath.EvalSymlinks(c); err == nil && resolved != c {
+				allowedRoots = append(allowedRoots, resolved)
+			}
+		}
+	}
+}
+
+// confineToAllowedRoots verifies that p, after filepath.Clean+EvalSymlinks,
+// is inside one of the daemon's allowed staging roots. It rejects any path
+// that contains ".." after cleaning or that resolves outside those roots.
+// Returns a wrapped sentinel error on rejection so callers can log it
+// without leaking the raw path to cloud storage.
+//
+// When p does not yet exist on disk (e.g. a destination file that will be
+// created by FetchContents), EvalSymlinks fails on p itself. Callers that
+// write to a new path MUST call confineToAllowedRoots again on the PARENT
+// directory after os.MkdirAll — the parent exists at that point, so
+// EvalSymlinks will resolve any symlinks that a race introduced there and
+// the subsequent open must use the resolved parent path with O_NOFOLLOW.
+// See fetchContentsConfineParent for the correct pattern.
+func confineToAllowedRoots(p string) error {
+	if p == "" {
+		return errors.New("fp: empty path")
+	}
+	cleaned := filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		cleaned = resolved
+	}
+	for _, root := range allowedRoots {
+		if strings.HasPrefix(cleaned, root+string(filepath.Separator)) || cleaned == root {
+			return nil
+		}
+	}
+	return fmt.Errorf("fp: path outside allowed staging roots: %w", os.ErrPermission)
+}
+
+// fetchContentsConfineParent resolves the parent of destPath (which must
+// already exist after os.MkdirAll) via filepath.EvalSymlinks and verifies
+// that the resolved parent is within an allowed root. Returns the resolved
+// parent so the caller can open the final path without following symlinks.
+//
+// This is the second confinement check for FetchContents: the first
+// (confineToAllowedRoots on the full destPath) is a fast lexical reject for
+// paths that are obviously outside allowed roots; this one catches a
+// race where an adversary creates a symlink at a parent component between
+// the first check and the os.MkdirAll call.
+func fetchContentsConfineParent(destPath string) (resolvedParent string, err error) {
+	parent := filepath.Dir(destPath)
+	resolvedParent, err = filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", fmt.Errorf("fp: resolve dest parent: %w", err)
+	}
+	if confineErr := confineToAllowedRoots(resolvedParent); confineErr != nil {
+		return "", fmt.Errorf("fp: dest parent resolved outside allowed staging roots: %w", os.ErrPermission)
+	}
+	return resolvedParent, nil
+}
 
 // RootContainerID is the sentinel identifier for a domain's root
 // container. It maps to NSFileProviderItemIdentifier.rootContainer on the
@@ -166,6 +249,59 @@ func parseIdentifier(id string) (scope, error) {
 
 // --- operations -------------------------------------------------------------
 
+// enumeratePageSize is the maximum number of items returned in a single
+// fp.enumerate response page. 1000 items × ~800 bytes each ≈ 800 KiB,
+// safely under the 1 MiB IPC frame cap (ipc.MaxFrameSize).
+const enumeratePageSize = 1000
+
+// EnumeratePage is the result of a paged enumeration.
+//
+// Cursor scheme: the cursor is an opaque base64-encoded decimal offset into
+// the sorted child list. "Opaque" means the Swift caller must not parse or
+// construct it, only echo it back verbatim. An empty cursor means "start from
+// the beginning"; an empty NextCursor means "this is the last page".
+type EnumeratePage struct {
+	Items      []Item
+	NextCursor string // empty when no more pages remain
+}
+
+// EnumeratePaged returns one page of the children of identifier, starting at
+// the position encoded in cursor (empty = first page). The result includes a
+// NextCursor token that the caller passes back to fetch the next page.
+func (s Service) EnumeratePaged(ctx context.Context, alias, identifier, cursor string) (EnumeratePage, error) {
+	all, err := s.Enumerate(ctx, alias, identifier)
+	if err != nil {
+		return EnumeratePage{}, err
+	}
+
+	offset := 0
+	if cursor != "" {
+		decoded, decErr := base64.StdEncoding.DecodeString(cursor)
+		if decErr != nil {
+			return EnumeratePage{}, fmt.Errorf("fp.EnumeratePaged: invalid cursor: %w", decErr)
+		}
+		var n int
+		if _, scanErr := fmt.Sscanf(string(decoded), "%d", &n); scanErr != nil {
+			return EnumeratePage{}, fmt.Errorf("fp.EnumeratePaged: invalid cursor value: %w", scanErr)
+		}
+		offset = n
+	}
+
+	if offset < 0 || offset > len(all) {
+		return EnumeratePage{}, fmt.Errorf("fp.EnumeratePaged: cursor offset %d out of range [0, %d]", offset, len(all))
+	}
+
+	page := all[offset:]
+	var nextCursor string
+	if len(page) > enumeratePageSize {
+		page = page[:enumeratePageSize]
+		nextOffset := offset + enumeratePageSize
+		nextCursor = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d", nextOffset)))
+	}
+
+	return EnumeratePage{Items: page, NextCursor: nextCursor}, nil
+}
+
 // Enumerate lists the children of the container named by identifier.
 func (s Service) Enumerate(ctx context.Context, alias, identifier string) ([]Item, error) {
 	sc, err := parseIdentifier(identifier)
@@ -283,6 +419,9 @@ func (s Service) FetchContents(ctx context.Context, alias, identifier, destPath 
 	if destPath == "" {
 		return Item{}, errors.New("fp.FetchContents: empty destination path")
 	}
+	if err := confineToAllowedRoots(destPath); err != nil {
+		return Item{}, fmt.Errorf("fp.FetchContents: %w", err)
+	}
 	k := cache.Key{AccountAlias: alias, WorkspaceID: sc.workspace, ItemID: sc.item, Path: sc.path}
 	rc, err := s.Engine.Open(ctx, k)
 	if err != nil {
@@ -293,17 +432,30 @@ func (s Service) FetchContents(ctx context.Context, alias, identifier, destPath 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o700); err != nil {
 		return Item{}, fmt.Errorf("fp.FetchContents: mkdir dest: %w", err)
 	}
-	f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- caller-controlled App Group path
+	// Second confinement check: the parent directory now exists, so
+	// EvalSymlinks can resolve it. This catches a TOCTOU race where an
+	// adversary inserts a symlink at a parent component between the first
+	// confineToAllowedRoots call above and the os.MkdirAll call just above.
+	// We then open using the resolved parent path + O_NOFOLLOW so that even
+	// the final filename component cannot be redirected via a symlink.
+	resolvedParent, confineErr := fetchContentsConfineParent(destPath)
+	if confineErr != nil {
+		return Item{}, fmt.Errorf("fp.FetchContents: %w", confineErr)
+	}
+	safeDestPath := filepath.Join(resolvedParent, filepath.Base(destPath))
+	// #nosec G304 -- path is confined to allowed App Group staging roots above (two checks).
+	// O_NOFOLLOW prevents the final filename component from being a symlink.
+	f, err := os.OpenFile(safeDestPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return Item{}, fmt.Errorf("fp.FetchContents: open dest: %w", err)
 	}
 	if _, err := io.Copy(f, rc); err != nil {
 		_ = f.Close()
-		_ = os.Remove(destPath)
+		_ = os.Remove(safeDestPath)
 		return Item{}, fmt.Errorf("fp.FetchContents: copy: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(destPath)
+		_ = os.Remove(safeDestPath)
 		return Item{}, fmt.Errorf("fp.FetchContents: close dest: %w", err)
 	}
 
@@ -343,7 +495,11 @@ func (s Service) CreateItem(ctx context.Context, alias, parentID, filename strin
 			return Item{}, err
 		}
 	} else {
-		f, err := os.Open(srcPath) // #nosec G304 -- macOS-supplied staging path
+		if err := confineToAllowedRoots(srcPath); err != nil {
+			return Item{}, fmt.Errorf("fp.CreateItem: %w", err)
+		}
+		// #nosec G304 -- path is confined to allowed App Group staging roots above.
+		f, err := os.Open(srcPath)
 		if err != nil {
 			return Item{}, fmt.Errorf("fp.CreateItem: open src: %w", err)
 		}
@@ -373,7 +529,11 @@ func (s Service) ModifyItem(ctx context.Context, alias, identifier, srcPath stri
 	if sc.kind != scopePath {
 		return Item{}, errNoSuchItem("modify requires a file identifier")
 	}
-	f, err := os.Open(srcPath) // #nosec G304 -- macOS-supplied staging path
+	if err := confineToAllowedRoots(srcPath); err != nil {
+		return Item{}, fmt.Errorf("fp.ModifyItem: %w", err)
+	}
+	// #nosec G304 -- path is confined to allowed App Group staging roots above.
+	f, err := os.Open(srcPath)
 	if err != nil {
 		return Item{}, fmt.Errorf("fp.ModifyItem: open src: %w", err)
 	}
@@ -580,9 +740,10 @@ const (
 func errNoSuchItem(msg string) error { return fmt.Errorf("%s: %w", msg, os.ErrNotExist) }
 
 // Classify maps a Go error to the wire ErrorCode the extension switches
-// on. Sentinel checks come first (cheap, unambiguous); string matching is
-// the last resort so a server adding a sentinel later is not silently
-// miscategorised.
+// on. Classification is based exclusively on typed errors and sentinels;
+// substring matching on error messages is intentionally absent because it
+// misfires on filenames or error context that happen to contain status
+// digits (e.g. a file named "report-404.csv").
 func Classify(err error) ErrorCode {
 	switch {
 	// Paused capacity first: Fabric surfaces it as a 404 (DFS) or 403
@@ -604,15 +765,6 @@ func Classify(err error) ErrorCode {
 	var nerr net.Error
 	if errors.As(err, &nerr) {
 		return CodeServerUnreachable
-	}
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "401"), strings.Contains(msg, "403"):
-		return CodeNotAuthenticated
-	case strings.Contains(msg, "404"):
-		return CodeNoSuchItem
-	case strings.Contains(msg, "429"):
-		return CodeServerBusy
 	}
 	return CodeCannotSynchronize
 }
