@@ -85,6 +85,10 @@ final class IPCClient {
     /// this is purely a liveness guard so a daemon that dies mid-frame
     /// cannot freeze the poll loop.
     private static let pollTimeout: TimeInterval = 10
+    /// Bounds the one-shot `call` path (connect + write + read) so a connection
+    /// that never reaches `.ready` cannot hang the menu's status fetch forever.
+    /// Surfaces as a thrown timeout the model can log and retry on next refresh.
+    private static let callTimeout: TimeInterval = 5
 
     private let socketPath: String
 
@@ -130,11 +134,12 @@ final class IPCClient {
         ]
         let requestData = try JSONSerialization.data(withJSONObject: request)
 
-        let conn = try await openConnection()
-        defer { conn.cancel() }
-
-        try await writeFrameOnConn(conn, requestData)
-        let responseData = try await readFrame(conn)
+        let responseData = try await Self.withTimeout(seconds: Self.callTimeout) { [self] in
+            let conn = try await self.openConnection()
+            defer { conn.cancel() }
+            try await self.writeFrameOnConn(conn, requestData)
+            return try await self.readFrame(conn)
+        }
 
         guard let obj = try JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
             throw IPCError.protocolError("response is not a JSON object")
@@ -220,20 +225,28 @@ final class IPCClient {
         // rather than a captured `var`, which would be a data race in Swift 6.
         let resumed = OSAllocatedUnfairLock(initialState: false)
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            conn.stateUpdateHandler = { state in
-                let alreadyResumed = resumed.withLock { flag -> Bool in
+            // Resume the continuation exactly once, and ONLY for the states
+            // that actually represent a connect outcome. The one-shot guard
+            // must NOT be consumed by transient states like `.preparing` /
+            // `.setup` — doing so (the earlier version set the flag before the
+            // switch) suppressed the real `.ready` resume and hung every
+            // connection forever after it reached ready.
+            @Sendable func resumeOnce(_ work: @Sendable () -> Void) {
+                let already = resumed.withLock { flag -> Bool in
                     if flag { return true }
                     flag = true
                     return false
                 }
-                guard !alreadyResumed else { return }
+                if !already { work() }
+            }
+            conn.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    cont.resume()
+                    resumeOnce { cont.resume() }
                 case .failed(let err):
-                    cont.resume(throwing: IPCError.unreachable(err.localizedDescription))
+                    resumeOnce { cont.resume(throwing: IPCError.unreachable(err.localizedDescription)) }
                 case .waiting(let err):
-                    cont.resume(throwing: IPCError.unreachable(err.localizedDescription))
+                    resumeOnce { cont.resume(throwing: IPCError.unreachable(err.localizedDescription)) }
                 default:
                     break
                 }
