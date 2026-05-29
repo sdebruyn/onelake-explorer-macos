@@ -112,7 +112,29 @@ private struct ErrorOnlyEnvelope: Decodable {
     let error: BridgeErrorPayload?
 }
 
-private struct BridgeErrorPayload: Decodable {
+// Simple string-value response envelopes for mutating actions.
+private struct SetDefaultEnvelope: Decodable {
+    let defaultAccount: String?
+    let error: BridgeErrorPayload?
+}
+
+private struct AliasEnvelope: Decodable {
+    let alias: String?
+    let error: BridgeErrorPayload?
+}
+
+private struct CacheBytesEnvelope: Decodable {
+    let cacheBytes: Int64?
+    let error: BridgeErrorPayload?
+}
+
+private struct ConfigSetEnvelope: Decodable {
+    let key: String?
+    let value: String?
+    let error: BridgeErrorPayload?
+}
+
+struct BridgeErrorPayload: Decodable {
     let code: String
     let message: String
 }
@@ -195,10 +217,45 @@ final class CoreBridge {
 
     // MARK: - Reads
 
+    // MARK: Status / account list (consumed by MenuStatusModel)
+
+    /// Fetch the daemon's live status (version, offline flag, cache sizes,
+    /// paused workspaces, canonical paths). Throws BridgeError.serverUnreachable
+    /// when the daemon is not running.
+    func status() async throws -> StatusInfo {
+        let env: StatusEnvelope = try await callAsync("status", [:])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        guard let info = env.statusInfo else {
+            throw BridgeError.decoding("status envelope missing result")
+        }
+        return info
+    }
+
+    /// Fetch the full account list including the default-account alias.
+    /// Supersedes the narrower listAccounts() for menu-bar display use.
+    func accountList() async throws -> AccountListInfo {
+        let env: AccountListEnvelope = try await callAsync("account.list", [:])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        guard let info = env.listInfo else {
+            throw BridgeError.decoding("account.list envelope missing result")
+        }
+        return info
+    }
+
     func listAccounts() async throws -> [Account] {
         let env: AccountsEnvelope = try await callAsync("account.list", [:])
         if let payload = env.error { throw BridgeError(payload: payload) }
         return env.accounts ?? []
+    }
+
+    /// Fetch the current config snapshot (telemetry flag, cache max, etc.).
+    func configSnapshot() async throws -> ConfigInfo {
+        let env: ConfigSnapshotEnvelope = try await callAsync("config.snapshot", [:])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        guard let info = env.configInfo else {
+            throw BridgeError.decoding("config.snapshot envelope missing result")
+        }
+        return info
     }
 
     /// Enumerate the children of `identifier` for `alias`. Returns items and
@@ -290,6 +347,51 @@ final class CoreBridge {
 
     func deleteItem(alias: String, identifier: String) async throws {
         let env: ErrorOnlyEnvelope = try await callAsync("fp.deleteItem", ["alias": alias, "identifier": identifier])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+    }
+
+    // MARK: - Mutating actions (Phase 2)
+
+    /// Mark `alias` as the default account in config.toml.
+    /// Returns the alias that was set as default.
+    @discardableResult
+    func setDefaultAccount(alias: String) async throws -> String {
+        let env: SetDefaultEnvelope = try await callAsync("account.setDefault", ["alias": alias])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        return env.defaultAccount ?? alias
+    }
+
+    /// Remove the account identified by `alias`. Deletes its token from the
+    /// keychain and removes it from config.toml. Returns the alias removed.
+    @discardableResult
+    func removeAccount(alias: String) async throws -> String {
+        let env: AliasEnvelope = try await callAsync("account.remove", ["alias": alias])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        return env.alias ?? alias
+    }
+
+    /// Evict blobs until the cache is within its configured size limit.
+    /// Returns the remaining deduped blob byte count after eviction.
+    @discardableResult
+    func cacheEvict() async throws -> Int64 {
+        let env: CacheBytesEnvelope = try await callAsync("cache.evict", [:])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        return env.cacheBytes ?? 0
+    }
+
+    /// Delete all cached blobs. Returns 0 (the byte count after clearing).
+    @discardableResult
+    func cacheClear() async throws -> Int64 {
+        let env: CacheBytesEnvelope = try await callAsync("cache.clear", [:])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        return env.cacheBytes ?? 0
+    }
+
+    /// Persist a config key/value pair. The daemon normalises the key and
+    /// rejects unknown keys. For telemetry use key `"telemetry"`, value
+    /// `"on"` or `"off"`.
+    func configSet(key: String, value: String) async throws {
+        let env: ConfigSetEnvelope = try await callAsync("config.set", ["key": key, "value": value])
         if let payload = env.error { throw BridgeError(payload: payload) }
     }
 

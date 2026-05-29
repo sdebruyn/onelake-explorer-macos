@@ -1,32 +1,48 @@
 // OneLakeApp.swift
-// SwiftUI entry point for the OneLake host application.
+// Menu-bar-only SwiftUI entry point for the OneLake host application.
 //
-// In addition to hosting the single-window landing UI, the host app
-// owns File Provider domain registration. Every time the app
-// launches or returns to the foreground it asks the Go core for the
-// current account list and calls `DomainSyncManager.reconcile()` so
-// macOS's domain table matches.
+// The app runs as a true agent (LSUIElement = true): no Dock icon, no
+// window. The single scene is a MenuBarExtra using the classic dropdown
+// style (menuBarExtraStyle(.menu)), available from macOS 14 Sonoma.
 //
-// The reconciliation is best-effort: failures are logged but never
-// surfaced as a modal. The user's mental model is "OneLake.app is
-// open, my Fabric accounts show up in Finder"; if that breaks, the
-// CLI's `ofem account` family is the recovery path.
+// Lifecycle:
+//   - applicationDidFinishLaunching: initial domain reconcile + start
+//     ChangeWatcher (moved here from the old ContentView .task).
+//   - applicationDidBecomeActive: re-reconcile so CLI-added accounts
+//     appear in Finder without a restart.
+//   - applicationWillTerminate: stop the ChangeWatcher poll loop.
 
 import SwiftUI
 import AppKit
 import os.log
 
-/// AppDelegate kept around purely to receive the
-/// `applicationDidBecomeActive(_:)` and `applicationWillTerminate(_:)`
-/// callbacks. SwiftUI lifecycle methods cover launch but not "user just
-/// `Cmd+Tab`'d back into us", and re-running reconcile on focus catches
-/// the case where the CLI added or removed an account while the host app
-/// was inactive. ChangeWatcher is stopped on termination so the polling
-/// loop unwinds cleanly.
+/// AppDelegate kept around to receive lifecycle callbacks that SwiftUI
+/// scenes do not surface (becomeActive, willTerminate) and to perform
+/// the initial boot sequence at launch.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "app-delegate")
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        AppDelegate.log.info("OneLake host app did finish launching")
+        // Initial reconcile + start the change-watcher poll loop. Mirrors
+        // what the old ContentView .task did; now lives here so it fires
+        // regardless of whether any window/scene becomes visible.
+        Task { @MainActor in
+            do {
+                try await DomainSyncManager.shared.reconcile()
+            } catch {
+                AppDelegate.log.error(
+                    "Initial domain reconcile failed: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+            ChangeWatcher.shared.start()
+        }
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
+        // Re-reconcile whenever the app comes to the foreground so accounts
+        // added or removed via the CLI while the host was inactive are
+        // reflected in the Finder sidebar promptly.
         AppDelegate.log.debug("applicationDidBecomeActive — triggering domain reconcile")
         Task { @MainActor in
             do {
@@ -40,17 +56,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Call stop() directly and synchronously. macOS terminates the process
-        // immediately after this callback returns; a Task would never get a
-        // chance to execute. ChangeWatcher.stop() is idempotent and
-        // non-blocking — it cancels the polling Task and clears the reference.
+        // stop() is synchronous and non-blocking; a Task would never run
+        // because macOS terminates the process immediately after this returns.
         ChangeWatcher.shared.stop()
     }
 }
 
-/// Root `App` for the OneLake host. Owns a single `WindowGroup`
-/// containing `ContentView`. Edit menu commands that don't apply to
-/// this read-only landing screen are suppressed.
+/// Root SwiftUI app — menu-bar agent only, no window, no Dock icon.
 @main
 struct OneLakeApp: App {
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "app")
@@ -62,35 +74,18 @@ struct OneLakeApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("OneLake") {
-            ContentView()
-                .task {
-                    // Boot the Go core and reconcile the domain list
-                    // as soon as the window appears. The bootstrap is
-                    // idempotent, so calling it from `ContentView` and
-                    // from the AppDelegate is harmless.
-                    do {
-                        try await DomainSyncManager.shared.reconcile()
-                    } catch {
-                        OneLakeApp.log.error(
-                            "Initial domain reconcile failed: \(error.localizedDescription, privacy: .public)"
-                        )
-                    }
-                    // Start polling the daemon for change events so Finder
-                    // receives signalEnumerator calls when remote content
-                    // changes. The watcher connects lazily; if the daemon is
-                    // not yet running it will retry on each poll interval.
-                    ChangeWatcher.shared.start()
-                }
+        // Classic dropdown style: renders SwiftUI content as a native menu.
+        // Available from macOS 14 (our deployment target).
+        MenuBarExtra {
+            MenuBarView()
+        } label: {
+            // .template rendering mode tells macOS to tint the image to
+            // match the menu-bar appearance (white in dark mode, black in
+            // light mode). This is the SwiftUI equivalent of setting
+            // isTemplate = true on an NSImage.
+            Image(systemName: "externaldrive.connected.to.line.below")
+                .renderingMode(.template)
         }
-        .commands {
-            // The host app has nothing to undo/redo, paste into, or
-            // find within. Hide the menu items so users don't see
-            // greyed-out clutter.
-            CommandGroup(replacing: .undoRedo) {}
-            CommandGroup(replacing: .pasteboard) {}
-            CommandGroup(replacing: .textEditing) {}
-            CommandGroup(replacing: .textFormatting) {}
-        }
+        .menuBarExtraStyle(.menu)
     }
 }
