@@ -112,6 +112,31 @@ private struct ErrorOnlyEnvelope: Decodable {
     let error: BridgeErrorPayload?
 }
 
+/// account.setDefault → {"defaultAccount": string}
+private struct AccountSetDefaultEnvelope: Decodable {
+    let defaultAccount: String?
+    let error: BridgeErrorPayload?
+}
+
+/// account.remove → {"alias": string}
+private struct AccountRemoveEnvelope: Decodable {
+    let alias: String?
+    let error: BridgeErrorPayload?
+}
+
+/// cache.evict / cache.clear → {"cacheBytes": int64}
+private struct CacheBytesEnvelope: Decodable {
+    let cacheBytes: Int64?
+    let error: BridgeErrorPayload?
+}
+
+/// config.set → {"key": string, "value": string}
+private struct ConfigSetEnvelope: Decodable {
+    let key: String?
+    let value: String?
+    let error: BridgeErrorPayload?
+}
+
 // Internal (not private) so StatusTypes.swift (same module) can reference it
 // in the StatusEnvelope and AccountListEnvelope types.
 struct BridgeErrorPayload: Decodable {
@@ -200,8 +225,8 @@ final class CoreBridge {
     // MARK: Status / account list (consumed by MenuStatusModel)
 
     /// Fetch the daemon's live status (version, offline flag, cache sizes,
-    /// paused workspaces). Throws BridgeError.serverUnreachable when the
-    /// daemon is not running. StatusInfo / StatusEnvelope are defined in
+    /// paused workspaces, and on-disk paths). Throws BridgeError.serverUnreachable
+    /// when the daemon is not running. StatusInfo / StatusEnvelope are defined in
     /// apple/Shared/StatusTypes.swift and compile into both targets.
     func status() async throws -> StatusInfo {
         let env: StatusEnvelope = try await callAsync("status", [:])
@@ -221,6 +246,62 @@ final class CoreBridge {
             throw BridgeError.decoding("account.list envelope missing result")
         }
         return info
+    }
+
+    /// Fetch the config snapshot (telemetry toggle + cache max).
+    /// ConfigInfo / ConfigSnapshotEnvelope are defined in StatusTypes.swift.
+    func configSnapshot() async throws -> ConfigInfo {
+        let env: ConfigSnapshotEnvelope = try await callAsync("config.snapshot", [:])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        guard let info = env.configInfo else {
+            throw BridgeError.decoding("config.snapshot envelope missing result")
+        }
+        return info
+    }
+
+    // MARK: - Mutating account actions (consumed by MenuStatusModel)
+
+    /// Make `alias` the default account. Does not modify the File Provider
+    /// domain list — call DomainSyncManager.shared.reconcile() if needed.
+    /// Response field "defaultAccount" is ignored; callers should refresh().
+    func setDefaultAccount(alias: String) async throws {
+        let env: AccountSetDefaultEnvelope = try await callAsync("account.setDefault", ["alias": alias])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+    }
+
+    /// Remove the account identified by `alias`. Deletes stored tokens and
+    /// cache entries in the daemon. After this returns the caller should call
+    /// DomainSyncManager.shared.reconcile() to drop the unmounted domain.
+    func removeAccount(alias: String) async throws {
+        let env: AccountRemoveEnvelope = try await callAsync("account.remove", ["alias": alias])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+    }
+
+    // MARK: - Cache actions
+
+    /// Run LRU eviction up to the configured limit. Returns bytes remaining.
+    @discardableResult
+    func cacheEvict() async throws -> Int64 {
+        let env: CacheBytesEnvelope = try await callAsync("cache.evict", [:])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        return env.cacheBytes ?? 0
+    }
+
+    /// Wipe all cached blobs. Returns 0 on success.
+    @discardableResult
+    func cacheClear() async throws -> Int64 {
+        let env: CacheBytesEnvelope = try await callAsync("cache.clear", [:])
+        if let payload = env.error { throw BridgeError(payload: payload) }
+        return env.cacheBytes ?? 0
+    }
+
+    // MARK: - Config actions
+
+    /// Persist a config key/value pair on the daemon.
+    /// The telemetry key accepts values "on" / "off".
+    func configSet(key: String, value: String) async throws {
+        let env: ConfigSetEnvelope = try await callAsync("config.set", ["key": key, "value": value])
+        if let payload = env.error { throw BridgeError(payload: payload) }
     }
 
     func listAccounts() async throws -> [Account] {

@@ -1,8 +1,9 @@
 // MenuBarView.swift
-// SwiftUI content for the menu-bar-extra dropdown (Phase 0).
+// SwiftUI content for the menu-bar-extra dropdown.
 //
-// Phase 0 scope: status header + per-account submenus with Open in Finder,
-// About and Quit. No add/sign-out/set-default actions — those come in later PRs.
+// Phase 0: status header + per-account submenus (Open in Finder), About, Quit.
+// Phase 2 additions: Set as Default, Sign Out, Cache submenu, Telemetry toggle,
+//                    Open Logs Folder, Open Config File.
 
 import AppKit
 import SwiftUI
@@ -19,6 +20,13 @@ struct MenuBarView: View {
             statusHeader
             Divider()
             accountRows
+            Divider()
+            cacheSubmenu
+            Divider()
+            telemetryToggle
+            Divider()
+            openLogsItem
+            openConfigItem
             Divider()
             aboutItem
             Divider()
@@ -45,14 +53,14 @@ struct MenuBarView: View {
     private var accountRows: some View {
         if model.accounts.isEmpty {
             Text(model.isRunning
-                 ? "No accounts — add one from a later build"
+                 ? "No accounts — add one with `ofem auth login`"
                  : "Daemon not running")
                 .foregroundStyle(.secondary)
                 .disabled(true)
         } else {
             ForEach(model.accounts) { account in
                 Menu {
-                    AccountSubmenu(account: account)
+                    AccountSubmenu(account: account, model: model)
                 } label: {
                     // In a classic menu style, Spacer() has no effect — menu
                     // items don't stretch to fill the menu width. Append the
@@ -65,6 +73,91 @@ struct MenuBarView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Cache submenu
+
+    @ViewBuilder
+    private var cacheSubmenu: some View {
+        Menu("Cache") {
+            // Disabled informational header — shows current usage vs limit.
+            Text(cacheUsageLabel)
+                .foregroundStyle(.secondary)
+                .disabled(true)
+
+            Divider()
+
+            Button("Free Up Space") {
+                model.cacheEvict()
+            }
+            .disabled(!model.isRunning)
+
+            Button("Clear Cache…") {
+                confirmCacheClear()
+            }
+            .disabled(!model.isRunning)
+        }
+    }
+
+    private var cacheUsageLabel: String {
+        guard model.cacheBytes >= 0 else { return "Cache size unknown" }
+        let used = ByteCountFormatter.string(fromByteCount: model.cacheBytes, countStyle: .binary)
+        if model.cacheMaxBytes > 0 {
+            let max = ByteCountFormatter.string(fromByteCount: model.cacheMaxBytes, countStyle: .binary)
+            return "\(used) of \(max) used"
+        }
+        return "\(used) used"
+    }
+
+    private func confirmCacheClear() {
+        // Activate the app so the alert appears in front of everything.
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Clear all cached data?"
+        alert.informativeText = "This removes all locally cached OneLake blobs. Files will be re-downloaded from OneLake on next access."
+        alert.addButton(withTitle: "Cancel")          // default → safe
+        alert.addButton(withTitle: "Clear Cache")
+        alert.alertStyle = .warning
+        if alert.runModal() == .alertSecondButtonReturn {
+            model.cacheClear()
+        }
+    }
+
+    // MARK: - Telemetry toggle
+
+    @ViewBuilder
+    private var telemetryToggle: some View {
+        Button {
+            model.setTelemetry(enabled: !model.telemetryEnabled)
+        } label: {
+            // A checkmark next to the label replicates an NSMenuItem's state
+            // toggle in SwiftUI menu style — Label with "checkmark" is the
+            // idiomatic way to show a checked state.
+            if model.telemetryEnabled {
+                Label("Send Anonymous Telemetry", systemImage: "checkmark")
+            } else {
+                Text("Send Anonymous Telemetry")
+            }
+        }
+        .disabled(!model.isRunning)
+    }
+
+    // MARK: - Open Logs / Config
+
+    @ViewBuilder
+    private var openLogsItem: some View {
+        Button("Open Logs Folder") {
+            openPath(model.paths.logDir, fallbackDescription: "logs directory")
+        }
+        .disabled(!model.isRunning || model.paths.logDir.isEmpty)
+    }
+
+    @ViewBuilder
+    private var openConfigItem: some View {
+        Button("Open Config File") {
+            openConfigFile(model.paths.configFile)
+        }
+        .disabled(!model.isRunning || model.paths.configFile.isEmpty)
     }
 
     // MARK: - About
@@ -86,17 +179,78 @@ struct MenuBarView: View {
         }
         .keyboardShortcut("q", modifiers: .command)
     }
+
+    // MARK: - Path helpers
+
+    /// Open a directory path in Finder via NSWorkspace.
+    /// The path lives under the App Group container
+    /// (~/Library/Group Containers/group.dev.debruyn.ofem/) so the sandboxed
+    /// app is entitled to open it. If the directory does not yet exist (e.g.
+    /// the daemon has not written any logs yet) fall back to copying the path
+    /// to the clipboard so the user can navigate there manually.
+    private func openPath(_ path: String, fallbackDescription: String) {
+        guard !path.isEmpty else { return }
+        let url = URL(fileURLWithPath: path, isDirectory: true)
+        if NSWorkspace.shared.open(url) {
+            Self.log.info("Opened \(fallbackDescription) at \(path, privacy: .public)")
+            return
+        }
+        // Directory does not exist yet — copy path to clipboard as fallback.
+        Self.log.warning("\(fallbackDescription) not found at \(path, privacy: .public); copying to clipboard")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+    }
+
+    /// Open the config file. Unlike a directory, NSWorkspace.open on a file
+    /// launches the associated editor (e.g. TextEdit for .toml). If the file
+    /// does not exist yet, fall back to opening its parent directory instead.
+    private func openConfigFile(_ path: String) {
+        guard !path.isEmpty else { return }
+        let url = URL(fileURLWithPath: path)
+        if NSWorkspace.shared.open(url) {
+            Self.log.info("Opened config file at \(path, privacy: .public)")
+            return
+        }
+        // File may not exist if the daemon hasn't written it yet; open parent.
+        let parentURL = url.deletingLastPathComponent()
+        if NSWorkspace.shared.open(parentURL) {
+            Self.log.info("Config file absent; opened parent dir \(parentURL.path, privacy: .public)")
+            return
+        }
+        // Last resort — copy path to clipboard.
+        Self.log.warning("Config file not accessible at \(path, privacy: .public); copying to clipboard")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+    }
 }
 
-// MARK: - Per-account submenu (Phase 0: Open in Finder only)
+// MARK: - Per-account submenu
 
 private struct AccountSubmenu: View {
     let account: AccountInfo
+    // Unowned reference to the shared model; the parent MenuBarView owns the
+    // @StateObject so the model's lifetime is tied to the view tree.
+    unowned let model: MenuStatusModel
+
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "menubar-view")
 
     var body: some View {
         Button("Open in Finder") {
             openInFinder()
+        }
+
+        Divider()
+
+        // "Set as Default" is hidden (replaced by the checkmark in the
+        // parent label) when this account is already the default.
+        if account.alias != model.defaultAccount {
+            Button("Set as Default") {
+                model.setDefaultAccount(alias: account.alias)
+            }
+        }
+
+        Button("Sign Out…") {
+            confirmSignOut()
         }
     }
 
@@ -121,6 +275,20 @@ private struct AccountSubmenu: View {
         Self.log.info("Opening Finder at \(url.path, privacy: .public)")
         if !NSWorkspace.shared.open(url) {
             NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
+
+    private func confirmSignOut() {
+        // Activate so the alert appears in front.
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Sign out \"\(account.alias)\"?"
+        alert.informativeText = "This removes the stored token and cached data for this account and unmounts it from Finder."
+        alert.addButton(withTitle: "Cancel")        // default → safe
+        alert.addButton(withTitle: "Sign Out")
+        alert.alertStyle = .warning
+        if alert.runModal() == .alertSecondButtonReturn {
+            model.removeAccount(alias: account.alias)
         }
     }
 }
