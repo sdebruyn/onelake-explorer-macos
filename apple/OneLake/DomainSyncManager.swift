@@ -57,10 +57,7 @@ final class DomainSyncManager {
         // boot any more). Cheap and synchronous — no IPC.
         _ = CoreBridge.shared.bootstrap()
 
-        // listAccounts() blocks on a synchronous IPC round-trip. Run it on
-        // a detached task so this @MainActor method does not park the main
-        // thread on the daemon socket.
-        let accounts = try await Task.detached { try CoreBridge.shared.listAccounts() }.value
+        let accounts = try await CoreBridge.shared.listAccounts()
         let existing = try await Self.existingDomains()
         let existingById: [String: NSFileProviderDomain] = Dictionary(
             uniqueKeysWithValues: existing.map { ($0.identifier.rawValue, $0) }

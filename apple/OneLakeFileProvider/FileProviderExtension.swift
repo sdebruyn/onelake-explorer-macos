@@ -111,9 +111,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         let bridgeId = ItemIdentifierParser.bridgeIdentifier(for: scope)
         let aliasCopy = self.alias
-        DispatchQueue.global(qos: .userInitiated).async {
+        Task.detached {
             do {
-                let item = try CoreBridge.shared.item(alias: aliasCopy, identifier: bridgeId)
+                let item = try await CoreBridge.shared.item(alias: aliasCopy, identifier: bridgeId)
                 completionHandler(OneLakeItem(from: item), nil)
             } catch let error as BridgeError {
                 FileProviderExtension.log.error(
@@ -241,9 +241,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             "createItem \(template.filename, privacy: .public) isDir=\(isDir, privacy: .public) parent=\(parentBridgeId, privacy: .public)"
         )
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        Task.detached {
             do {
-                let bridgeItem = try CoreBridge.shared.createItem(
+                let bridgeItem = try await CoreBridge.shared.createItem(
                     alias: aliasCopy,
                     parentIdentifier: parentBridgeId,
                     filename: template.filename,
@@ -307,15 +307,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return progress
         }
         let identifier = ItemIdentifierParser.bridgeIdentifier(for: scope)
+        let srcPath = contentsURL.path
 
         FileProviderExtension.log.debug("modifyItem \(identifier, privacy: .public)")
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        Task.detached {
             do {
-                let bridgeItem = try CoreBridge.shared.modifyItem(
+                let bridgeItem = try await CoreBridge.shared.modifyItem(
                     alias: aliasCopy,
                     identifier: identifier,
-                    srcPath: contentsURL.path
+                    srcPath: srcPath
                 )
                 completionHandler(OneLakeItem(from: bridgeItem), [], false, nil)
             } catch let error as BridgeError {
@@ -356,9 +357,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         FileProviderExtension.log.debug("deleteItem \(rawId, privacy: .public)")
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        Task.detached {
             do {
-                try CoreBridge.shared.deleteItem(alias: aliasCopy, identifier: rawId)
+                try await CoreBridge.shared.deleteItem(alias: aliasCopy, identifier: rawId)
                 completionHandler(nil)
             } catch let error as BridgeError {
                 FileProviderExtension.log.error(

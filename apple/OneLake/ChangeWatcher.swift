@@ -24,6 +24,7 @@
 
 import FileProvider
 import Foundation
+import Network
 import os.log
 
 @MainActor
@@ -62,19 +63,29 @@ final class ChangeWatcher {
     // MARK: - Polling loop
 
     private func runLoop() async {
-        let client = DaemonClient()
+        guard let socketPath = IPCClient.defaultSocketPath() else {
+            Self.log.error("ChangeWatcher: cannot resolve daemon socket path")
+            return
+        }
+        let client = IPCClient(socketPath: socketPath)
+        var conn: NWConnection?
+
+        defer {
+            if let c = conn { client.closePersistentConnection(c) }
+        }
 
         while !Task.isCancelled {
             do {
-                if !client.isConnected {
-                    try await client.connect()
+                if conn == nil {
+                    conn = try await client.openPersistentConnection()
                     // On reconnect, use nil anchor so the daemon sends all
                     // events it currently holds and we signal a full-resync
                     // to recover anything missed while disconnected.
                     anchor = nil
+                    Self.log.debug("ChangeWatcher: connected to daemon")
                 }
 
-                let result = try await client.pollChanges(since: anchor)
+                let result = try await client.pollChanges(conn: conn!, since: anchor)
                 anchor = result.anchor
 
                 if result.fullResync {
@@ -88,7 +99,10 @@ final class ChangeWatcher {
                     "ChangeWatcher: poll failed, will retry: \(error.localizedDescription, privacy: .public)"
                 )
                 // Reset connection so next iteration reconnects.
-                client.disconnect()
+                if let c = conn {
+                    client.closePersistentConnection(c)
+                    conn = nil
+                }
                 // Phase 1 accepted trade-off: if the daemon reported FullResync
                 // in a response that we fail to process (e.g. signalEnumerator
                 // threw), the flag is lost. On reconnect we reset anchor to nil,
@@ -103,8 +117,6 @@ final class ChangeWatcher {
             // Wait before next poll, but stop immediately on cancellation.
             try? await Task.sleep(nanoseconds: UInt64(Self.pollInterval * 1_000_000_000))
         }
-
-        client.disconnect()
     }
 
     // MARK: - Signaling

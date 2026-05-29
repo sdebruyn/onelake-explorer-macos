@@ -83,7 +83,7 @@ final class OneLakeEnumerator: NSObject, NSFileProviderEnumerator {
 
     func enumerateItems(
         for observer: NSFileProviderEnumerationObserver,
-        startingAt _: NSFileProviderPage
+        startingAt page: NSFileProviderPage
     ) {
         // The trash container has no bridge counterpart in Phase 1;
         // serve an empty page so Finder doesn't show stale state.
@@ -91,25 +91,55 @@ final class OneLakeEnumerator: NSObject, NSFileProviderEnumerator {
             observer.finishEnumerating(upTo: nil)
             return
         }
+
         let bridgeId = ItemIdentifierParser.bridgeIdentifier(for: scope)
-        do {
-            let items = try CoreBridge.shared.enumerate(alias: alias, identifier: bridgeId)
-            let provided = items.map { OneLakeItem(from: $0) }
-            OneLakeEnumerator.log.debug(
-                "enumerateItems \(self.alias, privacy: .public)/\(bridgeId, privacy: .public) -> \(provided.count, privacy: .public) items"
-            )
-            observer.didEnumerate(provided)
-            observer.finishEnumerating(upTo: nil)
-        } catch let error as BridgeError {
-            OneLakeEnumerator.log.error(
-                "enumerateItems failed for \(self.alias, privacy: .public)/\(bridgeId, privacy: .public): \(String(describing: error), privacy: .public)"
-            )
-            observer.finishEnumeratingWithError(error.nsFileProviderError)
-        } catch {
-            OneLakeEnumerator.log.error(
-                "enumerateItems failed for \(self.alias, privacy: .public)/\(bridgeId, privacy: .public): \(error.localizedDescription, privacy: .public)"
-            )
-            observer.finishEnumeratingWithError(error)
+        let aliasCopy = self.alias
+
+        // Decode the cursor from the page's raw UTF-8 bytes.
+        // The well-known initial pages (.initialPageSortedByName /
+        // .initialPageSortedByDate) carry a single NUL byte or a
+        // fixed Apple-internal marker; treat any non-UTF8-decodable
+        // or empty value as "first page" (no cursor).
+        let cursor: String
+        if page == NSFileProviderPage.initialPageSortedByName as NSFileProviderPage
+            || page == NSFileProviderPage.initialPageSortedByDate as NSFileProviderPage
+        {
+            cursor = ""
+        } else {
+            cursor = String(bytes: page.rawValue, encoding: .utf8) ?? ""
+        }
+
+        Task.detached {
+            do {
+                let result = try await CoreBridge.shared.enumerate(
+                    alias: aliasCopy,
+                    identifier: bridgeId,
+                    cursor: cursor
+                )
+                let provided = result.items.map { OneLakeItem(from: $0) }
+                OneLakeEnumerator.log.debug(
+                    "enumerateItems \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public) cursor='\(cursor, privacy: .public)' -> \(provided.count, privacy: .public) items nextCursor='\(result.nextCursor, privacy: .public)'"
+                )
+                observer.didEnumerate(provided)
+                // Signal the next page when the daemon provides a cursor,
+                // or nil to indicate this is the last (or only) page.
+                if result.nextCursor.isEmpty {
+                    observer.finishEnumerating(upTo: nil)
+                } else {
+                    let nextPage = NSFileProviderPage(Data(result.nextCursor.utf8))
+                    observer.finishEnumerating(upTo: nextPage)
+                }
+            } catch let error as BridgeError {
+                OneLakeEnumerator.log.error(
+                    "enumerateItems failed for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+                observer.finishEnumeratingWithError(error.nsFileProviderError)
+            } catch {
+                OneLakeEnumerator.log.error(
+                    "enumerateItems failed for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                observer.finishEnumeratingWithError(error)
+            }
         }
     }
 
