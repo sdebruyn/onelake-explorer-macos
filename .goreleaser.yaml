@@ -11,7 +11,7 @@
 #     the Homebrew cask in the homebrew-ofem tap.
 #   - Job B (ubuntu-latest): runs GoReleaser to compile the standalone CLI
 #     tarball, attach checksums, publish the GitHub Release notes, and push
-#     the ofem-cli Cask entry to the tap. The full-app cask (Casks/ofem.rb)
+#     the ofem-cli cask entry to the tap. The full-app cask (Casks/ofem.rb)
 #     is pushed by a separate workflow step after the DMG SHA-256 is known.
 version: 2
 
@@ -99,7 +99,7 @@ release:
     - glob: ./dist-app/OneLake-*.dmg
 
 # Publish the standalone CLI entry to sdebruyn/homebrew-ofem.
-# homebrew_casks wraps the darwin/arm64 CLI tarball produced above,
+# homebrew_casks: wraps the darwin/arm64 CLI tarball produced above,
 # letting users run `brew install sdebruyn/ofem/ofem-cli` to get only
 # the CLI binary without the full .app.
 # The main Homebrew *cask* (Casks/ofem.rb) installs the full .app DMG
@@ -127,6 +127,10 @@ homebrew_casks:
     homepage: "https://ofem.debruyn.dev"
     description: "Browse Microsoft Fabric OneLake from the macOS Finder (CLI only)"
     license: "MIT"
+    # The tarball contains the binary named "ofem"; expose it as "ofem" on PATH.
+    # `binaries` is the non-deprecated replacement for the old `binary` field.
+    binaries:
+      - ofem
     # Only stable CalVer tags (no hyphen) get pushed to the tap.
     # Pre-release tags (e.g. v2026.05.0-rc.1) are skipped.
     skip_upload: auto
