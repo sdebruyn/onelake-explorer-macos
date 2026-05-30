@@ -24,7 +24,6 @@
 
 import FileProvider
 import Foundation
-import Network
 import os.log
 
 @MainActor
@@ -68,7 +67,7 @@ final class ChangeWatcher {
             return
         }
         let client = IPCClient(socketPath: socketPath)
-        var conn: NWConnection?
+        var conn: IPCPersistentConnection?
 
         defer {
             if let c = conn { client.closePersistentConnection(c) }
