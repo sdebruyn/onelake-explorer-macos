@@ -12,6 +12,20 @@
 	<true/>
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
+	<!--
+	  Sandbox bypass for the File Provider mount root. The host app's
+	  menu bar "Open in Finder" hands an absolute URL under
+	  ~/Library/CloudStorage/ to NSWorkspace; without this exception,
+	  macOS prompts the user "OneLake does not have permission to open
+	  OneLake-<alias>" on every click. Scoped read-only and to the
+	  specific subtree so we don't broaden the sandbox beyond what the
+	  feature needs. Finder itself is not sandboxed and reads the
+	  mount fine — this exception only covers the URL hand-off.
+	-->
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+	<array>
+		<string>/Library/CloudStorage/</string>
+	</array>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)group.dev.debruyn.ofem</string>
