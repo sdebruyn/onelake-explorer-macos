@@ -7,21 +7,23 @@
 //
 //   ~/Library/Group Containers/group.dev.debruyn.ofem/ofem.sock
 //
+// Transport: plain POSIX socket (see IPCTransport.swift). The previous
+// implementation used NWConnection (Network.framework) and bled state-
+// machine + continuation bugs into every caller; replacing it with a
+// straight `socket()` + blocking `read`/`write` on a background queue
+// eliminated that whole class of problems.
+//
 // Connection model: stateless, one connection per call. A File Provider
 // Extension and the host app issue calls from many threads; a fresh
-// NWConnection per call sidesteps all shared-connection lifecycle bugs.
-// A Unix-domain socket connect is cheap (microseconds) relative to the
-// network I/O to OneLake the daemon then performs, so this is the right
-// trade for correctness. The daemon must be running; when it is not,
-// connect fails and the caller surfaces serverUnreachable.
+// connection per call sidesteps shared-connection lifecycle bugs. A
+// Unix-domain connect is microseconds relative to the OneLake I/O the
+// daemon then performs, so this is the right trade for correctness.
 //
-// Persistent model: `pollChanges` uses a long-lived NWConnection
-// managed by the caller (ChangeWatcher), because it is a one-producer
-// / one-consumer polling loop; each call() is still one connection per
-// call.
+// Persistent model: `pollChanges` uses a long-lived connection managed
+// by the caller (ChangeWatcher), because it is a one-producer / one-
+// consumer polling loop.
 
 import Foundation
-import Network
 import os
 import os.log
 
@@ -73,21 +75,35 @@ private struct PollRPCError: Decodable, Error {
     let message: String
 }
 
+// MARK: - Persistent connection handle
+
+/// Opaque handle around a long-lived `IPCSocket` used by callers that
+/// keep a connection open across many round-trips (the change-feed
+/// poll loop). The class is final and the only thing callers can do
+/// with it is hand it back to `IPCClient.pollChanges` or
+/// `IPCClient.closePersistentConnection`.
+final class IPCPersistentConnection {
+    let socket: IPCSocket
+    init(socket: IPCSocket) {
+        self.socket = socket
+    }
+}
+
 // MARK: - IPCClient
 
 /// Stateless JSON-RPC client over the daemon's Unix socket.
 final class IPCClient {
     private static let log = Logger(subsystem: "dev.debruyn.ofem.ipc", category: "client")
-    private static let maxFrameSize = 1 << 20 // 1 MiB, matching ipc.MaxFrameSize
 
     /// Upper bound on a single sync.pollChanges round-trip. The daemon
     /// answers from its in-memory changefeed so real latency is sub-ms;
     /// this is purely a liveness guard so a daemon that dies mid-frame
     /// cannot freeze the poll loop.
     private static let pollTimeout: TimeInterval = 10
-    /// Bounds the one-shot `call` path (connect + write + read) so a connection
-    /// that never reaches `.ready` cannot hang the menu's status fetch forever.
-    /// Surfaces as a thrown timeout the model can log and retry on next refresh.
+    /// Bounds the one-shot `call` path (connect + write + read) so a
+    /// connection that hangs cannot freeze the menu's status fetch
+    /// forever. Surfaces as a thrown timeout the model can log and
+    /// retry on next refresh.
     private static let callTimeout: TimeInterval = 5
 
     private let socketPath: String
@@ -133,12 +149,28 @@ final class IPCClient {
             "id": requestID,
         ]
         let requestData = try JSONSerialization.data(withJSONObject: request)
+        let path = socketPath
+        let timeout = Self.callTimeout
 
-        let responseData = try await Self.withTimeout(seconds: Self.callTimeout) { [self] in
-            let conn = try await self.openConnection()
-            defer { conn.cancel() }
-            try await self.writeFrameOnConn(conn, requestData)
-            return try await self.readFrame(conn)
+        // Hand the socket reference to the cancellation handler via a
+        // box so onCancel can close whatever socket the worker has so
+        // far attached.
+        let box = SocketBox()
+        let responseData: Data
+        do {
+            responseData = try await ipcRunBlocking(onCancel: { box.closeAndRelease() }) {
+                let sock = try Self.connectMappingErrors(path: path, timeout: timeout)
+                box.attach(sock)
+                defer { box.closeAndRelease() }
+                do {
+                    try sock.writeFrame(requestData)
+                    return try sock.readFrame()
+                } catch let e as IPCSocket.SocketError {
+                    throw Self.mapSocketError(e)
+                }
+            }
+        } catch is CancellationError {
+            throw IPCError.protocolError("IPC call cancelled")
         }
 
         guard let obj = try JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
@@ -149,33 +181,37 @@ final class IPCClient {
             let message = (errObj["message"] as? String) ?? "unknown error"
             throw IPCError.rpc(code: code, message: message)
         }
-        // result may be any JSON value; re-serialize it so the caller can
-        // decode it with a typed Decodable.
         let result = obj["result"] ?? [String: Any]()
         return try JSONSerialization.data(withJSONObject: result)
     }
 
     // MARK: - Persistent-connection poll call
 
-    /// Open (or reopen) a persistent connection to the daemon socket for use
-    /// by the poll loop. Returns a ready NWConnection; caller owns it and must
-    /// eventually call `conn.cancel()`.
-    func openPersistentConnection() async throws -> NWConnection {
-        try await openConnection()
+    /// Open (or reopen) a persistent connection to the daemon socket for
+    /// use by the poll loop. Caller owns it and must eventually call
+    /// `closePersistentConnection`. The pollTimeout is applied as the
+    /// socket-level SO_RCVTIMEO/SO_SNDTIMEO so a dead daemon surfaces as
+    /// a read error within bounded time.
+    func openPersistentConnection() async throws -> IPCPersistentConnection {
+        let path = socketPath
+        let timeout = Self.pollTimeout
+        let sock = try await ipcRunBlocking {
+            try Self.connectMappingErrors(path: path, timeout: timeout)
+        }
+        return IPCPersistentConnection(socket: sock)
     }
 
-    /// Cancel a persistent connection opened by `openPersistentConnection()`.
-    func closePersistentConnection(_ conn: NWConnection) {
-        conn.cancel()
+    /// Cancel a persistent connection opened by `openPersistentConnection`.
+    func closePersistentConnection(_ conn: IPCPersistentConnection) {
+        conn.socket.shutdownAndClose()
     }
 
     /// Poll the daemon for changes since `anchor` using a persistent
-    /// `NWConnection`. The call is bounded by `pollTimeout` seconds so a
-    /// daemon that dies mid-frame cannot freeze the caller forever.
-    ///
-    /// Returns a tuple of events, the new anchor, and a fullResync flag.
+    /// connection. SO_RCVTIMEO on the socket bounds the read; if the
+    /// daemon dies mid-frame the next read fails with EAGAIN and the
+    /// caller surfaces a protocolError.
     func pollChanges(
-        conn: NWConnection,
+        conn: IPCPersistentConnection,
         since anchor: Date?
     ) async throws -> (
         events: [(domainId: String, containerId: String)],
@@ -186,7 +222,6 @@ final class IPCClient {
             let anchor: Date?
         }
         let paramsData = try pollEncoder.encode(PollParams(anchor: anchor))
-        // Safe: we just encoded a strongly-typed value.
         guard let paramsJSON = try JSONSerialization.jsonObject(with: paramsData) as? [String: Any] else {
             throw IPCError.protocolError("failed to build pollChanges params")
         }
@@ -197,11 +232,15 @@ final class IPCClient {
             "id": UUID().uuidString,
         ]
         let requestData = try JSONSerialization.data(withJSONObject: requestDict)
+        let socket = conn.socket
 
-        // Bound the write+read so a hung connection cannot freeze the loop.
-        let responseData = try await Self.withTimeout(seconds: Self.pollTimeout) { [self] in
-            try await self.writeFrameOnConn(conn, requestData)
-            return try await self.readFrame(conn)
+        let responseData: Data = try await ipcRunBlocking(onCancel: { socket.shutdownAndClose() }) {
+            do {
+                try socket.writeFrame(requestData)
+                return try socket.readFrame()
+            } catch let e as IPCSocket.SocketError {
+                throw Self.mapSocketError(e)
+            }
         }
 
         let response = try pollDecoder.decode(PollRPCResponse.self, from: responseData)
@@ -215,173 +254,56 @@ final class IPCClient {
         return (events: pairs, anchor: result.anchor, fullResync: result.fullResync)
     }
 
-    // MARK: - Connection
+    // MARK: - Helpers
 
-    private func openConnection() async throws -> NWConnection {
-        let ep = NWEndpoint.unix(path: socketPath)
-        let conn = NWConnection(to: ep, using: NWParameters(tls: nil))
-        // stateUpdateHandler fires on the NW queue — a different executor from
-        // the Swift concurrency runtime. Guard the one-shot resume with a lock
-        // rather than a captured `var`, which would be a data race in Swift 6.
-        let resumed = OSAllocatedUnfairLock(initialState: false)
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            // Resume the continuation exactly once, and ONLY for the states
-            // that actually represent a connect outcome. The one-shot guard
-            // must NOT be consumed by transient states like `.preparing` /
-            // `.setup` — doing so (the earlier version set the flag before the
-            // switch) suppressed the real `.ready` resume and hung every
-            // connection forever after it reached ready.
-            @Sendable func resumeOnce(_ work: @Sendable () -> Void) {
-                let already = resumed.withLock { flag -> Bool in
-                    if flag { return true }
-                    flag = true
-                    return false
-                }
-                if !already { work() }
-            }
-            conn.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    resumeOnce { cont.resume() }
-                case .failed(let err):
-                    resumeOnce { cont.resume(throwing: IPCError.unreachable(err.localizedDescription)) }
-                case .waiting(let err):
-                    resumeOnce { cont.resume(throwing: IPCError.unreachable(err.localizedDescription)) }
-                default:
-                    break
-                }
-            }
-            conn.start(queue: .global(qos: .userInitiated))
+    /// Mutable, sendable holder for the socket that a blocking worker
+    /// might be using. Used to bridge a cancellation that fires on
+    /// another queue into a socket-close on the worker's queue.
+    private final class SocketBox: @unchecked Sendable {
+        private let lock = OSAllocatedUnfairLock<IPCSocket?>(initialState: nil)
+        func attach(_ s: IPCSocket) {
+            lock.withLock { $0 = s }
         }
-        return conn
-    }
-
-    // MARK: - Frame I/O
-
-    /// Write a length-prefixed frame on `conn`. Used by both the one-shot
-    /// `call` path and the persistent-connection `pollChanges` path.
-    private func writeFrameOnConn(_ conn: NWConnection, _ data: Data) async throws {
-        var header = Data(count: 4)
-        let length = UInt32(data.count)
-        header[0] = UInt8((length >> 24) & 0xFF)
-        header[1] = UInt8((length >> 16) & 0xFF)
-        header[2] = UInt8((length >> 8) & 0xFF)
-        header[3] = UInt8(length & 0xFF)
-        let frame = header + data
-        try await withConnectionCancellation(conn) { (cont: CheckedContinuation<Void, Error>) in
-            conn.send(content: frame, completion: .contentProcessed { err in
-                if let err = err {
-                    cont.resume(throwing: err)
-                } else {
-                    cont.resume()
-                }
-            })
+        func closeAndRelease() {
+            let s = lock.withLock { (slot: inout IPCSocket?) -> IPCSocket? in
+                let v = slot
+                slot = nil
+                return v
+            }
+            s?.shutdownAndClose()
         }
     }
 
-    /// Read one length-prefixed frame from `conn`.
-    ///
-    /// NWConnection's receive may deliver fewer bytes than requested at
-    /// EOF/close, so the payload read loops until all `length` bytes are
-    /// accumulated or a real error/EOF occurs — treating a short delivery
-    /// as a hard error would be fragile near the frame cap.
-    private func readFrame(_ conn: NWConnection) async throws -> Data {
-        // Read 4-byte header.
-        let header = try await receiveExact(conn, count: 4)
-        guard header.count == 4 else {
-            throw IPCError.protocolError("short frame header: \(header.count) bytes")
-        }
-        let length = Int(header[0]) << 24 | Int(header[1]) << 16 | Int(header[2]) << 8 | Int(header[3])
-        guard length >= 0, length <= Self.maxFrameSize else {
-            throw IPCError.frameTooLarge(length)
-        }
-        if length == 0 {
-            return Data()
-        }
-        return try await receiveExact(conn, count: length)
-    }
-
-    /// Accumulate exactly `count` bytes from `conn`, looping over partial
-    /// deliveries. NWConnection may satisfy a receive with fewer bytes than
-    /// requested when the peer sends the data in multiple TCP segments or
-    /// closes the connection mid-frame; looping is the correct fix.
-    private func receiveExact(_ conn: NWConnection, count: Int) async throws -> Data {
-        var accumulated = Data()
-        while accumulated.count < count {
-            let want = count - accumulated.count
-            // Snapshot the count before entering the NW callback so the
-            // closure does not capture the `accumulated` var — that would be
-            // a data race in Swift 6 (NW queue vs. Swift concurrency executor).
-            let soFar = accumulated.count
-            let chunk: Data = try await withConnectionCancellation(conn) { cont in
-                conn.receive(
-                    minimumIncompleteLength: 1,
-                    maximumLength: want
-                ) { data, _, isComplete, err in
-                    if let err = err {
-                        cont.resume(throwing: err)
-                        return
-                    }
-                    let bytes = data ?? Data()
-                    if bytes.isEmpty && isComplete {
-                        // Peer closed the connection before we got all bytes.
-                        cont.resume(throwing: IPCError.protocolError(
-                            "connection closed after \(soFar) of \(count) bytes"
-                        ))
-                        return
-                    }
-                    cont.resume(returning: bytes)
-                }
-            }
-            accumulated.append(chunk)
-        }
-        return accumulated
-    }
-
-    // MARK: - Cancellation bridge
-
-    /// Bridge a continuation-style NWConnection send/receive into async
-    /// such that task cancellation actually unblocks it. NWConnection's
-    /// completion handlers are NOT cancellation-aware: a stalled peer never
-    /// fires them, so a bare `withCheckedThrowingContinuation` would suspend
-    /// forever. Cancelling the connection forces the pending callback to fire
-    /// with an error, which resumes the continuation.
-    private func withConnectionCancellation<T>(
-        _ conn: NWConnection,
-        _ body: @escaping (CheckedContinuation<T, Error>) -> Void
-    ) async throws -> T {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation(body)
-        } onCancel: {
-            conn.cancel()
+    private static func connectMappingErrors(path: String, timeout: TimeInterval) throws -> IPCSocket {
+        do {
+            return try IPCSocket.connect(path: path, timeout: timeout)
+        } catch let e as IPCSocket.SocketError {
+            throw mapSocketError(e)
         }
     }
 
-    // MARK: - Timeout helper
-
-    /// Run `op` with a wall-clock ceiling. Two children race: `op` and a
-    /// sleeper that throws on expiry. `group.next()` rethrows whichever
-    /// finishes first and cancels the loser.
-    ///
-    /// This fires reliably because the frame I/O inside `op` is wrapped in
-    /// `withConnectionCancellation`: cancelling the task cancels the
-    /// connection, which forces the pending NWConnection receive to complete
-    /// with an error so the task unwinds promptly.
-    static func withTimeout<T: Sendable>(
-        seconds: TimeInterval,
-        _ op: @escaping @Sendable () async throws -> T
-    ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await op() }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                throw IPCError.protocolError("IPC timed out after \(seconds)s")
-            }
-            defer { group.cancelAll() }
-            guard let first = try await group.next() else {
-                throw IPCError.protocolError("IPC task group produced no result")
-            }
-            return first
+    private static func mapSocketError(_ e: IPCSocket.SocketError) -> IPCError {
+        switch e {
+        case .socketCreate(let code):
+            return .unreachable("socket() failed: errno \(code)")
+        case .connect(let code):
+            return .unreachable("connect() failed: errno \(code)")
+        case .pathTooLong(let n):
+            return .protocolError("socket path too long (\(n) bytes)")
+        case .write(let code):
+            return .protocolError("write failed: errno \(code)")
+        case .read(let code):
+            return .protocolError("read failed: errno \(code)")
+        case .eof(let n):
+            return .protocolError("connection closed after \(n) bytes")
+        case .timeout:
+            // Mirrors the prior NWConnection withTimeout message so existing
+            // logs and error matchers continue to work.
+            return .protocolError("IPC timed out after \(Self.callTimeout)s")
+        case .frameTooLarge(let n):
+            return .frameTooLarge(n)
+        case .closed:
+            return .protocolError("connection closed")
         }
     }
 }
