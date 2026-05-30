@@ -56,6 +56,17 @@ targets:
         # The build script reads OFEM_DAEMON_ENTITLEMENTS to locate this file.
         # PROJECT_DIR is the apple/ directory; OneLakeDaemon.entitlements is next to it.
         OFEM_DAEMON_ENTITLEMENTS: $(PROJECT_DIR)/OneLakeDaemon.entitlements
+      configs:
+        # Release builds pin manual signing to the Developer ID
+        # Application cert + the per-target provisioning profile.
+        # xcodebuild's command-line conditional-setting syntax
+        # (`PROVISIONING_PROFILE_SPECIFIER[bundle.identifier=...]=...`)
+        # does not parse, so the mapping has to live in the project
+        # file. Debug builds stay on automatic signing for local dev.
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+          PROVISIONING_PROFILE_SPECIFIER: "OFEM distribution developer ID"
     dependencies:
       - target: OneLakeFileProvider
         embed: true
@@ -165,6 +176,11 @@ targets:
         PRODUCT_NAME: OneLakeFileProvider
         INFOPLIST_FILE: OneLakeFileProvider/Info.plist
         CODE_SIGN_ENTITLEMENTS: OneLakeFileProvider/OneLakeFileProvider.entitlements
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+          PROVISIONING_PROFILE_SPECIFIER: "OFEM FP distribution developer ID"
   # Host-less logic-test bundle: it compiles the unit under test
   # (ItemIdentifierParser) and apple/Shared directly rather than loading a
   # host app, so it runs unsigned in CI with no daemon and no signing
