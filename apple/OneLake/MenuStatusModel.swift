@@ -82,7 +82,13 @@ final class MenuStatusModel: ObservableObject {
     var headerLabel: String {
         guard isRunning else { return "○ Not running" }
         if offline { return "⚠ Offline" }
-        if pausedCount > 0 { return "⏸ \(pausedCount) paused" }
+        if pausedCount > 0 {
+            // Spell "workspace" out so the bare number doesn't look
+            // like an alert badge with no referent ("2 paused" reads
+            // as "2 of what?"). Singular/plural follows the count.
+            let noun = pausedCount == 1 ? "workspace" : "workspaces"
+            return "⏸ \(pausedCount) paused \(noun)"
+        }
         if let cache = formattedCache {
             return "● Running · \(cache) cached"
         }
