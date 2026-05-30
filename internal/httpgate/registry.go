@@ -98,7 +98,7 @@ func (r *Registry) Gate(host string) *Gate {
 }
 
 // States returns a snapshot of every gate's [State], sorted by host so
-// the IPC/CLI output is deterministic.
+// the IPC output is deterministic.
 func (r *Registry) States() []State {
 	r.mu.RLock()
 	out := make([]State, 0, len(r.gates))

@@ -1,8 +1,9 @@
 // Package buildinfo holds build-time identity values: version, commit,
 // build date, and the Application Insights connection string used for
 // opt-out telemetry. Version, Commit and Date are populated at link
-// time by goreleaser; AppInsightsConnString is a committed constant so
-// every build — release, source, or fork — reports identically.
+// time by the Makefile's -ldflags (see the LDFLAGS block); AppInsightsConnString
+// is a committed constant so every build — release, source, or fork —
+// reports identically.
 package buildinfo
 
 // Version is the CalVer release string (e.g. "2026.05.1"). Set via
@@ -30,7 +31,7 @@ var Date = ""
 // shared opt-out telemetry stream too, so the maintainer gets a
 // representative signal instead of only the Homebrew users.
 //
-// Users disable telemetry per install with `ofem config set telemetry
-// off` or `OFEM_TELEMETRY=0`. There is no opt-in path that requires
-// editing this file.
+// Users disable telemetry per install from the menu bar (Settings >
+// Telemetry) or with `OFEM_TELEMETRY=0`. There is no opt-in path that
+// requires editing this file.
 const AppInsightsConnString = "InstrumentationKey=bb7c05e2-4616-4b8d-a18a-e32128034eb4;IngestionEndpoint=https://westeurope-5.in.applicationinsights.azure.com/;LiveEndpoint=https://westeurope.livediagnostics.monitor.azure.com/;ApplicationId=427c95d5-7252-4513-aed3-e1e5c3eece9d"

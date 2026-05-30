@@ -8,7 +8,7 @@
 // This logic used to live inside the cgo bridge (core/bridge.go), compiled
 // into the extension as a second engine. It moved here so the daemon —
 // the single owner of the engine and the cache — can serve it over the
-// same unix-socket IPC the CLI already uses, and the cgo bridge can be
+// same unix-socket IPC the host app uses, and the cgo bridge can be
 // deleted (see SIMPLIFICATION.md).
 package fp
 
@@ -37,7 +37,7 @@ import (
 // allowedRoots is the set of filesystem root prefixes under which the
 // daemon may read or write files on behalf of IPC callers. It is
 // populated once at init time from the well-known macOS locations shared
-// between the daemon, the CLI, and the sandboxed extension.
+// between the daemon, the host app, and the sandboxed extension.
 //
 // The App Group container (~/Library/Group Containers/group.dev.debruyn.ofem)
 // is the rendezvous point documented in docs/file-provider.md. Both the

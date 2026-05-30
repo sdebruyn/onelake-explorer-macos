@@ -12,8 +12,8 @@ import (
 // dashes treated as underscores) so "cache.max-size" and "cache.max_size"
 // are equivalent. It returns an error for unknown keys or invalid values.
 //
-// This function is shared between the CLI's `ofem config set` command and
-// the daemon's config.set IPC handler so the validation and normalisation
+// Invoked from the daemon's config.set IPC handler (which the menu bar
+// app calls from CoreBridge.configSet) so the validation and normalisation
 // logic stays in one place.
 func ApplyConfig(f *File, key, value string) error {
 	switch NormalizeConfigKey(key) {
@@ -26,7 +26,7 @@ func ApplyConfig(f *File, key, value string) error {
 	case "default_account":
 		if value != "" {
 			if _, ok := f.Accounts[value]; !ok {
-				return fmt.Errorf("no account with alias %q (run `ofem account list`)", value)
+				return fmt.Errorf("no account with alias %q", value)
 			}
 		}
 		f.DefaultAccount = value

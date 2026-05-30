@@ -225,15 +225,15 @@ func (g *Gate) State() State {
 }
 
 // String renders the gate's state in a compact, human-friendly form.
-// Used by the CLI's `ofem status --verbose` output.
+// Useful for debug output and log lines.
 func (s State) String() string {
 	return fmt.Sprintf("%s %s", s.Host, s.summary())
 }
 
 // summary renders everything after the host column — used by
-// [State.String] and by the CLI's printGates so the format lives in
-// one place. printGates handles host-column padding separately and
-// then prepends s.Host itself.
+// [State.String] and by [State.Summary] so the format lives in one
+// place. Callers that align the host column themselves can use
+// [State.Summary] and prepend s.Host on their own.
 func (s State) summary() string {
 	paused := "no"
 	if d := time.Until(s.PauseUntil); d > 0 {
@@ -244,6 +244,5 @@ func (s State) summary() string {
 }
 
 // Summary returns the per-host gate summary without the host prefix,
-// suitable for callers (like the CLI's tabular printer) that need to
-// align the host column themselves.
+// suitable for callers that need to align the host column themselves.
 func (s State) Summary() string { return s.summary() }

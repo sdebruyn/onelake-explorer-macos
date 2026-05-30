@@ -88,8 +88,8 @@ struct MenuBarView: View {
                     }
                 }
             }
-            // Always-visible item so existing users can add more accounts
-            // without needing the CLI.
+            // Always-visible item so existing users can add more
+            // accounts at any time.
             Button("Add Account…") {
                 openAddAccountWindow()
             }

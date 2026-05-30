@@ -10,9 +10,8 @@ dist/
 *.test
 *.out
 
-# Stray top-level `go build` outputs for cmd/* binaries
+# Stray top-level `go build` output for the cmd/ofem binary
 /ofem
-/ofem-docs
 
 # Go workspace
 go.work
@@ -70,9 +69,6 @@ DerivedData/
 .envrc
 local.toml
 ofem.sock
-
-# Goreleaser
-.goreleaser-temp/
 
 # Test artifacts
 testdata/tmp/
