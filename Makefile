@@ -177,8 +177,13 @@ apple-build-ci: apple-gen
 		$(APPLE_UNSIGNED) \
 		build
 
-# Run the host-less smoke XCTest bundle unsigned. Pure logic tests
-# (identifier grammar) — no daemon, no signing, no host app launch.
+# Run the host-less XCTest bundle unsigned. Includes both the pure
+# logic tests (identifier grammar) and the IPC integration test, which
+# spawns the ./bin/ofem daemon binary against a temp socket. The
+# integration test calls XCTSkip when bin/ofem is missing, so this
+# target stays usable on a fresh checkout — but to actually exercise
+# the IPC seam, build the CLI first (`make build apple-test` or just
+# `make app`). CI does this explicitly.
 apple-test: apple-gen
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLakeTests \

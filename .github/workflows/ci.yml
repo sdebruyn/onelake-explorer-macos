@@ -166,10 +166,19 @@ jobs:
       - name: Verify project.pbxproj exists
         run: test -f apple/OneLake.xcodeproj/project.pbxproj
 
+      - name: Build daemon CLI (needed by IPC integration test)
+        # IPCIntegrationTests spawns ./bin/ofem against a temp socket and
+        # drives it from the real Swift IPCClient. Without this binary the
+        # test calls XCTSkip and the regression net loses its biggest
+        # hole — that is exactly what shipped #71/#85. Build it first.
+        run: go build -o bin/ofem ./cmd/ofem
+
       - name: Smoke tests (unsigned, host-less)
-        # Pure logic tests of the File Provider identifier grammar. Runs
-        # first because it is fast and catches the most common Swift
-        # regressions before the slower full app build.
+        # OneLakeTests bundle: File Provider identifier grammar (pure
+        # logic) + IPC integration test (spawns the daemon binary built
+        # above and round-trips a real status call via IPCClient). Runs
+        # before the slower full app build so a Swift-side IPC regression
+        # surfaces in seconds.
         run: make apple-test
 
       - name: Build app + extension (unsigned)

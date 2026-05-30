@@ -146,7 +146,13 @@ this entry point under launchd; developers can also run it manually to
 tail the log via stdout.`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return daemon.Run(context.Background(), daemon.RunOptions{})
+			// OFEM_SOCKET_PATH overrides the default socket path under the
+			// App Group container. Used by the IPC integration test that
+			// spawns a real daemon against a temp socket; intentionally
+			// undocumented in --help because end users should not need it.
+			return daemon.Run(context.Background(), daemon.RunOptions{
+				SocketPath: os.Getenv("OFEM_SOCKET_PATH"),
+			})
 		},
 	}
 }
