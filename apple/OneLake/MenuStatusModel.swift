@@ -68,7 +68,8 @@ final class MenuStatusModel: ObservableObject {
     /// daemon's GB → bytes conversion used for the live used/limit math)
     /// but kept in GBs so the Stepper round-trips cleanly without losing
     /// precision through a bytes intermediate. 0 means "unknown / not yet
-    /// fetched"; once populated it stays within [1, 1024].
+    /// fetched"; once populated it stays within [1, 100] (matching
+    /// `config.MaxCacheSizeGB` on the daemon side).
     @Published private(set) var cacheMaxSizeGB: Int = 0
     @Published private(set) var pausedWorkspaces: [PausedWorkspaceInfo] = []
     @Published private(set) var accounts: [AccountInfo] = []
@@ -247,7 +248,7 @@ final class MenuStatusModel: ObservableObject {
     /// SwiftUI change that broadens the Stepper's bounds cannot ship an
     /// invalid value to the daemon (which would reject it anyway).
     func setCacheLimitGB(_ gb: Int) {
-        let clamped = max(1, min(1024, gb))
+        let clamped = max(1, min(100, gb))
         // Optimistic UI: reflect the new value immediately so the menu
         // stays consistent while the debounce window runs out.
         cacheMaxSizeGB = clamped

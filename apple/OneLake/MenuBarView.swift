@@ -126,7 +126,7 @@ struct MenuBarView: View {
                     get: { model.cacheMaxSizeGB > 0 ? model.cacheMaxSizeGB : 10 },
                     set: { model.setCacheLimitGB($0) }
                 ),
-                in: 1...1000,
+                in: 1...100,
                 step: 1
             ) {
                 Text("Limit: \(model.cacheMaxSizeGB > 0 ? "\(model.cacheMaxSizeGB) GB" : "—")")

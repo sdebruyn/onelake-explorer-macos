@@ -158,9 +158,10 @@ type Account struct {
 const MinCacheSizeGB = 1
 
 // MaxCacheSizeGB is the upper bound enforced by [ApplyConfig] on the
-// cache.max_size_gb key. 1024 GB (1 TiB) is well past any realistic
-// laptop SSD; it exists mainly to catch typos in the menubar Stepper.
-const MaxCacheSizeGB = 1024
+// cache.max_size_gb key. 100 GB is generous for OneLake working sets
+// on a developer laptop and small enough to catch typos in the
+// menubar Stepper.
+const MaxCacheSizeGB = 100
 
 // DefaultCacheSizeGB is the seeded value for new installations. 10 GB
 // matches the pre-refactor default (10 GiB == 10 binary GB).
