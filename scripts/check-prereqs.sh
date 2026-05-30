@@ -184,13 +184,6 @@ fi
 
 hdr "Publishing & signing (only required when cutting an official release)"
 
-if command -v goreleaser >/dev/null 2>&1; then
-    ok "goreleaser installed"
-else
-    warn "goreleaser not installed (only needed when tagging a release)"
-    hint "brew install goreleaser"
-fi
-
 if command -v create-dmg >/dev/null 2>&1; then
     ok "create-dmg installed"
 else

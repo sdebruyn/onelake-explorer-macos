@@ -1,7 +1,7 @@
-// Command ofem is the OneLake File Explorer command-line tool. It handles
-// account setup, the local daemon lifecycle, and (during development) a
-// handful of debug subcommands that exercise the Go core without going
-// through the File Provider Extension.
+// Command ofem is the helper binary bundled inside OneLake.app. It
+// exposes the daemon entry point that the host app's SMAppService
+// registration launches under launchd; end users interact with OneLake
+// through the menu bar app, not this binary.
 package main
 
 import (

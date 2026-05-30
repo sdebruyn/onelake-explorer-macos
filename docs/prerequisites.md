@@ -23,7 +23,7 @@ If you only want to contribute code, you only need the **Local development** sec
 | `commitlint` | 18 | latest | `brew install commitlint` (or `npm i -g @commitlint/cli @commitlint/config-conventional`) |
 | `make` (optional) | any | any | comes with Xcode CLT |
 
-Plus a configured **Microsoft Entra tenant** with at least one workspace you can read, so you can sign in with `ofem login` during development and have something to browse.
+Plus a configured **Microsoft Entra tenant** with at least one workspace you can read, so you can sign in from the OneLake menu bar app during development and have something to browse.
 
 ### Optional but useful
 
@@ -32,13 +32,13 @@ Plus a configured **Microsoft Entra tenant** with at least one workspace you can
 - `entr` — auto-run tests on file save (`brew install entr`).
 - `dlv` — Go debugger (`brew install delve`).
 
-### CLI-only work does NOT require
+### Go-only work does NOT require
 
 - Xcode (technically — but you have it anyway for the standard Mac dev environment).
 - Apple Developer Program membership.
 - Any signing certificates.
 
-`go build ./cmd/ofem` produces an unsigned binary you can run locally.
+`go build ./cmd/ofem` produces an unsigned daemon binary you can run locally (`./bin/ofem daemon run`). The IPC integration test in `apple/OneLakeTests/` exercises that binary against a temp socket.
 
 ### Working on the `.app` and File Provider Extension also requires
 
@@ -83,7 +83,6 @@ make apple-build       # Debug build via xcodebuild
 
 | Tool | How to install |
 |---|---|
-| `goreleaser` | `brew install goreleaser` |
 | `create-dmg` | `brew install create-dmg` |
 | `xcrun notarytool` | comes with Xcode |
 | `xcrun stapler` | comes with Xcode |
@@ -99,7 +98,7 @@ make apple-build       # Debug build via xcodebuild
 | `NOTARY_ISSUER_ID` | App Store Connect issuer id (UUID) | notarytool auth |
 | `NOTARY_API_KEY_P8` | contents of the `.p8` file from App Store Connect | notarytool auth |
 | `OFEM_APPINSIGHTS_CONNSTRING` | App Insights resource → Properties → Connection String | Embedded in release binary |
-| `HOMEBREW_TAP_GH_TOKEN` | a fine-grained PAT with `contents: write` on `homebrew-ofem` | GoReleaser updates the cask |
+| `HOMEBREW_TAP_GH_TOKEN` | a fine-grained PAT with `contents: write` on `homebrew-ofem` | The release workflow pushes the rendered cask to the tap |
 
 ### Domain ownership
 

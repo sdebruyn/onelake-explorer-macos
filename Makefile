@@ -1,23 +1,17 @@
 # Convenience targets for OFEM development.
 #
 # Day-to-day:
-#   make app         — CLI + signed macOS app; THE build to run after pulling
-#   make build       — build the ofem CLI into ./bin/ofem (Go-only, fast)
+#   make app         — daemon binary + signed macOS app; THE build to run after pulling
+#   make build       — build the ofem daemon binary into ./bin/ofem (Go-only, fast)
 #   make test        — run unit tests with the race detector
 #   make lint        — run golangci-lint with the repo config
 #   make fmt         — gofmt + goimports (mutates files in place)
 #   make fmt-check   — read-only gofmt check (fails on unformatted files)
 #   make ci          — fmt-check + lint + test + build (run before pushing)
-#   make docs-cli    — regenerate docs/cli/ from the cobra command tree
-#   make docs        — docs-cli + zensical build (full local docs build)
-#   make docs-serve  — docs-cli + zensical serve (live reload)
 #   make clean       — remove build artifacts
 #
 # Note: `make ci` deliberately uses fmt-check (read-only) so it matches
 # what GitHub Actions does. Use `make fmt` to actually rewrite files.
-#
-# Release maintainer:
-#   make release-snapshot  — run goreleaser locally to validate the config
 
 BIN_DIR := bin
 BIN     := $(BIN_DIR)/ofem
@@ -33,7 +27,7 @@ LDFLAGS := -s -w \
 	-X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Commit=$(COMMIT) \
 	-X github.com/sdebruyn/onelake-explorer-macos/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test lint fmt fmt-check vet tidy ci clean smoke release-snapshot help docs docs-cli docs-serve
+.PHONY: all build test lint fmt fmt-check vet tidy ci clean help
 
 all: ci
 
@@ -41,7 +35,7 @@ $(BIN): $(GO_FILES) go.mod go.sum
 	@mkdir -p $(BIN_DIR)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/ofem
 
-build: $(BIN) ## Build the ofem CLI into ./bin/ofem
+build: $(BIN) ## Build the ofem daemon binary into ./bin/ofem
 
 test: ## Run unit tests with the race detector
 	go test -race -coverprofile=coverage.out -covermode=atomic ./...
@@ -71,43 +65,10 @@ vet: ## Run go vet
 tidy: ## Run go mod tidy
 	go mod tidy
 
-smoke: build ## Build then run --version + status smoke test
-	@$(BIN) --version
-	@$(BIN) status
-
-ci: tidy fmt-check vet lint test build smoke ## Full local CI gate (run before pushing)
+ci: tidy fmt-check vet lint test build ## Full local CI gate (run before pushing)
 
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR) build dist dist-app coverage.out
-
-release-snapshot: ## Run goreleaser locally to validate the config (snapshot)
-	goreleaser release --snapshot --clean
-
-# --- Docs site (zensical → ofem.debruyn.dev) ---
-#
-# The CLI reference under docs/cli/ is generated from the cobra command
-# tree by `make docs-cli`. The generated files are committed so the
-# Cloudflare Pages build (which only runs zensical, no Go toolchain)
-# stays simple. CI fails on drift — see .github/workflows/ci.yml.
-#
-# docs/cli/ is exclusively generator-owned: every `ofem*.md` file in
-# there is rewritten on each `make docs-cli` run. Never hand-edit
-# files there — see docs/cli/README.md. The `mkdir -p` keeps a clean
-# checkout working (the find would otherwise error on a missing
-# directory) and the glob is scoped to `ofem*.md` so the generator
-# can never silently nuke a future hand-written `_index.md`, overview
-# page, or sibling doc that lives alongside the generated files.
-
-docs-cli:
-	@mkdir -p docs/cli
-	@find docs/cli -maxdepth 1 -type f -name 'ofem*.md' -delete
-	go run ./cmd/ofem-docs docs/cli
-
-docs: docs-cli
-	uvx --from 'zensical>=0.0.42' zensical build
-
-docs-serve: docs-cli
-	uvx --from 'zensical>=0.0.42' zensical serve
 
 help:
 	@echo "Targets:"
@@ -120,12 +81,13 @@ APPLE_CONFIG  := apple/Local.xcconfig
 
 .PHONY: apple-bootstrap apple-gen apple-build apple-build-ci apple-test apple-clean app
 
-# One-shot local build of everything runnable: the ofem CLI (./bin/ofem)
-# plus the signed macOS app (host + File Provider Extension, with the Go
-# daemon bundled and signed). This is THE single build to run after
-# pulling main — `make build` and `apple-build` stay available separately
-# for the fast Go-only loop and CI.
-app: build apple-build ## Build CLI + signed macOS app (everything, ready to run)
+# One-shot local build of everything runnable: the ofem daemon binary
+# (./bin/ofem, needed by the IPC integration test) plus the signed macOS
+# app (host + File Provider Extension, with the Go daemon bundled and
+# signed). This is THE single build to run after pulling main — `make
+# build` and `apple-build` stay available separately for the fast
+# Go-only loop and CI.
+app: build apple-build ## Build daemon binary + signed macOS app (everything, ready to run)
 
 # Signing knobs that turn a normal build into an unsigned compile-only
 # build. CI has no Developer ID identity, so it must NOT pass
@@ -182,8 +144,8 @@ apple-build-ci: apple-gen
 # spawns the ./bin/ofem daemon binary against a temp socket. The
 # integration test calls XCTSkip when bin/ofem is missing, so this
 # target stays usable on a fresh checkout — but to actually exercise
-# the IPC seam, build the CLI first (`make build apple-test` or just
-# `make app`). CI does this explicitly.
+# the IPC seam, build the daemon binary first (`make build apple-test`
+# or just `make app`). CI does this explicitly.
 apple-test: apple-gen
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLakeTests \

@@ -6,7 +6,7 @@
 brew uninstall --cask ofem
 ```
 
-Removes the app. Your local cache and sign-in state stay on disk so a future re-install picks up where you left off.
+Removes the app and unregisters its background helper. Your local cache and sign-in state stay on disk so a future re-install picks up where you left off.
 
 ## Remove everything
 
@@ -22,4 +22,4 @@ Uninstalling the app does not revoke OFEM's OAuth grant in your Microsoft Entra 
 
 1. Open [myapplications.microsoft.com](https://myapplications.microsoft.com).
 2. Find "OneLake Explorer for macOS".
-3. Click **Manage** → **Revoke**.
+3. Click **Manage** -> **Revoke**.

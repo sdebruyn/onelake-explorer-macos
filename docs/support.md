@@ -14,7 +14,7 @@ Please do **not** open a public issue. Use [GitHub Private Security Advisories](
 
 ## When filing a bug, please include
 
-1. `ofem --version` output.
+1. The app version (menu bar -> **About OFEM…**).
 2. `sw_vers` output (macOS version).
 3. Steps to reproduce.
 

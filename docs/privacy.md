@@ -17,13 +17,9 @@ OFEM sends a small amount of opt-out usage and crash data to help understand ado
 
 ## How to turn it off
 
-```bash
-ofem config set telemetry off
-```
+Open the OneLake menu bar icon and uncheck **Send Anonymous Telemetry**.
 
-Or set `OFEM_TELEMETRY=0` in your environment before the daemon starts.
-
-You can verify with `ofem config get telemetry`.
+If you start the daemon yourself for development, you can also set `OFEM_TELEMETRY=0` in the environment to keep telemetry off for that process. The menu bar checkbox always reflects what the daemon is currently reporting.
 
 ## Questions
 

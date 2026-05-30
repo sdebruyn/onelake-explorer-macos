@@ -28,11 +28,11 @@ brew install go golangci-lint commitlint
 # fetch deps
 go mod download
 
-# build the CLI
+# build the daemon binary (needed by the IPC integration test in apple/)
 go build -o bin/ofem ./cmd/ofem
 ./bin/ofem --version
 
-# shortcut — fmt + vet + lint + test + build + smoke test (matches CI)
+# shortcut — fmt + vet + lint + test + build (matches CI)
 make ci
 
 # individual targets
@@ -78,7 +78,7 @@ docs(plan): clarify exit criteria for signed builds
 refactor(cache): extract SQLite schema into separate file
 ```
 
-GoReleaser uses these to auto-generate the release notes on each GitHub Release, so please keep them clean.
+The release workflow uses these to auto-generate the release notes on each GitHub Release, so please keep them clean.
 
 ## Code style
 
@@ -91,7 +91,7 @@ GoReleaser uses these to auto-generate the release notes on each GitHub Release,
 - Use table-driven tests for anything with multiple input shapes.
 - No `panic()` outside `main()`'s early-init unless a programmer error genuinely cannot happen; return errors instead.
 - Use `slog` from stdlib for logging; never `fmt.Println` from non-CLI code.
-- Public APIs go in `core/` (cgo-exported) or `cmd/ofem/` (CLI surface); internal stuff in `internal/*` (Go's compiler enforces this).
+- All shared logic lives in `internal/*`; `cmd/ofem/` is just the daemon entry point that calls `internal/daemon`.
 
 ### Swift
 
@@ -111,16 +111,6 @@ GoReleaser uses these to auto-generate the release notes on each GitHub Release,
 - Markdown only. No images unless they show something not expressible in text.
 - Use the doc per topic, not a giant README. See existing structure.
 
-### CLI reference (`docs/cli/`)
-
-The CLI reference is generated from the cobra command tree by `cmd/ofem-docs`. When you add or modify a command, flag, or short/long description in `cmd/ofem/cli/`, run:
-
-```bash
-make docs-cli
-```
-
-and commit the regenerated `docs/cli/*.md` files together with the matching nav block in `zensical.toml`. CI runs the same target and fails if the committed files drift from the cobra tree, so the published reference can never go stale. Never hand-edit files under `docs/cli/`.
-
 ## Releasing (maintainer)
 
 ```bash
@@ -128,7 +118,7 @@ git tag v2026.05.1
 git push origin v2026.05.1
 ```
 
-GitHub Actions does the rest: build, sign, notarize, DMG, GoReleaser, cask bump.
+GitHub Actions does the rest: build, sign, notarize, DMG, GitHub Release upload, cask bump.
 
 See [docs/packaging-homebrew.md](docs/packaging-homebrew.md) for full pipeline details and [docs/prerequisites.md](docs/prerequisites.md) for the secrets that must be configured.
 

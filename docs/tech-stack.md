@@ -1,8 +1,8 @@
 # Tech stack
 
-## Language: Go for core + CLI, Swift for host app and File Provider Extension
+## Language: Go for the core + daemon, Swift for host app and File Provider Extension
 
-The core library, CLI, and daemon are written in **Go**. The macOS `.app` host and the File Provider Extension are written in **Swift**. The Go engine runs inside the long-running daemon; the Swift targets are thin clients that reach it over JSON-RPC on a Unix-domain socket (see "Swift ↔ Go boundary" below). There is no cgo: the Swift targets link no Go archive.
+The core library and the bundled daemon binary are written in **Go**. The macOS `.app` host and the File Provider Extension are written in **Swift**. The Go engine runs inside the long-running daemon (`OneLake.app/Contents/Helpers/ofem`); the Swift targets are thin clients that reach it over JSON-RPC on a Unix-domain socket (see "Swift ↔ Go boundary" below). There is no cgo: the Swift targets link no Go archive.
 
 ## Go libraries
 
@@ -20,10 +20,9 @@ The core library, CLI, and daemon are written in **Go**. The macOS `.app` host a
 - [`github.com/hashicorp/go-retryablehttp`](https://github.com/hashicorp/go-retryablehttp) — battle-tested retry wrapper that respects `Retry-After`.
 - Native JSON via stdlib `encoding/json` (no need for a faster JSON lib at our volume).
 
-### CLI
+### Daemon entry point
 
-- [`github.com/spf13/cobra`](https://github.com/spf13/cobra) — standard Go CLI framework. Subcommands, flags, completions, man-page generation.
-- [`github.com/spf13/viper`](https://github.com/spf13/viper) — config-file loading, env-var binding (`OFEM_*`).
+- [`github.com/spf13/cobra`](https://github.com/spf13/cobra) — used only for the daemon binary's `daemon run` subcommand wiring and `--version` flag. Not a user-facing CLI surface.
 
 ### Config & data
 
@@ -40,14 +39,14 @@ The core library, CLI, and daemon are written in **Go**. The macOS `.app` host a
 - [`github.com/microsoft/ApplicationInsights-Go`](https://github.com/microsoft/ApplicationInsights-Go) — official App Insights SDK for Go. Telemetry client with batching and offline buffer.
 - Custom panic-handler that flushes telemetry before re-panicking.
 
-### IPC (CLI ↔ daemon)
+### IPC (host app / extension ↔ daemon)
 
 - `net.Listen("unix", …)` from stdlib for the Unix domain socket.
 - JSON-RPC 2.0 over the socket using `net/rpc/jsonrpc` from stdlib, or a lightweight custom protocol if jsonrpc proves limiting.
 
 ### LaunchAgent
 
-- We ship a `dev.debruyn.ofem.plist` template. The CLI writes the resolved plist to `~/Library/LaunchAgents/` and runs `launchctl bootstrap gui/$UID …` to register it. No external dependency needed.
+- `dev.debruyn.ofem.daemon.plist` ships inside `OneLake.app/Contents/Library/LaunchAgents/`. The host app registers it via `SMAppService.agent(plistName:)` on first launch and unregisters it on quit. No `launchctl` calls from our own code.
 
 ### Testing
 
@@ -88,12 +87,11 @@ The core library, CLI, and daemon are written in **Go**. The macOS `.app` host a
 
 ## Build & release
 
-- [`GoReleaser`](https://goreleaser.com/) builds the Go binaries.
-- A separate `xcodebuild` step builds the Swift `.app` and `.appex` (no Go archive to link — they talk to the daemon over IPC).
-- `codesign --force --options runtime --sign "Developer ID Application: …"`.
+- `xcodebuild` builds the Swift `.app` and `.appex`. The Xcode postBuildScript compiles the Go daemon binary into `Contents/Helpers/ofem` and signs it with the daemon entitlements.
+- `codesign --force --options runtime --sign "Developer ID Application: …"` re-seals the outer bundle.
 - `xcrun notarytool submit … --wait` and `xcrun stapler staple`.
 - DMG via `create-dmg` (Homebrew formula `create-dmg`).
-- GoReleaser uploads the DMG to GitHub Releases and bumps the cask in the `homebrew-ofem` tap repo.
+- The release workflow uploads the DMG to GitHub Releases and pushes the rendered cask to the `homebrew-ofem` tap repo.
 
 See [docs/packaging-homebrew.md](packaging-homebrew.md) for the full pipeline.
 
@@ -102,7 +100,7 @@ See [docs/packaging-homebrew.md](packaging-homebrew.md) for the full pipeline.
 ```
 onelake-explorer-macos/
 ├── cmd/
-│   └── ofem/                 # CLI entrypoint (main package)
+│   └── ofem/                 # daemon entry-point binary (bundled in OneLake.app/Contents/Helpers/)
 ├── internal/
 │   ├── auth/                # MSAL wrapper, Keychain cache, account registry
 │   ├── onelake/             # DFS API client, retries, pagination
@@ -121,9 +119,8 @@ onelake-explorer-macos/
 │   └── OneLakeFileProvider/ # extension (.appex, Swift)
 ├── docs/
 ├── homebrew/
-│   └── ofem.rb               # cask template, updated by GoReleaser
+│   └── Casks/ofem.rb.tmpl    # cask template, rendered and pushed by the release workflow
 ├── .github/
-├── .goreleaser.yaml
 ├── go.mod
 ├── go.sum
 ├── LICENSE

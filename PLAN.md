@@ -1,10 +1,10 @@
 # Roadmap
 
-The scope of the product, grouped by component. The Go core library is shared across every component; only the presentation layer (CLI, `.app`, File Provider Extension, GUI, polish) changes.
+The scope of the product, grouped by component. The Go core library is shared across every component; only the presentation layer (`.app`, File Provider Extension, GUI, polish) changes.
 
 ## Core library
 
-The Go core under `internal/` is the shared engine. The CLI and the daemon run it in-process; the host app and File Provider Extension are thin Swift clients that reach the daemon — the single owner of the engine, cache, and blob store — over JSON-RPC. (There is no longer a cgo build of the engine inside the Swift targets; see the SIMPLIFICATION.)
+The Go core under `internal/` is the shared engine. The daemon runs it in-process; the host app and File Provider Extension are thin Swift clients that reach the daemon — the single owner of the engine, cache, and blob store — over JSON-RPC. (There is no longer a cgo build of the engine inside the Swift targets; see the SIMPLIFICATION.)
 
 - **Auth (`internal/auth`)**: MSAL Go integration, interactive browser flow, device-code fallback, Keychain-backed token cache, multi-account registry.
 - **Fabric REST (`internal/fabric`)**: typed client for `GET /workspaces`, `GET /workspaces/{id}/items`, `GET /workspaces/{id}/folders`, with pagination.
@@ -12,21 +12,10 @@ The Go core under `internal/` is the shared engine. The CLI and the daemon run i
 - **Cache (`internal/cache`)**: SQLite (`modernc.org/sqlite`) schema for file metadata, plus an LRU blob cache with a size cap.
 - **Sync (`internal/sync`)**: reconciliation engine, write queue, last-write-wins conflict resolution.
 - **Telemetry (`internal/telemetry`)**: App Insights client, opt-out behavior, schema, event emission helpers.
-- **IPC (`internal/ipc`)**: JSON-RPC 2.0 over a Unix-domain socket for CLI ↔ daemon and extension ↔ daemon traffic.
+- **IPC (`internal/ipc`)**: JSON-RPC 2.0 over a Unix-domain socket for the host app ↔ daemon and the File Provider Extension ↔ daemon traffic.
 - **File Provider model (`internal/fp`)**: identifier parsing, the wire-shape item, and the enumerate/item/fetch/create/modify/delete operations the daemon serves to the extension over IPC.
 
 Unit tests cover every internal package; integration tests gated by `OFEM_INTEGRATION=1` run against a real Fabric workspace. CI enforces a total-coverage **floor** (currently 60%, ratcheted up as coverage climbs) and prints the percentage on every run; 80% remains the aspiration, not yet the gate. CI runs `golangci-lint`, `go test -race`, `govulncheck`, commitlint, and build verifies.
-
-## CLI
-
-`ofem` is the developer- and power-user-facing entry point.
-
-- `ofem version`, `ofem help`.
-- `ofem login` (per alias) using interactive browser by default, device code on `--device-code`.
-- `ofem account add | remove | list`.
-- `ofem config get | set | snapshot` for TOML config, including the telemetry toggle.
-- `ofem daemon install | uninstall | start | stop | status` to manage the LaunchAgent.
-- `ofem debug ls`, `ofem debug cat`, `ofem debug stat` against `<alias:/workspace/item/path>` URIs for direct inspection.
 
 ## Native macOS app
 
@@ -55,7 +44,7 @@ The graphical front end for users who don't live in a terminal.
 
 - SwiftUI account-management screen in the host app: list, add, remove, switch default.
 - Menu bar status icon (`NSStatusItem`): sync state, recent activity, pause/resume, open Finder, open settings, quit.
-- First-run guided flow in the host app as an alternative to the CLI.
+- First-run guided flow in the host app.
 - Settings screen: telemetry toggle, cache max size, parallelism, log level.
 - macOS notifications on a curated set of error classes (configurable; default off, in line with the non-intrusive-UX preference).
 
@@ -72,9 +61,9 @@ Refinements that improve daily use without changing the core proposition.
 
 ## Distribution
 
-- `homebrew-ofem` tap with a cask formula; GoReleaser updates the cask on tag.
+- `homebrew-ofem` tap with a cask formula; the release workflow renders and pushes the cask on every CalVer tag.
 - Signing + notarization in GitHub Actions; DMG via `create-dmg`.
-- First-run telemetry disclosure; `ofem config set telemetry off` honored at the daemon and extension level.
+- First-run telemetry disclosure; the menu bar **Send Anonymous Telemetry** toggle is honored at the daemon and extension level.
 
 ## Documentation and telemetry
 

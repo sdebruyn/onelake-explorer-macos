@@ -4,7 +4,7 @@
 brew install --cask sdebruyn/ofem/ofem
 ```
 
-That single command installs `OneLake.app`, sets it to start at login, and puts the `ofem` CLI on your `$PATH`. No extra dependencies, no system-level changes, no admin password.
+That single command installs `OneLake.app`. The first time you launch it, the app registers its background helper to start at every login. No extra dependencies, no system-level changes, no admin password.
 
 ## Requirements
 
@@ -14,9 +14,7 @@ That single command installs `OneLake.app`, sets it to start at login, and puts 
 
 ## Verify
 
-```bash
-ofem --version
-```
+Open `OneLake.app` from Launchpad or `/Applications`. A OneLake icon appears in the menu bar.
 
 The next step is [Sign in](sign-in.md).
 

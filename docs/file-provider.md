@@ -50,13 +50,12 @@ We use the **replication model**, which is what Apple recommends for cloud stora
               └────────────────────────────────────┘
    The daemon signals the host app's ChangeWatcher (via pollChanges),
    which calls NSFileProviderManager.signalEnumerator to refresh Finder.
-   The CLI is a fourth client of the same socket.
 ```
 
 What each process does:
 - The **host app** holds the account-management UI, registers File Provider domains, talks to the system browser for auth, and polls the daemon for change signals. It is an IPC client of the daemon.
 - The **File Provider Extension** is sandboxed by Apple. macOS launches it on demand when Finder needs files. It implements the `NSFileProvider*` classes and calls the daemon's `fp.*` methods over IPC.
-- The **daemon** runs as a LaunchAgent and is the single owner of the Go engine, cache, and blob store. It holds the Unix socket every other surface (host app, extension, CLI) talks to, batches telemetry, and runs adaptive polling against Fabric.
+- The **daemon** runs as a LaunchAgent (`OneLake.app/Contents/Helpers/ofem`, registered via SMAppService) and is the single owner of the Go engine, cache, and blob store. It holds the Unix socket the host app and the File Provider Extension share, batches telemetry, and runs adaptive polling against Fabric.
 
 ## Shared state via App Group
 
@@ -131,13 +130,14 @@ Results are cached in SQLite with a TTL appropriate for the level: 30 seconds fo
 
 For change-detection on folders the user has visited recently, the daemon (not the extension) polls Fabric on the adaptive schedule. When it finds changes, it publishes them to an in-memory change feed. The **host app** (`OneLake.app`) polls the daemon every 5 seconds via the `sync.pollChanges` JSON-RPC method and calls `NSFileProviderManager.signalEnumerator(for:)` for each affected container. macOS then asks the File Provider Extension to re-enumerate and the extension fetches the delta.
 
-The CLI ↔ daemon socket lives at
+The daemon socket lives at
 `~/Library/Group Containers/group.dev.debruyn.ofem/ofem.sock`, owner-only
-(0600), inside the App Group container so the CLI and the host app find it
-without an extra path-resolution layer. The host app reuses the same
-JSON-RPC 2.0 framing ([`internal/ipc`](../internal/ipc)) for its polling.
-The daemon exposes `status`, `account.*`, `config.snapshot`, `sync.refresh`,
-`sync.pollChanges`, and `mount.list` methods.
+(0600), inside the App Group container so the host app and the File
+Provider Extension both find it without an extra path-resolution layer.
+Both sides share the same JSON-RPC 2.0 framing
+([`internal/ipc`](../internal/ipc)). The daemon exposes `status`,
+`account.*`, `config.snapshot`, `sync.refresh`, `sync.pollChanges`, and
+`mount.list` methods.
 
 **Phase 1 trade-off:** automatic Finder refresh requires `OneLake.app` to
 be running. If the user quits the host app, the File Provider Extension
@@ -195,8 +195,8 @@ Read path: we never read these from OneLake (they would never be there in the fi
 
 ## Sign-out / domain removal
 
-`ofem account remove <alias>`:
-1. CLI sends RPC to daemon.
+Signing out from the menu bar (account submenu -> **Sign Out…**):
+1. Menu bar sends `account.remove` RPC to the daemon.
 2. Daemon calls `NSFileProviderManager.remove(domain)` to ask macOS to tear down the mount.
 3. macOS asks the user for confirmation if there are local-only changes (we cooperate).
 4. Daemon clears the SQLite cache rows for that domain, removes the cache blob shards, removes the Keychain item, removes the account from `config.toml`.

@@ -1,5 +1,10 @@
 // Package cli wires together the cobra command tree for the ofem binary.
-// Each command lives in its own file (account.go, daemon.go, ...).
+//
+// The user-facing CLI has been removed; the menu bar app is the
+// supported end-user surface. What remains is the daemon entry point
+// that SMAppService launches under launchd (see
+// apple/OneLake/LoginItemManager.swift) and that the IPC integration
+// test spawns directly against a temp socket.
 package cli
 
 import (
@@ -9,25 +14,23 @@ import (
 )
 
 // NewRoot builds a fresh command tree. A new tree per invocation makes
-// the CLI testable; cobra is otherwise happy to share state.
+// the binary testable; cobra is otherwise happy to share state.
 func NewRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "ofem",
-		Short:         "OneLake Explorer for macOS",
+		Short:         "OneLake Explorer for macOS daemon entry point",
 		Long:          longDescription,
 		Version:       versionString(),
 		SilenceUsage:  true,
 		SilenceErrors: false,
+		CompletionOptions: cobra.CompletionOptions{
+			// No shell-completion surface: this binary is bundled inside
+			// OneLake.app and not meant to be invoked interactively.
+			DisableDefaultCmd: true,
+		},
 	}
 
-	root.AddCommand(newVersionCmd())
-	root.AddCommand(newAccountCmd())
-	root.AddCommand(newLoginCmd())
-	root.AddCommand(newStatusCmd())
-	root.AddCommand(newConfigCmd())
-	root.AddCommand(newCacheCmd())
 	root.AddCommand(newDaemonCmd())
-	root.AddCommand(newDebugCmd())
 
 	return root
 }
@@ -40,11 +43,9 @@ func versionString() string {
 	return v
 }
 
-const longDescription = `ofem is the command-line tool for the open-source OneLake File Explorer
-for macOS. It manages accounts, controls the local sync daemon, and ships
-a handful of debug commands for development.
+const longDescription = `ofem is the helper binary bundled inside OneLake.app.
 
-Day-to-day usage is in Finder once the daemon is running; the CLI is for
-setup, account management, and troubleshooting.
-
-See https://ofem.debruyn.dev for documentation.`
+It exposes the daemon entry point that the host app's SMAppService
+registration launches under launchd. End users interact with OneLake
+through the menu bar app and Finder; this binary is not a user-facing
+tool.`

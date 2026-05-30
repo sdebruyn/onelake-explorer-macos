@@ -50,31 +50,18 @@ DMG_NAME="OneLake-${VERSION}.dmg"
 DMG_PATH="${OUTPUT_DIR}/${DMG_NAME}"
 
 # ---------------------------------------------------------------------------
-# Codesign the app bundle inside-out (Apple TN3147).
+# Re-seal the outer app bundle.
 #
-# xcodebuild -exportArchive already signs the .app and the embedded .appex,
-# but the standalone CLI binary (Contents/Resources/bin/ofem) is placed into
-# the bundle after export and must be signed explicitly. Apple deprecated
-# `--deep` (Xcode 13+) because it can apply incorrect flags to nested
-# components. The correct approach is to sign each component individually
-# from the innermost layer outward.
-#
-# Order: embedded CLI binary -> outer .app bundle.
-# The .appex extension is already signed by xcodebuild and is not re-signed
-# here to avoid invalidating its entitlements.
+# xcodebuild -exportArchive already signs the .app, the embedded .appex,
+# and the bundled daemon helper at Contents/Helpers/ofem (the Xcode
+# postBuildScript signs that one with the daemon entitlements). We
+# re-seal the outer bundle here so that any local file mtime tweaks
+# performed between exportArchive and this script (e.g. resource
+# substitution) do not break the on-disk signature. The .appex
+# extension and the daemon helper are not re-signed here to avoid
+# invalidating their per-target entitlements.
 # ---------------------------------------------------------------------------
 DEVELOPER_ID="Developer ID Application: Debruyn Consultancy ($APPLE_TEAM_ID)"
-CLI_BINARY="${APP_PATH}/Contents/Resources/bin/ofem"
-
-if [[ -f "$CLI_BINARY" ]]; then
-    echo "Signing embedded CLI binary ${CLI_BINARY} ..."
-    codesign \
-        --force \
-        --options runtime \
-        --timestamp \
-        --sign "$DEVELOPER_ID" \
-        "$CLI_BINARY"
-fi
 
 echo "Re-sealing outer app bundle ${APP_PATH} ..."
 codesign \

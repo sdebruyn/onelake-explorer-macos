@@ -16,13 +16,13 @@ Settled during product discovery and unchanged since:
 
 ## Tech stack at a glance
 
-- **Go** for the core library, CLI, and daemon. See [Tech stack](../tech-stack.md).
+- **Go** for the core library and the bundled daemon binary. See [Tech stack](../tech-stack.md).
 - **Swift** for the macOS host app and File Provider Extension. The Go engine runs in the daemon; the Swift targets call it over JSON-RPC on a Unix-domain socket (no cgo).
 - **SQLite** (pure-Go `modernc.org/sqlite`, no cgo) for the metadata cache.
 - **MSAL Go** for Microsoft Entra authentication.
 - **macOS Keychain** for token storage (file-backed secret store under the OFEM config dir).
 - **Azure Application Insights** for opt-out telemetry.
-- **Homebrew cask** for distribution. **GoReleaser** for the CLI binary; **xcodebuild + codesign + notarytool + create-dmg** for the signed `.app`.
+- **Homebrew cask** for distribution. **xcodebuild + codesign + notarytool + create-dmg** for the signed `.app`.
 
 ## Process model
 
@@ -41,16 +41,14 @@ Settled during product discovery and unchanged since:
               │  - engine: auth/onelake/fabric/    │    engine, cache + blob
               │    cache/sync/fp                   │    store; telemetry; polling
               │  - IPC server (internal/ipc)       │
-              └──────────────────┬─────────────────┘
-                                 ▲
-                   ofem CLI (Go) ─┘  ← setup / account mgmt / debug, also IPC
+              └────────────────────────────────────┘
 ```
 
 What each process does:
 
-- The **host app** holds the auth UI, registers the File Provider domain, and shows the menu-bar status icon.
-- The **File Provider Extension** is sandboxed and short-lived — macOS launches it on demand for each Finder request. It implements the `NSFileProvider*` classes and calls into the Go core.
-- The **daemon** runs as a LaunchAgent, batches telemetry, polls Fabric on an adaptive schedule, runs scheduled cache eviction, and holds the Unix socket the CLI talks to.
+- The **host app** holds the auth UI, registers the File Provider domain, and shows the menu bar status icon. It also registers the bundled daemon as a LaunchAgent via SMAppService.
+- The **File Provider Extension** is sandboxed and short-lived — macOS launches it on demand for each Finder request. It implements the `NSFileProvider*` classes and reaches the daemon over IPC.
+- The **daemon** runs as a LaunchAgent (`OneLake.app/Contents/Helpers/ofem`), batches telemetry, polls Fabric on an adaptive schedule, runs scheduled cache eviction, and serves the Unix socket the host app and File Provider Extension share.
 
 All three share state through a macOS App Group (`group.dev.debruyn.ofem`): config TOML, the SQLite metadata cache, the cached blob shards, and the per-account Keychain entries.
 
@@ -58,7 +56,7 @@ All three share state through a macOS App Group (`group.dev.debruyn.ofem`): conf
 
 ```
 onelake-explorer-macos/
-├── cmd/ofem/                    # CLI entrypoint and subcommand wiring
+├── cmd/ofem/                    # daemon entry-point binary (bundled in OneLake.app/Contents/Helpers/)
 ├── internal/
 │   ├── auth/                   # MSAL, Keychain cache, Account registry
 │   ├── api/                    # shared HTTP plumbing (retry, errors, token interface)
@@ -70,7 +68,7 @@ onelake-explorer-macos/
 │   ├── ipc/                    # JSON-RPC 2.0 over Unix socket
 │   ├── daemon/                 # background process + LaunchAgent management
 │   ├── config/                 # TOML on-disk config under ~/Library/Group Containers/group.dev.debruyn.ofem/
-│   ├── logging/                # slog setup (CLI text vs daemon JSON-to-file)
+│   ├── logging/                # slog setup (text to stdout for foreground daemon, JSON-to-file otherwise)
 │   └── buildinfo/              # link-time version/commit/date/conn-string
 ├── apple/                      # Xcode project, host app, File Provider Extension
 ├── docs/                       # this site's source

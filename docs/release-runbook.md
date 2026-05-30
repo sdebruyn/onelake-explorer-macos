@@ -38,13 +38,16 @@ git push origin "v$VERSION"
 
 ### 4. Watch the GitHub Actions release workflow
 
-Navigate to **Actions > Release** in the repository. The two jobs should
-run sequentially:
+Navigate to **Actions > Release** in the repository. The single
+`build-app` job should:
 
-- **Build, sign, and notarize app** (~10-15 min, depends on notarization queue).
-- **Publish CLI release and update cask** (~3 min).
+- Build, sign and notarize the app.
+- Upload `OneLake-$VERSION.dmg` to the GitHub Release.
+- Render the Homebrew cask template and push it to the
+  `sdebruyn/homebrew-ofem` tap.
 
-If either job fails, see the troubleshooting section below.
+Expect ~10-15 min, depending on the Apple notarization queue. If the
+job fails, see the troubleshooting section below.
 
 ### 5. Verify the GitHub Release
 
@@ -52,8 +55,6 @@ At [github.com/sdebruyn/onelake-explorer-macos/releases](https://github.com/sdeb
 confirm:
 
 - `OneLake-$VERSION.dmg` is attached and has the correct size.
-- `ofem_$VERSION_darwin_arm64.tar.gz` is attached.
-- `checksums.txt` is attached.
 - The release is not marked as a draft.
 - Pre-release flag is correct (set for `-rc.*` tags, unset for stable).
 
@@ -64,7 +65,7 @@ brew tap sdebruyn/ofem
 brew update
 brew info --cask sdebruyn/ofem/ofem    # confirms new version
 brew install --cask sdebruyn/ofem/ofem
-/Applications/OneLake.app/Contents/Resources/bin/ofem --version
+open -a OneLake                        # menu bar icon should appear
 brew uninstall --cask sdebruyn/ofem/ofem
 brew untap sdebruyn/ofem
 ```
@@ -84,8 +85,9 @@ notarization queue is typically under 5 minutes for a small app.
 ### DMG SHA-256 mismatch in cask
 
 The cask update step computes the SHA-256 from the DMG on disk immediately
-after notarization. If the artifact is re-uploaded, re-run the
-`release-cli-and-cask` job after re-running `build-app`.
+after notarization, then commits the rendered cask to the tap. If the
+artifact is re-uploaded by hand, re-run the `build-app` job so the
+cask is rendered against the new SHA.
 
 ### Signing identity not found
 
