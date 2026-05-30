@@ -218,11 +218,15 @@ func (h *Handlers) handleStatus(ctx context.Context, _ json.RawMessage) (any, er
 
 	p := h.store.Paths()
 	return StatusResponse{
-		DaemonVersion:    h.version,
-		StartedAt:        h.startedAt,
-		Accounts:         aliases,
-		CacheBytes:       cacheBytes,
-		CacheMaxBytes:    snap.Cache.MaxSizeBytes,
+		DaemonVersion: h.version,
+		StartedAt:     h.startedAt,
+		Accounts:      aliases,
+		CacheBytes:    cacheBytes,
+		// CacheMaxBytes is the byte-precision conversion of the user's
+		// GB-precision limit (see config.CacheConfig.MaxBytes). The Swift
+		// menubar formats this against the live cacheBytes to render the
+		// "X used of Y GB" label.
+		CacheMaxBytes:    snap.Cache.MaxBytes(),
 		Gates:            gates,
 		PausedWorkspaces: paused,
 		Offline:          offline,

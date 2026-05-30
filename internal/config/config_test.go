@@ -14,14 +14,172 @@ func TestDefault(t *testing.T) {
 	if !d.Telemetry {
 		t.Error("telemetry should default to true (opt-out)")
 	}
-	if d.Cache.MaxSizeBytes != 10*1024*1024*1024 {
-		t.Errorf("Cache.MaxSizeBytes = %d, want 10 GiB", d.Cache.MaxSizeBytes)
+	if d.Cache.MaxSizeGB != DefaultCacheSizeGB {
+		t.Errorf("Cache.MaxSizeGB = %d, want %d", d.Cache.MaxSizeGB, DefaultCacheSizeGB)
+	}
+	if d.Cache.MaxBytes() != int64(DefaultCacheSizeGB)*1024*1024*1024 {
+		t.Errorf("Cache.MaxBytes() = %d, want 10 GiB", d.Cache.MaxBytes())
 	}
 	if d.Log.Level != "info" {
 		t.Errorf("Log.Level = %q, want %q", d.Log.Level, "info")
 	}
 	if d.Accounts == nil {
 		t.Error("Accounts map must be non-nil")
+	}
+}
+
+// TestMigrateLegacyMaxSizeBytes verifies that a config carrying only the
+// legacy max_size_bytes key is migrated to max_size_gb on read, and that
+// the next save drops the legacy key from disk. This is the critical
+// backwards-compat path for users upgrading from pre-2026.06 OFEM.
+func TestMigrateLegacyMaxSizeBytes(t *testing.T) {
+	dir := t.TempDir()
+	paths := Paths{
+		ConfigDir:  dir,
+		ConfigFile: filepath.Join(dir, "config.toml"),
+	}
+
+	// Hand-write a legacy-shaped config. 5 GiB exactly so the ceil math
+	// is verifiable. Also include a non-default account so we can assert
+	// the migration doesn't clobber unrelated user customisations.
+	legacy := []byte(`install_id = "legacy-install"
+telemetry = false
+default_account = "work"
+
+[cache]
+max_size_bytes = 5368709120
+
+[accounts.work]
+alias = "work"
+tenant_id = "t1"
+home_account_id = "h1"
+username = "u@example.com"
+added_at = "2026-05-01T00:00:00Z"
+`)
+	if err := os.WriteFile(paths.ConfigFile, legacy, 0o600); err != nil {
+		t.Fatalf("seed legacy config: %v", err)
+	}
+
+	store, err := LoadFrom(paths)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	f := store.Snapshot()
+	if f.Cache.MaxSizeGB != 5 {
+		t.Errorf("MaxSizeGB after migration = %d, want 5", f.Cache.MaxSizeGB)
+	}
+	if f.Cache.MaxSizeBytes != 0 {
+		t.Errorf("MaxSizeBytes after migration = %d, want 0 (legacy key cleared)", f.Cache.MaxSizeBytes)
+	}
+	if f.InstallID != "legacy-install" {
+		t.Errorf("InstallID = %q, want %q (migration must preserve unrelated keys)", f.InstallID, "legacy-install")
+	}
+	if f.Telemetry {
+		t.Errorf("Telemetry = true, want false (migration must preserve unrelated keys)")
+	}
+	if _, ok := f.Accounts["work"]; !ok {
+		t.Errorf("accounts.work was dropped during migration")
+	}
+
+	// Save and re-read raw bytes: the legacy key must be gone.
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(paths.ConfigFile)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	rawStr := string(raw)
+	if strings.Contains(rawStr, "max_size_bytes") {
+		t.Errorf("saved config still contains legacy max_size_bytes key:\n%s", rawStr)
+	}
+	if !strings.Contains(rawStr, "max_size_gb = 5") {
+		t.Errorf("saved config missing canonical max_size_gb = 5:\n%s", rawStr)
+	}
+}
+
+// TestMigrateLegacyMaxSizeBytesCeils verifies the migration rounds up
+// (math.Ceil) rather than truncating, so a 10737418241-byte limit (just
+// over 10 GiB) becomes 11 GB rather than shrinking to 10.
+func TestMigrateLegacyMaxSizeBytesCeils(t *testing.T) {
+	dir := t.TempDir()
+	paths := Paths{
+		ConfigDir:  dir,
+		ConfigFile: filepath.Join(dir, "config.toml"),
+	}
+	legacy := []byte("[cache]\nmax_size_bytes = 10737418241\n")
+	if err := os.WriteFile(paths.ConfigFile, legacy, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	store, err := LoadFrom(paths)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if got := store.Snapshot().Cache.MaxSizeGB; got != 11 {
+		t.Errorf("MaxSizeGB = %d, want 11 (ceil of 10 GiB + 1 byte)", got)
+	}
+}
+
+// TestMigrateLegacyZeroBecomesDefault verifies that the legacy
+// `max_size_bytes = 0` ("unlimited") sentinel — which the new GB schema
+// does not support — is replaced by the default rather than silently
+// disabling eviction.
+func TestMigrateLegacyZeroBecomesDefault(t *testing.T) {
+	dir := t.TempDir()
+	paths := Paths{
+		ConfigDir:  dir,
+		ConfigFile: filepath.Join(dir, "config.toml"),
+	}
+	legacy := []byte("[cache]\nmax_size_bytes = 0\n")
+	if err := os.WriteFile(paths.ConfigFile, legacy, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	store, err := LoadFrom(paths)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if got := store.Snapshot().Cache.MaxSizeGB; got != DefaultCacheSizeGB {
+		t.Errorf("MaxSizeGB = %d, want %d", got, DefaultCacheSizeGB)
+	}
+}
+
+// TestLoadFromHonorsNewMaxSizeGB confirms a config already on the new
+// schema is loaded verbatim (no migration logic interferes).
+func TestLoadFromHonorsNewMaxSizeGB(t *testing.T) {
+	dir := t.TempDir()
+	paths := Paths{
+		ConfigDir:  dir,
+		ConfigFile: filepath.Join(dir, "config.toml"),
+	}
+	if err := os.WriteFile(paths.ConfigFile, []byte("[cache]\nmax_size_gb = 25\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	store, err := LoadFrom(paths)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if got := store.Snapshot().Cache.MaxSizeGB; got != 25 {
+		t.Errorf("MaxSizeGB = %d, want 25", got)
+	}
+}
+
+// TestMaxBytesConversion verifies the GB → bytes seam, the contract
+// that the daemon hands to the cache package.
+func TestMaxBytesConversion(t *testing.T) {
+	cases := []struct {
+		gb   int
+		want int64
+	}{
+		{1, 1 << 30},
+		{10, 10 * (1 << 30)},
+		{1024, 1024 * (1 << 30)},
+		{0, 0},
+	}
+	for _, tc := range cases {
+		got := CacheConfig{MaxSizeGB: tc.gb}.MaxBytes()
+		if got != tc.want {
+			t.Errorf("CacheConfig{MaxSizeGB: %d}.MaxBytes() = %d, want %d", tc.gb, got, tc.want)
+		}
 	}
 }
 

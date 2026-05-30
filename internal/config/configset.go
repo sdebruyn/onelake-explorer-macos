@@ -9,8 +9,9 @@ import (
 )
 
 // ApplyConfig applies key=value to f. The key is normalised (lowercased,
-// dashes treated as underscores) so "cache.max-size" and "cache.max_size"
-// are equivalent. It returns an error for unknown keys or invalid values.
+// dashes treated as underscores) so "cache.max-size-gb" and
+// "cache.max_size_gb" are equivalent. It returns an error for unknown
+// keys or invalid values.
 //
 // Invoked from the daemon's config.set IPC handler (which the menu bar
 // app calls from CoreBridge.configSet) so the validation and normalisation
@@ -30,12 +31,19 @@ func ApplyConfig(f *File, key, value string) error {
 			}
 		}
 		f.DefaultAccount = value
-	case "cache.max_size_bytes", "cache.max_size":
-		n, err := ParseConfigSize(value)
+	case "cache.max_size_gb":
+		gb, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil {
-			return fmt.Errorf("%s: %w", NormalizeConfigKey(key), err)
+			return fmt.Errorf("cache.max_size_gb: invalid integer %q", value)
 		}
-		f.Cache.MaxSizeBytes = n
+		if gb < MinCacheSizeGB || gb > MaxCacheSizeGB {
+			return fmt.Errorf("cache.max_size_gb: %d out of range [%d, %d]",
+				gb, MinCacheSizeGB, MaxCacheSizeGB)
+		}
+		f.Cache.MaxSizeGB = gb
+		// Clear any lingering legacy field so the next Save emits only
+		// the canonical max_size_gb key.
+		f.Cache.MaxSizeBytes = 0
 	case "log.level":
 		switch strings.ToLower(value) {
 		case "debug", "info", "warn", "error":

@@ -164,35 +164,39 @@ private struct ProbingKey: CodingKey {
 public struct ConfigInfo: Decodable {
     /// Whether anonymous telemetry is currently enabled (opt-out, default true).
     public let telemetryEnabled: Bool
-    /// Configured LRU cache ceiling in bytes (0 means no limit).
-    public let cacheMaxBytes: Int64
+    /// Configured LRU cache ceiling in whole gigabytes (binary, 1 GB = 2^30
+    /// bytes). 0 only appears on transport failure; the daemon always
+    /// emits a value in [config.MinCacheSizeGB, config.MaxCacheSizeGB].
+    public let cacheMaxSizeGB: Int
 
     private enum CodingKeys: String, CodingKey {
         // top-level "telemetry" bool
         case telemetry
-        // nested "cache" object with "max_size_bytes" — handled manually below
+        // nested "cache" object with "max_size_gb" — handled manually below
         case cache
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         telemetryEnabled = (try c.decodeIfPresent(Bool.self, forKey: .telemetry)) ?? true
-        // config.snapshot wraps cache as {"cache": {"max_size_bytes": N}}
+        // config.snapshot wraps cache as {"cache": {"MaxSizeGB": N}}
         if let cacheObj = try c.decodeIfPresent(CachePayload.self, forKey: .cache) {
-            cacheMaxBytes = cacheObj.maxSizeBytes
+            cacheMaxSizeGB = cacheObj.maxSizeGB
         } else {
-            cacheMaxBytes = 0
+            cacheMaxSizeGB = 0
         }
     }
 
     private struct CachePayload: Decodable {
-        let maxSizeBytes: Int64
+        let maxSizeGB: Int
 
         private enum CodingKeys: String, CodingKey {
-            // config.CacheConfig.MaxSizeBytes carries only a toml tag, no json
-            // tag. Go's encoding/json emits exported field names verbatim when
-            // no json: tag is present, so the wire key is "MaxSizeBytes".
-            case maxSizeBytes = "MaxSizeBytes"
+            // config.CacheConfig.MaxSizeGB carries only a toml tag, no json
+            // tag. Go's encoding/json emits exported field names verbatim
+            // when no json: tag is present, so the wire key is "MaxSizeGB".
+            // The legacy "MaxSizeBytes" sibling is dropped after migration
+            // (omitzero) and is no longer surfaced over IPC.
+            case maxSizeGB = "MaxSizeGB"
         }
     }
 }
