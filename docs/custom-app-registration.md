@@ -65,14 +65,12 @@ az ad app permission add --id $APP_ID --api $STORAGE_SP \
 az ad app permission add --id $APP_ID --api $PBI_SP \
   --api-permissions ${WORKSPACE_READ}=Scope ${ITEM_READ}=Scope
 
-# 4. Admin-consent the scopes so users do not get a consent prompt
-#    at every sign-in. Requires Global Admin / Application Admin.
-az ad app permission admin-consent --id $APP_ID
-
 echo "Paste this Client ID into Add Account → Advanced: $APP_ID"
 ```
 
 Paste the printed Client ID into *Add Account → Advanced → Client ID*; leave Tenant blank unless you also want to pin a specific one.
+
+The first sign-in in Add Account opens a browser; Microsoft asks you to consent to the three permissions there. That's a per-user consent, no admin needed — exactly the reason this whole page exists. If you're a tenant admin and want to skip the prompt for everyone in your tenant, add `az ad app permission admin-consent --id $APP_ID` as a final step.
 
 ## Do I need to enter the Tenant ID too?
 
