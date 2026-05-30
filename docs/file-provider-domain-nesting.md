@@ -143,13 +143,13 @@ and Google Drive integrate").
   *within* the domain.
 - `~/OneLake/<alias>/...` in CLAUDE.md should be read as a logical
   path, not a filesystem path. The filesystem-visible path is
-  `~/Library/CloudStorage/OneLake-<alias>/...`. The CLI's
-  `ofem mount list` should report both forms.
+  `~/Library/CloudStorage/OneLake-<alias>/...`. The menu bar app's
+  per-account **Open in Finder** action navigates to that real path.
 - **TODO (follow-up, out of scope for this PR):** the `MountDomain`
   type in `internal/ipc` (currently just `Identifier` + `DisplayName`)
   needs a third `MountPath` field carrying the absolute user-visible
-  path, so the CLI and host app can display the on-disk location
-  without reconstructing it. The Swift extension will populate it from
+  path, so the host app can display the on-disk location without
+  reconstructing it. The Swift extension will populate it from
   `NSFileProviderManager.getUserVisibleURL(for:)` once the extension is
   wired up. Tracking this here so the IPC type doesn't drift further
   from the spike's recommendation.

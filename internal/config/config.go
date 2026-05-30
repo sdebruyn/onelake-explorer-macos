@@ -2,8 +2,8 @@
 // registry. The shape mirrors the docs/auth.md and docs/telemetry.md
 // designs. All on-disk state lives under the macOS App Group container at
 // ~/Library/Group Containers/group.dev.debruyn.ofem/ so the daemon, the
-// CLI, the host app, and the sandboxed File Provider Extension can share
-// it. See docs/file-provider.md for the rationale.
+// host app, and the sandboxed File Provider Extension can share it. See
+// docs/file-provider.md for the rationale.
 package config
 
 import (
@@ -16,7 +16,7 @@ import (
 )
 
 // BundleID is the reverse-DNS identifier shared by every OFEM process
-// (CLI, daemon, host app, File Provider Extension). It anchors the
+// (daemon, host app, File Provider Extension). It anchors the
 // LaunchAgent label and the Apple bundle identifiers.
 const BundleID = "dev.debruyn.ofem"
 
@@ -136,8 +136,8 @@ func Default() File {
 
 // Paths resolves the canonical OFEM locations on macOS. They all sit
 // under the shared App Group container so the sandboxed File Provider
-// Extension can read and write them alongside the CLI, the daemon, and
-// the host app. Callers should treat them as read-only.
+// Extension can read and write them alongside the daemon and the host
+// app. Callers should treat them as read-only.
 type Paths struct {
 	// ConfigDir is the App Group container root. All other paths are
 	// derived from it.
@@ -148,9 +148,9 @@ type Paths struct {
 	CacheDir string // <ConfigDir>/cache
 	// LogDir holds rotated daemon logs.
 	LogDir string // <ConfigDir>/log
-	// SocketPath is the CLI ↔ daemon Unix-domain socket. The sandboxed
-	// extension never talks to it (it goes over XPC); colocating it with
-	// the rest keeps the path layout uniform.
+	// SocketPath is the host-app ↔ daemon Unix-domain socket. The
+	// sandboxed extension never talks to it (it goes over XPC); colocating
+	// it with the rest keeps the path layout uniform.
 	SocketPath string // <ConfigDir>/ofem.sock
 }
 
@@ -180,11 +180,11 @@ type Store struct {
 }
 
 // Load reads config.toml from the canonical paths returned by
-// ResolvePaths. It is the right entry point for the CLI and the daemon,
-// which run unsandboxed and can resolve $HOME directly. Sandboxed
-// callers (the host app / File Provider Extension) must use LoadFrom
-// with an App Group container path instead, because os.UserHomeDir
-// returns the per-app sandbox container there rather than the real home.
+// ResolvePaths. It is the right entry point for the daemon, which runs
+// unsandboxed and can resolve $HOME directly. Sandboxed callers (the
+// host app / File Provider Extension) must use LoadFrom with an App
+// Group container path instead, because os.UserHomeDir returns the
+// per-app sandbox container there rather than the real home.
 func Load() (*Store, error) {
 	paths, err := ResolvePaths()
 	if err != nil {

@@ -5,9 +5,9 @@
 //
 //   The daemon detects changes via adaptive polling and stores them in an
 //   in-memory Changefeed. The host app (this class) polls the daemon every
-//   5 seconds via the sync.pollChanges JSON-RPC method over the same
-//   Unix-domain socket the CLI uses. When changes are reported, the host app
-//   calls NSFileProviderManager.signalEnumerator(for:) for each affected
+//   5 seconds via the sync.pollChanges JSON-RPC method over the daemon's
+//   Unix-domain socket. When changes are reported, the host app calls
+//   NSFileProviderManager.signalEnumerator(for:) for each affected
 //   container so Finder re-enumerates and picks up new/modified/removed items.
 //
 // Trade-off:

@@ -11,9 +11,10 @@ import (
 )
 
 // LoginDeviceCode starts the OAuth device-code flow. The prompt callback
-// receives the verification URL and user code so the CLI can display
-// them. The function blocks until the user completes the flow in their
-// browser, the device code expires, or the context is cancelled.
+// receives the verification URL and user code so the caller can surface
+// them (the daemon forwards them to the menu bar app via the auth.login
+// IPC stream). The function blocks until the user completes the flow in
+// their browser, the device code expires, or the context is cancelled.
 //
 // tenantHint follows the same rules as [LoginInteractive].
 func LoginDeviceCode(ctx context.Context, clientID, tenantHint string, kc Keychain, prompt func(verificationURL, userCode string, expiresAt time.Time)) (Account, public.Account, []byte, error) {

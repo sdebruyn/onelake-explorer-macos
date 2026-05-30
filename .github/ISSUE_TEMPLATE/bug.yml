@@ -12,7 +12,7 @@ body:
     attributes:
       label: What happened?
       description: A clear and concise description of the bug.
-      placeholder: When I run `ofem login`, ...
+      placeholder: When I click Add Account in the menu bar, ...
     validations:
       required: true
   - type: textarea
@@ -26,7 +26,7 @@ body:
     attributes:
       label: Steps to reproduce
       placeholder: |
-        1. Run `ofem ...`
+        1. Open the OneLake menu bar icon
         2. Click ...
         3. See error ...
     validations:
@@ -35,7 +35,7 @@ body:
     id: ofem-version
     attributes:
       label: OFEM version
-      description: Output of `ofem --version`
+      description: From the OneLake menu bar -> "About OFEM…"
       placeholder: "2026.05.1"
     validations:
       required: true

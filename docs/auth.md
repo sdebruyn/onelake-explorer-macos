@@ -80,7 +80,7 @@ On every OneLake request:
 2. If present and not within 5 minutes of expiry → use it.
 3. Otherwise call MSAL `AcquireTokenSilent` to refresh.
 4. If silent refresh fails with `interaction_required` (e.g. Conditional Access challenge, MFA expired) → mark account as `needs_reauth`, queue a menu-bar error indicator. No system notification.
-5. The next time the user opens the menu bar app (or runs `ofem status`), the indicator shows them which account needs re-auth. They re-run `ofem login --account <alias>` to interactively unblock.
+5. The next time the user opens the menu bar app, the indicator shows them which account needs re-auth. They sign that account out and add it again from the menu bar to interactively unblock.
 
 ## Conditional Access / MFA challenges
 
@@ -88,12 +88,12 @@ On `AADSTS50076` / `AADSTS50079` / `interaction_required`, the daemon silently r
 
 ## Logout / account removal
 
-`ofem account remove <alias>`:
+Signing out via the menu bar (account submenu -> **Sign Out…**) triggers the daemon's `account.remove` IPC method, which:
 
 1. Removes the Keychain item.
 2. Removes the account from the registry config.
 3. Optionally calls Microsoft's `/oauth2/v2.0/logout` (best effort, no error if it fails).
-4. Removes the account's folder from `~/Library/CloudStorage/OneLake-<alias>/` (and the matching Finder sidebar entry `OneLake — <alias>`) after a confirmation prompt (or `--force`).
+4. Removes the account's folder from `~/Library/CloudStorage/OneLake-<alias>/` (and the matching Finder sidebar entry `OneLake — <alias>`). The menu bar confirms before invoking it.
 
 ## Two-audience scope model
 
@@ -134,6 +134,6 @@ OFEM targets the Microsoft public cloud. The authority host is kept configurable
 - **PKCE** is used for the authorization code flow (MSAL Go does this by default).
 - **State parameter** is generated per flow and validated.
 - **Random port** for localhost redirect avoids collisions and reduces attack surface vs. a fixed well-known port.
-- **Refresh tokens** are stored in Keychain, scoped per account; they cannot be exported via the CLI.
-- **No token printing**: even `ofem debug` commands never echo tokens.
+- **Refresh tokens** are stored in Keychain, scoped per account; the daemon never exports or echoes them anywhere.
+- **No token printing**: tokens never appear in logs, telemetry, or any IPC response.
 - The Entra App Registration is owned by the project maintainer; users only consent to delegated permissions and can revoke at any time via [https://myapplications.microsoft.com](https://myapplications.microsoft.com).

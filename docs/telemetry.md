@@ -3,7 +3,7 @@
 ## Principles
 
 - **Opt-out**, enabled by default, clearly disclosed on first run and in README.
-- **Disable any time** with `OFEM_TELEMETRY=0` env var or `ofem config set telemetry off` (the daemon picks up the change on next start; the menu bar shows the current state).
+- **Disable any time** by unchecking **Send Anonymous Telemetry** in the OneLake menu bar, or by setting `OFEM_TELEMETRY=0` in the environment of a self-started daemon (the daemon picks the change up on next start; the menu bar always shows the current state).
 - **No PII**: no UPN, no workspace name, no item name, no file name, no folder path.
 - **Tenant IDs are collected.** Tenant IDs are aggregate-level enough to be useful for understanding adoption per tenant without identifying individual users.
 - **Pseudonymous install ID** is generated locally on first run (a random UUIDv4 stored in config) so we can deduplicate events from the same install without identifying the user.
@@ -43,8 +43,8 @@ Every event is sent as an App Insights `customEvent` with a fixed property set:
 |---|---|---|
 | `app_start` | Daemon process starts | — |
 | `app_stop` | Daemon process exits cleanly | — |
-| `account_added` | After successful `ofem login` | `tenantId`, `accountAliasHash` |
-| `account_removed` | After successful `ofem account remove` | `tenantId`, `accountAliasHash` |
+| `account_added` | After successful sign-in (menu bar -> **Add Account…**) | `tenantId`, `accountAliasHash` |
+| `account_removed` | After successful sign-out (menu bar account submenu -> **Sign Out…**) | `tenantId`, `accountAliasHash` |
 | `workspace_list` | Fabric REST list-workspaces call completes | `tenantId`, `accountAliasHash`, `durationMs`, `success` |
 | `item_list` | Fabric REST list-items call completes | `tenantId`, `accountAliasHash`, `durationMs`, `success` |
 | `folder_list` | OneLake DFS folder list completes | `tenantId`, `accountAliasHash`, `durationMs`, `success` |
@@ -80,21 +80,19 @@ them.
 
 The Application Insights connection string is a committed source constant in `internal/buildinfo/buildinfo.go`. Every OFEM build — official release, source build, or fork — reports to the same endpoint. The string is rotated by issuing a new one for the resource and bumping `internal/buildinfo/buildinfo.go`; old binaries then stop reporting on the next release.
 
-## First-run disclosure (in CLI and host app)
+## First-run disclosure
 
 ```
 OFEM collects anonymous usage events plus tenant IDs to help understand adoption
 and improve the tool. We never collect workspace names, file names, or your UPN.
 
-Disable any time:  ofem config set telemetry off
-                or set OFEM_TELEMETRY=0 in your environment
+Disable any time:  uncheck "Send Anonymous Telemetry" in the OneLake menu bar
+                   (or set OFEM_TELEMETRY=0 in the environment of a self-started daemon)
 
 Learn more:        https://github.com/sdebruyn/onelake-explorer-macos/blob/main/docs/telemetry.md
 ```
 
-Shown:
-- On first `ofem login` in the CLI.
-- On first launch of `OneLake.app` as a small banner in the host app.
+Shown on first launch of `OneLake.app` as a small banner in the host app.
 
 ## Local buffering and offline
 

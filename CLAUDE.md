@@ -4,7 +4,7 @@ Project context for Claude Code sessions on this repo.
 
 ## What this project is
 
-OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fabric OneLake, distributed via Homebrew cask, written in Go (core + CLI) and Swift (host app + File Provider Extension). MIT licensed, open source from day one.
+OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fabric OneLake, distributed via Homebrew cask, written in Go (core + daemon binary bundled in the .app) and Swift (host app + File Provider Extension). MIT licensed, open source from day one. There is no user-facing CLI — the menu bar app is the supported surface.
 
 ## Hard constraints (do not violate)
 
@@ -23,9 +23,9 @@ OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fa
 - Mount mechanism: File Provider Extension, never FUSE-T. See `docs/macos-mount.md` for the rejected alternatives.
 - Auth: `docs/auth.md` — MSAL Go, own multi-tenant Entra App Registration, Keychain-backed cache, per-account `PublicClientApplication`.
 - OneLake API: `docs/onelake-api.md` — ADLS Gen2 DFS endpoint for I/O (audience `https://storage.azure.com/`), Fabric REST for discovery (Power BI Service audience `https://analysis.windows.net/powerbi/api`). Two distinct audiences — a single one returns 401 on Fabric REST. See `docs/auth.md`.
-- Tech stack: `docs/tech-stack.md` — Go for core + CLI + daemon, Swift for `.app` and `.appex`. The daemon owns the engine/cache; the Swift targets are thin JSON-RPC clients over the daemon's unix socket (no cgo — removed in the SIMPLIFICATION).
+- Tech stack: `docs/tech-stack.md` — Go for the core + daemon binary, Swift for `.app` and `.appex`. The daemon owns the engine/cache; the Swift targets are thin JSON-RPC clients over the daemon's unix socket (no cgo — removed in the SIMPLIFICATION).
 - Telemetry: `docs/telemetry.md` — opt-out, App Insights free tier, tenant IDs collected but never UPN / workspace / file names.
-- Packaging: `docs/packaging-homebrew.md` — GoReleaser + xcodebuild + notarytool, DMG via Homebrew cask.
+- Packaging: `docs/packaging-homebrew.md` — xcodebuild + notarytool, DMG via Homebrew cask.
 - Prerequisites: `docs/prerequisites.md` — splits local dev vs publishing/signing.
 
 ## Style and conventions
@@ -42,7 +42,7 @@ OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fa
 
 ## Where things live
 
-- `cmd/ofem/` — CLI entrypoint.
+- `cmd/ofem/` — daemon entry-point binary bundled inside `OneLake.app/Contents/Helpers/ofem`. Exposes only `daemon run`; not a user-facing CLI.
 - `internal/auth/`, `internal/onelake/`, `internal/fabric/`, `internal/cache/`, `internal/sync/`, `internal/fp/`, `internal/ipc/`, `internal/daemon/`, `internal/telemetry/`, `internal/config/`, `internal/log/` — Go core packages. `internal/fp/` is the File Provider domain model the daemon serves over IPC.
 - `apple/` — Xcode project, host app, File Provider Extension. `apple/Shared/` holds the IPC client + CoreBridge shared by both Swift targets.
 - `docs/` — all design docs.
@@ -52,7 +52,7 @@ OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fa
 ## Useful commands
 
 ```bash
-# Build CLI
+# Build daemon binary (needed by the IPC integration test under apple/)
 go build -o bin/ofem ./cmd/ofem
 
 # Run unit tests
@@ -64,7 +64,7 @@ OFEM_INTEGRATION=1 go test ./...
 # Lint
 golangci-lint run
 
-# Build CLI + signed macOS app in one shot (THE build to run after pulling)
+# Build daemon binary + signed macOS app in one shot (THE build to run after pulling)
 make app
 
 # Build only the macOS app (Go daemon is compiled inside the Xcode postBuildScript)

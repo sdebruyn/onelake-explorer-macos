@@ -9,46 +9,38 @@ See also: [Release runbook](release-runbook.md) for the step-by-step process Sam
 A single signed and notarized DMG containing `OneLake.app`. The `.app` bundles:
 - The Swift host app (`OneLake`).
 - The Swift File Provider Extension (`OneLakeFileProvider.appex`).
-- The Go CLI binary (`ofem`), embedded at `OneLake.app/Contents/Resources/bin/ofem`.
-- The Go core library is statically linked into the Swift binaries; not shipped separately.
+- The Go daemon binary (`ofem`), embedded at `OneLake.app/Contents/Helpers/ofem` and launched by the SMAppService-registered LaunchAgent plist at `OneLake.app/Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.plist`.
+
+There is no standalone CLI distribution. The bundled daemon is an
+internal helper; end users interact with OneLake through the menu bar
+app and Finder.
 
 ## Build pipeline
 
-The full pipeline is implemented in `.github/workflows/release.yml`.
-It splits into two jobs to separate macOS-only work from the Go/GoReleaser work.
+The full pipeline is implemented in `.github/workflows/release.yml` as a single macOS-only job.
 
 ```
-Job A: build-app (macos-15 runner)
+build-app (macos-15 runner)
 ───────────────────────────────────────────────────────────────────────────────
 1.  checkout + setup-go
 2.  brew install xcodegen create-dmg
 3.  Import Developer ID Application cert from APPLE_CERT_P12 into a
     temporary keychain (deleted after the job).
 4.  Write App Store Connect API key from APPLE_API_KEY_JSON to a tmp .p8 file.
-5.  make apple-gen  -> regenerate apple/OneLake.xcodeproj from project.yml
-6.  Write apple/Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID
+5.  Write apple/Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID.
+6.  make apple-gen  -> regenerate apple/OneLake.xcodeproj from project.yml.
 7.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
+    (the Xcode postBuildScript compiles the Go daemon into Contents/Helpers/ofem
+    and signs it with the daemon entitlements).
 8.  xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
-9.  go build -o build/Export/OneLake.app/Contents/Resources/bin/ofem
-10. create-dmg -> dist-app/OneLake-$VERSION.dmg
-11. xcrun notarytool submit --wait --timeout 15m
-12. xcrun stapler staple
-13. Upload DMG to GitHub Release (softprops/action-gh-release)
-15. Upload DMG as workflow artifact for Job B
-
-Job B: release-cli-and-cask (ubuntu-latest, needs: build-app)
-───────────────────────────────────────────────────────────────────────────────
-1.  checkout + setup-go
-2.  Download DMG artifact from Job A -> dist-app/
-3.  goreleaser release --clean
-      - compiles ofem CLI tarball (CGO_ENABLED=0, darwin/arm64)
-      - attaches checksums.txt and dist-app/OneLake-*.dmg to GitHub Release
-      - pushes CLI formula to sdebruyn/homebrew-ofem Formula/ofem.rb
-4.  Render cask template (sed on homebrew/Casks/ofem.rb.tmpl)
-5.  Clone homebrew-ofem, commit + push updated Casks/ofem.rb
+9.  create-dmg -> dist-app/OneLake-$VERSION.dmg
+10. xcrun notarytool submit --wait --timeout 15m
+11. xcrun stapler staple
+12. Compute DMG SHA-256
+13. Upload DMG to the GitHub Release (softprops/action-gh-release)
+14. Render homebrew/Casks/ofem.rb.tmpl with the new version + SHA-256 and
+    push it to sdebruyn/homebrew-ofem as Casks/ofem.rb.
 ```
-
-For manual use (local signing without CI), see `scripts/sign-and-notarize.sh`.
 
 ## Homebrew cask
 
@@ -56,7 +48,6 @@ We maintain a separate tap repository `homebrew-ofem`. The cask:
 
 ```ruby
 cask "ofem" do
-  arch arm: "arm64"
   version "2026.05.1"
   sha256 "abc123..."
 
@@ -69,20 +60,12 @@ cask "ofem" do
   depends_on arch: :arm64
 
   app "OneLake.app"
-  binary "#{appdir}/OneLake.app/Contents/Resources/bin/ofem"
 
-  postflight do
-    # Trigger launchd registration on first install
-    system_command "#{appdir}/OneLake.app/Contents/Resources/bin/ofem",
-                   args: ["daemon", "install"],
-                   sudo: false
-  end
-
+  # The host app registers (and unregisters) the bundled daemon as a
+  # LaunchAgent via SMAppService on first launch / on quit, so no
+  # postflight or launchctl hookup is needed from the cask itself.
   uninstall launchctl: "dev.debruyn.ofem.daemon",
-            quit:      "dev.debruyn.ofem.app",
-            delete:    [
-              "~/Library/LaunchAgents/dev.debruyn.ofem.daemon.plist",
-            ]
+            quit:      "dev.debruyn.ofem.app"
 
   zap trash: [
     "~/Library/Group Containers/group.dev.debruyn.ofem",
@@ -99,7 +82,7 @@ end
 A dummy `0.0.0` cask lives at [`sdebruyn/homebrew-ofem`](https://github.com/sdebruyn/homebrew-ofem)
 (mirrored in this repo at `homebrew/ofem.rb`). It points at a release asset
 that does not exist yet, so `brew install --cask` will 404 — but the rest of
-the tap pipeline (`brew tap` → `brew info` → `brew audit` → `brew style`) is
+the tap pipeline (`brew tap` -> `brew info` -> `brew audit` -> `brew style`) is
 validated end-to-end against the real GitHub-hosted tap.
 
 To re-run the validation after a cask edit:
@@ -170,7 +153,7 @@ pushed. None of them are committed to the repository.
 | `APPLE_API_KEY_JSON` | App Store Connect API key as a JSON object with keys `key_id`, `issuer_id`, and `key` (PEM content). Generate at [appstoreconnect.apple.com/access/integrations/api](https://appstoreconnect.apple.com/access/integrations/api). Store the full JSON as the secret value. |
 | `APPLE_API_KEY_ID` | The 10-character key identifier, also present inside `APPLE_API_KEY_JSON`. Stored separately so it can be used in environment-variable interpolation without parsing JSON. |
 | `APPLE_API_ISSUER_ID` | The issuer UUID, also present inside `APPLE_API_KEY_JSON`. |
-| `HOMEBREW_TAP_GH_TOKEN` | Fine-grained GitHub PAT with **Contents: write** on `sdebruyn/homebrew-ofem`. The CLI formula push and cask update both use this token. |
+| `HOMEBREW_TAP_GH_TOKEN` | Fine-grained GitHub PAT with **Contents: write** on `sdebruyn/homebrew-ofem`. Used by the `Update Homebrew cask` workflow step. |
 
 ### How to generate the Developer ID `.p12`
 
@@ -201,46 +184,13 @@ pushed. None of them are committed to the repository.
 
 `homebrew-ofem` is a **separate GitHub repository** (`sdebruyn/homebrew-ofem`).
 The tap already exists and was bootstrapped with a dummy `0.0.0` cask in PR #35.
-No manual setup is required — the release workflow's `release-cli-and-cask` job
+No manual setup is required — the release workflow's `Update Homebrew cask` step
 renders the cask template and pushes the updated `Casks/ofem.rb` to
 `sdebruyn/homebrew-ofem` automatically on every release tag.
 
-## GoReleaser config (`.goreleaser.yaml`)
-
-GoReleaser handles the Go CLI binary part and attaches it (plus checksums) to
-the GitHub Release. It also manages the CLI-only cask entry (`ofem-cli`)
-via the `homebrew_casks:` block. It does **not** manage the full-app Homebrew
-cask — the cask is rendered from `homebrew/Casks/ofem.rb.tmpl` and committed to
-the tap by the `Update Homebrew cask` workflow step after the DMG SHA-256 is known.
-
-Key config blocks (abbreviated):
-
-```yaml
-project_name: ofem
-builds:
-  - id: ofem
-    binary: ofem   # binary name inside the archive
-    ...
-archives:
-  - id: ofem-cli
-    ids: [ofem]
-    ...
-homebrew_casks:
-  - name: ofem-cli              # installs as: brew install sdebruyn/ofem/ofem-cli
-    ids: [ofem-cli]
-    directory: Casks            # lands in Casks/ofem-cli.rb in the tap
-    binaries: [ofem]            # "ofem" matches the binary name inside the archive
-    skip_upload: auto           # skips pre-release tags (e.g. v2026.05.0-rc.1)
-    ...
-```
-
-Note: `homebrew_casks:` is GoReleaser v2's current key for publishing a binary
-distribution to a Homebrew tap. The older `brews:` key (Homebrew Formula) is
-deprecated as of GoReleaser v2.10+.
-
 ## Pre-release / beta channel
 
-No formal beta tap. Pre-release versions are tagged like `v2026.05.0-rc.1` and GoReleaser marks the GitHub Release as "prerelease". Users who want to try them download the DMG directly from the Releases page. Stable installs via Homebrew see only stable tags.
+No formal beta tap. Pre-release versions are tagged like `v2026.05.0-rc.1`. Users who want to try them download the DMG directly from the Releases page. Stable installs via Homebrew see only stable tags.
 
 ## Update mechanism
 

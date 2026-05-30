@@ -8,8 +8,8 @@
 // Lifecycle:
 //   - applicationDidFinishLaunching: initial domain reconcile + start
 //     ChangeWatcher (moved here from the old ContentView .task).
-//   - applicationDidBecomeActive: re-reconcile so CLI-added accounts
-//     appear in Finder without a restart.
+//   - applicationDidBecomeActive: re-reconcile so accounts added while
+//     the host was inactive appear in Finder without a restart.
 //   - applicationWillTerminate: stop the ChangeWatcher poll loop.
 
 import SwiftUI
@@ -50,8 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         // Re-reconcile whenever the app comes to the foreground so accounts
-        // added or removed via the CLI while the host was inactive are
-        // reflected in the Finder sidebar promptly.
+        // added or removed while the host was inactive are reflected in
+        // the Finder sidebar promptly.
         AppDelegate.log.debug("applicationDidBecomeActive — triggering domain reconcile")
         Task { @MainActor in
             do {

@@ -23,8 +23,9 @@
 // Public surface is intentionally tiny:
 //
 //   - [Gate] is a single-host coordinator.
-//   - [Registry] holds the per-host gates and is wired once at process
-//     start by cmd/ofem, then passed into the Fabric and OneLake clients.
+//   - [Registry] holds the per-host gates and is wired once at daemon
+//     start (see internal/engine.Wire), then passed into the Fabric and
+//     OneLake clients.
 //   - [ParseRetryAfter] turns an HTTP Retry-After header into a wall-clock
 //     deadline using the same rules as RFC 7231.
 //

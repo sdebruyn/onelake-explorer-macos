@@ -169,7 +169,7 @@ func (r *Registry) Get(alias string) (Account, []byte, error) {
 }
 
 // List returns all known accounts sorted by alias for deterministic
-// output (helpful for tests and for `ofem account list`).
+// output (helpful for tests and for the menu bar's accounts list).
 func (r *Registry) List() []Account {
 	snap := r.store.Snapshot()
 	out := make([]Account, 0, len(snap.Accounts))

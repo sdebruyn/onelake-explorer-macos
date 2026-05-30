@@ -5,9 +5,8 @@ import (
 	"sort"
 )
 
-// decodeBase64 accepts either standard or raw (no-padding) base64. The
-// host app and CLI may produce either, so the daemon is lenient on the
-// input side.
+// decodeBase64 accepts either standard or raw (no-padding) base64. IPC
+// callers may produce either, so the daemon is lenient on the input side.
 func decodeBase64(s string) ([]byte, error) {
 	if s == "" {
 		return nil, nil

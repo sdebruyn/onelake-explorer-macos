@@ -33,7 +33,7 @@ type Client struct {
 // instant for a live socket and immediate-fail for a missing one. Use
 // [DialContext] when you need to bound the connect by your own
 // deadline (for example, when an unresponsive daemon must not stall a
-// short-lived CLI command).
+// menu bar action).
 func Dial(path string) (*Client, error) {
 	return DialContext(context.Background(), path)
 }

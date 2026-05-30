@@ -9,9 +9,9 @@
 # and lets us validate `brew tap` + `brew info` end-to-end.
 #
 # `sha256 :no_check` is intentional for the dummy. On the first real release
-# this becomes the real DMG SHA-256 (goreleaser computes and patches it as
-# part of the release pipeline — see docs/packaging-homebrew.md in the main
-# repo).
+# this becomes the real DMG SHA-256 (the release workflow's `Update Homebrew
+# cask` step computes and substitutes it — see docs/packaging-homebrew.md in
+# the main repo).
 cask "ofem" do
   arch arm: "arm64"
 
@@ -37,16 +37,17 @@ cask "ofem" do
   depends_on arch: :arm64
 
   app "OneLake.app"
-  binary "#{appdir}/OneLake.app/Contents/Resources/bin/ofem"
 
   # Keep these stanzas in lockstep with homebrew/Casks/ofem.rb.tmpl (the
-  # template GoReleaser ships). This dummy only validates the tap pipeline,
-  # but stale uninstall/zap rules here would mislead anyone reading it.
+  # template the release workflow renders into the tap). This dummy only
+  # validates the tap pipeline, but stale uninstall/zap rules here would
+  # mislead anyone reading it.
+  #
+  # The host app registers (and unregisters) the bundled daemon as a
+  # LaunchAgent via SMAppService on first launch / on quit, so no
+  # postflight script or launchctl hookup is needed from the cask.
   uninstall launchctl: "dev.debruyn.ofem.daemon",
-            quit:      "dev.debruyn.ofem.app",
-            delete:    [
-              "~/Library/LaunchAgents/dev.debruyn.ofem.daemon.plist",
-            ]
+            quit:      "dev.debruyn.ofem.app"
 
   zap trash: [
     "~/Library/Group Containers/group.dev.debruyn.ofem",

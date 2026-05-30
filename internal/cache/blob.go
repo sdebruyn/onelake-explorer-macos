@@ -116,7 +116,8 @@ func (c *Cache) OpenBlob(ctx context.Context, sha string) (io.ReadCloser, error)
 // DiskUsage walks the on-disk blob root and returns the number of blob
 // files present and the sum of their sizes in bytes. Unlike [Cache.BlobBytes]
 // it sees orphaned blobs (files on disk with no surviving metadata link),
-// which is what the CLI wants when reporting "what's on the user's disk".
+// which is what the menu bar's cache panel reports as "what's on the
+// user's disk".
 //
 // Files that vanish mid-walk are skipped silently because eviction can
 // race with the call. A missing blob root (cache not yet opened by any

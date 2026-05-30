@@ -1,7 +1,7 @@
 // Package sync wires the local cache (internal/cache) to the OneLake DFS
 // client (internal/onelake) and the Fabric REST client (internal/fabric)
-// to give the File Provider Extension and the CLI a single, cohesive
-// API for enumerate / open / put / delete / mkdir / list-workspaces /
+// to give the File Provider Extension a single, cohesive API for
+// enumerate / open / put / delete / mkdir / list-workspaces /
 // list-items operations on OneLake content.
 //
 // One Engine is intended per OFEM process; it serves every signed-in

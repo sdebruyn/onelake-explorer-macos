@@ -2,11 +2,11 @@ package httpgate
 
 import "time"
 
-// Known hosts and their sensible default budgets. cmd/ofem pre-registers
-// these at process start so the very first Acquire on each host uses the
-// curated values instead of the generic [Defaults] fall-back. The values
-// are conservative — we'd rather be a little slow than trigger Fabric's
-// throttling on the first sync after a fresh login.
+// Known hosts and their sensible default budgets. [DefaultRegistry]
+// pre-registers these at daemon start so the very first Acquire on each
+// host uses the curated values instead of the generic [Defaults]
+// fall-back. The values are conservative — we'd rather be a little slow
+// than trigger Fabric's throttling on the first sync after a fresh login.
 const (
 	// HostFabric is the Fabric REST host (discovery only).
 	HostFabric = "api.fabric.microsoft.com"

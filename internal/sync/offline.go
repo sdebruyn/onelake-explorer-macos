@@ -91,7 +91,7 @@ func (s *offlineState) offline(now time.Time) bool {
 
 // Offline reports the engine's current best guess about host
 // connectivity. The daemon's status handler surfaces this on the IPC
-// status response so the host app and CLI render a banner.
+// status response so the host app renders a banner.
 func (e *Engine) Offline() bool {
 	if e == nil || e.offline == nil {
 		return false

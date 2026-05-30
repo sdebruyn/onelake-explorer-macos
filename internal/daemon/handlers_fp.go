@@ -9,8 +9,9 @@ import (
 )
 
 // File Provider IPC surface. These methods replace the cgo bridge: the
-// sandboxed extension calls them over the same unix socket the CLI uses,
-// and the daemon — the single owner of the engine and cache — serves them.
+// sandboxed extension calls them over the same unix socket the host app
+// uses, and the daemon — the single owner of the engine and cache —
+// serves them.
 //
 // Each handler returns an [fp.Envelope] as the JSON-RPC result. Domain
 // errors (missing item, paused capacity, offline, …) travel INSIDE the

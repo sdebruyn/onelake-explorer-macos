@@ -142,8 +142,7 @@ targets:
           #
           # --timestamp is required: Apple notarytool rejects hardened-runtime
           # binaries without a secure timestamp, even when they are embedded
-          # inside a bundle that is later re-sealed. This matches the --timestamp
-          # flag used for Resources/bin/ofem and the outer .app in release.yml.
+          # inside a bundle that is later re-sealed.
           if [ "${CODE_SIGNING_ALLOWED:-NO}" = "YES" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
             echo "Signing daemon as ${EXPANDED_CODE_SIGN_IDENTITY_NAME:-?} with entitlements: ${ENTITLEMENTS}"
             # Sign with EXPANDED_CODE_SIGN_IDENTITY (the SHA-1 hash Xcode already
