@@ -231,13 +231,18 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          # 45m bound: notarytool service quality is variable; the
+          # earlier 15m limit consistently expired with a submission
+          # still "In Progress" on Apple's side. 45m is well within
+          # GitHub Actions job-timeout headroom (6h) and covers the
+          # tail of Apple's queue depth on bad days.
           xcrun notarytool submit \
             "dist-app/OneLake-$VERSION.dmg" \
             --key "$RUNNER_TEMP/notary/key.p8" \
             --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER_ID" \
             --wait \
-            --timeout 15m
+            --timeout 45m
 
       - name: Staple notarization ticket
         if: github.event_name != 'workflow_dispatch'
