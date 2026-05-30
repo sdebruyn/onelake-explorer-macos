@@ -169,10 +169,11 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          # Manual signing with the Developer ID Application cert from
-          # the build keychain and the provisioning profiles we just
-          # staged. xcodebuild picks the matching profile per target
-          # (bundle id + cert pair) without a cloud round-trip.
+          # Signing settings (Manual, Developer ID cert, per-target
+          # provisioning profile) live in apple/project.yml on each
+          # target's Release config. xcodebuild's command-line
+          # `KEY[bundle.identifier=...]=VALUE` syntax does not parse,
+          # so per-target overrides have to be in the project file.
           xcodebuild \
             -project apple/OneLake.xcodeproj \
             -scheme OneLake \
@@ -181,10 +182,6 @@ jobs:
             -derivedDataPath build/Release \
             -archivePath build/OneLake.xcarchive \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Developer ID Application" \
-            PROVISIONING_PROFILE_SPECIFIER="OFEM distribution developer ID" \
-            "PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*][bundle.identifier=dev.debruyn.ofem.fileprovider]=OFEM FP distribution developer ID" \
             archive
 
       - name: Export archive (Developer ID)
