@@ -32,6 +32,48 @@ The two Power BI scopes target the Fabric REST API for workspace and item discov
 
 After saving the registration, copy the **Application (client) ID** GUID from the Overview tab. That is the value to paste into *Add Account → Advanced → Client ID*.
 
+## Faster path — Azure CLI
+
+If you have [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) installed and you can sign in to the target tenant with permission to create app registrations, the steps above collapse into one snippet. Permission GUIDs are fetched live from the service principals so the script keeps working when Microsoft renumbers anything.
+
+```bash
+# Sign in to the right tenant.
+az login --tenant <your-tenant-id-or-domain>
+
+# 1. Register the app with a loopback redirect + public client flows on.
+APP_ID=$(az ad app create \
+  --display-name "OneLake Explorer (mac)" \
+  --public-client-redirect-uris http://localhost \
+  --is-fallback-public-client true \
+  --query appId -o tsv)
+echo "Client ID: $APP_ID"
+
+# 2. Look up delegated permission GUIDs straight from the service principals.
+STORAGE_SP="e406a681-f3d4-42a8-90b6-c2b029497af1"   # Azure Storage
+PBI_SP="00000009-0000-0000-c000-000000000000"        # Power BI Service
+
+USER_IMPERSONATION=$(az ad sp show --id $STORAGE_SP \
+  --query "oauth2PermissionScopes[?value=='user_impersonation'].id | [0]" -o tsv)
+WORKSPACE_READ=$(az ad sp show --id $PBI_SP \
+  --query "oauth2PermissionScopes[?value=='Workspace.Read.All'].id | [0]" -o tsv)
+ITEM_READ=$(az ad sp show --id $PBI_SP \
+  --query "oauth2PermissionScopes[?value=='Item.Read.All'].id | [0]" -o tsv)
+
+# 3. Add the three delegated scopes.
+az ad app permission add --id $APP_ID --api $STORAGE_SP \
+  --api-permissions ${USER_IMPERSONATION}=Scope
+az ad app permission add --id $APP_ID --api $PBI_SP \
+  --api-permissions ${WORKSPACE_READ}=Scope ${ITEM_READ}=Scope
+
+# 4. Admin-consent the scopes so users do not get a consent prompt
+#    at every sign-in. Requires Global Admin / Application Admin.
+az ad app permission admin-consent --id $APP_ID
+
+echo "Paste this Client ID into Add Account → Advanced: $APP_ID"
+```
+
+Paste the printed Client ID into *Add Account → Advanced → Client ID*; leave Tenant blank unless you also want to pin a specific one.
+
 ## Do I need to enter the Tenant ID too?
 
 Usually no. Leave the **Tenant** field blank and Microsoft will pick the right tenant from your sign-in. Pin a tenant only if:
