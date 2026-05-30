@@ -304,22 +304,31 @@ private struct AccountSubmenu: View {
     private func openInFinder() {
         // Mount path convention: ~/Library/CloudStorage/OneLake-<alias>/
         // See CLAUDE.md and docs/file-provider-domain-nesting.md.
-        let expandedBase = NSString(
-            string: "~/Library/CloudStorage/OneLake-\(account.alias)"
-        ).expandingTildeInPath
-        let url = URL(fileURLWithPath: expandedBase, isDirectory: true)
-
-        // Create on demand — the directory may not exist yet if the File
-        // Provider Extension has not registered the domain yet.
-        do {
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        } catch {
-            Self.log.warning(
-                "createDirectory for \(url.path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
-            )
+        //
+        // We cannot use `expandingTildeInPath` or `NSHomeDirectory()`
+        // here: this app is sandboxed, so both resolve to the App
+        // Sandbox container (~/Library/Containers/dev.debruyn.ofem/…),
+        // not the real user home. Finder then opens an empty container
+        // path that has nothing to do with the File Provider mount.
+        // `getpwuid(getuid())->pw_dir` reads the passwd record directly
+        // and returns the real $HOME, regardless of the sandbox.
+        let realHome: String
+        if let pw = getpwuid(getuid()), let cstr = pw.pointee.pw_dir {
+            realHome = String(cString: cstr)
+        } else {
+            realHome = NSHomeDirectory()
         }
+        let url = URL(
+            fileURLWithPath: "\(realHome)/Library/CloudStorage/OneLake-\(account.alias)",
+            isDirectory: true
+        )
 
         Self.log.info("Opening Finder at \(url.path, privacy: .public)")
+        // Skip createDirectory: the File Provider Extension owns the
+        // mount path and the sandbox blocks us from writing there
+        // anyway. NSWorkspace.shared.open hands off to Finder (a
+        // separate, non-sandboxed process), which can read the mount
+        // directly even when our app cannot.
         if !NSWorkspace.shared.open(url) {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
