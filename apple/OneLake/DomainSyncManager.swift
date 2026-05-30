@@ -74,11 +74,20 @@ final class DomainSyncManager {
             // macOS's NSFileProviderDomain init takes only identifier +
             // displayName; pathRelativeToDocumentStorage is iOS-only.
             // The system picks the on-disk parent itself: each domain
-            // materialises at ~/Library/CloudStorage/OneLake-<alias>/ via
-            // CFBundleDisplayName + displayName concatenation.
+            // materialises at ~/Library/CloudStorage/OneLake-<alias>/.
+            //
+            // Sidebar label: with only `account.alias` as displayName,
+            // Finder's Locations sidebar collapses single-domain apps to
+            // just "OneLake" (no em-dash, no alias). Set the displayName
+            // to the full "OneLake — <alias>" string so the sidebar
+            // entry is unambiguous from the first account onward, and
+            // so multi-account setups disambiguate by alias the same
+            // way OneDrive does ("OneDrive — Personal" / "OneDrive —
+            // Company"). The em-dash is display-only; the on-disk path
+            // stays ASCII (`OneLake-<alias>`).
             let domain = NSFileProviderDomain(
                 identifier: NSFileProviderDomainIdentifier(rawValue: id),
-                displayName: account.alias
+                displayName: "OneLake \u{2014} \(account.alias)"
             )
             do {
                 try await NSFileProviderManager.add(domain)
