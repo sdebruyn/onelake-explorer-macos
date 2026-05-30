@@ -91,8 +91,10 @@ func Build(opts Options) (*Components, error) {
 	// SQLite metadata cache. cache.Open creates the directory when it
 	// does not yet exist; no pre-flight MkdirAll is needed here.
 	c, err := cache.Open(cache.Options{
-		Root:         paths.CacheDir,
-		MaxBlobBytes: cfg.Cache.MaxSizeBytes,
+		Root: paths.CacheDir,
+		// Cache wants bytes; CacheConfig speaks gigabytes. Convert at
+		// the seam so the cache package stays unaware of the GB schema.
+		MaxBlobBytes: cfg.Cache.MaxBytes(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open cache: %w", err)

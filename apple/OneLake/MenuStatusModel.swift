@@ -14,9 +14,11 @@
 //   - On daemon-unreachable the model publishes isRunning = false so the
 //     menu shows "Not running" instead of stale data.
 //
-// Action methods (setDefault, signOut, cacheEvict, cacheClear, configSet*)
-// are called from MenuBarView. They always call refresh() on completion so
-// the menu reflects the new state immediately.
+// Action methods (setDefault, signOut, cacheClear, setCacheLimitGB,
+// setTelemetry) are called from MenuBarView. They always call refresh()
+// on completion so the menu reflects the new state immediately.
+// setCacheLimitGB additionally debounces its IPC write (see
+// setCacheLimitDebounce) so a held-down Stepper does not flood the daemon.
 
 import Foundation
 import os.log
@@ -61,6 +63,13 @@ final class MenuStatusModel: ObservableObject {
     @Published private(set) var offline: Bool = false
     @Published private(set) var cacheBytes: Int64 = -1
     @Published private(set) var cacheMaxBytes: Int64 = 0
+    /// User-editable LRU ceiling in whole gigabytes; the menubar Stepper
+    /// reads and writes this. Mirrors `cacheMaxBytes` (which is the
+    /// daemon's GB → bytes conversion used for the live used/limit math)
+    /// but kept in GBs so the Stepper round-trips cleanly without losing
+    /// precision through a bytes intermediate. 0 means "unknown / not yet
+    /// fetched"; once populated it stays within [1, 1024].
+    @Published private(set) var cacheMaxSizeGB: Int = 0
     @Published private(set) var pausedWorkspaces: [PausedWorkspaceInfo] = []
     @Published private(set) var accounts: [AccountInfo] = []
     @Published private(set) var defaultAccount: String = ""
@@ -110,6 +119,16 @@ final class MenuStatusModel: ObservableObject {
     private let bridge = CoreBridge.shared
     private var refreshTask: Task<Void, Never>?
     private var autoRefreshTask: Task<Void, Never>?
+    /// In-flight debounce timer for setCacheLimitGB. Each Stepper tick
+    /// cancels the previous timer; only the final value (after the user
+    /// stops clicking for SetCacheLimitDebounce) hits the daemon over IPC.
+    private var setCacheLimitTask: Task<Void, Never>?
+
+    /// Debounce window for setCacheLimitGB writes. Sized so a user can
+    /// hold the Stepper arrow and rack up many ticks without firing one
+    /// IPC call per tick, while staying short enough that letting go
+    /// feels immediate.
+    static let setCacheLimitDebounce: Duration = .milliseconds(750)
 
     // MARK: - Refresh
 
@@ -155,6 +174,12 @@ final class MenuStatusModel: ObservableObject {
             accounts = list.accounts
             defaultAccount = list.defaultAccount
             telemetryEnabled = config.telemetryEnabled
+            // Only update the GB-precision value when the daemon answered
+            // with one; a transport blip that returns 0 must not snap the
+            // Stepper to an out-of-range value the user never asked for.
+            if config.cacheMaxSizeGB > 0 {
+                cacheMaxSizeGB = config.cacheMaxSizeGB
+            }
         } catch {
             // Daemon not running, or IPC failure — show degraded state.
             Self.log.warning("Daemon status fetch failed: \(error.localizedDescription, privacy: .public)")
@@ -196,20 +221,6 @@ final class MenuStatusModel: ObservableObject {
         }
     }
 
-    /// Run LRU eviction and refresh.
-    func cacheEvict() {
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                let after = try await bridge.cacheEvict()
-                Self.log.info("cache.evict done; bytes remaining: \(after, privacy: .public)")
-            } catch {
-                Self.log.error("cache.evict failed: \(error.localizedDescription, privacy: .public)")
-            }
-            refresh()
-        }
-    }
-
     /// Wipe all cached blobs and refresh.
     func cacheClear() {
         Task { [weak self] in
@@ -219,6 +230,40 @@ final class MenuStatusModel: ObservableObject {
                 Self.log.info("cache.clear done; bytes remaining: \(after, privacy: .public)")
             } catch {
                 Self.log.error("cache.clear failed: \(error.localizedDescription, privacy: .public)")
+            }
+            refresh()
+        }
+    }
+
+    /// Stage a new cache-size limit (in whole gigabytes) for the daemon.
+    ///
+    /// Optimistically updates the published `cacheMaxSizeGB` so the
+    /// Stepper visibly tracks every click, then debounces the actual
+    /// `config.set cache.max_size_gb=<gb>` IPC call by
+    /// `setCacheLimitDebounce`. Holding the Stepper arrow racks up many
+    /// in-process ticks but only the last value crosses the socket.
+    ///
+    /// Out-of-range values are clamped to the allowed window so a future
+    /// SwiftUI change that broadens the Stepper's bounds cannot ship an
+    /// invalid value to the daemon (which would reject it anyway).
+    func setCacheLimitGB(_ gb: Int) {
+        let clamped = max(1, min(1024, gb))
+        // Optimistic UI: reflect the new value immediately so the menu
+        // stays consistent while the debounce window runs out.
+        cacheMaxSizeGB = clamped
+        cacheMaxBytes = Int64(clamped) * 1024 * 1024 * 1024
+        setCacheLimitTask?.cancel()
+        setCacheLimitTask = Task { [weak self] in
+            // Wait for the user to stop clicking. A new call cancels this
+            // task; only the final settle reaches the daemon.
+            try? await Task.sleep(for: MenuStatusModel.setCacheLimitDebounce)
+            guard let self else { return }
+            if Task.isCancelled { return }
+            do {
+                try await bridge.configSet(key: "cache.max_size_gb", value: String(clamped))
+                Self.log.info("cache.max_size_gb set to \(clamped, privacy: .public) GB")
+            } catch {
+                Self.log.error("config.set cache.max_size_gb failed: \(error.localizedDescription, privacy: .public)")
             }
             refresh()
         }

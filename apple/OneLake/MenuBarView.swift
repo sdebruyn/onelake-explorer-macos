@@ -116,8 +116,20 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Free Up Space") {
-                model.cacheEvict()
+            // Editable upper bound. Stepper (rather than TextField) keeps
+            // input constrained to a valid whole-GB integer — users cannot
+            // type "asdf" or "-5" — and matches the natural mental model
+            // for a disk-size knob. Writes are debounced inside the model
+            // so racking up many clicks fires only one IPC call.
+            Stepper(
+                value: Binding(
+                    get: { model.cacheMaxSizeGB > 0 ? model.cacheMaxSizeGB : 10 },
+                    set: { model.setCacheLimitGB($0) }
+                ),
+                in: 1...1000,
+                step: 1
+            ) {
+                Text("Limit: \(model.cacheMaxSizeGB > 0 ? "\(model.cacheMaxSizeGB) GB" : "—")")
             }
             .disabled(!model.isRunning)
 
@@ -128,12 +140,22 @@ struct MenuBarView: View {
         }
     }
 
+    /// "3.2 GB of 10 GB used". Falls back to "Cache size unknown" until
+    /// the first refresh lands.
+    ///
+    /// Uses ByteCountFormatter with `.useGB` for the "used" side because
+    /// the live cache size is byte-precision (the daemon reports it via
+    /// `du`-style math, fractional). The limit side reads directly from
+    /// the user's GB setting so it never wobbles between rounding modes.
     private var cacheUsageLabel: String {
         guard model.cacheBytes >= 0 else { return "Cache size unknown" }
-        let used = ByteCountFormatter.string(fromByteCount: model.cacheBytes, countStyle: .binary)
-        if model.cacheMaxBytes > 0 {
-            let max = ByteCountFormatter.string(fromByteCount: model.cacheMaxBytes, countStyle: .binary)
-            return "\(used) of \(max) used"
+        let usedFormatter = ByteCountFormatter()
+        usedFormatter.allowedUnits = [.useGB]
+        usedFormatter.countStyle = .binary
+        usedFormatter.allowsNonnumericFormatting = false
+        let used = usedFormatter.string(fromByteCount: model.cacheBytes)
+        if model.cacheMaxSizeGB > 0 {
+            return "\(used) of \(model.cacheMaxSizeGB) GB used"
         }
         return "\(used) used"
     }

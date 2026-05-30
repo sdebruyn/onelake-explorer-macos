@@ -80,8 +80,12 @@ func TestHandleStatus(t *testing.T) {
 	}
 	if resp.CacheMaxBytes <= 0 {
 		// We seeded MaxBlobBytes=1024 in the cache but the config's
-		// MaxSizeBytes default is 10 GiB; ensure non-zero is returned.
+		// MaxSizeGB default is 10 GB → handlers must return the
+		// converted byte value (10 * 1<<30); ensure non-zero is returned.
 		t.Errorf("CacheMaxBytes should be > 0, got %d", resp.CacheMaxBytes)
+	}
+	if want := int64(config.DefaultCacheSizeGB) * 1024 * 1024 * 1024; resp.CacheMaxBytes != want {
+		t.Errorf("CacheMaxBytes = %d, want %d (GB→bytes conversion at the daemon seam)", resp.CacheMaxBytes, want)
 	}
 	if resp.CacheBytes < 0 {
 		t.Errorf("CacheBytes should be measured (>=0), got %d", resp.CacheBytes)
@@ -681,20 +685,37 @@ func TestHandleConfigSetTelemetry(t *testing.T) {
 	}
 }
 
-// TestHandleConfigSetCacheMaxSize verifies that the human-friendly size alias
-// (cache.max_size) is accepted and resolves to the same backing field as the
-// raw bytes key (cache.max_size_bytes).
-func TestHandleConfigSetCacheMaxSize(t *testing.T) {
+// TestHandleConfigSetCacheMaxSizeGB verifies that the canonical GB key
+// the menubar Stepper writes is accepted and resolves to the right
+// backing field and byte conversion.
+func TestHandleConfigSetCacheMaxSizeGB(t *testing.T) {
 	h := newTestHandlers(t)
-	res, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: "cache.max_size", Value: "1GiB"}))
+	res, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: "cache.max_size_gb", Value: "25"}))
 	if err != nil {
-		t.Fatalf("config.set cache.max_size=1GiB: %v", err)
+		t.Fatalf("config.set cache.max_size_gb=25: %v", err)
 	}
 	if _, ok := res.(ConfigSetResponse); !ok {
 		t.Fatalf("type: got %T", res)
 	}
-	if got := h.store.Snapshot().Cache.MaxSizeBytes; got != 1<<30 {
-		t.Errorf("MaxSizeBytes = %d, want %d", got, int64(1<<30))
+	snap := h.store.Snapshot()
+	if got := snap.Cache.MaxSizeGB; got != 25 {
+		t.Errorf("MaxSizeGB = %d, want 25", got)
+	}
+	if got := snap.Cache.MaxBytes(); got != 25*(1<<30) {
+		t.Errorf("MaxBytes() = %d, want %d (GB→bytes conversion)", got, int64(25)*(1<<30))
+	}
+}
+
+// TestHandleConfigSetCacheMaxSizeGBRejectsOutOfRange confirms the
+// daemon refuses Stepper writes outside the [MinCacheSizeGB,
+// MaxCacheSizeGB] bounds even if a buggy client manages to send them.
+func TestHandleConfigSetCacheMaxSizeGBRejectsOutOfRange(t *testing.T) {
+	h := newTestHandlers(t)
+	for _, bad := range []string{"0", "-1", "9999"} {
+		_, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: "cache.max_size_gb", Value: bad}))
+		if err == nil {
+			t.Errorf("config.set cache.max_size_gb=%s expected error", bad)
+		}
 	}
 }
 
@@ -709,16 +730,15 @@ func TestHandleConfigSetUnknownKeyErrors(t *testing.T) {
 }
 
 // TestHandleConfigSetKeyNormalization verifies that dash-separated key
-// variants are accepted (e.g. "cache.max-size" == "cache.max_size").
+// variants are accepted (e.g. "cache.max-size-gb" == "cache.max_size_gb").
 func TestHandleConfigSetKeyNormalization(t *testing.T) {
 	h := newTestHandlers(t)
-	_, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: "cache.max-size", Value: "512MB"}))
+	_, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: "cache.max-size-gb", Value: "7"}))
 	if err != nil {
-		t.Fatalf("config.set cache.max-size: %v", err)
+		t.Fatalf("config.set cache.max-size-gb: %v", err)
 	}
-	// 512 MB decimal = 512 * 1_000_000
-	if got := h.store.Snapshot().Cache.MaxSizeBytes; got != 512*1_000_000 {
-		t.Errorf("MaxSizeBytes = %d, want %d", got, int64(512*1_000_000))
+	if got := h.store.Snapshot().Cache.MaxSizeGB; got != 7 {
+		t.Errorf("MaxSizeGB = %d, want 7", got)
 	}
 }
 

@@ -8,6 +8,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -59,9 +60,45 @@ type File struct {
 }
 
 // CacheConfig controls the on-disk blob cache.
+//
+// Wire/disk schema: the LRU eviction threshold is expressed in whole
+// gigabytes (1 GB = 1_073_741_824 bytes — binary, matching what Finder /
+// `du -h` show). Fractional GBs are intentionally not supported; the
+// menubar Stepper writes integer GBs and the cache layer converts to
+// bytes at the seam (see [CacheConfig.MaxBytes]).
+//
+// Backwards compatibility: the previous schema used `max_size_bytes`
+// (raw int64). Existing configs in the wild are migrated on first read
+// by [Store.normalise] — `max_size_bytes` is converted to whole GBs (with
+// `math.Ceil` to avoid silently shrinking a user's customised limit
+// below what they set) and rewritten as `max_size_gb` on the next save.
+// `max_size_bytes` is preserved on the struct only to detect the legacy
+// shape; it is omitted from any future save (see omitempty).
 type CacheConfig struct {
-	// MaxSizeBytes is the LRU eviction threshold. Default 10 GiB.
-	MaxSizeBytes int64 `toml:"max_size_bytes"`
+	// MaxSizeGB is the LRU eviction threshold in gigabytes (binary).
+	// Default 10. A value of 0 means "no limit" (eviction is a no-op).
+	MaxSizeGB int `toml:"max_size_gb"`
+
+	// MaxSizeBytes is the legacy, byte-precision threshold. Kept ONLY to
+	// recognise pre-migration configs on disk; new code should read
+	// [MaxSizeGB] (or [CacheConfig.MaxBytes] for byte-precision needs).
+	// omitzero drops the legacy key on save once migration has happened
+	// (BurntSushi/toml's omitempty does NOT skip zero ints — only empty
+	// strings/slices/maps — so omitzero is required to actually remove
+	// the key from the rewritten config).
+	MaxSizeBytes int64 `toml:"max_size_bytes,omitzero"`
+}
+
+// bytesPerGB is the binary gigabyte multiplier (1 GiB = 2^30 bytes).
+// CacheConfig.MaxSizeGB uses binary GBs to match what Finder, `du -h`
+// and macOS storage reports show.
+const bytesPerGB int64 = 1024 * 1024 * 1024
+
+// MaxBytes returns the cache size limit in bytes for callers that need
+// byte-precision (the cache package's eviction sums byte counts from the
+// blob table). 0 means "no limit".
+func (c CacheConfig) MaxBytes() int64 {
+	return int64(c.MaxSizeGB) * bytesPerGB
 }
 
 // NetConfig controls HTTP behavior to OneLake / Fabric.
@@ -114,6 +151,21 @@ type Account struct {
 	ClientID string `toml:"client_id,omitempty"`
 }
 
+// MinCacheSizeGB is the lower bound enforced by [ApplyConfig] on the
+// cache.max_size_gb key. 1 GB is small enough that a curious user can
+// experiment without breaking the cache; smaller values produce a cache
+// that thrashes on the smallest of file downloads.
+const MinCacheSizeGB = 1
+
+// MaxCacheSizeGB is the upper bound enforced by [ApplyConfig] on the
+// cache.max_size_gb key. 1024 GB (1 TiB) is well past any realistic
+// laptop SSD; it exists mainly to catch typos in the menubar Stepper.
+const MaxCacheSizeGB = 1024
+
+// DefaultCacheSizeGB is the seeded value for new installations. 10 GB
+// matches the pre-refactor default (10 GiB == 10 binary GB).
+const DefaultCacheSizeGB = 10
+
 // Default returns the zero-but-sensible config used the first time OFEM
 // starts on a machine. Callers persist this via Save once they have
 // populated InstallID.
@@ -121,7 +173,7 @@ func Default() File {
 	return File{
 		Telemetry: true,
 		Cache: CacheConfig{
-			MaxSizeBytes: 10 * 1024 * 1024 * 1024, // 10 GiB
+			MaxSizeGB: DefaultCacheSizeGB,
 		},
 		Net: NetConfig{
 			MaxConcurrentUploadsPerAccount:   4,
@@ -209,13 +261,59 @@ func LoadFrom(paths Paths) (*Store, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
+	// Zero the Cache block before unmarshal so migrateCacheConfig can
+	// distinguish "file omits [cache] entirely → keep the Default()
+	// seed" from "file has [cache] with legacy max_size_bytes only →
+	// migrate". With BurntSushi/toml, missing keys preserve struct
+	// defaults, so without this reset both shapes would look identical.
+	s.file.Cache = CacheConfig{}
+
 	if err := toml.Unmarshal(data, &s.file); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	if s.file.Accounts == nil {
 		s.file.Accounts = map[string]Account{}
 	}
+	migrateCacheConfig(&s.file)
 	return s, nil
+}
+
+// migrateCacheConfig promotes the legacy `max_size_bytes` key to the new
+// `max_size_gb` representation on read so existing on-disk configs from
+// pre-2026.06 OFEM installations keep working. The conversion uses
+// math.Ceil so a 10 GiB customisation never shrinks below what the user
+// originally asked for. The legacy field is zeroed so the next Save
+// drops the key from disk (it carries omitempty).
+//
+// When both fields are absent the file omitted the `[cache]` table
+// entirely and the seeded Default() value already populated max_size_gb;
+// this function leaves that case untouched.
+func migrateCacheConfig(f *File) {
+	if f.Cache.MaxSizeGB > 0 {
+		// New schema present — clear legacy bytes if both somehow coexist
+		// (e.g. user hand-edited the file) to ensure subsequent saves
+		// emit only the canonical key.
+		f.Cache.MaxSizeBytes = 0
+		return
+	}
+	if f.Cache.MaxSizeBytes > 0 {
+		gbFloat := float64(f.Cache.MaxSizeBytes) / float64(bytesPerGB)
+		f.Cache.MaxSizeGB = int(math.Ceil(gbFloat))
+		if f.Cache.MaxSizeGB < MinCacheSizeGB {
+			f.Cache.MaxSizeGB = MinCacheSizeGB
+		}
+		f.Cache.MaxSizeBytes = 0
+		return
+	}
+	// Both zero. Two sub-cases collapse to the same fix:
+	//   1. The file omits [cache] entirely (fresh install or pre-2026.05
+	//      config without cache settings).
+	//   2. The file has [cache] with max_size_bytes = 0 (the legacy
+	//      "unlimited" sentinel, supported only by the byte-precision
+	//      parser). The GB schema does not offer an unlimited option;
+	//      seeding the default keeps the cache bounded.
+	// In both cases, seeding the default is the safe choice.
+	f.Cache.MaxSizeGB = DefaultCacheSizeGB
 }
 
 // Snapshot returns a copy of the current file. Mutations on the returned
