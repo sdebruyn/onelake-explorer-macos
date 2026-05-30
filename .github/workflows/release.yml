@@ -137,19 +137,42 @@ jobs:
       - name: Generate Xcode project
         run: make apple-gen
 
+      # Stage the Developer ID provisioning profiles for the host app
+      # and the File Provider Extension so xcodebuild can match them
+      # to the respective bundle IDs. Profiles must live in
+      # ~/Library/MobileDevice/Provisioning Profiles/ with a
+      # <UUID>.provisionprofile filename — xcodebuild keys by UUID.
+      - name: Install provisioning profiles
+        env:
+          APPLE_PROVISION_PROFILE_APP: ${{ secrets.APPLE_PROVISION_PROFILE_APP }}
+          APPLE_PROVISION_PROFILE_FP: ${{ secrets.APPLE_PROVISION_PROFILE_FP }}
+        run: |
+          PROFILES_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILES_DIR"
+
+          install_profile() {
+            local b64="$1"; local label="$2"
+            local tmp
+            tmp=$(mktemp)
+            echo "$b64" | base64 --decode > "$tmp"
+            local uuid
+            uuid=$(security cms -D -i "$tmp" | plutil -extract UUID raw -)
+            cp "$tmp" "$PROFILES_DIR/${uuid}.provisionprofile"
+            rm "$tmp"
+            echo "Installed $label as ${uuid}.provisionprofile"
+          }
+
+          install_profile "$APPLE_PROVISION_PROFILE_APP" "host app profile"
+          install_profile "$APPLE_PROVISION_PROFILE_FP" "fileprovider extension profile"
+
       - name: Archive (xcodebuild)
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          # Manual signing with the Developer ID Application cert we
-          # imported into the build keychain earlier. We do NOT use
-          # -allowProvisioningUpdates here: that triggers Apple's
-          # Cloud-Managed signing path, which our team does not have
-          # enabled and which silently ignores the keychain cert.
-          # CODE_SIGN_STYLE=Manual + CODE_SIGN_IDENTITY pin xcodebuild
-          # to the local cert. Provisioning profiles are not required
-          # for Developer ID app/extension signing when the cert is
-          # available directly.
+          # Manual signing with the Developer ID Application cert from
+          # the build keychain and the provisioning profiles we just
+          # staged. xcodebuild picks the matching profile per target
+          # (bundle id + cert pair) without a cloud round-trip.
           xcodebuild \
             -project apple/OneLake.xcodeproj \
             -scheme OneLake \
@@ -160,21 +183,27 @@ jobs:
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Developer ID Application" \
+            PROVISIONING_PROFILE_SPECIFIER="OFEM distribution developer ID" \
+            "PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*][bundle.identifier=dev.debruyn.ofem.fileprovider]=OFEM FP distribution developer ID" \
             archive
 
       - name: Export archive (Developer ID)
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          # Manual signing in ExportOptions: signingStyle=manual +
-          # signingCertificate pin the lookup to the local cert.
-          # Drop -allowProvisioningUpdates so Cloud Signing is never
-          # attempted; the keychain cert is the only source of truth.
+          # ExportOptions: manual signing + per-bundle-id profile mapping.
+          # The signingCertificate pin keeps Cloud Signing from being
+          # tried; the provisioningProfiles dict tells xcodebuild which
+          # profile name (from the staged folder) to embed in each
+          # signed target.
           /usr/libexec/PlistBuddy \
             -c "Add :method string developer-id" \
             -c "Add :signingStyle string manual" \
             -c "Add :signingCertificate string Developer ID Application" \
             -c "Add :teamID string $APPLE_TEAM_ID" \
+            -c "Add :provisioningProfiles dict" \
+            -c "Add :provisioningProfiles:dev.debruyn.ofem string OFEM distribution developer ID" \
+            -c "Add :provisioningProfiles:dev.debruyn.ofem.fileprovider string OFEM FP distribution developer ID" \
             "$RUNNER_TEMP/ExportOptions.plist"
 
           xcodebuild \
