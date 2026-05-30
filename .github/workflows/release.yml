@@ -140,14 +140,16 @@ jobs:
       - name: Archive (xcodebuild)
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
-          # -authenticationKey* lets xcodebuild create / refresh
-          # provisioning profiles through the App Store Connect API
-          # without an interactive Xcode account on the runner.
-          # Without this, -allowProvisioningUpdates fails with
-          # "No Accounts: Add a new account in Accounts settings."
+          # Manual signing with the Developer ID Application cert we
+          # imported into the build keychain earlier. We do NOT use
+          # -allowProvisioningUpdates here: that triggers Apple's
+          # Cloud-Managed signing path, which our team does not have
+          # enabled and which silently ignores the keychain cert.
+          # CODE_SIGN_STYLE=Manual + CODE_SIGN_IDENTITY pin xcodebuild
+          # to the local cert. Provisioning profiles are not required
+          # for Developer ID app/extension signing when the cert is
+          # available directly.
           xcodebuild \
             -project apple/OneLake.xcodeproj \
             -scheme OneLake \
@@ -155,24 +157,23 @@ jobs:
             -destination "generic/platform=macOS" \
             -derivedDataPath build/Release \
             -archivePath build/OneLake.xcarchive \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/notary/key.p8" \
-            -authenticationKeyID "$APPLE_API_KEY_ID" \
-            -authenticationKeyIssuerID "$APPLE_API_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
             archive
 
       - name: Export archive (Developer ID)
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
-          # Build ExportOptions.plist via PlistBuddy so no shell heredoc
-          # quoting rules interfere with the secret value expansion.
+          # Manual signing in ExportOptions: signingStyle=manual +
+          # signingCertificate pin the lookup to the local cert.
+          # Drop -allowProvisioningUpdates so Cloud Signing is never
+          # attempted; the keychain cert is the only source of truth.
           /usr/libexec/PlistBuddy \
             -c "Add :method string developer-id" \
-            -c "Add :signingStyle string automatic" \
+            -c "Add :signingStyle string manual" \
+            -c "Add :signingCertificate string Developer ID Application" \
             -c "Add :teamID string $APPLE_TEAM_ID" \
             "$RUNNER_TEMP/ExportOptions.plist"
 
@@ -180,11 +181,7 @@ jobs:
             -exportArchive \
             -archivePath build/OneLake.xcarchive \
             -exportPath build/Export \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/notary/key.p8" \
-            -authenticationKeyID "$APPLE_API_KEY_ID" \
-            -authenticationKeyIssuerID "$APPLE_API_ISSUER_ID"
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
 
       - name: Build CLI binary (embed in .app)
         env:
