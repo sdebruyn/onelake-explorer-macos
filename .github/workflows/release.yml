@@ -140,7 +140,14 @@ jobs:
       - name: Archive (xcodebuild)
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
+          # -authenticationKey* lets xcodebuild create / refresh
+          # provisioning profiles through the App Store Connect API
+          # without an interactive Xcode account on the runner.
+          # Without this, -allowProvisioningUpdates fails with
+          # "No Accounts: Add a new account in Accounts settings."
           xcodebuild \
             -project apple/OneLake.xcodeproj \
             -scheme OneLake \
@@ -149,12 +156,17 @@ jobs:
             -derivedDataPath build/Release \
             -archivePath build/OneLake.xcarchive \
             -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/notary/key.p8" \
+            -authenticationKeyID "$APPLE_API_KEY_ID" \
+            -authenticationKeyIssuerID "$APPLE_API_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             archive
 
       - name: Export archive (Developer ID)
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
           # Build ExportOptions.plist via PlistBuddy so no shell heredoc
           # quoting rules interfere with the secret value expansion.
@@ -169,7 +181,10 @@ jobs:
             -archivePath build/OneLake.xcarchive \
             -exportPath build/Export \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -allowProvisioningUpdates
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/notary/key.p8" \
+            -authenticationKeyID "$APPLE_API_KEY_ID" \
+            -authenticationKeyIssuerID "$APPLE_API_ISSUER_ID"
 
       - name: Build CLI binary (embed in .app)
         env:
