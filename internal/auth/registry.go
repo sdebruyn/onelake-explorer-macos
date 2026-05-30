@@ -247,7 +247,7 @@ func (r *Registry) TokenForScopes(ctx context.Context, alias string, scopes []st
 		return "", fmt.Errorf("auth: account %q: %w", alias, os.ErrNotExist)
 	}
 
-	client, err := r.clientFor(alias, cfg.TenantID)
+	client, err := r.clientFor(alias, cfg.TenantID, cfg.ClientID)
 	if err != nil {
 		return "", err
 	}
@@ -281,14 +281,23 @@ func (s scopedProvider) Token(ctx context.Context, alias string) (string, error)
 
 // clientFor returns the cached MSAL client for the (alias, tenant)
 // pair, building it lazily via the registry's factory on first use.
-func (r *Registry) clientFor(alias, tenantID string) (MSALClient, error) {
+// accountClientID overrides the registry-wide default when non-empty
+// — Bring Your Own App Registration setups persist a per-account
+// client ID that MUST be used here, otherwise MSAL's cache lookup
+// (keyed on client+tenant+account) misses and the user is forced to
+// re-authenticate on every daemon start.
+func (r *Registry) clientFor(alias, tenantID, accountClientID string) (MSALClient, error) {
+	clientID := accountClientID
+	if clientID == "" {
+		clientID = r.clientID
+	}
 	key := tenantID + "|" + alias
 	r.clientsMu.Lock()
 	defer r.clientsMu.Unlock()
 	if c, ok := r.clients[key]; ok {
 		return c, nil
 	}
-	c, err := r.factory(r.clientID, tenantID, r.kc, alias)
+	c, err := r.factory(clientID, tenantID, r.kc, alias)
 	if err != nil {
 		return nil, fmt.Errorf("auth: build MSAL client for %q: %w", alias, err)
 	}
@@ -351,6 +360,7 @@ func toConfigAccount(a Account) config.Account {
 		HomeAccountID: a.HomeAccountID,
 		Username:      a.Username,
 		AddedAt:       added.UTC().Format(time.RFC3339),
+		ClientID:      a.ClientID,
 	}
 }
 
@@ -371,5 +381,6 @@ func fromConfigAccount(c config.Account) Account {
 		TenantID:      c.TenantID,
 		TenantName:    c.TenantName,
 		AddedAt:       added,
+		ClientID:      c.ClientID,
 	}
 }

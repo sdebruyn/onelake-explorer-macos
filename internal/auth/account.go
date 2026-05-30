@@ -34,6 +34,16 @@ type Account struct {
 	// AddedAt is the wall-clock timestamp of the first successful login
 	// for this alias.
 	AddedAt time.Time
+
+	// ClientID is the Microsoft Entra App Registration this account
+	// authenticated against. Empty means "use the built-in OFEM
+	// registration ([EntraClientID])"; non-empty is a Bring Your Own
+	// App Registration override the user supplied at Add Account time
+	// (see docs/auth-custom-app-registration.md). Stored per-account
+	// because MSAL's token cache is keyed on (client, tenant, account),
+	// so silent refresh after a daemon restart must reach for the same
+	// client ID the original login used.
+	ClientID string
 }
 
 // MaxAliasLength is the upper bound enforced by [ValidateAlias]. It is

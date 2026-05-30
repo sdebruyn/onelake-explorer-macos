@@ -104,6 +104,14 @@ type Account struct {
 
 	// AddedAt is the wall-clock timestamp of the first successful login.
 	AddedAt string `toml:"added_at"`
+
+	// ClientID is the Entra App Registration client GUID this account
+	// authenticated against. Empty/absent means "use the built-in OFEM
+	// registration"; only present for Bring Your Own App Registration
+	// setups. Persisted because MSAL's token cache is keyed on
+	// (client, tenant, account), so silent refresh on the next daemon
+	// start must reach for the same client ID the original login used.
+	ClientID string `toml:"client_id,omitempty"`
 }
 
 // Default returns the zero-but-sensible config used the first time OFEM

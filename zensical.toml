@@ -20,6 +20,7 @@ nav = [
     { "Install" = "install.md" },
     { "Sign in" = "sign-in.md" },
     { "Use in Finder" = "use.md" },
+    { "Custom App Registration" = "custom-app-registration.md" },
     { "Privacy" = "privacy.md" },
     { "Uninstall" = "uninstall.md" },
     { "Support" = "support.md" },

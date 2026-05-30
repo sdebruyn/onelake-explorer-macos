@@ -26,8 +26,17 @@ struct AddAccountView: View {
 
     @State private var alias: String = ""
     @State private var tenant: String = ""
+    @State private var customClientID: String = ""
+    @State private var showAdvanced: Bool = false
     @State private var phase: LoginPhase = .idle
     @State private var loginTask: Task<Void, Never>?
+
+    // The follow-on docs page that describes when and how to bring
+    // your own Entra App Registration. Linked from the Advanced
+    // section so curious users don't have to dig for it.
+    private static let customAppRegDocsURL = URL(
+        string: "https://ofem.debruyn.dev/custom-app-registration/"
+    )!
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "add-account")
 
@@ -55,9 +64,14 @@ struct AddAccountView: View {
                 TextField("e.g. work", text: $alias)
                     .textFieldStyle(.roundedBorder)
                     .disabled(phase == .waiting)
+                // fixedSize(vertical) lets the caption wrap to a second
+                // line when the alias is long enough to push the
+                // composed preview past the field width, instead of
+                // clipping with an ellipsis.
                 Text("Short name for this account. Appears in Finder as \"OneLake \u{2014} \(alias.isEmpty ? "<alias>" : alias)\".")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             // Tenant field — optional; leave blank to let Azure pick at login.
@@ -65,10 +79,19 @@ struct AddAccountView: View {
                 Text("Tenant (optional)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                TextField("GUID or domain — blank to pick at sign-in", text: $tenant)
+                TextField("GUID or domain", text: $tenant)
                     .textFieldStyle(.roundedBorder)
                     .disabled(phase == .waiting)
+                Text("Optional. Leave blank and Microsoft will pick the right tenant at sign-in. Pin a specific tenant only if you belong to multiple and want to skip the picker.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+
+            // Advanced — Bring Your Own App Registration. Hidden by
+            // default; only users whose tenant admin has not approved
+            // the built-in OFEM app registration need to set this.
+            advancedSection
 
             Divider()
 
@@ -98,6 +121,35 @@ struct AddAccountView: View {
         // Dismiss if the window is closed via the red traffic-light button.
         .onDisappear {
             loginTask?.cancel()
+        }
+    }
+
+    // MARK: - Advanced (Bring Your Own App Registration)
+
+    @ViewBuilder
+    private var advancedSection: some View {
+        DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Client ID (optional)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                TextField("Use the built-in app registration when blank", text: $customClientID)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(phase == .waiting)
+                // Help text — kept short here, with a link to the full
+                // docs page that explains when this is needed and how
+                // to configure the Entra registration.
+                Text("Sign in with your own Microsoft Entra App Registration instead of the built-in OFEM one. Only needed when your tenant admin has not approved the OFEM app for organisation-wide use.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 2)
+                Link("How to set up a custom App Registration",
+                     destination: Self.customAppRegDocsURL)
+                    .font(.caption)
+                    .padding(.top, 2)
+            }
         }
     }
 
@@ -152,9 +204,11 @@ struct AddAccountView: View {
         loginTask = Task { @MainActor in
             do {
                 let tenantArg = tenant.trimmingCharacters(in: .whitespaces)
+                let clientIDArg = customClientID.trimmingCharacters(in: .whitespaces)
                 let info = try await CoreBridge.shared.login(
                     alias: trimmedAlias,
-                    tenant: tenantArg.isEmpty ? nil : tenantArg
+                    tenant: tenantArg.isEmpty ? nil : tenantArg,
+                    clientID: clientIDArg.isEmpty ? nil : clientIDArg
                 )
                 // Task may have been cancelled while the browser was open;
                 // guard against updating state after cancellation.
