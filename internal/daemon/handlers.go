@@ -636,6 +636,11 @@ type AuthLoginRequest struct {
 	// Tenant is an optional tenant GUID or domain hint. When empty, MSAL
 	// picks the tenant from the user's home directory at sign-in time.
 	Tenant string `json:"tenant,omitempty"`
+	// ClientID is an optional override for the Entra App Registration
+	// client ID. When empty (the common case), the built-in OFEM
+	// registration ([auth.EntraClientID]) is used. Non-empty: caller
+	// brings their own registration — see docs/auth-custom-app-registration.md.
+	ClientID string `json:"clientId,omitempty"`
 	// DeviceCode selects the device-code flow instead of the interactive
 	// browser flow. Default false (interactive browser).
 	DeviceCode bool `json:"deviceCode,omitempty"`
@@ -684,11 +689,19 @@ func (h *Handlers) handleAuthLogin(ctx context.Context, params json.RawMessage) 
 		cacheBytes []byte
 		err        error
 	)
+	// Resolve which Entra App Registration to authenticate against: the
+	// caller's override if supplied (Bring Your Own App Registration —
+	// see docs/auth-custom-app-registration.md), otherwise the built-in
+	// multi-tenant OFEM registration.
+	clientID := req.ClientID
+	if clientID == "" {
+		clientID = auth.EntraClientID
+	}
 	if req.DeviceCode {
 		// Device-code: the prompt text is logged rather than returned; the
 		// menu-bar app should not use this flow (no terminal to display it).
 		// It is wired for completeness and CI headless-auth scenarios.
-		account, _, cacheBytes, err = auth.LoginDeviceCode(ctx, auth.EntraClientID, req.Tenant, h.kc,
+		account, _, cacheBytes, err = auth.LoginDeviceCode(ctx, clientID, req.Tenant, h.kc,
 			func(verificationURL, userCode string, _ time.Time) {
 				slog.Info("auth.login device-code prompt",
 					slog.String("verification_url", verificationURL),
@@ -697,13 +710,18 @@ func (h *Handlers) handleAuthLogin(ctx context.Context, params json.RawMessage) 
 			},
 		)
 	} else {
-		account, _, cacheBytes, err = auth.LoginInteractive(ctx, auth.EntraClientID, req.Tenant, h.kc)
+		account, _, cacheBytes, err = auth.LoginInteractive(ctx, clientID, req.Tenant, h.kc)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("sign in: %w", err)
 	}
 
 	account.Alias = req.Alias
+	// Persist the caller's client-ID override so silent refresh on a
+	// later daemon start reaches for the same App Registration. Empty
+	// stays empty — the registry falls back to the built-in OFEM
+	// client ID transparently.
+	account.ClientID = req.ClientID
 	if err := h.registry.Add(account, cacheBytes); err != nil {
 		return nil, fmt.Errorf("register account: %w", err)
 	}

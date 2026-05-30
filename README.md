@@ -31,6 +31,10 @@ Requires macOS 14 Sonoma or later on Apple Silicon. No system-level changes, no 
 
 Things managed by Microsoft Fabric and not exposed through the file system: creating or renaming workspaces, managing permissions, changing the schema of Delta tables. Those still go through the Fabric portal.
 
+## Strict tenant? Bring your own App Registration
+
+OFEM ships with a multi-tenant Entra App Registration that works for most users. Tenants that block third-party multi-tenant apps can supply their own client ID in *Add Account → Advanced* — see [Custom App Registration](https://ofem.debruyn.dev/custom-app-registration/) for the exact registration settings.
+
 ## Support
 
 [Issues](https://github.com/sdebruyn/onelake-explorer-macos/issues) · [Discussions](https://github.com/sdebruyn/onelake-explorer-macos/discussions) · [Security (private)](https://github.com/sdebruyn/onelake-explorer-macos/security/advisories/new)

@@ -321,11 +321,18 @@ final class CoreBridge {
     /// acceptable: no credentials are persisted for the incomplete login, and
     /// the daemon simply drops the connection once the task is done or the
     /// client disconnects.
-    func login(alias: String, tenant: String?) async throws -> AccountInfo {
+    func login(alias: String, tenant: String?, clientID: String? = nil) async throws -> AccountInfo {
         guard let client = client else { throw BridgeError.notBootstrapped }
         var params: [String: Any] = ["alias": alias, "deviceCode": false]
         if let tenant = tenant, !tenant.isEmpty {
             params["tenant"] = tenant
+        }
+        // Bring Your Own App Registration. When clientID is nil/empty,
+        // the daemon uses the built-in OFEM registration — see
+        // docs/auth-custom-app-registration.md for when an override is
+        // appropriate.
+        if let clientID = clientID, !clientID.isEmpty {
+            params["clientId"] = clientID
         }
         let data: Data
         do {
