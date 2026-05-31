@@ -82,3 +82,16 @@ func (s *perAccountSemaphore) channel(alias string) chan struct{} {
 	}
 	return ch
 }
+
+// clear replaces the internal map with a fresh empty one, freeing every
+// lazily-allocated per-alias channel. It MUST only be called after all
+// in-flight acquire/release pairs have completed (i.e. after the engine's
+// WaitGroup has been drained in Engine.Close).
+func (s *perAccountSemaphore) clear() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sem = make(map[string]chan struct{})
+}
