@@ -41,8 +41,8 @@ func TestListWorkspaces_FetchesAndCaches(t *testing.T) {
 	for _, w := range ws {
 		if _, err := f.cache.Get(ctx, cache.Key{
 			AccountAlias: testAlias,
-			WorkspaceID:  virtualWorkspaceID,
-			ItemID:       virtualWorkspaceID,
+			WorkspaceID:  VirtualWorkspaceID,
+			ItemID:       VirtualWorkspaceID,
 			Path:         w.ID,
 		}); err != nil {
 			t.Errorf("workspace %s not cached: %v", w.ID, err)
@@ -81,7 +81,7 @@ func TestListItems_FetchesAndCaches(t *testing.T) {
 	if _, err := f.cache.Get(ctx, cache.Key{
 		AccountAlias: testAlias,
 		WorkspaceID:  testWorkspaceID,
-		ItemID:       virtualItemID,
+		ItemID:       VirtualItemID,
 		Path:         testItemID,
 	}); err != nil {
 		t.Errorf("item not cached: %v", err)
@@ -152,8 +152,8 @@ func TestListWorkspaces_ExpiresStaleRows(t *testing.T) {
 	}
 	financeKey := cache.Key{
 		AccountAlias: testAlias,
-		WorkspaceID:  virtualWorkspaceID,
-		ItemID:       virtualWorkspaceID,
+		WorkspaceID:  VirtualWorkspaceID,
+		ItemID:       VirtualWorkspaceID,
 		Path:         testWorkspaceID,
 	}
 	if _, err := f.cache.Get(ctx, financeKey); err != nil {

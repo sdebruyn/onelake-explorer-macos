@@ -146,10 +146,9 @@ func (e *Engine) observeNetworkResult(err error) {
 // encodes the cache.Key so a daemon restart can rebuild the queue
 // from disk without any side-channel state.
 type queuedUpload struct {
-	key    cache.Key
-	body   string
-	size   int64
-	queued time.Time
+	key  cache.Key
+	body string
+	size int64
 }
 
 // offlineQueueDirName is the leaf directory under the cache root used
@@ -252,7 +251,7 @@ func (e *Engine) enqueueOfflineUpload(_ context.Context, k cache.Key, content io
 		_ = dh.Sync()
 		_ = dh.Close()
 	}
-	q := queuedUpload{key: k, body: final, size: written, queued: e.now()}
+	q := queuedUpload{key: k, body: final, size: written}
 	e.queueMu.Lock()
 	// Coalesce: if an entry for the same final path already sits in
 	// the queue, drop the old entry — the new spool file replaced its
@@ -351,10 +350,9 @@ func (e *Engine) recoverOfflineQueue() error {
 			continue
 		}
 		e.queue = append(e.queue, queuedUpload{
-			key:    p.key,
-			body:   p.path,
-			size:   p.size,
-			queued: p.mtime,
+			key:  p.key,
+			body: p.path,
+			size: p.size,
 		})
 	}
 	if len(pendings) > 0 {
