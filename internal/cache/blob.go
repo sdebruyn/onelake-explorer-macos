@@ -234,6 +234,14 @@ WHERE blob_sha256 != ''
 // Summing per-row would report N×size against a disk holding 1×size and
 // make [EvictToLimit] over-evict. Use it with [Options.MaxBlobBytes] to
 // decide whether eviction is needed.
+//
+// The deduped on-disk byte total is computed by summing DISTINCT
+// blob_size values from path_metadata (GROUP BY blob_sha256). This is
+// O(1) in SQL and avoids a full filesystem walk on every status call.
+//
+// The daemon status handler calls it via (*Cache).BlobBytes to report
+// CacheBytes without the per-call I/O overhead of filepath.WalkDir.
+// See internal/daemon/handlers.go: cacheBlobSize.
 func (c *Cache) BlobBytes(ctx context.Context) (int64, error) {
 	var total sql.NullInt64
 	if err := c.db.QueryRowContext(ctx, `
