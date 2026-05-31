@@ -6,7 +6,7 @@
   The daemon is NOT sandboxed (com.apple.security.app-sandbox is absent).
   Running as an SMAppService LaunchAgent helper, it must access:
 
-    • ~/Library/Group Containers/group.dev.debruyn.ofem/ — shared state with
+    • ~/Library/Group Containers/<TeamID>.group.dev.debruyn.ofem/ — shared state with
       the host app and File Provider Extension (config, cache, socket).
       app-groups covers this at the kernel level.
     • The unix-domain socket (ofem.sock) it creates in the group container.
@@ -29,10 +29,12 @@
 -->
 <plist version="1.0">
 <dict>
-    <!-- App Group shared container (config, cache, socket) -->
+    <!-- App Group shared container (config, cache, socket).
+         Team-prefixed so the same identifier works for both Developer
+         ID and Mac App Store distribution. -->
     <key>com.apple.security.application-groups</key>
     <array>
-        <string>group.dev.debruyn.ofem</string>
+        <string>$(TeamIdentifierPrefix)group.dev.debruyn.ofem</string>
     </array>
     <!-- Outbound HTTPS to OneLake / Entra ID -->
     <key>com.apple.security.network.client</key>

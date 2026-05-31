@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/sdebruyn/onelake-explorer-macos/internal/cache"
+	"github.com/sdebruyn/onelake-explorer-macos/internal/config"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/fabric"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/httpretry"
 	syncpkg "github.com/sdebruyn/onelake-explorer-macos/internal/sync"
@@ -38,8 +39,8 @@ import (
 // populated once at init time from the well-known macOS locations shared
 // between the daemon, the host app, and the sandboxed extension.
 //
-// The App Group container (~/Library/Group Containers/group.dev.debruyn.ofem)
-// is the rendezvous point documented in docs/file-provider.md. Both the
+// The App Group container (~/Library/Group Containers/<GroupID>/) is
+// the rendezvous point documented in docs/file-provider.md. Both the
 // daemon's cache/staging area and the extension's per-file staging area
 // live under it. The user's temp dir is also included for test fixtures.
 var allowedRoots []string
@@ -48,7 +49,7 @@ func init() {
 	home, err := os.UserHomeDir()
 	if err == nil {
 		candidates := []string{
-			filepath.Join(home, "Library", "Group Containers", "group.dev.debruyn.ofem"),
+			filepath.Join(home, "Library", "Group Containers", config.GroupID),
 			os.TempDir(),
 		}
 		for _, c := range candidates {

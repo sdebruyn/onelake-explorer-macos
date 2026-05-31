@@ -1,6 +1,6 @@
 // Package logging configures slog for the CLI and daemon. The CLI logs to
 // stderr with a human-readable format; the daemon logs JSON to a rotating
-// file in ~/Library/Group Containers/group.dev.debruyn.ofem/log/.
+// file in <config.Paths.LogDir> (the App Group container's log/ dir).
 package logging
 
 import (

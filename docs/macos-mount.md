@@ -37,7 +37,7 @@ extension when it has news.
 The wire protocol the host app and the extension use to talk to the
 daemon is the local-only JSON-RPC 2.0 socket described in
 [`internal/ipc`](../internal/ipc). It binds at
-`~/Library/Group Containers/group.dev.debruyn.ofem/ofem.sock`, owner-only
+`~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem/ofem.sock`, owner-only
 0600 permissions, length-prefixed frames capped at 1 MiB.
 
 The daemon → extension direction is wrapped over an XPC service (the

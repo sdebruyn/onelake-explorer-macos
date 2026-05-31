@@ -93,4 +93,4 @@ Fix any of those and re-run *Add Account*; OFEM does not cache failed registrati
 
 ## Privacy note
 
-The Client ID you supply is stored in `~/Library/Group Containers/group.dev.debruyn.ofem/config.toml` next to the account alias. It is never sent to telemetry; only the tenant GUID is — and only if telemetry is enabled (it defaults to on, but everything except tenant IDs is opt-out anyway).
+The Client ID you supply is stored in `~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem/config.toml` next to the account alias. It is never sent to telemetry; only the tenant GUID is — and only if telemetry is enabled (it defaults to on, but everything except tenant IDs is opt-out anyway).

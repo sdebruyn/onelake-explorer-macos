@@ -5,7 +5,7 @@
 // The daemon frames each message as a 4-byte big-endian uint32 length
 // followed by the JSON bytes. The socket lives at:
 //
-//   ~/Library/Group Containers/group.dev.debruyn.ofem/ofem.sock
+//   ~/Library/Group Containers/<ofemAppGroupIdentifier>/ofem.sock
 //
 // Transport: plain POSIX socket (see IPCTransport.swift). The previous
 // implementation used NWConnection (Network.framework) and bled state-
@@ -28,7 +28,14 @@ import os
 import os.log
 
 /// App Group identifier shared by host app, extension, and daemon.
-let ofemAppGroupIdentifier = "group.dev.debruyn.ofem"
+/// Team-prefixed (`<TeamID>.group.<bundle-prefix>`) so the same code
+/// signs cleanly for both Developer ID and Mac App Store distribution.
+/// Apple requires the team prefix for MAS; Developer ID accepts it as
+/// well. Keeping a single identifier means a single on-disk container
+/// path (`~/Library/Group Containers/<TeamID>.group.dev.debruyn.ofem/`)
+/// regardless of how the user installed OFEM. Must match
+/// `internal/config.GroupID` on the Go side.
+let ofemAppGroupIdentifier = "6D79CUWZ4J.group.dev.debruyn.ofem"
 
 /// Errors raised by the transport itself (as opposed to a domain error,
 /// which the daemon returns inside the JSON-RPC result envelope).

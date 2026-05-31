@@ -50,7 +50,7 @@ What each process does:
 - The **File Provider Extension** is sandboxed and short-lived — macOS launches it on demand for each Finder request. It implements the `NSFileProvider*` classes and reaches the daemon over IPC.
 - The **daemon** runs as a LaunchAgent (`OneLake.app/Contents/Helpers/ofem`), batches telemetry, polls Fabric on an adaptive schedule, runs scheduled cache eviction, and serves the Unix socket the host app and File Provider Extension share.
 
-All three share state through a macOS App Group (`group.dev.debruyn.ofem`): config TOML, the SQLite metadata cache, the cached blob shards, and the per-account Keychain entries.
+All three share state through a macOS App Group (`6D79CUWZ4J.group.dev.debruyn.ofem`, team-prefixed for both Developer ID and Mac App Store): config TOML, the SQLite metadata cache, the cached blob shards, and the per-account Keychain entries.
 
 ## Source layout
 
@@ -67,7 +67,7 @@ onelake-explorer-macos/
 │   ├── telemetry/              # Application Insights client + redaction
 │   ├── ipc/                    # JSON-RPC 2.0 over Unix socket
 │   ├── daemon/                 # background process + LaunchAgent management
-│   ├── config/                 # TOML on-disk config under ~/Library/Group Containers/group.dev.debruyn.ofem/
+│   ├── config/                 # TOML on-disk config under ~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem/
 │   ├── logging/                # slog setup (text to stdout for foreground daemon, JSON-to-file otherwise)
 │   └── buildinfo/              # link-time version/commit/date/conn-string
 ├── apple/                      # Xcode project, host app, File Provider Extension
