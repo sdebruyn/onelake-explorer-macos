@@ -54,6 +54,14 @@ final class MenuStatusModel: ObservableObject {
     /// @ObservedObject — it observes but does not own.
     static let shared = MenuStatusModel()
 
+    /// `nonisolated` because `static let shared` initializers run on
+    /// whatever thread first touches them — not guaranteed to be the
+    /// main actor. The body only assigns literal defaults to stored
+    /// properties and reads `CoreBridge.shared` (itself non-isolated),
+    /// so no MainActor work is required at construction. Instance
+    /// methods that mutate published state remain `@MainActor`.
+    nonisolated init() {}
+
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "menu-status")
 
     // MARK: Published
