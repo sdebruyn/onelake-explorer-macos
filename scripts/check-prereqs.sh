@@ -116,7 +116,7 @@ if /usr/bin/xcodebuild -version >/dev/null 2>&1; then
     xcode_ver=$(xcodebuild -version 2>/dev/null | head -1 | awk '{print $2}')
     ok "Xcode $xcode_ver (only required when working on the .app / File Provider Extension)"
 else
-    warn "Full Xcode is not installed; not needed for Phase 0 Go development but required for Phase 1+"
+    warn "Full Xcode is not installed; not needed for Go-only development but required for the .app / File Provider Extension"
     hint "install from the App Store, then run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
 fi
 
@@ -148,9 +148,9 @@ else
     hint "go install golang.org/x/tools/cmd/goimports@latest"
 fi
 
-# xcodegen owns the Xcode project (apple/project.yml); required from Phase 1
-# onwards for `make apple-gen` / `make apple-build`. Treat absence as a warning
-# (not a hard miss) because Phase 0 Go work doesn't need it, but if it *is*
+# xcodegen owns the Xcode project (apple/project.yml); required for
+# `make apple-gen` / `make apple-build`. Treat absence as a warning
+# (not a hard miss) because Go-only work doesn't need it, but if it *is*
 # installed, compare the version against the 2.40 minimum from
 # docs/prerequisites.md instead of just printing it.
 if command -v xcodegen >/dev/null 2>&1; then
@@ -164,7 +164,7 @@ if command -v xcodegen >/dev/null 2>&1; then
         hint "brew upgrade xcodegen"
     fi
 else
-    warn "xcodegen not installed (needed once you start working on the Phase 1 .app / File Provider Extension)"
+    warn "xcodegen not installed (needed for the .app / File Provider Extension)"
     hint "brew install xcodegen"
 fi
 

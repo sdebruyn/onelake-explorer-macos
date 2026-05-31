@@ -139,21 +139,19 @@ Both sides share the same JSON-RPC 2.0 framing
 `account.*`, `auth.login`, `cache.*`, `config.*`, `sync.pollChanges`,
 and the `fp.*` File Provider methods.
 
-**Phase 1 trade-off:** automatic Finder refresh requires `OneLake.app` to
-be running. If the user quits the host app, the File Provider Extension
+**Trade-off:** automatic Finder refresh requires `OneLake.app` to be
+running. If the user quits the host app, the File Provider Extension
 continues to work (files open, upload, download) but it will not receive
 proactive `signalEnumerator` calls. macOS performs its own periodic
 re-enumeration as a fallback; the cadence is at macOS's discretion and is
-typically slower than OFEM's 5-second polling interval. This limitation is
-accepted for Phase 1 and will be addressed in Phase 2 when the daemon gains
-a dedicated signaling channel directly into the extension.
+typically slower than OFEM's 5-second polling interval.
 
 **Why not XPC between daemon and extension?** A sandboxed File Provider
 Extension can communicate with the host app via App Group XPC, but wiring a
 new XPC service correctly (entitlements, Mach service name, bi-directional
-framing) adds significant complexity with no functional benefit in Phase 1:
-the host app is already the domain-registration owner and is expected to
-stay running while the user works. Using the existing Unix socket keeps the
+framing) adds significant complexity with no functional benefit: the host
+app is already the domain-registration owner and is expected to stay running
+while the user works. Using the existing Unix socket keeps the
 change-detection path simple and uniform.
 
 ## Fetching content
@@ -175,7 +173,7 @@ When the user saves a modified file, macOS calls `createItem` or `modifyItem`. T
 4. On success, returns the updated `NSFileProviderItem` with the server-assigned etag/mtime from the post-upload HEAD.
 5. On failure (network, throttling, capacity-paused), returns an `NSFileProviderError` macOS understands; macOS surfaces it in the UI and may retry later (we honor `Retry-After`).
 
-`modifyItem` only processes calls where `changedFields` includes `.contents`. Metadata-only changes (rename, reparent) return an `NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)` in Phase 1 — not the `NSFileProviderError.notAuthenticated` alias that `NSFileProviderError.featureUnsupported` resolves to on this macOS version.
+`modifyItem` only processes calls where `changedFields` includes `.contents`. Metadata-only changes (rename, reparent) return an `NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)` — not the `NSFileProviderError.notAuthenticated` alias that `NSFileProviderError.featureUnsupported` resolves to on this macOS version.
 
 ## Conflict resolution
 

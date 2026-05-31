@@ -7,12 +7,11 @@
 // `NSFileProviderError` values the framework retries / surfaces
 // appropriately.
 //
-// Phase 1: enumeration, fetch, and the full write path (create / modify /
-// delete) are wired up. Metadata-only modifications (rename, reparent,
-// xattr) return NSError(domain: NSCocoaErrorDomain, code:
-// NSFeatureUnsupportedError) — `NSFileProviderError.Code.featureUnsupported`
-// is iOS-only, so we use Foundation's generic equivalent — and are
-// deferred to Phase 2.
+// Enumeration, fetch, and the full write path (create / modify / delete)
+// are wired up. Metadata-only modifications (rename, reparent, xattr)
+// return NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)
+// — `NSFileProviderError.Code.featureUnsupported` is iOS-only, so we use
+// Foundation's generic equivalent — and are not yet implemented.
 
 import FileProvider
 import Foundation
@@ -297,14 +296,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     ) -> Progress {
         let progress = Progress(totalUnitCount: -1)
 
-        // Phase 1 handles content-bearing modifications only. Metadata-only
-        // changes (rename, reparent, xattr) come back as NSFeatureUnsupportedError
-        // so macOS does not retry them in a loop. NSFileProviderError has no
-        // featureUnsupported case on macOS, so Foundation's generic equivalent
-        // is the conventional fallback.
+        // Content-bearing modifications only. Metadata-only changes (rename,
+        // reparent, xattr) come back as NSFeatureUnsupportedError so macOS does
+        // not retry them in a loop. NSFileProviderError has no featureUnsupported
+        // case on macOS, so Foundation's generic equivalent is the conventional
+        // fallback.
         guard changedFields.contains(.contents), let contentsURL = contents else {
             FileProviderExtension.log.debug(
-                "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — metadata-only, unsupported in Phase 1"
+                "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — metadata-only, not yet supported"
             )
             completionHandler(
                 nil, [], false,

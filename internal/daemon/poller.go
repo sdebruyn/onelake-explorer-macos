@@ -27,7 +27,7 @@ type pollerEngine interface {
 //
 // Per docs/auth.md the adaptive poller refreshes "recent" folders every
 // 5 minutes. The full notion of "recent" requires interaction with the
-// File Provider Extension (Phase 1); until then we approximate it from
+// File Provider Extension; until then we approximate it from
 // the cache's LastAccessed timestamps via [cache.Cache.HotItems].
 //
 // Telemetry: sync_pulled events are emitted by [sync.Engine.RefreshFolder]
