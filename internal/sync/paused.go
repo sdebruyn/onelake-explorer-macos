@@ -205,8 +205,12 @@ func (e *Engine) probePausedWorkspace(ctx context.Context, alias, workspaceID st
 	}
 	defer e.pausedTracker.release(alias, workspaceID)
 
-	// Re-check after claiming the slot in case another goroutine
-	// recovered the workspace while we were waiting on the lock.
+	// Cache-row TOCTOU guard: the workspacePaused call above (line 196)
+	// read the cache without holding t.mu. Between that read and the claim
+	// above, the goroutine that previously held the inflight slot may have
+	// finished its probe, flipped the cache row to active, and released.
+	// Re-reading here catches that flip; skipping it would send a redundant
+	// HEAD probe to a workspace that is already recovered.
 	if st, ok := e.workspacePaused(ctx, alias, workspaceID); !ok {
 		return true
 	} else if !st.ProbedAt.IsZero() && e.now().Sub(st.ProbedAt) < e.pausedProbeInterval {
