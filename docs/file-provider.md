@@ -59,9 +59,9 @@ What each process does:
 
 ## Shared state via App Group
 
-All three processes share one App Group identifier `group.dev.debruyn.ofem`. That gives them:
-- A shared container at `~/Library/Group Containers/group.dev.debruyn.ofem/`.
-- A shared Keychain access group `group.dev.debruyn.ofem`.
+All three processes share one App Group identifier `6D79CUWZ4J.group.dev.debruyn.ofem` (team-prefixed so the same value works for both Developer ID and Mac App Store distribution). That gives them:
+- A shared container at `~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem/`.
+- A shared Keychain access group `6D79CUWZ4J.group.dev.debruyn.ofem`.
 
 What lives in the shared container:
 - `config.toml` — accounts, settings.
@@ -131,7 +131,7 @@ Results are cached in SQLite with a TTL appropriate for the level: 30 seconds fo
 For change-detection on folders the user has visited recently, the daemon (not the extension) polls Fabric on the adaptive schedule. When it finds changes, it publishes them to an in-memory change feed. The **host app** (`OneLake.app`) polls the daemon every 5 seconds via the `sync.pollChanges` JSON-RPC method and calls `NSFileProviderManager.signalEnumerator(for:)` for each affected container. macOS then asks the File Provider Extension to re-enumerate and the extension fetches the delta.
 
 The daemon socket lives at
-`~/Library/Group Containers/group.dev.debruyn.ofem/ofem.sock`, owner-only
+`~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem/ofem.sock`, owner-only
 (0600), inside the App Group container so the host app and the File
 Provider Extension both find it without an extra path-resolution layer.
 Both sides share the same JSON-RPC 2.0 framing
@@ -237,8 +237,8 @@ The bundled targets are:
 - `OneLakeFileProvider.appex` — embedded File Provider Extension
   (bundle id `dev.debruyn.ofem.fileprovider`).
 
-Both share the App Group `group.dev.debruyn.ofem` and the matching
-Keychain access group.
+Both share the App Group `6D79CUWZ4J.group.dev.debruyn.ofem` and the
+matching Keychain access group.
 
 Neither target embeds the Go engine. They share
 `apple/Shared/IPCClient.swift` (a JSON-RPC client over the daemon's Unix

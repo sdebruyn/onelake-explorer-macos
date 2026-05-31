@@ -12,10 +12,10 @@ import (
 )
 
 // Keychain stores per-account secrets on disk under
-// ~/Library/Group Containers/group.dev.debruyn.ofem/tokens/, one file
-// per account with 0600 permissions. The App Group container is shared
-// with the sandboxed File Provider Extension, so a single token cache
-// serves the daemon, the host app, and the extension.
+// <ConfigDir>/tokens/ (resolved by [config.ResolvePaths]), one file per
+// account with 0600 permissions. The App Group container is shared with
+// the sandboxed File Provider Extension, so a single token cache serves
+// the daemon, the host app, and the extension.
 //
 // An earlier implementation used the macOS Keychain via go-keyring; we
 // moved off it because the MSAL token cache after a single Microsoft
@@ -51,12 +51,12 @@ type Keychain interface {
 
 // NewKeychain returns a file-backed [Keychain] rooted at
 // <ConfigDir>/tokens/ — i.e. inside the shared App Group container at
-// ~/Library/Group Containers/group.dev.debruyn.ofem/tokens/. It resolves
-// the path through config.ResolvePaths, which is correct for the
-// unsandboxed daemon. Sandboxed callers (host app / File Provider
-// Extension) must use NewKeychainAt with the App Group token dir instead,
-// because os.UserHomeDir returns the per-app sandbox container there
-// rather than the real home.
+// ~/Library/Group Containers/<config.GroupID>/tokens/. It resolves the
+// path through config.ResolvePaths, which is correct for the unsandboxed
+// daemon. Sandboxed callers (host app / File Provider Extension) must
+// use NewKeychainAt with the App Group token dir instead, because
+// os.UserHomeDir returns the per-app sandbox container there rather than
+// the real home.
 func NewKeychain() (Keychain, error) {
 	paths, err := config.ResolvePaths()
 	if err != nil {

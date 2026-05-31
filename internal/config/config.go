@@ -1,9 +1,9 @@
 // Package config holds the on-disk OFEM configuration and the per-account
 // registry. The shape mirrors the docs/auth.md and docs/telemetry.md
 // designs. All on-disk state lives under the macOS App Group container at
-// ~/Library/Group Containers/group.dev.debruyn.ofem/ so the daemon, the
-// host app, and the sandboxed File Provider Extension can share it. See
-// docs/file-provider.md for the rationale.
+// ~/Library/Group Containers/<GroupID>/ (resolved via [ResolvePaths]) so
+// the daemon, the host app, and the sandboxed File Provider Extension can
+// share it. See docs/file-provider.md for the rationale.
 package config
 
 import (
@@ -206,7 +206,7 @@ func Default() File {
 type Paths struct {
 	// ConfigDir is the App Group container root. All other paths are
 	// derived from it.
-	ConfigDir string // ~/Library/Group Containers/group.dev.debruyn.ofem
+	ConfigDir string // ~/Library/Group Containers/<GroupID>
 	// ConfigFile is the TOML config file with accounts and settings.
 	ConfigFile string // <ConfigDir>/config.toml
 	// CacheDir holds cache.sqlite and the blob shards.

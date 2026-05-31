@@ -32,7 +32,7 @@ The core library and the bundled daemon binary are written in **Go**. The macOS 
 ### Logging
 
 - `log/slog` from stdlib (Go 1.21+). Structured logging with JSON or text handler. No external dependency.
-- Log files in `~/Library/Group Containers/group.dev.debruyn.ofem/log/ofem.log`, rotated with [`gopkg.in/natefinch/lumberjack.v2`](https://github.com/natefinch/lumberjack).
+- Log files in `~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem/log/ofem.log`, rotated with [`gopkg.in/natefinch/lumberjack.v2`](https://github.com/natefinch/lumberjack).
 
 ### Telemetry
 

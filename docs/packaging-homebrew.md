@@ -68,7 +68,7 @@ cask "ofem" do
             quit:      "dev.debruyn.ofem.app"
 
   zap trash: [
-    "~/Library/Group Containers/group.dev.debruyn.ofem",
+    "~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem",
     "~/Library/Preferences/dev.debruyn.ofem.plist",
     "~/Library/CloudStorage/OneLake-*",
   ]
@@ -127,7 +127,7 @@ We need:
 
 `apple/OneLake.entitlements`:
 - `com.apple.security.app-sandbox` = true.
-- `com.apple.security.application-groups` = `[group.dev.debruyn.ofem]`.
+- `com.apple.security.application-groups` = `[$(TeamIdentifierPrefix)group.dev.debruyn.ofem]` (Xcode expands to `6D79CUWZ4J.group.dev.debruyn.ofem` at sign-time; team-prefixed so the same value is valid for both Developer ID and Mac App Store).
 - `com.apple.security.network.client` = true.
 - `com.apple.security.files.user-selected.read-write` = true.
 - `com.apple.security.keychain-access-groups` = `[$(AppIdentifierPrefix)group.dev.debruyn.ofem]`.

@@ -253,7 +253,7 @@ struct MenuBarView: View {
 
     /// Open a directory path in Finder via NSWorkspace.
     /// The path lives under the App Group container
-    /// (~/Library/Group Containers/group.dev.debruyn.ofem/) so the sandboxed
+    /// (~/Library/Group Containers/<ofemAppGroupIdentifier>/) so the sandboxed
     /// app is entitled to open it. If the directory does not yet exist (e.g.
     /// the daemon has not written any logs yet) fall back to copying the path
     /// to the clipboard so the user can navigate there manually.

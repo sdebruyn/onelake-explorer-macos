@@ -5,7 +5,7 @@
 // The daemon frames each message as a 4-byte big-endian uint32 length
 // followed by the JSON bytes. The socket lives at:
 //
-//   ~/Library/Group Containers/group.dev.debruyn.ofem/ofem.sock
+//   ~/Library/Group Containers/<ofemAppGroupIdentifier>/ofem.sock
 //
 // Transport: plain POSIX socket (see IPCTransport.swift). The previous
 // implementation used NWConnection (Network.framework) and bled state-
