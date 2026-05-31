@@ -108,6 +108,11 @@ func (e *Engine) Offline() bool {
 // window go out FIFO. A no-op transition (already online) does not
 // trigger a drain — otherwise every successful call within an active
 // drain spawns another drain and we recurse.
+//
+// The drain goroutine is tracked via Engine.bg so Engine.Close can wait
+// for it to exit. When Close has already fired (e.done closed), we skip
+// the spawn entirely — the engine is shutting down and any queued bytes
+// stay on disk for the next process to recover via RecoverOfflineQueue.
 func (e *Engine) observeNetworkResult(err error) {
 	if e == nil || e.offline == nil {
 		return
@@ -116,7 +121,17 @@ func (e *Engine) observeNetworkResult(err error) {
 		wasOffline := e.offline.flagged.Load()
 		e.offline.markOnline()
 		if wasOffline && e.queueDepth() > 0 {
-			go e.drainOfflineQueue(context.Background())
+			select {
+			case <-e.done:
+				// Engine is closing; do not start new background work.
+				return
+			default:
+			}
+			e.bg.Add(1)
+			go func() {
+				defer e.bg.Done()
+				e.drainOfflineQueue(context.Background())
+			}()
 		}
 		return
 	}

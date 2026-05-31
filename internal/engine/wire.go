@@ -38,7 +38,16 @@ type Components struct {
 // Close releases resources owned by the engine. It is safe to call
 // multiple times; subsequent calls are no-ops from the cache's
 // perspective.
+//
+// The sync.Engine is closed before the cache so the drain goroutine
+// spawned by observeNetworkResult cannot race the cache shutdown.
+// The daemon also relies on process exit (os.Exit / signal-driven
+// return from Run) to reap any stragglers, but closing here keeps
+// shutdown tidy and lets goroutine-leak tests run cleanly.
 func (c *Components) Close() {
+	if c.Engine != nil {
+		_ = c.Engine.Close()
+	}
 	_ = c.Cache.Close()
 }
 

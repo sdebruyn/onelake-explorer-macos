@@ -145,6 +145,11 @@ func newEngineAt(t *testing.T, cacheRoot string, opts ...func(*Options)) *engine
 	if err != nil {
 		t.Fatalf("sync.New: %v", err)
 	}
+	// Close the engine before the cache: Close waits for the drain
+	// goroutine spawned by observeNetworkResult to exit so it can't race
+	// the cache shutdown (cache.Close above is registered earlier and
+	// therefore runs after this cleanup per t.Cleanup LIFO order).
+	t.Cleanup(func() { _ = eng.Close() })
 
 	return &engineFixture{
 		engine: eng,

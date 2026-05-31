@@ -182,6 +182,14 @@ type Engine struct {
 	drainMu             sync.Mutex
 	now                 func() time.Time
 	scratchDir          string
+
+	// done is closed by Close to signal background goroutines (currently
+	// the fire-and-forget drain spawned from observeNetworkResult) to
+	// unwind. bg tracks those goroutines so Close can wait for them to
+	// exit before returning. closeOnce makes Close idempotent.
+	done      chan struct{}
+	bg        sync.WaitGroup
+	closeOnce sync.Once
 }
 
 // New constructs an Engine from Options. It returns an error if any of
@@ -262,7 +270,34 @@ func New(opts Options) (*Engine, error) {
 		offline:             newOfflineState(),
 		now:                 now,
 		scratchDir:          scratchDir,
+		done:                make(chan struct{}),
 	}, nil
+}
+
+// Close stops every background goroutine the engine started during its
+// lifetime and waits for them to exit. It is idempotent: a second call
+// is a no-op. It does NOT close the cache, the auth registry, or any
+// other dependency the engine was wired with — those have their own
+// lifecycles owned by the caller (see engine.Components.Close).
+//
+// The production daemon currently relies on process exit to reap these
+// goroutines (see internal/daemon/run.go), so calling Close in that
+// path is optional. Tests SHOULD call it: a test that spins up several
+// engines and never reaps the drain goroutine started by
+// observeNetworkResult would otherwise leak one goroutine per engine
+// between sub-tests, which the race detector + -count=2 surfaces as
+// flaky timing under heavy parallelism.
+func (e *Engine) Close() error {
+	if e == nil {
+		return nil
+	}
+	e.closeOnce.Do(func() {
+		if e.done != nil {
+			close(e.done)
+		}
+		e.bg.Wait()
+	})
+	return nil
 }
 
 // tenantFor returns the tenant GUID for alias, or "" if no resolver is
