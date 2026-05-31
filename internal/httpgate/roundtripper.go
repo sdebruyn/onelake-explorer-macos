@@ -13,8 +13,8 @@ import (
 // per-host gate of the supplied Registry. It is the recommended way to
 // plug httpgate into existing *http.Client wiring: callers wrap the
 // transport they already use, and gating is applied transparently on
-// every attempt — including each retry an inner layer such as
-// internal/api.Do issues.
+// every attempt — including each retry an outer layer such as
+// internal/httpretry.Do issues.
 //
 // On 429 / 503 responses the round-tripper parses Retry-After and, when
 // present, calls Penalty on the matching gate so subsequent attempts
@@ -111,8 +111,8 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	// Post any Penalty BEFORE wrapping the body so the in-band retry in
-	// internal/api.Do (which only sees status+headers) observes the new
-	// pause window the moment it loops back into Acquire.
+	// internal/httpretry.Do (which only sees status+headers) observes the
+	// new pause window the moment it loops back into Acquire.
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
 		until, ok := ParseRetryAfter(resp.Header.Get("Retry-After"), now())
 		if !ok {

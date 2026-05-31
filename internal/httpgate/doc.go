@@ -2,7 +2,7 @@
 // front of every HTTP round trip to Fabric and OneLake.
 //
 // It composes with — but does not replace — the per-call retry layer in
-// internal/api and internal/httpretry. The retry layer
+// internal/httpretry. The retry layer
 // decides whether to retry a single in-flight call after it returns.
 // httpgate decides whether the call is allowed to leave the local
 // process at all, given:
@@ -39,20 +39,23 @@
 // NOT import internal/httpretry. The dependency is one-way:
 // httpretry → httpgate.
 //
-// # Interaction with internal/api.Do
+// # Interaction with internal/httpretry.Do
 //
-// The retry layer in internal/api.Do composes with — and does not
+// The retry layer in internal/httpretry.Do composes with — and does not
 // replace — the gate's pause window. When a 5xx response carries no
-// Retry-After header, api.Do sleeps its own initialBackoff (~500ms)
-// before retrying; the retry's Acquire then waits for the gate's
+// Retry-After header, httpretry.Do sleeps its own jittered backoff
+// (starting at [httpretry.DefaultInitialBackoff], 250ms) before
+// retrying; the retry's Acquire then waits for the gate's
 // [Defaults.MissingRetryAfter] window to elapse. These waits are
 // additive: the effective delay before the next attempt actually
-// leaves the local process is api.Do's backoff PLUS the gate's pause.
+// leaves the local process is httpretry.Do's backoff PLUS the gate's
+// pause.
 //
 // In practice that means an unmarked 5xx on the Fabric host costs
-// ~500ms (api.Do) + ~30s (Fabric MissingRetryAfter); on the OneLake
-// host ~500ms + ~10s. This is intentional — the doubled wait costs
-// half a second over either bound alone but guarantees that peer
-// goroutines on the same host also observe the pause through the
-// shared gate, not just the goroutine that received the 5xx.
+// up to ~250ms (httpretry.Do, jittered) + ~30s (Fabric
+// MissingRetryAfter); on the OneLake host up to ~250ms + ~10s. This
+// is intentional — the doubled wait costs a fraction of a second over
+// either bound alone but guarantees that peer goroutines on the same
+// host also observe the pause through the shared gate, not just the
+// goroutine that received the 5xx.
 package httpgate

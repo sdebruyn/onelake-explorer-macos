@@ -19,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sdebruyn/onelake-explorer-macos/internal/api"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/httpretry"
@@ -508,7 +507,7 @@ func (c *Client) doRequest(ctx context.Context, alias, method, pathAndQuery stri
 		}
 	}
 	req.Header.Set("x-ms-version", "2021-08-06")
-	if err := api.InjectBearer(ctx, req, c.tp, alias); err != nil {
+	if err := auth.InjectBearer(ctx, req, c.tp, alias); err != nil {
 		return nil, err
 	}
 	slog.Debug("onelake: request", "method", method, "path", pathAndQuery)

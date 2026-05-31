@@ -18,7 +18,7 @@ import (
 // TestGateIntegration_429PauseHonoured verifies the end-to-end
 // integration: a 429 with Retry-After on the first response must
 // install a pause window on the shared gate; the next request (the
-// in-band retry from api.Do) must wait for the pause to clear before
+// in-band retry from httpretry.Do) must wait for the pause to clear before
 // reaching the server again.
 //
 // This is the OneLake-side counterpart to internal/httpgate's unit
