@@ -428,6 +428,127 @@ func TestFindMSALAccount_RejectsEmptyHomeAccountID(t *testing.T) {
 	}
 }
 
+// TestRegistryRemoveEvictsCachedMSALClient is a regression test for the
+// leak in Remove: the (tenantID|alias) entry in r.clients survived a
+// Remove, so a subsequent Add of the same alias against a DIFFERENT
+// tenant — or against the same tenant after a keychain wipe — would
+// keep serving tokens from the stale, pre-Remove MSAL client. Remove
+// must drop every cached client for the alias so the next Add forces
+// the factory to build a fresh one bound to the new tenant.
+func TestRegistryRemoveEvictsCachedMSALClient(t *testing.T) {
+	store := newTestStore(t)
+
+	// Track the tenantID each factory invocation saw so we can prove the
+	// second Add did not reuse the tenant-A client.
+	var (
+		mu        sync.Mutex
+		tenants   []string
+		buildErr  error
+		stubA     = &stubMSALClient{accounts: []public.Account{{HomeAccountID: "object-id.work"}}}
+		stubB     = &stubMSALClient{accounts: []public.Account{{HomeAccountID: "object-id.work"}}}
+		buildNext = stubA
+	)
+	factory := func(_, tenantID string, _ Keychain, _ string) (MSALClient, error) {
+		mu.Lock()
+		tenants = append(tenants, tenantID)
+		c := buildNext
+		err := buildErr
+		mu.Unlock()
+		return c, err
+	}
+	reg := NewRegistry(store, NewMemoryKeychain(), EntraClientID, factory)
+
+	// Add against tenant A and force the client cache to populate by
+	// taking a token through the registry.
+	tenantA := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	accA := sampleAccount("work")
+	accA.TenantID = tenantA
+	if err := reg.Add(accA, []byte("cache-a")); err != nil {
+		t.Fatalf("Add tenant A: %v", err)
+	}
+	if _, err := reg.Token(context.Background(), "work"); err != nil {
+		t.Fatalf("Token tenant A: %v", err)
+	}
+
+	keyA := tenantA + "|work"
+	reg.clientsMu.Lock()
+	_, hadA := reg.clients[keyA]
+	reg.clientsMu.Unlock()
+	if !hadA {
+		t.Fatalf("precondition: r.clients missing %q after Token, got keys=%v", keyA, mapKeys(reg))
+	}
+
+	// Remove must evict the cached client for the alias.
+	if err := reg.Remove("work"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	reg.clientsMu.Lock()
+	_, stillA := reg.clients[keyA]
+	remaining := len(reg.clients)
+	reg.clientsMu.Unlock()
+	if stillA {
+		t.Errorf("r.clients[%q] still present after Remove; want evicted", keyA)
+	}
+	if remaining != 0 {
+		t.Errorf("r.clients has %d entries after Remove, want 0", remaining)
+	}
+
+	// Re-add against tenant B. The next token acquisition must build a
+	// fresh client for tenant B — proving the stale tenant-A entry is
+	// gone.
+	mu.Lock()
+	buildNext = stubB
+	mu.Unlock()
+
+	tenantB := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	accB := sampleAccount("work")
+	accB.TenantID = tenantB
+	if err := reg.Add(accB, []byte("cache-b")); err != nil {
+		t.Fatalf("Add tenant B: %v", err)
+	}
+	if _, err := reg.Token(context.Background(), "work"); err != nil {
+		t.Fatalf("Token tenant B: %v", err)
+	}
+
+	mu.Lock()
+	gotTenants := append([]string(nil), tenants...)
+	mu.Unlock()
+	if len(gotTenants) != 2 {
+		t.Fatalf("factory called %d times, want 2 (one per Add+Token); calls=%v", len(gotTenants), gotTenants)
+	}
+	if gotTenants[0] != tenantA {
+		t.Errorf("first factory call tenant = %q, want %q", gotTenants[0], tenantA)
+	}
+	if gotTenants[1] != tenantB {
+		t.Errorf("second factory call tenant = %q, want %q (stale tenant-A client was reused)", gotTenants[1], tenantB)
+	}
+
+	// And r.clients now holds the tenant-B key, not tenant-A.
+	keyB := tenantB + "|work"
+	reg.clientsMu.Lock()
+	_, hasB := reg.clients[keyB]
+	_, hasStaleA := reg.clients[keyA]
+	reg.clientsMu.Unlock()
+	if !hasB {
+		t.Errorf("r.clients missing %q after re-Add+Token", keyB)
+	}
+	if hasStaleA {
+		t.Errorf("r.clients still has stale %q after re-Add against tenant B", keyA)
+	}
+}
+
+// mapKeys returns the keys of r.clients for diagnostic output. The
+// caller is responsible for not mutating the registry concurrently.
+func mapKeys(r *Registry) []string {
+	r.clientsMu.Lock()
+	defer r.clientsMu.Unlock()
+	out := make([]string, 0, len(r.clients))
+	for k := range r.clients {
+		out = append(out, k)
+	}
+	return out
+}
+
 // TestRegistryAdd_ConcurrentSameAliasOneWinner covers M-2: writeMu must
 // serialise Add so that N concurrent Add("work") calls produce exactly one
 // winner (no clobbered keychain secret, no diverged config). Run under

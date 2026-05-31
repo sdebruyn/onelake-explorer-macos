@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -133,6 +134,28 @@ func (r *Registry) Remove(alias string) error {
 	}); err != nil {
 		return fmt.Errorf("auth: save config: %w", err)
 	}
+
+	// Evict any cached MSAL client for this alias. Without this, a
+	// Remove-then-Add lifecycle inside a single daemon process would
+	// reuse the stale client — which still serves tokens for the OLD
+	// tenant/identity (the cache key is tenantID|alias, so re-adding
+	// against a different tenant misses while the OLD entry lingers,
+	// and re-adding against the same tenant after a keychain wipe
+	// hands back tokens MSAL would no longer issue). Iterating the
+	// map (rather than computing one key) covers all (tenant, alias)
+	// pairs ever cached for this alias — re-adds under a different
+	// tenant must still drop the prior entry. Aliases never contain
+	// '|' (see ValidateAlias), so a suffix match is unambiguous.
+	// Lock order: writeMu (held) → clientsMu; no other site takes
+	// them in the reverse order.
+	r.clientsMu.Lock()
+	suffix := "|" + alias
+	for key := range r.clients {
+		if strings.HasSuffix(key, suffix) {
+			delete(r.clients, key)
+		}
+	}
+	r.clientsMu.Unlock()
 	return nil
 }
 
