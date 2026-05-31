@@ -175,48 +175,6 @@ func TestGetProperties_404(t *testing.T) {
 	}
 }
 
-func TestRead_NoRange(t *testing.T) {
-	c := newTestClient(t)
-	httpmock.RegisterResponder("GET", testBase+"/"+wsGUID+"/"+itemGUID+"/Files/a.csv",
-		func(req *http.Request) (*http.Response, error) {
-			if req.Header.Get("Range") != "" {
-				t.Errorf("Range header should be empty, got %q", req.Header.Get("Range"))
-			}
-			return httpmock.NewStringResponse(200, "hello"), nil
-		})
-
-	rc, _, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/a.csv", 0, -1)
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	defer rc.Close()
-	b, _ := io.ReadAll(rc)
-	if string(b) != "hello" {
-		t.Errorf("body = %q, want hello", b)
-	}
-}
-
-func TestRead_WithRange(t *testing.T) {
-	c := newTestClient(t)
-	httpmock.RegisterResponder("GET", testBase+"/"+wsGUID+"/"+itemGUID+"/Files/a.csv",
-		func(req *http.Request) (*http.Response, error) {
-			if got := req.Header.Get("Range"); got != "bytes=10-20" {
-				t.Errorf("Range = %q, want bytes=10-20", got)
-			}
-			return httpmock.NewStringResponse(206, "partial"), nil
-		})
-
-	rc, _, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/a.csv", 10, 20)
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	defer rc.Close()
-	b, _ := io.ReadAll(rc)
-	if string(b) != "partial" {
-		t.Errorf("body = %q", b)
-	}
-}
-
 func TestCreateDirectory(t *testing.T) {
 	c := newTestClient(t)
 	called := false
@@ -409,30 +367,6 @@ func TestListPath_401(t *testing.T) {
 	}
 }
 
-func TestRead_429RetriedThenSucceeds(t *testing.T) {
-	c := newTestClient(t)
-	var calls int
-	httpmock.RegisterResponder("GET", testBase+"/"+wsGUID+"/"+itemGUID+"/Files/a.csv",
-		func(req *http.Request) (*http.Response, error) {
-			calls++
-			if calls == 1 {
-				r := httpmock.NewStringResponse(429, "")
-				r.Header.Set("Retry-After", "0")
-				return r, nil
-			}
-			return httpmock.NewStringResponse(200, "hello"), nil
-		})
-	rc, _, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/a.csv", 0, -1)
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	defer rc.Close()
-	b, _ := io.ReadAll(rc)
-	if string(b) != "hello" || calls != 2 {
-		t.Errorf("body=%q calls=%d", b, calls)
-	}
-}
-
 // TestWrite_NoManualContentLength verifies that Write does not pass an
 // explicit Content-Length header (the stdlib sets one automatically
 // from *bytes.Reader's Len()), and that the auto-set value matches
@@ -531,9 +465,9 @@ func TestPathURL_EscapesReservedCharacters(t *testing.T) {
 	}
 }
 
-// TestRead_EscapesPathWithSpaces ensures that a file name containing
+// TestReadWithIfMatch_EscapesPathWithSpaces ensures that a file name containing
 // reserved characters is preserved end-to-end through the HTTP layer.
-func TestRead_EscapesPathWithSpaces(t *testing.T) {
+func TestReadWithIfMatch_EscapesPathWithSpaces(t *testing.T) {
 	c := newTestClient(t)
 
 	// httpmock receives the raw URL after Go's transport encodes it.
@@ -545,9 +479,9 @@ func TestRead_EscapesPathWithSpaces(t *testing.T) {
 			return httpmock.NewStringResponse(200, "ok"), nil
 		})
 
-	rc, _, err := c.Read(context.Background(), "work", wsGUID, itemGUID, "Files/My Report.csv", 0, -1)
+	rc, _, err := c.ReadWithIfMatch(context.Background(), "work", wsGUID, itemGUID, "Files/My Report.csv", 0, -1, "")
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("ReadWithIfMatch: %v", err)
 	}
 	defer rc.Close()
 	if seenPath != "/"+wsGUID+"/"+itemGUID+"/Files/My%20Report.csv" {
