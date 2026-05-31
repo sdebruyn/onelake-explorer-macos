@@ -39,7 +39,7 @@ type Account struct {
 	// authenticated against. Empty means "use the built-in OFEM
 	// registration ([EntraClientID])"; non-empty is a Bring Your Own
 	// App Registration override the user supplied at Add Account time
-	// (see docs/auth-custom-app-registration.md). Stored per-account
+	// (see docs/custom-app-registration.md). Stored per-account
 	// because MSAL's token cache is keyed on (client, tenant, account),
 	// so silent refresh after a daemon restart must reach for the same
 	// client ID the original login used.

@@ -504,7 +504,7 @@ type AuthLoginRequest struct {
 	// ClientID is an optional override for the Entra App Registration
 	// client ID. When empty (the common case), the built-in OFEM
 	// registration ([auth.EntraClientID]) is used. Non-empty: caller
-	// brings their own registration — see docs/auth-custom-app-registration.md.
+	// brings their own registration — see docs/custom-app-registration.md.
 	ClientID string `json:"clientId,omitempty"`
 }
 
@@ -553,7 +553,7 @@ func (h *Handlers) handleAuthLogin(ctx context.Context, params json.RawMessage) 
 	)
 	// Resolve which Entra App Registration to authenticate against: the
 	// caller's override if supplied (Bring Your Own App Registration —
-	// see docs/auth-custom-app-registration.md), otherwise the built-in
+	// see docs/custom-app-registration.md), otherwise the built-in
 	// multi-tenant OFEM registration.
 	clientID := req.ClientID
 	if clientID == "" {
