@@ -48,8 +48,8 @@ type Handlers struct {
 	store    *config.Store
 	registry *auth.Registry
 	// kc is the keychain used by the registry. Needed by auth.login to
-	// pass the same keychain instance to LoginInteractive / LoginDeviceCode
-	// without opening a second file-backed store.
+	// pass the same keychain instance to LoginInteractive without
+	// opening a second file-backed store.
 	kc        auth.Keychain
 	cache     *cache.Cache
 	engine    syncRefresher
@@ -506,9 +506,6 @@ type AuthLoginRequest struct {
 	// registration ([auth.EntraClientID]) is used. Non-empty: caller
 	// brings their own registration — see docs/auth-custom-app-registration.md.
 	ClientID string `json:"clientId,omitempty"`
-	// DeviceCode selects the device-code flow instead of the interactive
-	// browser flow. Default false (interactive browser).
-	DeviceCode bool `json:"deviceCode,omitempty"`
 }
 
 // AuthLoginResponse is the payload returned by "auth.login".
@@ -519,15 +516,15 @@ type AuthLoginResponse struct {
 	TenantName string `json:"tenantName,omitempty"`
 }
 
-// handleAuthLogin runs the MSAL interactive-browser or device-code login
-// flow in-process and persists the account via the registry.
+// handleAuthLogin runs the MSAL interactive-browser login flow
+// in-process and persists the account via the registry.
 //
-// This handler is long-running (the user interacts with a browser or a
-// device-code prompt). Context cancellation is forwarded all the way into
-// the MSAL library so the server can abort a pending login (e.g. on daemon
-// shutdown). Note: the IPC server dispatches requests sequentially per
-// connection, so a client that sends auth.login must wait for it to return
-// before sending further requests on the same connection; other connections
+// This handler is long-running (the user interacts with a browser).
+// Context cancellation is forwarded all the way into the MSAL library
+// so the server can abort a pending login (e.g. on daemon shutdown).
+// Note: the IPC server dispatches requests sequentially per connection,
+// so a client that sends auth.login must wait for it to return before
+// sending further requests on the same connection; other connections
 // (e.g. a "status" call from a second client) proceed concurrently.
 //
 // NOTE for packaging: the interactive (loopback redirect) flow binds a
@@ -562,21 +559,7 @@ func (h *Handlers) handleAuthLogin(ctx context.Context, params json.RawMessage) 
 	if clientID == "" {
 		clientID = auth.EntraClientID
 	}
-	if req.DeviceCode {
-		// Device-code: the prompt text is logged rather than returned; the
-		// menu-bar app should not use this flow (no terminal to display it).
-		// It is wired for completeness and CI headless-auth scenarios.
-		account, _, cacheBytes, err = auth.LoginDeviceCode(ctx, clientID, req.Tenant, h.kc,
-			func(verificationURL, userCode string, _ time.Time) {
-				slog.Info("auth.login device-code prompt",
-					slog.String("verification_url", verificationURL),
-					slog.String("user_code", userCode),
-				)
-			},
-		)
-	} else {
-		account, _, cacheBytes, err = auth.LoginInteractive(ctx, clientID, req.Tenant, h.kc)
-	}
+	account, _, cacheBytes, err = auth.LoginInteractive(ctx, clientID, req.Tenant, h.kc)
 	if err != nil {
 		return nil, fmt.Errorf("sign in: %w", err)
 	}

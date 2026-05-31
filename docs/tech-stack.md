@@ -8,7 +8,7 @@ The core library and the bundled daemon binary are written in **Go**. The macOS 
 
 ### Authentication
 
-- [`github.com/AzureAD/microsoft-authentication-library-for-go`](https://github.com/AzureAD/microsoft-authentication-library-for-go) — MSAL Go. Public client app, interactive browser flow, device code flow, silent refresh, cache extensibility.
+- [`github.com/AzureAD/microsoft-authentication-library-for-go`](https://github.com/AzureAD/microsoft-authentication-library-for-go) — MSAL Go. Public client app, interactive browser flow, silent refresh, cache extensibility.
 - [`github.com/zalando/go-keyring`](https://github.com/zalando/go-keyring) — macOS Keychain access without cgo dependencies. Implements MSAL's `cache.ExportReplace`.
 
 ### HTTP & OneLake

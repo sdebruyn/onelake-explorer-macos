@@ -13,8 +13,7 @@
 //   - The [Registry], which persists accounts to the OFEM TOML config and
 //     per-account opaque secrets to the keychain, and implements
 //     [TokenProvider] via MSAL silent acquisition.
-//   - The interactive-browser and device-code login flows
-//     ([LoginInteractive], [LoginDeviceCode]).
+//   - The interactive-browser login flow ([LoginInteractive]).
 //
 // Sentinel errors:
 //   - [ErrInteractionRequired] — silent refresh failed because the user

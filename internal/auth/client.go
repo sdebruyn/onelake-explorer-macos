@@ -26,7 +26,7 @@ var FabricScopes = []string{
 	"https://analysis.windows.net/powerbi/api/Item.Read.All",
 }
 
-// LoginScopes is what interactive / device-code sign-in requests. It is
+// LoginScopes is what interactive sign-in requests. It is
 // deliberately a SINGLE resource (OneLake / storage): the Microsoft
 // Entra v2 endpoint rejects an interactive request whose scopes span
 // more than one resource with AADSTS28000. The Fabric (Power BI)

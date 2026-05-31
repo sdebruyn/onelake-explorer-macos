@@ -9,7 +9,7 @@ OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fa
 ## Hard constraints (do not violate)
 
 - No system-level changes for the end user (no kext, no Reduced Security, no Recovery Mode).
-- Authentication: interactive browser or device code only. No service principals, no client secrets.
+- Authentication: interactive browser only. No service principals, no client secrets.
 - Multi-tenant + multi-account simultaneously, identified by user-chosen short aliases.
 - Install via Homebrew cask.
 - No external runtime dependency for end users (no Python / .NET / Node).
