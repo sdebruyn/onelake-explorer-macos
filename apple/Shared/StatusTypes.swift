@@ -60,6 +60,14 @@ public struct PausedWorkspaceInfo: Decodable {
     public let accountAlias: String
     public let workspaceId: String
     public let reason: String
+    /// Timestamp when the capacity pause was first detected. Go emits this
+    /// as an RFC 3339 string; decoded via CoreBridge.decoder's .iso8601
+    /// strategy.
+    public let detectedAt: Date
+    /// Timestamp of the last probe that confirmed the pause is still active.
+    /// Absent (`omitempty` on the Go side) until at least one follow-up
+    /// probe has run; optional here to match.
+    public let probedAt: Date?
 }
 
 // MARK: - account.list

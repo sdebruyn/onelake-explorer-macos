@@ -187,7 +187,19 @@ final class CoreBridge {
     static let appGroupIdentifier = ofemAppGroupIdentifier
 
     private let client: IPCClient?
-    private let decoder = JSONDecoder()
+    private let decoder: JSONDecoder = {
+        let d = JSONDecoder()
+        // Go's time.Time marshals as RFC 3339 strings. The default Swift
+        // JSONDecoder strategy expects Double (seconds since 2001-01-01),
+        // which would fail to decode any Date field. .iso8601 matches the
+        // wire format and is consistent with IPCClient.pollDecoder.
+        //
+        // Audit: BridgeItem.modificationDate bypasses this decoder entirely
+        // (it's decoded manually via decodeIfPresent(String)+parseDate in
+        // BridgeItem.init), so no existing field is broken by this change.
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }()
 
     private init() {
         if let path = IPCClient.defaultSocketPath() {
