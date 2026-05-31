@@ -2,7 +2,6 @@ package httpgate
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -61,10 +60,6 @@ func New(host string, concurrency int, qps float64, burst int) *Gate {
 		sem:         make(chan struct{}, concurrency),
 	}
 }
-
-// Host returns the host this gate guards. Useful for logging and the
-// IPC status surface.
-func (g *Gate) Host() string { return g.host }
 
 // Acquire reserves one slot on the gate. It blocks until:
 //
@@ -223,26 +218,3 @@ func (g *Gate) State() State {
 		QPS:         g.qps,
 	}
 }
-
-// String renders the gate's state in a compact, human-friendly form.
-// Useful for debug output and log lines.
-func (s State) String() string {
-	return fmt.Sprintf("%s %s", s.Host, s.summary())
-}
-
-// summary renders everything after the host column — used by
-// [State.String] and by [State.Summary] so the format lives in one
-// place. Callers that align the host column themselves can use
-// [State.Summary] and prepend s.Host on their own.
-func (s State) summary() string {
-	paused := "no"
-	if d := time.Until(s.PauseUntil); d > 0 {
-		paused = fmt.Sprintf("for %s", d.Round(time.Second))
-	}
-	return fmt.Sprintf("inflight=%d/%d tokens=%d/%d paused: %s",
-		s.Inflight, s.Concurrency, s.Available, s.Burst, paused)
-}
-
-// Summary returns the per-host gate summary without the host prefix,
-// suitable for callers that need to align the host column themselves.
-func (s State) Summary() string { return s.summary() }
