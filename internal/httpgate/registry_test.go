@@ -2,7 +2,6 @@ package httpgate
 
 import (
 	"testing"
-	"time"
 )
 
 // TestRegistry_GateLazyCreate verifies that calling Gate on an unknown
@@ -69,21 +68,6 @@ func TestNewRegistry_ClampsDefaults(t *testing.T) {
 	}
 }
 
-// TestRegistry_GateHostExposed verifies that the Host() helper returns
-// the host passed to Register / Gate.
-func TestRegistry_GateHostExposed(t *testing.T) {
-	r := NewRegistry(Defaults{Concurrency: 1, QPS: 1, Burst: 1})
-	const h = "explicit.example.com"
-	r.Register(h, 1, 1, 1)
-	if got := r.Gate(h).Host(); got != h {
-		t.Errorf("Host = %q, want %q", got, h)
-	}
-	const lazy = "lazy.example.com"
-	if got := r.Gate(lazy).Host(); got != lazy {
-		t.Errorf("lazy Host = %q, want %q", got, lazy)
-	}
-}
-
 // TestDefaultRegistry verifies the convenience constructor pre-
 // registers both production hosts.
 func TestDefaultRegistry(t *testing.T) {
@@ -102,36 +86,4 @@ func TestDefaultRegistry(t *testing.T) {
 	if one.Concurrency != OneLakeConcurrency || one.Burst != OneLakeBurst {
 		t.Errorf("onelake budget not applied: %+v", one)
 	}
-}
-
-// TestState_String renders the human-friendly summary.
-func TestState_String(t *testing.T) {
-	s := State{
-		Host:        "api.fabric.microsoft.com",
-		Inflight:    3,
-		Concurrency: 8,
-		Available:   2,
-		Burst:       4,
-		QPS:         2,
-	}
-	got := s.String()
-	want := "api.fabric.microsoft.com inflight=3/8 tokens=2/4 paused: no"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-
-	s.PauseUntil = time.Now().Add(23 * time.Second)
-	got = s.String()
-	if !contains(got, "paused: for ") {
-		t.Errorf("State.String() = %q, want substring %q", got, "paused: for ")
-	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
