@@ -134,7 +134,6 @@ func newEngineAt(t *testing.T, cacheRoot string, opts ...func(*Options)) *engine
 		Fabric:          fc,
 		OneLake:         oc,
 		Telemetry:       tel,
-		OpenFolderTTL:   30 * time.Second,
 		RecentFolderTTL: 5 * time.Minute,
 		Now:             clock.Now,
 	}
