@@ -179,6 +179,28 @@ const MaxCacheSizeGB = 100
 // matches the pre-refactor default (10 GiB == 10 binary GB).
 const DefaultCacheSizeGB = 10
 
+// MinNetConcurrentUploadsPerAccount is the lower bound enforced by
+// [ApplyConfig] on the net.max_concurrent_uploads_per_account key.
+// 1 is the smallest useful value: zero would stall the sync engine.
+const MinNetConcurrentUploadsPerAccount = 1
+
+// MaxNetConcurrentUploadsPerAccount is the upper bound enforced by
+// [ApplyConfig] on the net.max_concurrent_uploads_per_account key.
+// 16 is generous for OneDrive-class home connections; the limit is
+// mainly there to catch typos in the Settings Stepper.
+const MaxNetConcurrentUploadsPerAccount = 16
+
+// MinNetConcurrentDownloadsPerAccount is the lower bound enforced by
+// [ApplyConfig] on the net.max_concurrent_downloads_per_account key.
+const MinNetConcurrentDownloadsPerAccount = 1
+
+// MaxNetConcurrentDownloadsPerAccount is the upper bound enforced by
+// [ApplyConfig] on the net.max_concurrent_downloads_per_account key.
+// 32 is sized so a Finder "select-all + preview" on a folder of
+// cloud-only files keeps every slot busy without saturating the host's
+// available file descriptors.
+const MaxNetConcurrentDownloadsPerAccount = 32
+
 // Default returns the zero-but-sensible config used the first time OFEM
 // starts on a machine. Callers persist this via Save once they have
 // populated InstallID.

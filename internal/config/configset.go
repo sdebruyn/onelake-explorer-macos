@@ -44,6 +44,26 @@ func ApplyConfig(f *File, key, value string) error {
 		// Clear any lingering legacy field so the next Save emits only
 		// the canonical max_size_gb key.
 		f.Cache.MaxSizeBytes = 0
+	case "net.max_concurrent_uploads_per_account":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("net.max_concurrent_uploads_per_account: invalid integer %q", value)
+		}
+		if n < MinNetConcurrentUploadsPerAccount || n > MaxNetConcurrentUploadsPerAccount {
+			return fmt.Errorf("net.max_concurrent_uploads_per_account: %d out of range [%d, %d]",
+				n, MinNetConcurrentUploadsPerAccount, MaxNetConcurrentUploadsPerAccount)
+		}
+		f.Net.MaxConcurrentUploadsPerAccount = n
+	case "net.max_concurrent_downloads_per_account":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("net.max_concurrent_downloads_per_account: invalid integer %q", value)
+		}
+		if n < MinNetConcurrentDownloadsPerAccount || n > MaxNetConcurrentDownloadsPerAccount {
+			return fmt.Errorf("net.max_concurrent_downloads_per_account: %d out of range [%d, %d]",
+				n, MinNetConcurrentDownloadsPerAccount, MaxNetConcurrentDownloadsPerAccount)
+		}
+		f.Net.MaxConcurrentDownloadsPerAccount = n
 	case "log.level":
 		switch strings.ToLower(value) {
 		case "debug", "info", "warn", "error":

@@ -77,6 +77,16 @@ final class MenuStatusModel: ObservableObject {
     @Published private(set) var telemetryEnabled: Bool = true
     @Published private(set) var paths: StatusPaths = StatusPaths()
 
+    /// Max parallel uploads per account (Settings → Network). 0 means
+    /// "not yet fetched"; once populated stays in
+    /// [config.MinNetConcurrentUploadsPerAccount, config.MaxNetConcurrentUploadsPerAccount].
+    @Published private(set) var netMaxUploads: Int = 0
+    /// Max parallel downloads per account (Settings → Network).
+    @Published private(set) var netMaxDownloads: Int = 0
+    /// Daemon log level (Settings → Advanced). One of "debug", "info",
+    /// "warn", "error". Empty only before the first refresh.
+    @Published private(set) var logLevel: String = ""
+
     // MARK: Computed conveniences
 
     var pausedCount: Int { pausedWorkspaces.count }
@@ -124,12 +134,20 @@ final class MenuStatusModel: ObservableObject {
     /// cancels the previous timer; only the final value (after the user
     /// stops clicking for SetCacheLimitDebounce) hits the daemon over IPC.
     private var setCacheLimitTask: Task<Void, Never>?
+    /// In-flight debounce timer for setNetMaxUploads (Settings slider/stepper).
+    private var setNetUploadsTask: Task<Void, Never>?
+    /// In-flight debounce timer for setNetMaxDownloads (Settings slider/stepper).
+    private var setNetDownloadsTask: Task<Void, Never>?
 
     /// Debounce window for setCacheLimitGB writes. Sized so a user can
     /// hold the Stepper arrow and rack up many ticks without firing one
     /// IPC call per tick, while staying short enough that letting go
     /// feels immediate.
     static let setCacheLimitDebounce: Duration = .milliseconds(750)
+    /// Debounce window for the Network tab's parallel uploads/downloads
+    /// Steppers — same 750 ms window as the cache slider so racking up
+    /// clicks reaches the daemon as a single IPC call.
+    static let setNetConcurrencyDebounce: Duration = .milliseconds(750)
 
     // MARK: - Refresh
 
@@ -180,6 +198,19 @@ final class MenuStatusModel: ObservableObject {
             // Stepper to an out-of-range value the user never asked for.
             if config.cacheMaxSizeGB > 0 {
                 cacheMaxSizeGB = config.cacheMaxSizeGB
+            }
+            // Same reasoning for the Settings tab values — only update
+            // when the daemon gave us a non-zero answer. An older daemon
+            // (pre-this-PR) returns 0 because the JSON keys are absent,
+            // and we'd rather show stale-but-correct numbers than zeroes.
+            if config.netMaxConcurrentUploadsPerAccount > 0 {
+                netMaxUploads = config.netMaxConcurrentUploadsPerAccount
+            }
+            if config.netMaxConcurrentDownloadsPerAccount > 0 {
+                netMaxDownloads = config.netMaxConcurrentDownloadsPerAccount
+            }
+            if !config.logLevel.isEmpty {
+                logLevel = config.logLevel
             }
         } catch {
             // Daemon not running, or IPC failure — show degraded state.
@@ -278,6 +309,75 @@ final class MenuStatusModel: ObservableObject {
                 try await bridge.configSet(key: "telemetry", value: enabled ? "on" : "off")
             } catch {
                 Self.log.error("config.set telemetry failed: \(error.localizedDescription, privacy: .public)")
+            }
+            refresh()
+        }
+    }
+
+    /// Stage a new "max parallel uploads per account" value.
+    ///
+    /// Optimistically updates the published `netMaxUploads` so a Stepper
+    /// in the Settings window tracks every click immediately, then
+    /// debounces the IPC write the same way `setCacheLimitGB` does — only
+    /// the final value reaches the daemon. Out-of-range values are clamped
+    /// so a future UI change cannot ship an invalid value (the daemon
+    /// would reject it anyway).
+    func setNetMaxUploads(_ n: Int) {
+        let clamped = max(1, min(16, n))
+        netMaxUploads = clamped
+        setNetUploadsTask?.cancel()
+        setNetUploadsTask = Task { [weak self] in
+            try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
+            guard let self else { return }
+            if Task.isCancelled { return }
+            do {
+                try await bridge.configSet(
+                    key: "net.max_concurrent_uploads_per_account",
+                    value: String(clamped)
+                )
+                Self.log.info("net.max_concurrent_uploads_per_account set to \(clamped, privacy: .public)")
+            } catch {
+                Self.log.error("config.set net.max_concurrent_uploads_per_account failed: \(error.localizedDescription, privacy: .public)")
+            }
+            refresh()
+        }
+    }
+
+    /// Stage a new "max parallel downloads per account" value. Symmetric
+    /// to setNetMaxUploads.
+    func setNetMaxDownloads(_ n: Int) {
+        let clamped = max(1, min(32, n))
+        netMaxDownloads = clamped
+        setNetDownloadsTask?.cancel()
+        setNetDownloadsTask = Task { [weak self] in
+            try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
+            guard let self else { return }
+            if Task.isCancelled { return }
+            do {
+                try await bridge.configSet(
+                    key: "net.max_concurrent_downloads_per_account",
+                    value: String(clamped)
+                )
+                Self.log.info("net.max_concurrent_downloads_per_account set to \(clamped, privacy: .public)")
+            } catch {
+                Self.log.error("config.set net.max_concurrent_downloads_per_account failed: \(error.localizedDescription, privacy: .public)")
+            }
+            refresh()
+        }
+    }
+
+    /// Persist the daemon log level. The Picker fires this once per
+    /// selection (no rapid bursts), so no debounce is needed.
+    func setLogLevel(_ level: String) {
+        // Optimistic UI: reflect the new value before the IPC round trip.
+        logLevel = level
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await bridge.configSet(key: "log.level", value: level)
+                Self.log.info("log.level set to \(level, privacy: .public)")
+            } catch {
+                Self.log.error("config.set log.level failed: \(error.localizedDescription, privacy: .public)")
             }
             refresh()
         }

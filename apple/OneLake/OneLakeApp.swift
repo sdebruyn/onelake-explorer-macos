@@ -107,6 +107,17 @@ struct OneLakeApp: App {
             AddAccountView()
         }
         .windowResizability(.contentSize)
+
+        // The Settings scene: Cmd+, target, hosts the four config tabs
+        // that replaced the per-knob menu items the dropdown used to
+        // carry (Cache, Telemetry, Open at Login, Open Logs / Config).
+        // SwiftUI generates the Preferences… menu item under the app
+        // menu automatically; LSUIElement apps don't have an app menu,
+        // so MenuBarView surfaces its own "Preferences…" button that
+        // calls openSettings() (via the showSettingsWindow: selector).
+        Settings {
+            SettingsView()
+        }
     }
 }
 

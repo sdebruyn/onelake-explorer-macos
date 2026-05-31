@@ -742,6 +742,80 @@ func TestHandleConfigSetKeyNormalization(t *testing.T) {
 	}
 }
 
+// TestHandleConfigSetNetConcurrency verifies the Settings → Network
+// tab's two Steppers can write valid in-range values for both
+// concurrency knobs and they round-trip into the right config fields.
+func TestHandleConfigSetNetConcurrency(t *testing.T) {
+	h := newTestHandlers(t)
+	cases := []struct {
+		key     string
+		value   string
+		check   func(snap config.File) int
+		wantInt int
+	}{
+		{"net.max_concurrent_uploads_per_account", "6",
+			func(f config.File) int { return f.Net.MaxConcurrentUploadsPerAccount }, 6},
+		{"net.max_concurrent_downloads_per_account", "20",
+			func(f config.File) int { return f.Net.MaxConcurrentDownloadsPerAccount }, 20},
+	}
+	for _, c := range cases {
+		_, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: c.key, Value: c.value}))
+		if err != nil {
+			t.Fatalf("config.set %s=%s: %v", c.key, c.value, err)
+		}
+		if got := c.check(h.store.Snapshot()); got != c.wantInt {
+			t.Errorf("after %s=%s field = %d, want %d", c.key, c.value, got, c.wantInt)
+		}
+	}
+}
+
+// TestHandleConfigSetNetConcurrencyRejectsOutOfRange confirms the daemon
+// refuses values outside the documented bounds for both net.* keys, so
+// a buggy Settings build that broadens the Stepper range cannot ship an
+// invalid value.
+func TestHandleConfigSetNetConcurrencyRejectsOutOfRange(t *testing.T) {
+	h := newTestHandlers(t)
+	cases := []struct {
+		key    string
+		values []string
+	}{
+		// uploads bound [1, 16]
+		{"net.max_concurrent_uploads_per_account", []string{"0", "-1", "17", "9999"}},
+		// downloads bound [1, 32]
+		{"net.max_concurrent_downloads_per_account", []string{"0", "-1", "33", "9999"}},
+	}
+	for _, c := range cases {
+		for _, bad := range c.values {
+			_, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: c.key, Value: bad}))
+			if err == nil {
+				t.Errorf("config.set %s=%s expected error", c.key, bad)
+			}
+		}
+	}
+}
+
+// TestHandleConfigSetLogLevel verifies the Settings → Advanced tab's
+// log level Picker can persist each of the four accepted levels and
+// rejects garbage.
+func TestHandleConfigSetLogLevel(t *testing.T) {
+	h := newTestHandlers(t)
+	for _, level := range []string{"debug", "info", "warn", "error"} {
+		_, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: "log.level", Value: level}))
+		if err != nil {
+			t.Fatalf("config.set log.level=%s: %v", level, err)
+		}
+		if got := h.store.Snapshot().Log.Level; got != level {
+			t.Errorf("Log.Level = %q, want %q", got, level)
+		}
+	}
+	for _, bad := range []string{"", "verbose", "trace", "DEBUG-x"} {
+		_, err := h.handleConfigSet(context.Background(), mustJSON(t, ConfigSetRequest{Key: "log.level", Value: bad}))
+		if err == nil {
+			t.Errorf("config.set log.level=%q expected error", bad)
+		}
+	}
+}
+
 // TestHandleStatusIncludesPaths verifies the status response carries
 // the config file, cache directory, and log directory paths.
 func TestHandleStatusIncludesPaths(t *testing.T) {
