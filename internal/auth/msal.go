@@ -95,15 +95,6 @@ func (a *publicClientAdapter) Accounts(ctx context.Context) ([]public.Account, e
 	return a.inner.Accounts(ctx)
 }
 
-// Underlying returns the wrapped public.Client. The login flows use this
-// to call MSAL APIs (AcquireTokenInteractive, AcquireTokenByDeviceCode)
-// that are not part of the [MSALClient] interface because they are only
-// invoked during the one-shot login path, not by the hot-path token
-// provider.
-func (a *publicClientAdapter) Underlying() *public.Client {
-	return &a.inner
-}
-
 // KeychainCache adapts a [Keychain] to MSAL Go's cache.ExportReplace
 // interface. Each instance is bound to a single account alias: the alias
 // is used as the keychain key, matching the convention in [Registry].
