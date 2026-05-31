@@ -15,30 +15,6 @@
 import Foundation
 import os.log
 
-/// JSON shape returned by the "account.list" IPC method (extra keys such
-/// as addedAt / defaultAccount are ignored). Every field except `alias`
-/// decodes defensively to "" when absent, because the daemon's
-/// AccountSummary marks them `omitempty` — an account with no tenant name
-/// drops the key entirely, which a non-optional `String` would reject.
-struct Account: Decodable, Equatable {
-    let alias: String
-    let username: String
-    let tenantId: String
-    let tenantName: String
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        alias = try c.decode(String.self, forKey: .alias)
-        username = (try c.decodeIfPresent(String.self, forKey: .username)) ?? ""
-        tenantId = (try c.decodeIfPresent(String.self, forKey: .tenantId)) ?? ""
-        tenantName = (try c.decodeIfPresent(String.self, forKey: .tenantName)) ?? ""
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case alias, username, tenantId, tenantName
-    }
-}
-
 /// Decoded representation of a single item entry. Mapped onto OneLakeItem
 /// for the File Provider framework.
 struct BridgeItem: Decodable, Equatable {
@@ -89,11 +65,6 @@ struct BridgeItem: Decodable, Equatable {
         case identifier, parentIdentifier, filename, isDir, size
         case contentType, modificationDate, contentVersion, metadataVersion, capabilities
     }
-}
-
-private struct AccountsEnvelope: Decodable {
-    let accounts: [Account]?
-    let error: BridgeErrorPayload?
 }
 
 private struct ItemsEnvelope: Decodable {
@@ -176,7 +147,6 @@ enum BridgeError: Error, Equatable {
     case notAuthenticated(String)
     case serverUnreachable(String)
     case serverBusy(String)
-    case insufficientQuota(String)
     case cannotSynchronize(String)
     case decoding(String)
     case nullPointer(String)
@@ -188,7 +158,6 @@ enum BridgeError: Error, Equatable {
         case "notAuthenticated": self = .notAuthenticated(payload.message)
         case "serverUnreachable": self = .serverUnreachable(payload.message)
         case "serverBusy": self = .serverBusy(payload.message)
-        case "insufficientQuota": self = .insufficientQuota(payload.message)
         case "cannotSynchronize": self = .cannotSynchronize(payload.message)
         default: self = .cannotSynchronize("\(payload.code): \(payload.message)")
         }
@@ -263,7 +232,6 @@ final class CoreBridge {
     }
 
     /// Fetch the full account list including the default-account alias.
-    /// Supersedes the narrower listAccounts() for menu-bar display use.
     func accountList() async throws -> AccountListInfo {
         let env: AccountListEnvelope = try await callAsync("account.list", [:])
         if let payload = env.error { throw BridgeError(payload: payload) }
@@ -351,14 +319,6 @@ final class CoreBridge {
 
     // MARK: - Cache actions
 
-    /// Run LRU eviction up to the configured limit. Returns bytes remaining.
-    @discardableResult
-    func cacheEvict() async throws -> Int64 {
-        let env: CacheBytesEnvelope = try await callAsync("cache.evict", [:])
-        if let payload = env.error { throw BridgeError(payload: payload) }
-        return env.cacheBytes ?? 0
-    }
-
     /// Wipe all cached blobs. Returns 0 on success.
     @discardableResult
     func cacheClear() async throws -> Int64 {
@@ -374,12 +334,6 @@ final class CoreBridge {
     func configSet(key: String, value: String) async throws {
         let env: ConfigSetEnvelope = try await callAsync("config.set", ["key": key, "value": value])
         if let payload = env.error { throw BridgeError(payload: payload) }
-    }
-
-    func listAccounts() async throws -> [Account] {
-        let env: AccountsEnvelope = try await callAsync("account.list", [:])
-        if let payload = env.error { throw BridgeError(payload: payload) }
-        return env.accounts ?? []
     }
 
     /// Enumerate the children of `identifier` for `alias`. Returns items and

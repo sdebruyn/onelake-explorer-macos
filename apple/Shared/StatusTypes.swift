@@ -9,21 +9,18 @@ import Foundation
 // MARK: - status
 
 /// On-disk locations the menu-bar app can surface to the user.
-/// Mirrors the Go StatusPaths struct in internal/daemon/handlers.go.
+/// Only `logDir` is currently consumed by the UI; the Go daemon may emit
+/// additional fields (configFile, cacheDir) which are ignored here.
 public struct StatusPaths: Decodable {
-    public let configFile: String
-    public let cacheDir: String
     public let logDir: String
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        configFile = (try c.decodeIfPresent(String.self, forKey: .configFile)) ?? ""
-        cacheDir = (try c.decodeIfPresent(String.self, forKey: .cacheDir)) ?? ""
         logDir = (try c.decodeIfPresent(String.self, forKey: .logDir)) ?? ""
     }
 
     private enum CodingKeys: String, CodingKey {
-        case configFile, cacheDir, logDir
+        case logDir
     }
 }
 
@@ -55,8 +52,6 @@ public struct StatusInfo: Decodable {
 extension StatusPaths {
     /// Memberwise init used as a fallback when the daemon omits the paths key.
     init() {
-        configFile = ""
-        cacheDir = ""
         logDir = ""
     }
 }

@@ -253,7 +253,6 @@ struct AddAccountView: View {
             case .decoding(let m): return "Unexpected response: \(m)"
             case .cannotSynchronize(let m): return "Sign-in failed: \(m)"
             case .noSuchItem(let m): return "Sign-in failed: \(m)"
-            case .insufficientQuota(let m): return "Sign-in failed: \(m)"
             case .nullPointer(let m): return "Internal error: \(m)"
             }
         }

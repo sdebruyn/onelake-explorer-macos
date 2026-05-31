@@ -44,9 +44,6 @@ extension BridgeError {
                 "BridgeError.serverBusy -> .serverUnreachable (no exact mapping): \(msg, privacy: .public)"
             )
             return NSFileProviderError(.serverUnreachable)
-        case .insufficientQuota(let msg):
-            mappingLog.info("BridgeError.insufficientQuota -> .insufficientQuota: \(msg, privacy: .public)")
-            return NSFileProviderError(.insufficientQuota)
         case .cannotSynchronize(let msg):
             mappingLog.error("BridgeError.cannotSynchronize -> .cannotSynchronize: \(msg, privacy: .public)")
             return NSFileProviderError(.cannotSynchronize)
