@@ -14,7 +14,7 @@ If you only want to contribute code, you only need the **Local development** sec
 | Tool | Minimum version | Recommended | How to install |
 |---|---|---|---|
 | macOS | 14 Sonoma (arm64) | latest stable | – |
-| Go | 1.22 | 1.26.x | `brew install go` |
+| Go | 1.26 | 1.26.x | `brew install go` |
 | Xcode | 15 | 26.x | App Store |
 | git | 2.40 | latest | comes with Xcode CLT |
 | Homebrew | any recent | latest | https://brew.sh |

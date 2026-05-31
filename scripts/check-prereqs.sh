@@ -99,7 +99,7 @@ fi
 
 hdr "Local development (required to build and test)"
 
-check_command go      "1.22"  "brew install go"
+check_command go      "1.26"  "brew install go"
 check_command git     "2.40"  "comes with Xcode Command Line Tools"
 check_command gh      "2.40"  "brew install gh"
 check_command brew    "4.0"   "https://brew.sh"
