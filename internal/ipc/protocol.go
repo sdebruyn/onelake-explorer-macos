@@ -33,9 +33,6 @@ const (
 	// CodeMethodNotFound indicates no handler is registered for the
 	// requested method name.
 	CodeMethodNotFound = -32601
-	// CodeInvalidParams indicates the handler could not decode the
-	// request's params field.
-	CodeInvalidParams = -32602
 	// CodeInternalError is the catch-all for unexpected server errors.
 	CodeInternalError = -32603
 	// CodeHandlerError is returned when a registered handler returns a
