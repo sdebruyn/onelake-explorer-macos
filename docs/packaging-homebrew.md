@@ -2,7 +2,7 @@
 
 OFEM ships as a signed and notarized Homebrew cask of the macOS `.app`.
 
-See also: [Release runbook](release-runbook.md) for the step-by-step process Sam follows when cutting a release.
+See also: [Release runbook](release-runbook.md) for the step-by-step release process.
 
 ## Output artifact
 
@@ -149,7 +149,7 @@ pushed. None of them are committed to the repository.
 |---|---|
 | `APPLE_CERT_P12` | Base64-encoded Developer ID Application `.p12` certificate. Export from Keychain Access (right-click the certificate > Export > Personal Information Exchange `.p12`), then encode: `base64 -i cert.p12 \| pbcopy`. |
 | `APPLE_CERT_PASSWORD` | Password chosen when exporting the `.p12`. |
-| `APPLE_TEAM_ID` | Apple Developer Team ID. For Debruyn Consultancy this is `6D79CUWZ4J`. Find yours at [developer.apple.com/account](https://developer.apple.com/account) under Membership. |
+| `APPLE_TEAM_ID` | Apple Developer Team ID. Find yours at [developer.apple.com/account](https://developer.apple.com/account) under Membership. |
 | `APPLE_API_KEY_JSON` | App Store Connect API key as a JSON object with keys `key_id`, `issuer_id`, and `key` (PEM content). Generate at [appstoreconnect.apple.com/access/integrations/api](https://appstoreconnect.apple.com/access/integrations/api). Store the full JSON as the secret value. |
 | `APPLE_API_KEY_ID` | The 10-character key identifier, also present inside `APPLE_API_KEY_JSON`. Stored separately so it can be used in environment-variable interpolation without parsing JSON. |
 | `APPLE_API_ISSUER_ID` | The issuer UUID, also present inside `APPLE_API_KEY_JSON`. |

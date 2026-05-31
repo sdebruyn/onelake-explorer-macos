@@ -6,7 +6,7 @@
 #                           Export from Keychain Access: right-click certificate > Export > .p12.
 #                           Encode: base64 -i cert.p12 | pbcopy
 #   APPLE_CERT_PASSWORD     Password chosen when exporting the .p12.
-#   APPLE_TEAM_ID           Apple Developer Team ID, e.g. 6D79CUWZ4J (Debruyn Consultancy).
+#   APPLE_TEAM_ID           Apple Developer Team ID.
 #                           Find it at developer.apple.com/account > Membership.
 #   APPLE_API_KEY_JSON      App Store Connect API key as a JSON file with fields:
 #                             { "key_id": "...", "issuer_id": "...", "key": "-----BEGIN EC PRIVATE KEY-----\n..." }
@@ -24,7 +24,7 @@ name: Release
 # full archive → exportArchive (Developer ID) → codesign → DMG path with
 # the real certificate, but stops short of notarize/staple and publishes
 # nothing — so Swift or signing regressions surface off-tag instead of
-# mid-release. See CODE_REVIEW.md M-8.
+# mid-release.
 on:
   push:
     tags:

@@ -245,8 +245,7 @@ Neither target embeds the Go engine. They share
 socket) and `apple/Shared/CoreBridge.swift` (typed wrappers around the
 daemon's `fp.*` methods). The daemon is the single owner of the engine,
 cache, and blob store; file bytes cross the process boundary through the
-shared App Group container. There is no cgo archive and no bridging header
-(both were removed in the SIMPLIFICATION).
+shared App Group container. There is no cgo archive and no bridging header.
 
 ### Signing for local vs release
 

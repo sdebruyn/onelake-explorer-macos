@@ -25,7 +25,7 @@ body:
     attributes:
       label: Scope check
       options:
-        - label: I checked the README and PLAN.md and this is not already covered or explicitly out-of-scope.
+        - label: I checked the README and docs and this is not already covered or explicitly out-of-scope.
           required: true
         - label: I searched existing issues for similar requests.
           required: true
