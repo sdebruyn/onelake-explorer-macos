@@ -168,12 +168,26 @@ public struct ConfigInfo: Decodable {
     /// bytes). 0 only appears on transport failure; the daemon always
     /// emits a value in [config.MinCacheSizeGB, config.MaxCacheSizeGB].
     public let cacheMaxSizeGB: Int
+    /// Max parallel uploads per account. 0 only appears on transport failure
+    /// (or against an older daemon); the daemon always emits a value in
+    /// [config.MinNetConcurrentUploadsPerAccount, config.MaxNetConcurrentUploadsPerAccount].
+    public let netMaxConcurrentUploadsPerAccount: Int
+    /// Max parallel downloads per account. 0 only appears on transport
+    /// failure (or against an older daemon).
+    public let netMaxConcurrentDownloadsPerAccount: Int
+    /// Current daemon log level. One of "debug", "info", "warn", "error".
+    /// Empty only on transport failure / older daemon.
+    public let logLevel: String
 
     private enum CodingKeys: String, CodingKey {
         // top-level "telemetry" bool
         case telemetry
         // nested "cache" object with "max_size_gb" — handled manually below
         case cache
+        // nested "net" object — handled manually below
+        case net
+        // nested "log" object — handled manually below
+        case log
     }
 
     public init(from decoder: Decoder) throws {
@@ -184,6 +198,18 @@ public struct ConfigInfo: Decodable {
             cacheMaxSizeGB = cacheObj.maxSizeGB
         } else {
             cacheMaxSizeGB = 0
+        }
+        if let netObj = try c.decodeIfPresent(NetPayload.self, forKey: .net) {
+            netMaxConcurrentUploadsPerAccount = netObj.maxUploads
+            netMaxConcurrentDownloadsPerAccount = netObj.maxDownloads
+        } else {
+            netMaxConcurrentUploadsPerAccount = 0
+            netMaxConcurrentDownloadsPerAccount = 0
+        }
+        if let logObj = try c.decodeIfPresent(LogPayload.self, forKey: .log) {
+            logLevel = logObj.level
+        } else {
+            logLevel = ""
         }
     }
 
@@ -197,6 +223,27 @@ public struct ConfigInfo: Decodable {
             // The legacy "MaxSizeBytes" sibling is dropped after migration
             // (omitzero) and is no longer surfaced over IPC.
             case maxSizeGB = "MaxSizeGB"
+        }
+    }
+
+    private struct NetPayload: Decodable {
+        let maxUploads: Int
+        let maxDownloads: Int
+
+        private enum CodingKeys: String, CodingKey {
+            // config.NetConfig fields carry only toml tags, so encoding/json
+            // emits the Go field names verbatim — see CachePayload above for
+            // the same reasoning.
+            case maxUploads = "MaxConcurrentUploadsPerAccount"
+            case maxDownloads = "MaxConcurrentDownloadsPerAccount"
+        }
+    }
+
+    private struct LogPayload: Decodable {
+        let level: String
+
+        private enum CodingKeys: String, CodingKey {
+            case level = "Level"
         }
     }
 }
