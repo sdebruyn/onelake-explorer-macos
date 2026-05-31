@@ -15,8 +15,8 @@ const JSONRPCVersion = "2.0"
 // MaxFrameSize is the hard upper bound on a single JSON-RPC frame
 // payload, in bytes. Anything larger is rejected to keep a buggy or
 // hostile peer from exhausting daemon memory. 1 MiB is well over the
-// largest realistic request (an account.add with a serialized MSAL
-// cache is on the order of tens of KiB).
+// largest realistic request (an fp.fetchContents response staying
+// within the daemon-side chunking budget).
 const MaxFrameSize = 1 << 20
 
 // ErrFrameTooLarge is returned by [ReadFrame] when the incoming frame's

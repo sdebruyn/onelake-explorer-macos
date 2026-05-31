@@ -145,14 +145,6 @@ and Google Drive integrate".
   path, not a filesystem path. The filesystem-visible path is
   `~/Library/CloudStorage/OneLake-<alias>/...`. The menu bar app's
   per-account **Open in Finder** action navigates to that real path.
-- **TODO (follow-up, out of scope for this PR):** the `MountDomain`
-  type in `internal/ipc` (currently just `Identifier` + `DisplayName`)
-  needs a third `MountPath` field carrying the absolute user-visible
-  path, so the host app can display the on-disk location without
-  reconstructing it. The Swift extension will populate it from
-  `NSFileProviderManager.getUserVisibleURL(for:)` once the extension is
-  wired up. Tracking this here so the IPC type doesn't drift further
-  from the spike's recommendation.
 - For users who really want a single entry point in their home
   directory, we can document a one-line `ln -s` they can run
   themselves. We will not create or manage that symlink for them.

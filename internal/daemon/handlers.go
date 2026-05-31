@@ -18,10 +18,10 @@ import (
 	"github.com/sdebruyn/onelake-explorer-macos/internal/sync"
 )
 
-// ErrEngineNotWired is returned by sync.refresh when the daemon was
-// constructed without a sync engine (for example in unit tests). Callers
-// can use [errors.Is] to detect it rather than string-matching the
-// formatted error.
+// ErrEngineNotWired is returned by the fp.* handlers when the daemon
+// was constructed without a sync engine (for example in unit tests).
+// Callers can use [errors.Is] to detect it rather than string-matching
+// the formatted error.
 var ErrEngineNotWired = errors.New("sync engine not wired")
 
 // syncRefresher is the subset of [sync.Engine] the IPC handlers need.
@@ -70,9 +70,9 @@ type Handlers struct {
 // NewHandlers builds a Handlers wired to the given dependencies. All of
 // store, registry and cache are required; kc may be nil for tests that
 // don't exercise auth.login (the handler returns an error when kc is nil).
-// engine may be nil for tests that don't exercise sync.refresh; gates may
-// be nil for tests (status returns an empty Gates list); feed may be nil
-// for tests (sync.pollChanges returns an empty result).
+// engine may be nil for tests that don't exercise the fp.* handlers;
+// gates may be nil for tests (status returns an empty Gates list); feed
+// may be nil for tests (sync.pollChanges returns an empty result).
 func NewHandlers(store *config.Store, registry *auth.Registry, kc auth.Keychain, cache *cache.Cache, engine syncRefresher, gates *httpgate.Registry, feed *Changefeed) *Handlers {
 	off, _ := engine.(offlineReporter)
 	h := &Handlers{
@@ -102,7 +102,6 @@ func NewHandlers(store *config.Store, registry *auth.Registry, kc auth.Keychain,
 func (h *Handlers) Register(srv *ipc.Server) {
 	srv.Register("status", h.handleStatus)
 	srv.Register("account.list", h.handleAccountList)
-	srv.Register("account.add", h.handleAccountAdd)
 	srv.Register("account.remove", h.handleAccountRemove)
 	srv.Register("account.setDefault", h.handleAccountSetDefault)
 	srv.Register("config.snapshot", h.handleConfigSnapshot)
@@ -110,9 +109,7 @@ func (h *Handlers) Register(srv *ipc.Server) {
 	srv.Register("cache.evict", h.handleCacheEvict)
 	srv.Register("cache.clear", h.handleCacheClear)
 	srv.Register("auth.login", h.handleAuthLogin)
-	srv.Register("sync.refresh", h.handleSyncRefresh)
 	srv.Register("sync.pollChanges", h.handleSyncPollChanges)
-	srv.Register("mount.list", h.handleMountList)
 
 	// File Provider Extension surface (replaces the cgo bridge).
 	srv.Register("fp.enumerate", h.handleFPEnumerate)
@@ -289,58 +286,6 @@ func (h *Handlers) handleAccountList(_ context.Context, _ json.RawMessage) (any,
 	return out, nil
 }
 
-// AccountAddRequest is the payload accepted by "account.add". The
-// secret is base64-encoded so JSON can carry arbitrary bytes.
-type AccountAddRequest struct {
-	Alias     string         `json:"alias"`
-	SecretB64 string         `json:"secretB64"`
-	Account   AccountPayload `json:"account"`
-}
-
-// AccountPayload mirrors [auth.Account] for wire transport.
-type AccountPayload struct {
-	Alias         string    `json:"alias"`
-	HomeAccountID string    `json:"homeAccountId"`
-	Username      string    `json:"username"`
-	TenantID      string    `json:"tenantId"`
-	TenantName    string    `json:"tenantName,omitempty"`
-	AddedAt       time.Time `json:"addedAt,omitempty"`
-}
-
-// AccountAddResponse confirms the alias that was persisted.
-type AccountAddResponse struct {
-	Alias string `json:"alias"`
-}
-
-func (h *Handlers) handleAccountAdd(_ context.Context, params json.RawMessage) (any, error) {
-	var req AccountAddRequest
-	if err := json.Unmarshal(params, &req); err != nil {
-		return nil, fmt.Errorf("decode params: %w", err)
-	}
-	if req.Alias == "" {
-		req.Alias = req.Account.Alias
-	}
-	secret, err := decodeBase64(req.SecretB64)
-	if err != nil {
-		return nil, fmt.Errorf("decode secret: %w", err)
-	}
-	account := auth.Account{
-		Alias:         req.Alias,
-		HomeAccountID: req.Account.HomeAccountID,
-		Username:      req.Account.Username,
-		TenantID:      req.Account.TenantID,
-		TenantName:    req.Account.TenantName,
-		AddedAt:       req.Account.AddedAt,
-	}
-	if account.AddedAt.IsZero() {
-		account.AddedAt = time.Now().UTC()
-	}
-	if err := h.registry.Add(account, secret); err != nil {
-		return nil, err
-	}
-	return AccountAddResponse{Alias: req.Alias}, nil
-}
-
 // AccountRemoveRequest is the payload accepted by "account.remove".
 type AccountRemoveRequest struct {
 	Alias string `json:"alias"`
@@ -412,51 +357,6 @@ func (h *Handlers) handleConfigSnapshot(_ context.Context, _ json.RawMessage) (a
 	}, nil
 }
 
-// SyncRefreshRequest is the payload accepted by "sync.refresh". Path
-// may be empty to refresh the item root.
-type SyncRefreshRequest struct {
-	Alias       string `json:"alias"`
-	WorkspaceID string `json:"workspaceId"`
-	ItemID      string `json:"itemId"`
-	Path        string `json:"path"`
-}
-
-// SyncRefreshResponse mirrors [sync.Diff] for the wire.
-type SyncRefreshResponse struct {
-	Added   int `json:"added"`
-	Updated int `json:"updated"`
-	Removed int `json:"removed"`
-}
-
-func (h *Handlers) handleSyncRefresh(ctx context.Context, params json.RawMessage) (any, error) {
-	var req SyncRefreshRequest
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, fmt.Errorf("decode params: %w", err)
-		}
-	}
-	if req.Alias == "" || req.WorkspaceID == "" || req.ItemID == "" {
-		return nil, errors.New("alias, workspaceId and itemId are required")
-	}
-	if h.engine == nil {
-		return nil, ErrEngineNotWired
-	}
-	diff, err := h.engine.RefreshFolder(ctx, cache.Key{
-		AccountAlias: req.Alias,
-		WorkspaceID:  req.WorkspaceID,
-		ItemID:       req.ItemID,
-		Path:         req.Path,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return SyncRefreshResponse{
-		Added:   diff.Added,
-		Updated: diff.Updated,
-		Removed: diff.Removed,
-	}, nil
-}
-
 // PollChangesRequest is the payload accepted by "sync.pollChanges".
 // Anchor is the watermark returned by the previous call; pass the zero
 // value on the first call to receive all events in the feed.
@@ -488,45 +388,6 @@ func (h *Handlers) handleSyncPollChanges(_ context.Context, params json.RawMessa
 		res.Events = []ChangeEvent{}
 	}
 	return res, nil
-}
-
-// MountListResponse is the payload returned by "mount.list".
-type MountListResponse struct {
-	// Domains is the list of registered File Provider domains, derived
-	// from the accounts in config.toml. Each account maps to one domain
-	// with the mount path the macOS File Provider framework assigns under
-	// ~/Library/CloudStorage/. The daemon cannot query NSFileProviderManager
-	// from Go; the host app is the authoritative source for the actual domain
-	// registration state. This list reflects config.toml, not live domain state.
-	//
-	// TODO(phase-2): replace with a real NSFileProviderDomain query once the
-	// host app exposes domain registration state over IPC.
-	Domains []MountDomain `json:"domains"`
-}
-
-// MountDomain describes one File Provider domain as the host app will
-// register it. The fields mirror NSFileProviderDomain.
-type MountDomain struct {
-	Identifier  string `json:"identifier"`
-	DisplayName string `json:"displayName"`
-	// MountPath is the expected on-disk location under ~/Library/CloudStorage/.
-	// It is constructed from the alias; the actual directory only appears once
-	// the File Provider Extension registers and macOS creates it.
-	MountPath string `json:"mountPath,omitempty"`
-}
-
-func (h *Handlers) handleMountList(_ context.Context, _ json.RawMessage) (any, error) {
-	snap := h.store.Snapshot()
-	domains := make([]MountDomain, 0, len(snap.Accounts))
-	for alias := range snap.Accounts {
-		domains = append(domains, MountDomain{
-			Identifier:  alias,
-			DisplayName: "OneLake — " + alias, // em-dash, matching Finder sidebar label
-			MountPath:   "~/Library/CloudStorage/OneLake-" + alias,
-		})
-	}
-	sortDomains(domains)
-	return MountListResponse{Domains: domains}, nil
 }
 
 // AccountSetDefaultRequest is the payload accepted by "account.setDefault".

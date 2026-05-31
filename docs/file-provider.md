@@ -136,8 +136,8 @@ The daemon socket lives at
 Provider Extension both find it without an extra path-resolution layer.
 Both sides share the same JSON-RPC 2.0 framing
 ([`internal/ipc`](../internal/ipc)). The daemon exposes `status`,
-`account.*`, `config.snapshot`, `sync.refresh`, `sync.pollChanges`, and
-`mount.list` methods.
+`account.*`, `auth.login`, `cache.*`, `config.*`, `sync.pollChanges`,
+and the `fp.*` File Provider methods.
 
 **Phase 1 trade-off:** automatic Finder refresh requires `OneLake.app` to
 be running. If the user quits the host app, the File Provider Extension
