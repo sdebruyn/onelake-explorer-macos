@@ -1,7 +1,7 @@
 // ChangeWatcher.swift
 // Polls the daemon for OneLake changes and signals Finder to re-enumerate.
 //
-// Architecture decision (Phase 1):
+// Architecture decision:
 //
 //   The daemon detects changes via adaptive polling and stores them in an
 //   in-memory Changefeed. The host app (this class) polls the daemon every
@@ -17,7 +17,7 @@
 //   (files can be opened, uploaded, downloaded) but it will not receive
 //   proactive refresh signals. Finder performs its own periodic re-enumeration
 //   as a fallback; the cadence is controlled by macOS and is typically slower
-//   than our 5-second polling interval. This is an accepted Phase 1 limitation.
+//   than our 5-second polling interval.
 //
 // This class is @MainActor because NSFileProviderManager calls are
 // documented as main-thread-only.
@@ -102,14 +102,13 @@ final class ChangeWatcher {
                     client.closePersistentConnection(c)
                     conn = nil
                 }
-                // Phase 1 accepted trade-off: if the daemon reported FullResync
-                // in a response that we fail to process (e.g. signalEnumerator
-                // threw), the flag is lost. On reconnect we reset anchor to nil,
-                // which causes the daemon to return all events it currently holds;
-                // if the feed itself was truncated the daemon will set FullResync
-                // again. A persistent pendingFullResync flag would be more robust
-                // but is deferred to Phase 2 when the signaling path gains
-                // end-to-end reliability guarantees.
+                // If the daemon reported FullResync in a response that we fail
+                // to process (e.g. signalEnumerator threw), the flag is lost.
+                // On reconnect we reset anchor to nil, which causes the daemon
+                // to return all events it currently holds; if the feed itself was
+                // truncated the daemon will set FullResync again. A persistent
+                // pendingFullResync flag would be more robust but adds complexity
+                // that is not yet warranted.
                 anchor = nil
             }
 

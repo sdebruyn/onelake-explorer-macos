@@ -74,7 +74,7 @@ help:
 	@echo "Targets:"
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-18s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-# --- Phase 1: macOS app + File Provider Extension ---
+# --- macOS app + File Provider Extension ---
 
 XCODE_PROJECT := apple/OneLake.xcodeproj
 APPLE_CONFIG  := apple/Local.xcconfig

@@ -37,7 +37,7 @@ var FabricScopes = []string{
 //
 // (If a tenant has not admin-consented the Fabric permissions, the first
 // Fabric silent acquisition returns consent_required; surfacing an
-// interactive re-consent for that case is a Phase 2 refinement.)
+// interactive re-consent for that case is a future refinement.)
 var LoginScopes = append([]string{}, OneLakeScopes...)
 
 // AuthorityHostPublicCloud is the public-cloud Microsoft Entra authority

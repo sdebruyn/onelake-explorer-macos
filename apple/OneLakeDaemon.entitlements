@@ -15,8 +15,8 @@
     • The Keychain: keychain-access-groups lets it share the MSAL token
       cache with the host app. This entitlement requires a paid Developer
       Program team — it is a no-op in unsigned dev builds.
-    • Phase 3 auth: an interactive browser loopback redirect (localhost) is
-      the "browser" auth flow. network.server covers that listener.
+    • Interactive browser loopback redirect (localhost) is the auth callback
+      flow. network.server covers that listener.
 
   Sandboxing would block: launchctl, ~/Library/LaunchAgents writes, the
   App Group container path (until the container exists), and arbitrary
@@ -39,7 +39,7 @@
     <!-- Outbound HTTPS to OneLake / Entra ID -->
     <key>com.apple.security.network.client</key>
     <true/>
-    <!-- Unix-domain socket listener (IPC) + Phase 3 localhost loopback for auth -->
+    <!-- Unix-domain socket listener (IPC) + localhost loopback for browser auth callback -->
     <key>com.apple.security.network.server</key>
     <true/>
     <!-- Shared MSAL Keychain token cache (requires paid Developer Program team) -->

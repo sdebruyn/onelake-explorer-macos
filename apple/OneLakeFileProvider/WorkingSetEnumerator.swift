@@ -3,11 +3,10 @@
 //
 // The working set is macOS's bag of "recently used / actively
 // referenced" items used for cross-folder search, badges, and the
-// recents list. In Phase 1 we have no daemon-driven change feed
-// powering it yet, so we hand back an empty page and a constant
-// zero-byte sync anchor. Returning a real (empty) enumerator rather
-// than refusing keeps Finder, Spotlight, and the framework's badge
-// machinery happy.
+// recents list. The daemon does not yet emit a change feed powering it,
+// so we hand back an empty page and a constant zero-byte sync anchor.
+// Returning a real (empty) enumerator rather than refusing keeps Finder,
+// Spotlight, and the framework's badge machinery happy.
 
 import FileProvider
 import Foundation
