@@ -31,7 +31,7 @@
 		<key>NSExtensionFileProviderSupportsEnumeration</key>
 		<true/>
 		<key>NSExtensionFileProviderDocumentGroup</key>
-		<string>group.dev.debruyn.ofem</string>
+		<string>$(TeamIdentifierPrefix)group.dev.debruyn.ofem</string>
 	</dict>
 </dict>
 </plist>

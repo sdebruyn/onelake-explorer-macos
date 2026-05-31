@@ -21,14 +21,26 @@ import (
 // LaunchAgent label and the Apple bundle identifiers.
 const BundleID = "dev.debruyn.ofem"
 
+// TeamID is the Apple Developer team identifier OFEM is signed with.
+// It prefixes the App Group identifier so the same value is valid for
+// both Developer ID and Mac App Store distribution — Apple requires
+// the team prefix for MAS and accepts it for Developer ID.
+//
+// Hardcoded because OFEM ships from a single Developer Program team.
+// Forks that re-sign under a different team must update this constant
+// AND `apple/Shared/IPCClient.swift`'s `ofemAppGroupIdentifier` so the
+// daemon and the Swift targets agree on the container path.
+const TeamID = "6D79CUWZ4J"
+
 // GroupID is the App Group identifier shared by the host app, the File
 // Provider Extension, and the daemon. It controls (a) the shared
 // container directory at ~/Library/Group Containers/<GroupID>/ and (b)
 // the keychain-access-group used to share the MSAL token cache.
 //
-// Conventionally, App Group identifiers are prefixed with "group." so
-// they are recognisable to other tooling (codesign, profiles, …).
-const GroupID = "group." + BundleID
+// Apple's App Group identifiers always start with `group.` (Developer
+// ID) or `<TeamID>.group.` (Mac App Store). We use the team-prefixed
+// form everywhere so one identifier covers both distribution paths.
+const GroupID = TeamID + ".group." + BundleID
 
 // File is the TOML config schema. New fields must be backwards-compatible:
 // add with sensible zero-value defaults rather than removing or renaming.
