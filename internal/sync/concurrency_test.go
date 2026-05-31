@@ -20,11 +20,13 @@ func TestPerAccountSemaphore_CapEnforced(t *testing.T) {
 	ctx := context.Background()
 
 	const goroutines = 16
+	const cap = 3
 	var (
 		peak    int32
 		inUse   int32
 		wg      sync.WaitGroup
 		barrier = make(chan struct{})
+		entered = make(chan struct{}, cap)
 	)
 	wg.Add(goroutines)
 	for i := 0; i < goroutines; i++ {
@@ -44,15 +46,20 @@ func TestPerAccountSemaphore_CapEnforced(t *testing.T) {
 					break
 				}
 			}
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
 			<-barrier
 			atomic.AddInt32(&inUse, -1)
 			s.release("alias-1")
 		}()
 	}
 
-	// Let the spawned goroutines pile up against the cap, then release
-	// them all at once.
-	time.Sleep(50 * time.Millisecond)
+	// Wait until the cap is saturated before releasing the gate.
+	for i := 0; i < cap; i++ {
+		<-entered
+	}
 	close(barrier)
 	wg.Wait()
 
@@ -185,10 +192,12 @@ func TestOpen_DownloadConcurrencyCap(t *testing.T) {
 	f := newEngine(t, func(o *Options) { o.MaxConcurrentDownloads = 2 })
 	ctx := context.Background()
 
+	const dlCap = 2
 	var (
 		inFlight int32
 		peak     int32
 		release  = make(chan struct{})
+		entered  = make(chan struct{}, dlCap)
 	)
 	httpmock.RegisterResponder("GET", "=~^"+testOneLakeBase+`.*`,
 		func(req *http.Request) (*http.Response, error) {
@@ -198,6 +207,10 @@ func TestOpen_DownloadConcurrencyCap(t *testing.T) {
 				if n <= prev || atomic.CompareAndSwapInt32(&peak, prev, n) {
 					break
 				}
+			}
+			select {
+			case entered <- struct{}{}:
+			default:
 			}
 			<-release
 			atomic.AddInt32(&inFlight, -1)
@@ -222,8 +235,10 @@ func TestOpen_DownloadConcurrencyCap(t *testing.T) {
 			errs <- err
 		}()
 	}
-	// Let the goroutines pile up against the semaphore.
-	time.Sleep(50 * time.Millisecond)
+	// Wait until the cap is saturated before releasing the gate.
+	for i := 0; i < dlCap; i++ {
+		<-entered
+	}
 	close(release)
 	for i := 0; i < n; i++ {
 		if err := <-errs; err != nil {
@@ -302,8 +317,10 @@ func TestPut_UploadConcurrencyCap(t *testing.T) {
 	f := newEngine(t, func(o *Options) { o.MaxConcurrentUploads = 2 })
 	ctx := context.Background()
 
+	const ulCap = 2
 	var inFlight, peak int32
 	release := make(chan struct{})
+	entered := make(chan struct{}, ulCap)
 	httpmock.RegisterResponder("PUT", "=~^"+testOneLakeBase+`.*`,
 		func(_ *http.Request) (*http.Response, error) {
 			n := atomic.AddInt32(&inFlight, 1)
@@ -312,6 +329,10 @@ func TestPut_UploadConcurrencyCap(t *testing.T) {
 				if n <= prev || atomic.CompareAndSwapInt32(&peak, prev, n) {
 					break
 				}
+			}
+			select {
+			case entered <- struct{}{}:
+			default:
 			}
 			<-release
 			atomic.AddInt32(&inFlight, -1)
@@ -332,7 +353,10 @@ func TestPut_UploadConcurrencyCap(t *testing.T) {
 			errs <- f.engine.Put(ctx, k, strings.NewReader("ok"), 2)
 		}()
 	}
-	time.Sleep(50 * time.Millisecond)
+	// Wait until the cap is saturated before releasing the gate.
+	for i := 0; i < ulCap; i++ {
+		<-entered
+	}
 	close(release)
 	for i := 0; i < n; i++ {
 		if err := <-errs; err != nil {
