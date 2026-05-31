@@ -82,8 +82,8 @@ added_at = "2026-05-01T00:00:00Z"
 	}
 
 	// Save and re-read raw bytes: the legacy key must be gone.
-	if err := store.Save(); err != nil {
-		t.Fatalf("Save: %v", err)
+	if err := store.UpdateAndSave(func(_ *File) {}); err != nil {
+		t.Fatalf("UpdateAndSave: %v", err)
 	}
 	raw, err := os.ReadFile(paths.ConfigFile)
 	if err != nil {
@@ -191,7 +191,7 @@ func TestStoreRoundtrip(t *testing.T) {
 	}
 
 	s := &Store{paths: paths, file: Default()}
-	s.Update(func(f *File) {
+	if err := s.UpdateAndSave(func(f *File) {
 		f.InstallID = "abc-123"
 		f.DefaultAccount = "work"
 		f.Accounts["work"] = Account{
@@ -201,10 +201,8 @@ func TestStoreRoundtrip(t *testing.T) {
 			Username:      "user@example.com",
 			AddedAt:       "2026-05-23T12:00:00Z",
 		}
-	})
-
-	if err := s.Save(); err != nil {
-		t.Fatalf("save: %v", err)
+	}); err != nil {
+		t.Fatalf("UpdateAndSave: %v", err)
 	}
 
 	// Verify file permissions and content via a second store.

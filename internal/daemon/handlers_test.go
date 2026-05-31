@@ -29,8 +29,8 @@ func newTestHandlers(t *testing.T) *Handlers {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	if err := store.Save(); err != nil {
-		t.Fatalf("config.Save: %v", err)
+	if err := store.UpdateAndSave(func(_ *config.File) {}); err != nil {
+		t.Fatalf("config.UpdateAndSave: %v", err)
 	}
 
 	kc := auth.NewMemoryKeychain()
@@ -188,7 +188,9 @@ func TestHandleAccountRemoveMissingAliasErrors(t *testing.T) {
 func TestHandleConfigSnapshotOmitsInstallID(t *testing.T) {
 	h := newTestHandlers(t)
 	// Set an install ID via the store so we know it's set.
-	h.store.Update(func(f *config.File) { f.InstallID = "should-not-appear" })
+	if err := h.store.UpdateAndSave(func(f *config.File) { f.InstallID = "should-not-appear" }); err != nil {
+		t.Fatalf("UpdateAndSave: %v", err)
+	}
 	res, err := h.handleConfigSnapshot(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)

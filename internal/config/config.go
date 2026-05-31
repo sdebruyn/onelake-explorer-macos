@@ -365,19 +365,6 @@ func (s *Store) Snapshot() File {
 	return out
 }
 
-// Update mutates the file under lock. The mutator receives a pointer to
-// the live file; changes are persisted by a subsequent Save.
-//
-// Prefer [Store.UpdateAndSave] when the mutation must be persisted: a
-// separate Update + Save pair releases the lock between the two, so a
-// concurrent mutation can interleave and the on-disk file can reflect a
-// state no single caller intended.
-func (s *Store) Update(mutator func(*File)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	mutator(&s.file)
-}
-
 // UpdateAndSave applies mutator and persists the result while holding the
 // lock across BOTH steps, so concurrent writers cannot interleave between
 // the mutation and the encode+rename and leave the file in a state no
@@ -391,14 +378,6 @@ func (s *Store) UpdateAndSave(mutator func(*File)) error {
 
 // Paths returns the resolved OFEM paths.
 func (s *Store) Paths() Paths { return s.paths }
-
-// Save writes the current config to disk atomically (write-temp + rename).
-// It creates the parent directory if needed.
-func (s *Store) Save() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.saveLocked()
-}
 
 // saveLocked encodes and atomically renames the config. The caller MUST
 // hold s.mu.
