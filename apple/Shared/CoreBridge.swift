@@ -3,8 +3,7 @@
 //
 // The Go engine and cache are owned by the long-running daemon; this type
 // is a thin async client that talks to it over the unix-socket IPC (see
-// IPCClient). It replaces the old cgo bridge that compiled a second engine
-// into each Swift target — see SIMPLIFICATION.md.
+// IPCClient).
 //
 // Files cross the process boundary through the shared App Group container:
 // a fetch asks the daemon to write into the container and then moves the

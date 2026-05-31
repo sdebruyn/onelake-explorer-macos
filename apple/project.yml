@@ -31,8 +31,8 @@ settings:
     ENABLE_DEBUG_DYLIB: NO
 # The Go engine and cache live in the long-running daemon. Both Swift
 # targets reach it over the unix-socket IPC (apple/Shared/IPCClient.swift +
-# CoreBridge.swift) — there is no cgo archive to link any more, so no
-# settingGroups / bridging headers are needed. See SIMPLIFICATION.md.
+# CoreBridge.swift) — there is no cgo archive to link, so no
+# settingGroups / bridging headers are needed.
 targets:
   OneLake:
     type: application
@@ -183,7 +183,7 @@ targets:
   # Host-less logic-test bundle: it compiles the unit under test
   # (ItemIdentifierParser) and apple/Shared directly rather than loading a
   # host app, so it runs unsigned in CI with no daemon and no signing
-  # identity. Smoke-level only — see CODE_REVIEW.md M-8.
+  # identity. Smoke-level only.
   OneLakeTests:
     type: bundle.unit-test
     platform: macOS

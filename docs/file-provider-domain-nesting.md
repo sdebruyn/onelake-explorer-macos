@@ -82,8 +82,8 @@ Personal-Team-signed domain before we lock it in.
 
 The user gives up a single collapsible parent folder, but gains
 exactly the layout that every other cloud-storage app on macOS uses —
-which is what Sam asked for in the hard constraints ("the way OneDrive
-and Google Drive integrate").
+which matches the hard constraint of integrating "the way OneDrive
+and Google Drive integrate".
 
 ### Why the other workarounds are worse
 

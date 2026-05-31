@@ -25,19 +25,17 @@ nav = [
     { "Uninstall" = "uninstall.md" },
     { "Support" = "support.md" },
   ] },
-  { "Architecture & design" = [
-    { "Overview" = "design/overview.md" },
+  { "Contributing" = [
+    { "How to contribute" = "design/contributing.md" },
+    { "Prerequisites" = "prerequisites.md" },
+    { "Architecture overview" = "design/overview.md" },
+    { "Tech stack" = "tech-stack.md" },
     { "macOS integration" = "macos-mount.md" },
     { "File Provider Extension" = "file-provider.md" },
     { "Authentication" = "auth.md" },
     { "OneLake & Fabric APIs" = "onelake-api.md" },
     { "Telemetry" = "telemetry.md" },
-    { "Tech stack" = "tech-stack.md" },
     { "Packaging & releases" = "packaging-homebrew.md" },
-  ] },
-  { "Contributing" = [
-    { "How to contribute" = "design/contributing.md" },
-    { "Prerequisites" = "prerequisites.md" },
   ] },
 ]
 

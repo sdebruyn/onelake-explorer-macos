@@ -8,8 +8,7 @@
 // This logic used to live inside the cgo bridge (core/bridge.go), compiled
 // into the extension as a second engine. It moved here so the daemon —
 // the single owner of the engine and the cache — can serve it over the
-// same unix-socket IPC the host app uses, and the cgo bridge can be
-// deleted (see SIMPLIFICATION.md).
+// same unix-socket IPC the host app uses.
 package fp
 
 import (

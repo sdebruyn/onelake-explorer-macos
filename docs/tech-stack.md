@@ -128,6 +128,5 @@ onelake-explorer-macos/
 ├── CONTRIBUTING.md
 ├── SECURITY.md
 ├── CODE_OF_CONDUCT.md
-├── CLAUDE.md
-└── PLAN.md
+└── CLAUDE.md
 ```

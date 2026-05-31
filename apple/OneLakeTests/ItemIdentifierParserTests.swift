@@ -4,7 +4,7 @@
 // directly (no host application), so it runs unsigned in CI with no
 // daemon and no signing identity. Its job is to catch Swift compile
 // regressions and the most basic identifier-grammar mistakes on every
-// PR — see CODE_REVIEW.md M-8.
+// PR.
 
 import FileProvider
 import XCTest

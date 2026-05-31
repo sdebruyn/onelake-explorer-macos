@@ -74,9 +74,8 @@ jobs:
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Coverage floor
-        # Enforced floor that ratchets regressions out; the aspirational
-        # target is 80% (see PLAN.md). Raise FLOOR as coverage climbs —
-        # notably after the cgo bridge is removed, which lifts the total.
+        # Enforced floor that ratchets regressions out. Aspirational target
+        # is 80%. Raise FLOOR as coverage climbs.
         run: |
           FLOOR=60
           pct=$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}' | tr -d '%')
@@ -157,7 +156,6 @@ jobs:
         # Compiles the OneLake app and the File Provider .appex with code
         # signing disabled. Catches Swift compile regressions on every PR
         # so they no longer surface for the first time on a release tag.
-        # See CODE_REVIEW.md M-8.
         run: make apple-build-ci
 
   vulncheck:

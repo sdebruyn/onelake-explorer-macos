@@ -14,16 +14,15 @@ OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fa
 - Install via Homebrew cask.
 - No external runtime dependency for end users (no Python / .NET / Node).
 - macOS 14 Sonoma or later, arm64-only.
-- Project communication: code/docs/comments/commits in English. Sam and Claude speak Dutch.
+- Project communication: code/docs/comments/commits in English.
 
 ## Key decisions (where to look)
 
-- All product and tech decisions are in `README.md`, `PLAN.md`, and `docs/*`.
-- Phasing: `PLAN.md` — Phase 0 internal core, Phase 1 MVP signed `.app` with File Provider Extension, Phase 2 host app GUI, Phase 3 polish.
+- All product and tech decisions are in `README.md` and `docs/*`.
 - Mount mechanism: File Provider Extension, never FUSE-T. See `docs/macos-mount.md` for the rejected alternatives.
 - Auth: `docs/auth.md` — MSAL Go, own multi-tenant Entra App Registration, Keychain-backed cache, per-account `PublicClientApplication`.
 - OneLake API: `docs/onelake-api.md` — ADLS Gen2 DFS endpoint for I/O (audience `https://storage.azure.com/`), Fabric REST for discovery (Power BI Service audience `https://analysis.windows.net/powerbi/api`). Two distinct audiences — a single one returns 401 on Fabric REST. See `docs/auth.md`.
-- Tech stack: `docs/tech-stack.md` — Go for the core + daemon binary, Swift for `.app` and `.appex`. The daemon owns the engine/cache; the Swift targets are thin JSON-RPC clients over the daemon's unix socket (no cgo — removed in the SIMPLIFICATION).
+- Tech stack: `docs/tech-stack.md` — Go for the core + daemon binary, Swift for `.app` and `.appex`. The daemon owns the engine/cache; the Swift targets are thin JSON-RPC clients over the daemon's unix socket (no cgo).
 - Telemetry: `docs/telemetry.md` — opt-out, App Insights free tier, tenant IDs collected but never UPN / workspace / file names.
 - Packaging: `docs/packaging-homebrew.md` — xcodebuild + notarytool, DMG via Homebrew cask.
 - Prerequisites: `docs/prerequisites.md` — splits local dev vs publishing/signing.
@@ -73,9 +72,9 @@ make apple-build
 
 ## Things to avoid
 
-- Don't suggest FUSE-T, macFUSE, or any kernel-extension-based approach. Sam already rejected the FUSE-T intermediate stage.
-- Don't over-engineer protective UX layers. Sam prefers less intrusive defaults — silent retry over notifications, last-write-wins over conflict-copy, no client-side write guards when the server already enforces.
-- Don't add features beyond the current phase's exit criteria. Each phase has clear deliverables in PLAN.md.
+- Don't suggest FUSE-T, macFUSE, or any kernel-extension-based approach. The FUSE-T intermediate stage was explicitly rejected.
+- Don't over-engineer protective UX layers. The project prefers less intrusive defaults — silent retry over notifications, last-write-wins over conflict-copy, no client-side write guards when the server already enforces.
+- Don't add features beyond what the current scope calls for. Open a discussion if scope is unclear.
 - Don't introduce Python, .NET, Node, or any runtime dependency for end users.
 - Don't suggest making it cross-platform (Windows / Linux). It's macOS-only.
 - Don't suggest service-principal auth or client-secret flows.
@@ -83,7 +82,7 @@ make apple-build
 ## When in doubt
 
 - Read the doc in `docs/` first. They are intentionally detailed.
-- If a decision needs to be made and it's not documented, ask Sam in Dutch before guessing.
+- If a decision needs to be made and it's not documented, ask in an issue or discussion before guessing.
 - If you create a new design doc, link it from README.md.
 
 ## Open questions / known unknowns
