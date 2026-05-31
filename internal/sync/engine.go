@@ -278,6 +278,12 @@ func (e *Engine) Close() error {
 			close(e.done)
 		}
 		e.bg.Wait()
+		// Clear per-alias semaphore maps now that all goroutines have
+		// exited and no acquire/release calls can be in flight. This
+		// reclaims the lazily-allocated channels (one per alias ever
+		// seen) that would otherwise remain for the process lifetime.
+		e.downloadSem.clear()
+		e.uploadSem.clear()
 	})
 	return nil
 }

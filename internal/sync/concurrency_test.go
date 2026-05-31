@@ -107,6 +107,77 @@ func TestPerAccountSemaphore_RespectsContext(t *testing.T) {
 	cancel()
 }
 
+// TestPerAccountSemaphore_Clear verifies that clear empties the internal
+// map so previously allocated per-alias channels are released.
+func TestPerAccountSemaphore_Clear(t *testing.T) {
+	s := newPerAccountSemaphore(2)
+	ctx := context.Background()
+
+	// Touch two aliases to populate the map.
+	for _, alias := range []string{"alice", "bob"} {
+		if err := s.acquire(ctx, alias); err != nil {
+			t.Fatalf("acquire %s: %v", alias, err)
+		}
+		s.release(alias)
+	}
+
+	s.mu.Lock()
+	before := len(s.sem)
+	s.mu.Unlock()
+	if before != 2 {
+		t.Fatalf("expected 2 entries before clear, got %d", before)
+	}
+
+	s.clear()
+
+	s.mu.Lock()
+	after := len(s.sem)
+	s.mu.Unlock()
+	if after != 0 {
+		t.Fatalf("expected 0 entries after clear, got %d", after)
+	}
+}
+
+// TestEngine_Close_ClearsSemaphores builds a real Engine, exercises both
+// upload and download semaphores across a couple of aliases, calls Close,
+// and asserts the semaphore maps are empty.
+func TestEngine_Close_ClearsSemaphores(t *testing.T) {
+	f := newEngine(t)
+
+	ctx := context.Background()
+	// Prime the per-alias channels for two aliases in each semaphore.
+	for _, alias := range []string{"acme", "contoso"} {
+		if err := f.engine.downloadSem.acquire(ctx, alias); err != nil {
+			t.Fatalf("downloadSem.acquire(%s): %v", alias, err)
+		}
+		f.engine.downloadSem.release(alias)
+
+		if err := f.engine.uploadSem.acquire(ctx, alias); err != nil {
+			t.Fatalf("uploadSem.acquire(%s): %v", alias, err)
+		}
+		f.engine.uploadSem.release(alias)
+	}
+
+	if err := f.engine.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	f.engine.downloadSem.mu.Lock()
+	dLen := len(f.engine.downloadSem.sem)
+	f.engine.downloadSem.mu.Unlock()
+
+	f.engine.uploadSem.mu.Lock()
+	uLen := len(f.engine.uploadSem.sem)
+	f.engine.uploadSem.mu.Unlock()
+
+	if dLen != 0 {
+		t.Errorf("downloadSem.sem: want 0 entries after Close, got %d", dLen)
+	}
+	if uLen != 0 {
+		t.Errorf("uploadSem.sem: want 0 entries after Close, got %d", uLen)
+	}
+}
+
 // TestOpen_DownloadConcurrencyCap launches more parallel Opens than
 // the cap and asserts that no more than cap requests ever sit in
 // flight against the mock server.
