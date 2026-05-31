@@ -50,7 +50,7 @@ cask "ofem" do
             quit:      "dev.debruyn.ofem.app"
 
   zap trash: [
-    "~/Library/Group Containers/group.dev.debruyn.ofem",
+    "~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem",
     "~/Library/Preferences/dev.debruyn.ofem.plist",
     # Each account materialises as its own File Provider domain.
     # Zapped only on explicit `brew uninstall --zap` to avoid data loss.
