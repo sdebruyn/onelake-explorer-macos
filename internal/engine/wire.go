@@ -1,9 +1,10 @@
-// Package engine exposes a single constructor that assembles the shared
-// core of every OFEM process: cache → auth registry → Fabric/OneLake
-// clients → sync.Engine. Both the daemon (internal/daemon/run.go) and
-// the debug CLI (cmd/ofem/cli/debug.go) call [Build] instead of
-// hand-wiring these layers independently, so a change in one place
-// cannot silently diverge from the other.
+// Package engine exposes a single wire-up function for the daemon
+// process: cache → auth registry → Fabric/OneLake clients → sync.Engine.
+// It lives in its own package so unit tests can construct the components
+// without booting the full daemon — [daemon.Run] owns signal handling,
+// logging setup, telemetry init, and the IPC listener, all of which are
+// orthogonal to wiring. [Build] is the only production caller's entry
+// point; [Build] is also exercised directly in wire_test.go.
 package engine
 
 import (
@@ -82,10 +83,9 @@ func Build(opts Options) (*Components, error) {
 		}
 		kc = built
 	}
-	// Auth registry. We pass it the same store so the daemon and CLI
-	// stay in sync — both read and mutate config.toml under the same
-	// lock. The registry implements [auth.TokenProvider] directly, so
-	// the Fabric and OneLake clients can consume it without an adapter.
+	// Auth registry. The registry implements [auth.TokenProvider]
+	// directly, so the Fabric and OneLake clients can consume it
+	// without an adapter.
 	registry := auth.NewRegistry(opts.Store, kc, auth.EntraClientID, nil)
 
 	// SQLite metadata cache. cache.Open creates the directory when it
@@ -119,8 +119,8 @@ func Build(opts Options) (*Components, error) {
 	syncOpts.Fabric = fabricClient
 	syncOpts.OneLake = onelakeClient
 	syncOpts.Tenants = registry
-	// All three processes (daemon, CLI, extension) rendezvous on the
-	// same partial-download spill files inside the App Group cache dir.
+	// The daemon and the File Provider extension rendezvous on the same
+	// partial-download spill files inside the App Group cache dir.
 	syncOpts.ScratchDir = filepath.Join(paths.CacheDir, "partials")
 
 	engine, err := sync.New(syncOpts)
