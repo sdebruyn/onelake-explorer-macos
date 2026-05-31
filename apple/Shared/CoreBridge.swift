@@ -328,7 +328,7 @@ final class CoreBridge {
         }
         // Bring Your Own App Registration. When clientID is nil/empty,
         // the daemon uses the built-in OFEM registration — see
-        // docs/auth-custom-app-registration.md for when an override is
+        // docs/custom-app-registration.md for when an override is
         // appropriate.
         if let clientID = clientID, !clientID.isEmpty {
             params["clientId"] = clientID
