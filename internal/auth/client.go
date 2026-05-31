@@ -40,13 +40,6 @@ var FabricScopes = []string{
 // interactive re-consent for that case is a Phase 2 refinement.)
 var LoginScopes = append([]string{}, OneLakeScopes...)
 
-// Scopes is retained for callers that have not migrated to the
-// audience-specific variants.
-//
-// Deprecated: use OneLakeScopes or FabricScopes explicitly. It equals
-// OneLakeScopes and will be removed once all call sites migrate.
-var Scopes = append([]string{}, OneLakeScopes...)
-
 // AuthorityHostPublicCloud is the public-cloud Microsoft Entra authority
 // host. Sovereign clouds (US Gov, China, Germany) are out of scope for
 // MVP; see docs/auth.md.
