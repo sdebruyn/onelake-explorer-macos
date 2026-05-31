@@ -18,6 +18,12 @@
 //
 // On any failure the partial is left in place; on completion it is
 // consumed by cache.StoreBlob and removed.
+//
+// TODO: cross-process resume (Mac sleep mid-download → daemon restart on
+// wake; OFEM update → daemon restart) is intentionally NOT covered here.
+// The PID-scoped scratch dir wipes partials on every restart. Revisit
+// with cross-restart scope + a per-key in-process mutex when large-file
+// dogfood surfaces this as a real pain point.
 
 package sync
 
@@ -47,13 +53,16 @@ const partialsDirName = "ofem-download-partials"
 // see [New]), so the same key maps to the same path within a process but
 // to different paths across processes.
 //
-// This gives two layers of write-safety: within a process the per-account
-// download semaphore ([Engine.downloadSem]) serialises same-key downloads,
-// and across processes the PID-scoped path means two processes never open
-// the same spill file at all. Without the cross-process scoping a fresh
-// download (which skips SHA verification, expectedSHA == "") could have
-// its bytes interleaved with another process's and be content-addressed
-// as a silently corrupt blob. The trade-off is that resume does not carry
+// Same-key concurrent Opens within one process are NOT serialised by
+// [Engine.downloadSem]: that semaphore is per-alias, not per-key. In
+// practice we rely on macOS File Provider's per-item-identifier
+// serialisation upstream to prevent two Opens from racing on partialFor.
+// The PID-scoped path adds cross-process write-safety: two daemon
+// processes (e.g. during an upgrade overlap) cannot interleave bytes
+// into the same spill file. Without this scoping a fresh download (which
+// skips SHA verification, expectedSHA == "") could have its bytes
+// interleaved with another process's and be content-addressed as a
+// silently corrupt blob. The trade-off is that resume does not carry
 // across processes or across a process restart — acceptable, since a
 // dropped partial just re-downloads from offset 0.
 func (e *Engine) partialFor(k cache.Key) string {
