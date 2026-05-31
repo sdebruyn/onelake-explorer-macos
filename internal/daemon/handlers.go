@@ -32,13 +32,6 @@ type syncRefresher interface {
 	RefreshFolder(ctx context.Context, k cache.Key) (sync.Diff, error)
 }
 
-// offlineReporter is the subset of [sync.Engine] the status handler
-// uses to surface "is the host offline" to the IPC client. Defined as
-// an interface so tests can stub it without spinning up the engine.
-type offlineReporter interface {
-	Offline() bool
-}
-
 // Handlers bundles the dependencies every IPC handler needs and exposes
 // a Register method that binds all of OFEM's methods on a [ipc.Server].
 //
@@ -53,7 +46,6 @@ type Handlers struct {
 	kc        auth.Keychain
 	cache     *cache.Cache
 	engine    syncRefresher
-	offline   offlineReporter
 	gates     *httpgate.Registry
 	feed      *Changefeed
 	startedAt time.Time
@@ -74,14 +66,12 @@ type Handlers struct {
 // gates may be nil for tests (status returns an empty Gates list); feed
 // may be nil for tests (sync.pollChanges returns an empty result).
 func NewHandlers(store *config.Store, registry *auth.Registry, kc auth.Keychain, cache *cache.Cache, engine syncRefresher, gates *httpgate.Registry, feed *Changefeed) *Handlers {
-	off, _ := engine.(offlineReporter)
 	h := &Handlers{
 		store:     store,
 		registry:  registry,
 		kc:        kc,
 		cache:     cache,
 		engine:    engine,
-		offline:   off,
 		gates:     gates,
 		feed:      feed,
 		startedAt: time.Now().UTC(),
@@ -150,10 +140,6 @@ type StatusResponse struct {
 	// considers unreachable due to a paused / suspended Fabric
 	// capacity. Empty when no workspace is paused.
 	PausedWorkspaces []PausedWorkspace `json:"pausedWorkspaces"`
-	// Offline reports whether the daemon believes the host is offline
-	// (DNS / network-unreachable on the last outbound attempt). When
-	// true, writes are queued locally for later drain.
-	Offline bool `json:"offline"`
 	// Paths contains the canonical file-system locations the menu-bar
 	// app can expose via "Reveal in Finder" actions.
 	Paths StatusPaths `json:"paths"`
@@ -206,11 +192,6 @@ func (h *Handlers) handleStatus(ctx context.Context, _ json.RawMessage) (any, er
 		}
 	}
 
-	offline := false
-	if h.offline != nil {
-		offline = h.offline.Offline()
-	}
-
 	p := h.store.Paths()
 	return StatusResponse{
 		DaemonVersion: h.version,
@@ -224,7 +205,6 @@ func (h *Handlers) handleStatus(ctx context.Context, _ json.RawMessage) (any, er
 		CacheMaxBytes:    snap.Cache.MaxBytes(),
 		Gates:            gates,
 		PausedWorkspaces: paused,
-		Offline:          offline,
 		Paths: StatusPaths{
 			LogDir: p.LogDir,
 		},

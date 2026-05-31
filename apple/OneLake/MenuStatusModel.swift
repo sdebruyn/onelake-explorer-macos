@@ -25,15 +25,13 @@ import os.log
 
 // MARK: - MenuIconState
 
-/// The four icon states the menu-bar label can represent.
+/// The three icon states the menu-bar label can represent.
 /// Used by both the icon view (OneLakeApp) and tests that verify the model logic.
 enum MenuIconState {
-    /// Daemon is reachable, not offline, no paused workspaces.
+    /// Daemon is reachable and no workspaces are paused.
     case normal
     /// Daemon not reachable over IPC.
     case notRunning
-    /// Daemon reachable but reporting offline (no network / token expired).
-    case offline
     /// One or more Fabric capacity workspaces are paused.
     case paused
 }
@@ -68,7 +66,6 @@ final class MenuStatusModel: ObservableObject {
 
     @Published private(set) var isRunning: Bool = false
     @Published private(set) var daemonVersion: String = ""
-    @Published private(set) var offline: Bool = false
     @Published private(set) var cacheBytes: Int64 = -1
     @Published private(set) var cacheMaxBytes: Int64 = 0
     /// User-editable LRU ceiling in whole gigabytes; the menubar Stepper
@@ -99,17 +96,15 @@ final class MenuStatusModel: ObservableObject {
 
     var pausedCount: Int { pausedWorkspaces.count }
 
-    /// Icon state for the menu-bar label. Priority: not-running > offline > paused > normal.
+    /// Icon state for the menu-bar label. Priority: not-running > paused > normal.
     var menuIconState: MenuIconState {
         if !isRunning { return .notRunning }
-        if offline    { return .offline }
         if pausedCount > 0 { return .paused }
         return .normal
     }
 
     var headerLabel: String {
         guard isRunning else { return "○ Not running" }
-        if offline { return "⚠ Offline" }
         if pausedCount > 0 {
             // Spell "workspace" out so the bare number doesn't look
             // like an alert badge with no referent ("2 paused" reads
@@ -229,7 +224,6 @@ final class MenuStatusModel: ObservableObject {
 
             isRunning = true
             daemonVersion = status.daemonVersion
-            offline = status.offline
             // cacheBytes / pausedWorkspaces / paths / accounts /
             // defaultAccount are daemon-owned read-only values — no
             // setter writes them, so no fence is needed.

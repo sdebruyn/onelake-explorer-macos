@@ -54,6 +54,11 @@ func IsMacOSMetadata(p string) bool {
 // This keeps the lake namespace clean and keeps event counts honest.
 // See docs/file-provider.md.
 //
+// Network errors are surfaced directly to the caller (the File Provider
+// Extension), which hands them back to macOS. macOS File Provider then
+// marks the item with serverUnreachable and retries automatically — the
+// OS is the retry surface for connectivity failures, not the daemon.
+//
 // Telemetry: emits file_upload with durationMs, success, and
 // bytesTransferred.
 func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size int64) error {
@@ -79,14 +84,12 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 
 	start := e.now()
 
-	// Buffer the upload bytes into a spill file so they can be replayed
-	// after the network write: once to queue offline if the host is
-	// unreachable, and once to seed the local blob store on success
-	// (the caller's reader is often one-shot). The spill lives in the
-	// engine's scratch dir (the App Group container in production) — NOT
-	// the global OS tempdir, which the sandboxed File Provider extension
-	// cannot write to. On success it is consumed by StoreBlob, on failure
-	// it is cleaned up by the deferred call.
+	// Buffer the upload bytes into a spill file so they can be fed to
+	// StoreBlob after the network write without re-reading the caller's
+	// (often one-shot) reader. The spill lives in the engine's scratch
+	// dir (the App Group container in production) — NOT the global OS
+	// tempdir, which the sandboxed File Provider extension cannot write to.
+	// Cleaned up by the deferred call regardless of outcome.
 	tmp, err := newSpillFile(e.scratchDir)
 	if err != nil {
 		return fmt.Errorf("sync.Put: spill temp: %w", err)
@@ -115,40 +118,6 @@ func (e *Engine) Put(ctx context.Context, k cache.Key, content io.Reader, size i
 				ErrorCode:        telemetry.SafeErrorCode("capacity_paused"),
 			})
 			return fmt.Errorf("sync.Put: %w", ErrWorkspacePaused)
-		}
-		// Network unreachable: rewind the spill and queue the bytes so
-		// the daemon can drain them on the next online window. Skip this
-		// when we are ALREADY draining the queue — re-queueing would
-		// rewrite the spool the drain is replaying (the spool path is
-		// deterministic per key) and coalesce the queue head away, losing
-		// the upload. In draining mode we surface the offline error so the
-		// drain stops and keeps the entry for the next online window.
-		if IsOfflineError(writeErr) && !isDraining(ctx) {
-			if rerr := tmp.rewind(); rerr != nil {
-				// Cheap diagnostic: without this an operator has no way
-				// to tell that queuing was even attempted, only that
-				// the upload surfaced its original network error.
-				e.logger.Warn("offline detected but spill rewind failed; skipping queue",
-					slog.String("path", k.Path), slog.Any("err", rerr))
-			} else {
-				qerr := e.enqueueOfflineUpload(ctx, k, tmp.file, size)
-				if qerr == nil {
-					e.track(telemetry.Event{
-						Name:             "file_upload",
-						AccountAliasHash: telemetry.HashAlias(k.AccountAlias),
-						DurationMs:       elapsedMs(start, e.now),
-						Success:          boolPtr(false),
-						ErrorCode:        telemetry.SafeErrorCode("queued_offline"),
-					})
-					// Silently succeed at the call site: less-protective,
-					// less-intrusive default. The next online drain
-					// completes the upload; the cache row is left
-					// untouched so a later Open re-checks the remote.
-					return nil
-				}
-				e.logger.Warn("offline queue write failed; surfacing original error",
-					slog.String("path", k.Path), slog.Any("err", qerr))
-			}
 		}
 		e.track(telemetry.Event{
 			Name:             "file_upload",

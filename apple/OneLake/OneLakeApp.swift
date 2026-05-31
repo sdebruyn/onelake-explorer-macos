@@ -130,7 +130,6 @@ struct OneLakeApp: App {
 /// States:
 ///   - normal      → plain brand icon (macOS tints it automatically)
 ///   - notRunning  → brand icon at reduced opacity (muted / disabled look)
-///   - offline     → brand icon + wifi.slash badge (bottom-trailing)
 ///   - paused      → brand icon + pause.fill badge  (bottom-trailing)
 ///
 /// The brand image is declared as a Template image in the asset catalogue
@@ -166,7 +165,6 @@ private struct MenuBarIconView: View {
     private var badgeSystemName: String? {
         switch state {
         case .normal, .notRunning: return nil
-        case .offline:             return "wifi.slash"
         case .paused:              return "pause.fill"
         }
     }
@@ -175,7 +173,6 @@ private struct MenuBarIconView: View {
         switch state {
         case .normal:      return "OneLake"
         case .notRunning:  return "OneLake — not running"
-        case .offline:     return "OneLake — offline"
         case .paused:      return "OneLake — paused"
         }
     }
