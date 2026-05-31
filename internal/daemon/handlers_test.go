@@ -622,7 +622,7 @@ func TestHandleConfigSetLogLevel(t *testing.T) {
 }
 
 // TestHandleStatusIncludesPaths verifies the status response carries
-// the config file, cache directory, and log directory paths.
+// the log directory path.
 func TestHandleStatusIncludesPaths(t *testing.T) {
 	h := newTestHandlers(t)
 	got, err := h.handleStatus(context.Background(), nil)
@@ -630,12 +630,6 @@ func TestHandleStatusIncludesPaths(t *testing.T) {
 		t.Fatalf("handleStatus: %v", err)
 	}
 	resp := got.(StatusResponse)
-	if resp.Paths.ConfigFile == "" {
-		t.Error("Paths.ConfigFile should be set")
-	}
-	if resp.Paths.CacheDir == "" {
-		t.Error("Paths.CacheDir should be set")
-	}
 	if resp.Paths.LogDir == "" {
 		t.Error("Paths.LogDir should be set")
 	}

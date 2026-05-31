@@ -123,9 +123,7 @@ func (h *Handlers) Register(srv *ipc.Server) {
 // StatusPaths contains the canonical on-disk locations the menu-bar app
 // can surface to the user via "Reveal in Finder" actions.
 type StatusPaths struct {
-	ConfigFile string `json:"configFile"`
-	CacheDir   string `json:"cacheDir"`
-	LogDir     string `json:"logDir"`
+	LogDir string `json:"logDir"`
 }
 
 // StatusResponse is the payload returned by the "status" method.
@@ -228,9 +226,7 @@ func (h *Handlers) handleStatus(ctx context.Context, _ json.RawMessage) (any, er
 		PausedWorkspaces: paused,
 		Offline:          offline,
 		Paths: StatusPaths{
-			ConfigFile: p.ConfigFile,
-			CacheDir:   p.CacheDir,
-			LogDir:     p.LogDir,
+			LogDir: p.LogDir,
 		},
 	}, nil
 }

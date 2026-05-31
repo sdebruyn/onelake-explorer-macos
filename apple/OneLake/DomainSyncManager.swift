@@ -57,7 +57,8 @@ final class DomainSyncManager {
         // boot any more). Cheap and synchronous — no IPC.
         _ = CoreBridge.shared.bootstrap()
 
-        let accounts = try await CoreBridge.shared.listAccounts()
+        let accountListInfo = try await CoreBridge.shared.accountList()
+        let accounts = accountListInfo.accounts
         let existing = try await Self.existingDomains()
         let existingById: [String: NSFileProviderDomain] = Dictionary(
             uniqueKeysWithValues: existing.map { ($0.identifier.rawValue, $0) }
