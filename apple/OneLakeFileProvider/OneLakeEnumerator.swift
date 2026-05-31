@@ -51,6 +51,11 @@ final class OneLakeEnumerator: NSObject, NSFileProviderEnumerator {
     /// Account-alias for the domain this enumerator belongs to.
     let alias: String
 
+    /// In-flight enumeration task, retained so `invalidate()` (the
+    /// framework's cancellation signal for enumerators — there is no
+    /// per-call `NSProgress` here) can cancel the awaiting bridge call.
+    private var inFlightTask: Task<Void, Never>?
+
     init(
         containerItemIdentifier: NSFileProviderItemIdentifier,
         scope: EnumScope,
@@ -77,6 +82,8 @@ final class OneLakeEnumerator: NSObject, NSFileProviderEnumerator {
         OneLakeEnumerator.log.debug(
             "Invalidate enumerator for \(self.containerItemIdentifier.rawValue, privacy: .public)"
         )
+        inFlightTask?.cancel()
+        inFlightTask = nil
     }
 
     // MARK: - Enumeration
@@ -109,7 +116,8 @@ final class OneLakeEnumerator: NSObject, NSFileProviderEnumerator {
             cursor = String(bytes: page.rawValue, encoding: .utf8) ?? ""
         }
 
-        Task.detached {
+        inFlightTask?.cancel()
+        inFlightTask = Task {
             do {
                 let result = try await CoreBridge.shared.enumerate(
                     alias: aliasCopy,
@@ -129,6 +137,11 @@ final class OneLakeEnumerator: NSObject, NSFileProviderEnumerator {
                     let nextPage = NSFileProviderPage(Data(result.nextCursor.utf8))
                     observer.finishEnumerating(upTo: nextPage)
                 }
+            } catch is CancellationError {
+                OneLakeEnumerator.log.debug(
+                    "enumerateItems cancelled for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public)"
+                )
+                observer.finishEnumeratingWithError(NSFileProviderError(.cannotSynchronize))
             } catch let error as BridgeError {
                 OneLakeEnumerator.log.error(
                     "enumerateItems failed for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public): \(String(describing: error), privacy: .public)"

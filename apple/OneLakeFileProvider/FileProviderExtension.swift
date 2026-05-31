@@ -111,10 +111,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         let bridgeId = ItemIdentifierParser.bridgeIdentifier(for: scope)
         let aliasCopy = self.alias
-        Task.detached {
+        let task = Task {
             do {
                 let item = try await CoreBridge.shared.item(alias: aliasCopy, identifier: bridgeId)
                 completionHandler(OneLakeItem(from: item), nil)
+            } catch is CancellationError {
+                FileProviderExtension.log.debug(
+                    "item(for:) cancelled for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public)"
+                )
+                completionHandler(nil, NSFileProviderError(.cannotSynchronize))
             } catch let error as BridgeError {
                 FileProviderExtension.log.error(
                     "item(for:) failed for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -127,6 +132,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 completionHandler(nil, error)
             }
         }
+        progress.cancellationHandler = { task.cancel() }
         return progress
     }
 
@@ -185,7 +191,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return progress
         }
 
-        Task.detached {
+        let task = Task {
             do {
                 let item = try await CoreBridge.shared.fetchContents(
                     alias: aliasCopy,
@@ -193,6 +199,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     dest: dest
                 )
                 completionHandler(dest, OneLakeItem(from: item), nil)
+            } catch is CancellationError {
+                FileProviderExtension.log.debug(
+                    "fetchContents cancelled for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public)"
+                )
+                completionHandler(nil, nil, NSFileProviderError(.cannotSynchronize))
             } catch let error as BridgeError {
                 FileProviderExtension.log.error(
                     "fetchContents failed for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -205,6 +216,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 completionHandler(nil, nil, error)
             }
         }
+        progress.cancellationHandler = { task.cancel() }
         return progress
     }
 
@@ -241,7 +253,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             "createItem \(template.filename, privacy: .public) isDir=\(isDir, privacy: .public) parent=\(parentBridgeId, privacy: .public)"
         )
 
-        Task.detached {
+        let task = Task {
             do {
                 let bridgeItem = try await CoreBridge.shared.createItem(
                     alias: aliasCopy,
@@ -251,6 +263,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     srcPath: srcPath
                 )
                 completionHandler(OneLakeItem(from: bridgeItem), [], false, nil)
+            } catch is CancellationError {
+                FileProviderExtension.log.debug(
+                    "createItem cancelled for \(aliasCopy, privacy: .public)/\(parentBridgeId, privacy: .public)/\(template.filename, privacy: .public)"
+                )
+                completionHandler(nil, [], false, NSFileProviderError(.cannotSynchronize))
             } catch let error as BridgeError {
                 FileProviderExtension.log.error(
                     "createItem failed for \(aliasCopy, privacy: .public)/\(parentBridgeId, privacy: .public)/\(template.filename, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -263,6 +280,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 completionHandler(nil, [], false, error)
             }
         }
+        progress.cancellationHandler = { task.cancel() }
         return progress
     }
 
@@ -311,7 +329,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         FileProviderExtension.log.debug("modifyItem \(identifier, privacy: .public)")
 
-        Task.detached {
+        let task = Task {
             do {
                 let bridgeItem = try await CoreBridge.shared.modifyItem(
                     alias: aliasCopy,
@@ -319,6 +337,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     srcPath: srcPath
                 )
                 completionHandler(OneLakeItem(from: bridgeItem), [], false, nil)
+            } catch is CancellationError {
+                FileProviderExtension.log.debug(
+                    "modifyItem cancelled for \(aliasCopy, privacy: .public)/\(identifier, privacy: .public)"
+                )
+                completionHandler(nil, [], false, NSFileProviderError(.cannotSynchronize))
             } catch let error as BridgeError {
                 FileProviderExtension.log.error(
                     "modifyItem failed for \(aliasCopy, privacy: .public)/\(identifier, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -331,6 +354,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 completionHandler(nil, [], false, error)
             }
         }
+        progress.cancellationHandler = { task.cancel() }
         return progress
     }
 
@@ -357,10 +381,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         FileProviderExtension.log.debug("deleteItem \(rawId, privacy: .public)")
 
-        Task.detached {
+        let task = Task {
             do {
                 try await CoreBridge.shared.deleteItem(alias: aliasCopy, identifier: rawId)
                 completionHandler(nil)
+            } catch is CancellationError {
+                FileProviderExtension.log.debug(
+                    "deleteItem cancelled for \(aliasCopy, privacy: .public)/\(rawId, privacy: .public)"
+                )
+                completionHandler(NSFileProviderError(.cannotSynchronize))
             } catch let error as BridgeError {
                 FileProviderExtension.log.error(
                     "deleteItem failed for \(aliasCopy, privacy: .public)/\(rawId, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -373,6 +402,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 completionHandler(error)
             }
         }
+        progress.cancellationHandler = { task.cancel() }
         return progress
     }
 
