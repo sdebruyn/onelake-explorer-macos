@@ -26,10 +26,6 @@ const VirtualWorkspaceID = "__workspaces__"
 // Exported for the same reason as VirtualWorkspaceID.
 const VirtualItemID = "__items__"
 
-// Keep unexported aliases so internal callers don't need to change.
-const virtualWorkspaceID = VirtualWorkspaceID
-const virtualItemID = VirtualItemID
-
 // ListWorkspaces returns the workspaces visible to the given account.
 // The result is also written to the cache so offline enumeration of
 // the top-level OneLake folder works.
@@ -62,8 +58,8 @@ func (e *Engine) ListWorkspaces(ctx context.Context, alias string) ([]fabric.Wor
 	now := e.now()
 	parentKey := cache.Key{
 		AccountAlias: alias,
-		WorkspaceID:  virtualWorkspaceID,
-		ItemID:       virtualWorkspaceID,
+		WorkspaceID:  VirtualWorkspaceID,
+		ItemID:       VirtualWorkspaceID,
 		Path:         "",
 	}
 	root := cache.Entry{
@@ -82,8 +78,8 @@ func (e *Engine) ListWorkspaces(ctx context.Context, alias string) ([]fabric.Wor
 		row := cache.Entry{
 			Key: cache.Key{
 				AccountAlias: alias,
-				WorkspaceID:  virtualWorkspaceID,
-				ItemID:       virtualWorkspaceID,
+				WorkspaceID:  VirtualWorkspaceID,
+				ItemID:       VirtualWorkspaceID,
 				Path:         w.ID,
 			},
 			ParentPath:   "",
@@ -137,7 +133,7 @@ func (e *Engine) ListItems(ctx context.Context, alias, workspaceID string) ([]fa
 	parentKey := cache.Key{
 		AccountAlias: alias,
 		WorkspaceID:  workspaceID,
-		ItemID:       virtualItemID,
+		ItemID:       VirtualItemID,
 		Path:         "",
 	}
 	root := cache.Entry{
@@ -157,7 +153,7 @@ func (e *Engine) ListItems(ctx context.Context, alias, workspaceID string) ([]fa
 			Key: cache.Key{
 				AccountAlias: alias,
 				WorkspaceID:  workspaceID,
-				ItemID:       virtualItemID,
+				ItemID:       VirtualItemID,
 				Path:         it.ID,
 			},
 			ParentPath:   "",
