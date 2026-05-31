@@ -18,7 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sdebruyn/onelake-explorer-macos/internal/api"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/auth"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/httpgate"
 	"github.com/sdebruyn/onelake-explorer-macos/internal/httpretry"
@@ -327,7 +326,7 @@ func (c *Client) doJSON(ctx context.Context, alias, method, pathAndQuery string,
 	}
 	req.Header.Set("Accept", "application/json")
 
-	if err := api.InjectBearer(ctx, req, c.tp, alias); err != nil {
+	if err := auth.InjectBearer(ctx, req, c.tp, alias); err != nil {
 		return nil, err
 	}
 
