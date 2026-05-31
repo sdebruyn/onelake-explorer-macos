@@ -147,6 +147,42 @@ final class MenuStatusModel: ObservableObject {
     /// In-flight debounce timer for setNetMaxDownloads (Settings slider/stepper).
     private var setNetDownloadsTask: Task<Void, Never>?
 
+    // MARK: - Write fence (snapshot vs setter race)
+    //
+    // Every optimistic setter (cache limit, net up/down, log level,
+    // telemetry) publishes the new value on `@MainActor` immediately, then
+    // sends the IPC write — either debounced (Steppers/Slider) or
+    // straight through. Until the daemon has *seen* that write and a
+    // subsequent refresh round-trip carries the new value back, any
+    // snapshot the auto-refresh timer fetches still reports the *old*
+    // value. Landing such a snapshot would briefly snap the UI back, then
+    // snap forward again on the next tick — the slider visibly bouncing.
+    //
+    // The fix is a per-field write fence. Each setter inserts its field
+    // key into `pendingWrites` before the optimistic publish and removes
+    // it once the IPC call has returned (success or failure — on failure
+    // the next refresh is free to overwrite the optimistic value again).
+    // `doRefresh` skips any field whose key is currently fenced and
+    // applies every other snapshot field as before. When nothing is
+    // pending, the snapshot lands exactly as it used to — no behaviour
+    // change on the happy path.
+    //
+    // Per-field rather than a single boolean: distinct setters can run
+    // in parallel (the user can drag the cache slider while the upload
+    // Stepper still has a pending IPC), and we want each snapshot field
+    // to be applied as soon as nothing is in flight for *that* field.
+    private enum WriteKey: Hashable {
+        case cacheMaxSize
+        case netMaxUploads
+        case netMaxDownloads
+        case logLevel
+        case telemetry
+    }
+    private var pendingWrites: Set<WriteKey> = []
+
+    private func beginWrite(_ key: WriteKey) { pendingWrites.insert(key) }
+    private func endWrite(_ key: WriteKey) { pendingWrites.remove(key) }
+
     /// Debounce window for setCacheLimitGB writes. Sized so a user can
     /// hold the Stepper arrow and rack up many ticks without firing one
     /// IPC call per tick, while staying short enough that letting go
@@ -194,30 +230,39 @@ final class MenuStatusModel: ObservableObject {
             isRunning = true
             daemonVersion = status.daemonVersion
             offline = status.offline
+            // cacheBytes / pausedWorkspaces / paths / accounts /
+            // defaultAccount are daemon-owned read-only values — no
+            // setter writes them, so no fence is needed.
             cacheBytes = status.cacheBytes
-            cacheMaxBytes = status.cacheMaxBytes
             pausedWorkspaces = status.pausedWorkspaces
             paths = status.paths
             accounts = list.accounts
             defaultAccount = list.defaultAccount
-            telemetryEnabled = config.telemetryEnabled
+            // cacheMaxBytes mirrors cacheMaxSizeGB on the daemon side; the
+            // optimistic setter writes both, so fence them as one unit.
+            if !pendingWrites.contains(.cacheMaxSize) {
+                cacheMaxBytes = status.cacheMaxBytes
+            }
+            if !pendingWrites.contains(.telemetry) {
+                telemetryEnabled = config.telemetryEnabled
+            }
             // Only update the GB-precision value when the daemon answered
             // with one; a transport blip that returns 0 must not snap the
             // Stepper to an out-of-range value the user never asked for.
-            if config.cacheMaxSizeGB > 0 {
+            if config.cacheMaxSizeGB > 0, !pendingWrites.contains(.cacheMaxSize) {
                 cacheMaxSizeGB = config.cacheMaxSizeGB
             }
             // Same reasoning for the Settings tab values — only update
             // when the daemon gave us a non-zero answer. An older daemon
             // (pre-this-PR) returns 0 because the JSON keys are absent,
             // and we'd rather show stale-but-correct numbers than zeroes.
-            if config.netMaxConcurrentUploadsPerAccount > 0 {
+            if config.netMaxConcurrentUploadsPerAccount > 0, !pendingWrites.contains(.netMaxUploads) {
                 netMaxUploads = config.netMaxConcurrentUploadsPerAccount
             }
-            if config.netMaxConcurrentDownloadsPerAccount > 0 {
+            if config.netMaxConcurrentDownloadsPerAccount > 0, !pendingWrites.contains(.netMaxDownloads) {
                 netMaxDownloads = config.netMaxConcurrentDownloadsPerAccount
             }
-            if !config.logLevel.isEmpty {
+            if !config.logLevel.isEmpty, !pendingWrites.contains(.logLevel) {
                 logLevel = config.logLevel
             }
         } catch {
@@ -289,7 +334,11 @@ final class MenuStatusModel: ObservableObject {
     func setCacheLimitGB(_ gb: Int) {
         let clamped = max(1, min(100, gb))
         // Optimistic UI: reflect the new value immediately so the menu
-        // stays consistent while the debounce window runs out.
+        // stays consistent while the debounce window runs out. Fence the
+        // field so the 5s auto-refresh cannot land a stale snapshot that
+        // overwrites the optimistic value with the daemon's old one —
+        // see the "Write fence" comment block above.
+        beginWrite(.cacheMaxSize)
         cacheMaxSizeGB = clamped
         cacheMaxBytes = Int64(clamped) * 1024 * 1024 * 1024
         setCacheLimitTask?.cancel()
@@ -298,6 +347,9 @@ final class MenuStatusModel: ObservableObject {
             // task; only the final settle reaches the daemon.
             try? await Task.sleep(for: MenuStatusModel.setCacheLimitDebounce)
             guard let self else { return }
+            // Superseded by a newer setCacheLimitGB call — that call has
+            // already re-fenced the field, so do NOT endWrite here or the
+            // newer fence would be lifted prematurely.
             if Task.isCancelled { return }
             do {
                 try await bridge.configSet(key: "cache.max_size_gb", value: String(clamped))
@@ -305,12 +357,21 @@ final class MenuStatusModel: ObservableObject {
             } catch {
                 Self.log.error("config.set cache.max_size_gb failed: \(error.localizedDescription, privacy: .public)")
             }
+            endWrite(.cacheMaxSize)
             refresh()
         }
     }
 
     /// Toggle anonymous telemetry and refresh.
+    ///
+    /// Optimistically publishes the new value so the SwiftUI Toggle snaps
+    /// to the user's choice instantly; fenced for the same reason the
+    /// other setters are — without the fence, an auto-refresh that fires
+    /// between the IPC call going out and its ACK landing would briefly
+    /// flip the switch back to the daemon's old value.
     func setTelemetry(enabled: Bool) {
+        beginWrite(.telemetry)
+        telemetryEnabled = enabled
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -318,6 +379,7 @@ final class MenuStatusModel: ObservableObject {
             } catch {
                 Self.log.error("config.set telemetry failed: \(error.localizedDescription, privacy: .public)")
             }
+            endWrite(.telemetry)
             refresh()
         }
     }
@@ -332,11 +394,14 @@ final class MenuStatusModel: ObservableObject {
     /// would reject it anyway).
     func setNetMaxUploads(_ n: Int) {
         let clamped = max(1, min(16, n))
+        // Fence the field for the same reason setCacheLimitGB does.
+        beginWrite(.netMaxUploads)
         netMaxUploads = clamped
         setNetUploadsTask?.cancel()
         setNetUploadsTask = Task { [weak self] in
             try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
             guard let self else { return }
+            // Superseded — newer call re-fenced; don't endWrite here.
             if Task.isCancelled { return }
             do {
                 try await bridge.configSet(
@@ -347,6 +412,7 @@ final class MenuStatusModel: ObservableObject {
             } catch {
                 Self.log.error("config.set net.max_concurrent_uploads_per_account failed: \(error.localizedDescription, privacy: .public)")
             }
+            endWrite(.netMaxUploads)
             refresh()
         }
     }
@@ -355,11 +421,13 @@ final class MenuStatusModel: ObservableObject {
     /// to setNetMaxUploads.
     func setNetMaxDownloads(_ n: Int) {
         let clamped = max(1, min(32, n))
+        beginWrite(.netMaxDownloads)
         netMaxDownloads = clamped
         setNetDownloadsTask?.cancel()
         setNetDownloadsTask = Task { [weak self] in
             try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
             guard let self else { return }
+            // Superseded — newer call re-fenced; don't endWrite here.
             if Task.isCancelled { return }
             do {
                 try await bridge.configSet(
@@ -370,6 +438,7 @@ final class MenuStatusModel: ObservableObject {
             } catch {
                 Self.log.error("config.set net.max_concurrent_downloads_per_account failed: \(error.localizedDescription, privacy: .public)")
             }
+            endWrite(.netMaxDownloads)
             refresh()
         }
     }
@@ -378,6 +447,10 @@ final class MenuStatusModel: ObservableObject {
     /// selection (no rapid bursts), so no debounce is needed.
     func setLogLevel(_ level: String) {
         // Optimistic UI: reflect the new value before the IPC round trip.
+        // Fence the field — even without a debounce, an auto-refresh that
+        // fires between this publish and the IPC ACK would overwrite the
+        // optimistic value with the daemon's old log level.
+        beginWrite(.logLevel)
         logLevel = level
         Task { [weak self] in
             guard let self else { return }
@@ -387,6 +460,7 @@ final class MenuStatusModel: ObservableObject {
             } catch {
                 Self.log.error("config.set log.level failed: \(error.localizedDescription, privacy: .public)")
             }
+            endWrite(.logLevel)
             refresh()
         }
     }
