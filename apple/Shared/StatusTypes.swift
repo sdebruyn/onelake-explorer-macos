@@ -27,7 +27,6 @@ public struct StatusPaths: Decodable {
 /// Decoded result of the "status" IPC method.
 public struct StatusInfo: Decodable {
     public let daemonVersion: String
-    public let offline: Bool
     public let cacheBytes: Int64
     public let cacheMaxBytes: Int64
     public let pausedWorkspaces: [PausedWorkspaceInfo]
@@ -35,13 +34,12 @@ public struct StatusInfo: Decodable {
     public let paths: StatusPaths
 
     private enum CodingKeys: String, CodingKey {
-        case daemonVersion, offline, cacheBytes, cacheMaxBytes, pausedWorkspaces, paths
+        case daemonVersion, cacheBytes, cacheMaxBytes, pausedWorkspaces, paths
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         daemonVersion = (try c.decodeIfPresent(String.self, forKey: .daemonVersion)) ?? ""
-        offline = (try c.decodeIfPresent(Bool.self, forKey: .offline)) ?? false
         cacheBytes = (try c.decodeIfPresent(Int64.self, forKey: .cacheBytes)) ?? -1
         cacheMaxBytes = (try c.decodeIfPresent(Int64.self, forKey: .cacheMaxBytes)) ?? 0
         pausedWorkspaces = (try c.decodeIfPresent([PausedWorkspaceInfo].self, forKey: .pausedWorkspaces)) ?? []

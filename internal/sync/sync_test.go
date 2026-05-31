@@ -85,8 +85,7 @@ func newEngine(t *testing.T, opts ...func(*Options)) *engineFixture {
 
 // newEngineAt builds an engine rooted at the given cache directory.
 // Pass "" to allocate a fresh t.TempDir(); pass a previously-used path
-// to re-open an existing cache (the offline-queue restart tests rely
-// on this to model a daemon crash + restart).
+// to re-open an existing cache.
 func newEngineAt(t *testing.T, cacheRoot string, opts ...func(*Options)) *engineFixture {
 	t.Helper()
 
@@ -144,10 +143,9 @@ func newEngineAt(t *testing.T, cacheRoot string, opts ...func(*Options)) *engine
 	if err != nil {
 		t.Fatalf("sync.New: %v", err)
 	}
-	// Close the engine before the cache: Close waits for the drain
-	// goroutine spawned by observeNetworkResult to exit so it can't race
-	// the cache shutdown (cache.Close above is registered earlier and
-	// therefore runs after this cleanup per t.Cleanup LIFO order).
+	// Close the engine before the cache so any background goroutines
+	// can't race the cache shutdown (cache.Close above is registered
+	// earlier and therefore runs after this cleanup per t.Cleanup LIFO order).
 	t.Cleanup(func() { _ = eng.Close() })
 
 	return &engineFixture{

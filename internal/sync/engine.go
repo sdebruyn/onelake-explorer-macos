@@ -164,16 +164,12 @@ type Engine struct {
 	downloadSem         *perAccountSemaphore
 	uploadSem           *perAccountSemaphore
 	offline             *offlineState
-	queueMu             sync.Mutex
-	queue               []queuedUpload
-	drainMu             sync.Mutex
 	now                 func() time.Time
 	scratchDir          string
 
-	// done is closed by Close to signal background goroutines (currently
-	// the fire-and-forget drain spawned from observeNetworkResult) to
-	// unwind. bg tracks those goroutines so Close can wait for them to
-	// exit before returning. closeOnce makes Close idempotent.
+	// done is closed by Close to signal background goroutines to unwind.
+	// bg tracks those goroutines so Close can wait for them to exit before
+	// returning. closeOnce makes Close idempotent.
 	done      chan struct{}
 	bg        sync.WaitGroup
 	closeOnce sync.Once
@@ -262,13 +258,10 @@ func New(opts Options) (*Engine, error) {
 // other dependency the engine was wired with — those have their own
 // lifecycles owned by the caller (see engine.Components.Close).
 //
-// The production daemon currently relies on process exit to reap these
+// The production daemon currently relies on process exit to reap
 // goroutines (see internal/daemon/run.go), so calling Close in that
-// path is optional. Tests SHOULD call it: a test that spins up several
-// engines and never reaps the drain goroutine started by
-// observeNetworkResult would otherwise leak one goroutine per engine
-// between sub-tests, which the race detector + -count=2 surfaces as
-// flaky timing under heavy parallelism.
+// path is optional. Tests SHOULD call it to avoid goroutine leaks
+// that the race detector surfaces under heavy parallelism.
 func (e *Engine) Close() error {
 	if e == nil {
 		return nil
