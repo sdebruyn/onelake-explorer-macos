@@ -65,7 +65,7 @@ func TestGateIntegration_429PauseHonoured(t *testing.T) {
 	})
 
 	start := time.Now()
-	rc, _, err := c.Read(context.Background(), "alias", wsGUID, itemGUID, "Files/a", 0, -1)
+	rc, _, err := c.ReadWithIfMatch(context.Background(), "alias", wsGUID, itemGUID, "Files/a", 0, -1, "")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestGateIntegration_PeersWaitOnPenalty(t *testing.T) {
 	// Use a barrier so the peers launch only after the gate has the
 	// penalty recorded - otherwise their pre-penalty Acquire wins the
 	// race and they hit the server in parallel.
-	rc, _, err := c.Read(context.Background(), "alias", wsGUID, itemGUID, "Files/a", 0, -1)
+	rc, _, err := c.ReadWithIfMatch(context.Background(), "alias", wsGUID, itemGUID, "Files/a", 0, -1, "")
 	if err != nil {
 		t.Fatalf("lead Read: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestGateIntegration_PeersWaitOnPenalty(t *testing.T) {
 	for i := 0; i < peers; i++ {
 		go func() {
 			defer wg.Done()
-			rc, _, err := c.Read(context.Background(), "alias", wsGUID, itemGUID, "Files/a", 0, -1)
+			rc, _, err := c.ReadWithIfMatch(context.Background(), "alias", wsGUID, itemGUID, "Files/a", 0, -1, "")
 			if err != nil {
 				t.Errorf("peer Read: %v", err)
 				return
@@ -227,7 +227,7 @@ func TestGateIntegration_Penalty503(t *testing.T) {
 		Registry:      registry,
 	})
 
-	rc, _, err := c.Read(context.Background(), "alias", wsGUID, itemGUID, "Files/a", 0, -1)
+	rc, _, err := c.ReadWithIfMatch(context.Background(), "alias", wsGUID, itemGUID, "Files/a", 0, -1, "")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}

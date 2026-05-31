@@ -237,25 +237,20 @@ func (c *Client) GetProperties(ctx context.Context, alias, workspaceGUID, itemGU
 	return propertiesFromHeader(resp.Header), nil
 }
 
-// Read returns the file body, optionally restricted by a byte Range.
-// Use rangeStart=0, rangeEnd=-1 to skip Range and read the whole file.
+// ReadWithIfMatch returns the file body, optionally restricted by a byte Range
+// and pinned to a known ETag via an If-Match header. Useful for partial-download
+// resume: if the remote etag changed between the original GET and the
+// resumed range request, DFS replies 412 PreconditionFailed and the
+// caller discards the (now incompatible) on-disk partial.
+//
+// Use rangeStart=0, rangeEnd=-1 to skip the Range header and read the whole file.
+// Pass ifMatch="" to skip the If-Match header.
 // The caller MUST close the returned ReadCloser.
 //
 // The second return value carries the response-header metadata (etag,
 // content length, last-modified, content-type) DFS returned alongside
 // the body. Callers that want to skip a follow-up HEAD can persist
 // these values straight away. The struct is always non-nil on success.
-func (c *Client) Read(ctx context.Context, alias, workspaceGUID, itemGUID, path string, rangeStart, rangeEnd int64) (io.ReadCloser, *PathProperties, error) {
-	return c.ReadWithIfMatch(ctx, alias, workspaceGUID, itemGUID, path, rangeStart, rangeEnd, "")
-}
-
-// ReadWithIfMatch is [Read] plus an optional If-Match header that
-// pins the response to a known ETag. Useful for partial-download
-// resume: if the remote etag changed between the original GET and the
-// resumed range request, DFS replies 412 PreconditionFailed and the
-// caller discards the (now incompatible) on-disk partial.
-//
-// Pass ifMatch="" to skip the header (equivalent to [Read]).
 func (c *Client) ReadWithIfMatch(ctx context.Context, alias, workspaceGUID, itemGUID, path string, rangeStart, rangeEnd int64, ifMatch string) (io.ReadCloser, *PathProperties, error) {
 	if workspaceGUID == "" || itemGUID == "" {
 		return nil, nil, fmt.Errorf("onelake: workspaceGUID and itemGUID required")
