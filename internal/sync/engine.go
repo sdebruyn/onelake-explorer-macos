@@ -12,8 +12,7 @@
 // Design notes:
 //
 //   - Reads (Enumerate, Open) consult the SQLite metadata cache first.
-//     Folder freshness is governed by adaptive-poll TTLs: OpenFolderTTL
-//     for folders currently visible in Finder (default 30 s) and
+//     Folder freshness is governed by an adaptive-poll TTL:
 //     RecentFolderTTL for recently visited folders (default 5 min). See
 //     docs/auth.md for the rationale.
 //
@@ -76,15 +75,8 @@ import (
 
 // Default TTLs implementing the adaptive-poll schedule from docs/auth.md.
 // The engine never goes longer than RecentFolderTTL without revalidating
-// a cache entry, even when the caller does not pass an explicit context
-// flag identifying the folder as "currently open" in Finder.
+// a cache entry.
 const (
-	// DefaultOpenFolderTTL is the freshness window for folders currently
-	// visible in Finder. Per docs/auth.md the daemon's adaptive poller
-	// refreshes these every 30 s, and an Enumerate call falls back on a
-	// remote fetch once the cached row is older than this.
-	DefaultOpenFolderTTL = 30 * time.Second
-
 	// DefaultRecentFolderTTL is the freshness window for folders the user
 	// visited recently. Per docs/auth.md the adaptive poller refreshes
 	// these every 5 min.
@@ -127,10 +119,6 @@ type Options struct {
 	// "component=sync" attribute when nil.
 	Logger *slog.Logger
 
-	// OpenFolderTTL is the refresh interval for folders currently
-	// visible in Finder. Defaults to DefaultOpenFolderTTL.
-	OpenFolderTTL time.Duration
-
 	// RecentFolderTTL is the refresh interval for folders the user
 	// visited recently. Defaults to DefaultRecentFolderTTL.
 	RecentFolderTTL time.Duration
@@ -170,7 +158,6 @@ type Engine struct {
 	telemetry           *telemetry.Client
 	tenants             TenantResolver
 	logger              *slog.Logger
-	openFolderTTL       time.Duration
 	recentFolderTTL     time.Duration
 	pausedProbeInterval time.Duration
 	pausedTracker       *pausedTracker
@@ -216,10 +203,6 @@ func New(opts Options) (*Engine, error) {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 
-	openTTL := opts.OpenFolderTTL
-	if openTTL <= 0 {
-		openTTL = DefaultOpenFolderTTL
-	}
 	recentTTL := opts.RecentFolderTTL
 	if recentTTL <= 0 {
 		recentTTL = DefaultRecentFolderTTL
@@ -261,7 +244,6 @@ func New(opts Options) (*Engine, error) {
 		telemetry:           opts.Telemetry,
 		tenants:             opts.Tenants,
 		logger:              logger,
-		openFolderTTL:       openTTL,
 		recentFolderTTL:     recentTTL,
 		pausedProbeInterval: probeInterval,
 		pausedTracker:       newPausedTracker(),
@@ -312,10 +294,6 @@ func (e *Engine) tenantFor(alias string) string {
 	}
 	return ""
 }
-
-// OpenFolderTTL returns the configured open-folder freshness window.
-// Exposed primarily for tests and the daemon's adaptive poller.
-func (e *Engine) OpenFolderTTL() time.Duration { return e.openFolderTTL }
 
 // RecentFolderTTL returns the configured recent-folder freshness window.
 // Exposed primarily for tests and the daemon's adaptive poller.
