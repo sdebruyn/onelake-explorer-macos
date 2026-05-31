@@ -211,6 +211,20 @@ func TestPut_WriteErrorReleasesAccountSlot(t *testing.T) {
 	}
 }
 
+// TestPerAccountSemaphore_UnbalancedReleasePanics verifies that calling
+// release without a prior acquire panics, making double-release bugs
+// immediately visible under the race detector.
+func TestPerAccountSemaphore_UnbalancedReleasePanics(t *testing.T) {
+	s := newPerAccountSemaphore(1)
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on unbalanced release, got none")
+		}
+	}()
+	s.release("ghost") // no prior acquire — must panic
+}
+
 // TestPut_UploadConcurrencyCap mirrors the download cap assertion on
 // the upload path.
 func TestPut_UploadConcurrencyCap(t *testing.T) {

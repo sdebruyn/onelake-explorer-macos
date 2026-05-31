@@ -57,8 +57,8 @@ func (s *perAccountSemaphore) acquire(ctx context.Context, alias string) error {
 }
 
 // release frees a slot acquired via acquire. Calling release without a
-// prior acquire is a programmer error but kept non-panicking — the
-// channel-receive blocks and the goroutine simply parks.
+// prior successful acquire is a programmer error and will panic.
+// All callers must guard defer release() behind a nil-error check on acquire.
 func (s *perAccountSemaphore) release(alias string) {
 	if s == nil {
 		return
@@ -67,8 +67,7 @@ func (s *perAccountSemaphore) release(alias string) {
 	select {
 	case <-ch:
 	default:
-		// Unbalanced release: should never happen, but a non-blocking
-		// receive keeps us from deadlocking the caller.
+		panic("perAccountSemaphore: unbalanced release for alias " + alias)
 	}
 }
 
