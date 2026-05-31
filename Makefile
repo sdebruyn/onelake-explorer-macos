@@ -93,8 +93,7 @@ app: build apple-build ## Build daemon binary + signed macOS app (everything, re
 # build. CI has no Developer ID identity, so it must NOT pass
 # -allowProvisioningUpdates (that reaches Apple for a profile and fails);
 # instead it disables code signing entirely. The output is not runnable,
-# but it proves the Swift app + .appex still compile — see CODE_REVIEW.md
-# M-8.
+# but it proves the Swift app + .appex still compile.
 APPLE_UNSIGNED := CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
 
 # First-time setup: copy the xcconfig sample if it's missing and tell the
@@ -129,7 +128,7 @@ apple-build: apple-gen
 # Compile the app + .appex unsigned (no signing identity, no provisioning
 # round-trip). This is the CI build gate: it catches Swift compile
 # regressions on every PR without needing a Developer ID. The product is
-# not runnable. See CODE_REVIEW.md M-8.
+# not runnable.
 apple-build-ci: apple-gen
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLake \

@@ -12,7 +12,7 @@ Microsoft, Microsoft Fabric, OneLake and macOS are trademarks of their respectiv
 This project is not affiliated with Microsoft or Apple.
 """
 
-watch = ["README.md", "PLAN.md", "CONTRIBUTING.md"]
+watch = ["README.md", "CONTRIBUTING.md"]
 
 nav = [
   { "Home" = [
