@@ -7,7 +7,7 @@ Developer-facing summary. End-user docs live under [Home](../index.md); this sec
 Settled during product discovery and unchanged since:
 
 - **No system-level changes** required from the user (no kernel extensions, no Recovery Mode, no `csrutil` tweaks).
-- **Authentication only via interactive browser or device code**. Users only, never service principals or client secrets.
+- **Authentication only via interactive browser**. Users only, never service principals or client secrets.
 - **Multi-tenant and multi-account simultaneously**, identified by user-chosen short aliases (`work`, `client-a`).
 - **Install via Homebrew cask**.
 - **No external runtime dependency** for end users (no Python, no .NET, no Node). Statically distributable binary.

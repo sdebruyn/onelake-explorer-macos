@@ -322,7 +322,7 @@ final class CoreBridge {
     /// client disconnects.
     func login(alias: String, tenant: String?, clientID: String? = nil) async throws -> AccountInfo {
         guard let client = client else { throw BridgeError.notBootstrapped }
-        var params: [String: Any] = ["alias": alias, "deviceCode": false]
+        var params: [String: Any] = ["alias": alias]
         if let tenant = tenant, !tenant.isEmpty {
             params["tenant"] = tenant
         }

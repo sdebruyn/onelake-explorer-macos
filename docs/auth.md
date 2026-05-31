@@ -23,22 +23,16 @@ We register a **multi-tenant public client application** in our own tenant:
 
 The client ID lives in `internal/auth/client.go` as a constant — it is a public identifier, not a secret.
 
-## Token acquisition flows
+## Token acquisition flow
 
-We support two flows, chosen automatically per environment:
+Sign-in uses the **interactive browser** flow:
 
-1. **Interactive browser** (default on macOS desktop):
-   - Opens `https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/authorize?...` in the system default browser.
-   - We run a tiny localhost HTTP server (random port between 49152–65535) to catch the redirect.
-   - User signs in, consents (first time), and is redirected back to `http://localhost:PORT/?code=...&state=...`.
-   - We exchange the authorization code for an access token + refresh token.
+- Opens `https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/authorize?...` in the system default browser.
+- We run a tiny localhost HTTP server (random port between 49152–65535) to catch the redirect.
+- User signs in, consents (first time), and is redirected back to `http://localhost:PORT/?code=...&state=...`.
+- We exchange the authorization code for an access token + refresh token.
 
-2. **Device code** (fallback for SSH sessions, headless environments, or when `--device-code` is passed):
-   - We call `/devicecode` endpoint to get `user_code` and `device_code`.
-   - We display: `To sign in, visit https://microsoft.com/devicelogin and enter the code: XXXX-YYYY`.
-   - We poll `/token` every 5 seconds until success, error, or expiry.
-
-Both flows are implemented on top of the Go MSAL library [`github.com/AzureAD/microsoft-authentication-library-for-go`](https://github.com/AzureAD/microsoft-authentication-library-for-go) (`msal-go`). MSAL Go natively supports both flows on a `PublicClientApplication`.
+The flow is implemented on top of the Go MSAL library [`github.com/AzureAD/microsoft-authentication-library-for-go`](https://github.com/AzureAD/microsoft-authentication-library-for-go) (`msal-go`) on a `PublicClientApplication`.
 
 ## Multi-tenant + multi-account model
 
@@ -106,7 +100,7 @@ OFEM talks to two distinct Microsoft resource APIs that require different token 
 
 ### Single interactive consent via LoginScopes
 
-`LoginScopes` is the union of both scope sets and is passed during the one-shot interactive or device-code login flow. Microsoft Entra records the user's consent for every resource in a single call. After that first consent:
+`LoginScopes` is the union of both scope sets and is passed during the one-shot interactive login flow. Microsoft Entra records the user's consent for every resource in a single call. After that first consent:
 
 - `AcquireTokenSilent` for `OneLakeScopes` returns a storage-audience token from the refresh token — no browser pop-up.
 - `AcquireTokenSilent` for `FabricScopes` returns a Power BI-audience token from the same refresh token — also silent.

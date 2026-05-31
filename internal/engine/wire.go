@@ -30,8 +30,8 @@ type Components struct {
 	Registry *auth.Registry
 	Gates    *httpgate.Registry
 	// Keychain is the per-account secret store used by Registry. Exposed so
-	// the daemon's auth.login IPC handler can pass it to LoginInteractive /
-	// LoginDeviceCode without opening a second keychain instance.
+	// the daemon's auth.login IPC handler can pass it to LoginInteractive
+	// without opening a second keychain instance.
 	Keychain auth.Keychain
 }
 

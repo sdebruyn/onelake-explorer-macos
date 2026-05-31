@@ -72,7 +72,7 @@ Valid types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`
 Examples:
 
 ```
-feat(auth): support device code flow as fallback when no browser available
+feat(auth): persist tenant hint per-account for silent refresh
 fix(onelake): honor Retry-After header on 429 responses
 docs(plan): clarify exit criteria for signed builds
 refactor(cache): extract SQLite schema into separate file
