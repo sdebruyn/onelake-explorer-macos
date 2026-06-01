@@ -29,7 +29,7 @@ The File Provider Extension is sandboxed and short-lived — macOS
 launches it on demand for each Finder request and tears it down again.
 It cannot hold long-lived network sockets, run scheduled polling, or
 perform interactive auth flows. To bridge that gap a separate
-**daemon** process (`OneLake.app/Contents/Helpers/ofem daemon run`,
+**daemon** process (`OneLake.app/Contents/MacOS/ofem daemon run`,
 started by the LaunchAgent the host app registers via SMAppService on
 first launch) handles those long-running concerns and signals the
 extension when it has news.
