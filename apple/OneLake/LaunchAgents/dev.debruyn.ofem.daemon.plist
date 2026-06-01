@@ -46,5 +46,9 @@
     <true/>
     <key>ProcessType</key>
     <string>Background</string>
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>dev.debruyn.ofem</string>
+    </array>
 </dict>
 </plist>
