@@ -45,10 +45,8 @@ final class AboutWindowController: NSObject {
         win.title = "About OFEM"
         win.isReleasedWhenClosed = false
         win.contentView = hostingView
-        // Cmd-W should close the panel. NSPanel routes key events through
-        // the responder chain when canBecomeKey is true (default for NSPanel).
-        win.standardWindowButton(.zoomButton)?.isHidden = true
-        win.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        // Cmd-W closes the panel: NSPanel routes key events through the
+        // responder chain when canBecomeKey is true (default for NSPanel).
         win.center()
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
