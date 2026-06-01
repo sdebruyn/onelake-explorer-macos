@@ -54,6 +54,7 @@ targets:
           copyFiles:
             destination: wrapper
             subpath: Contents/Library/LaunchAgents
+        codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem
