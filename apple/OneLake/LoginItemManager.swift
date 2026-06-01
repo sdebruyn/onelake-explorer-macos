@@ -65,6 +65,34 @@ final class LoginItemManager: ObservableObject {
         )
     }
 
+    // MARK: - First-launch bootstrap
+
+    /// UserDefaults key that records whether we have already attempted the
+    /// initial daemon registration. Stored in standard (per-app) defaults
+    /// because this flag is only meaningful to the host app itself — the
+    /// daemon and the File Provider Extension do not read it.
+    private static let didBootstrapKey = "dev.debruyn.ofem.didAttemptInitialDaemonRegistration"
+
+    /// Register the daemon on the very first launch so the app works out of
+    /// the box after a fresh Homebrew install, without requiring the user to
+    /// manually enable "Open at Login" in Settings first.
+    ///
+    /// The flag is set to `true` regardless of whether `register()` succeeds
+    /// so that a user who explicitly denies the Login Items permission in
+    /// System Settings is not re-prompted on every subsequent launch.
+    ///
+    /// After the first launch this is a no-op, so explicit user toggles in
+    /// Settings are never overridden.
+    func bootstrapIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: Self.didBootstrapKey) else {
+            Self.log.debug("Initial daemon bootstrap already attempted — skipping")
+            return
+        }
+        Self.log.info("First launch detected — attempting initial daemon registration")
+        register()
+        UserDefaults.standard.set(true, forKey: Self.didBootstrapKey)
+    }
+
     // MARK: - Toggle
 
     /// Register or unregister the daemon LaunchAgent in one call.
