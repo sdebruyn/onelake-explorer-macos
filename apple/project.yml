@@ -49,6 +49,11 @@ targets:
           - "**/*.entitlements"
           - "**/LaunchAgents/**"
       - path: apple/Shared
+      - path: apple/OneLake/LaunchAgents/dev.debruyn.ofem.daemon.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchAgents
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem
@@ -76,12 +81,15 @@ targets:
         embed: true
         codeSign: true
     postBuildScripts:
-      # Bundle the ofem daemon binary and its LaunchAgent plist.
+      # Bundle the ofem daemon binary.
       #
       # The daemon lives at Contents/Helpers/ofem (the macOS convention for
       # helper executables that are separately signed). The LaunchAgent plist
-      # lives at Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.plist —
-      # exactly where SMAppService.agent(plistName:) looks for it.
+      # is copied into Contents/Library/LaunchAgents/ by the copyFiles build
+      # phase above so that it is included in the code-signing seal before
+      # xcodebuild signs the bundle. SMAppService validates that the plist is
+      # part of the sealed bundle — copying it here (post-sign) would cause
+      # "Unable to read plist" at runtime.
       #
       # Code signing:
       #   • When CODE_SIGNING_ALLOWED=YES (local dev / release): the daemon is
@@ -106,13 +114,10 @@ targets:
           REPO_ROOT="${PROJECT_DIR}/.."
 
           HELPERS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Helpers"
-          LA_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/LaunchAgents"
           DAEMON_DEST="${HELPERS_DIR}/ofem"
-          PLIST_SRC="${PROJECT_DIR}/OneLake/LaunchAgents/dev.debruyn.ofem.daemon.plist"
-          PLIST_DEST="${LA_DIR}/dev.debruyn.ofem.daemon.plist"
           ENTITLEMENTS="${OFEM_DAEMON_ENTITLEMENTS:-${PROJECT_DIR}/OneLakeDaemon.entitlements}"
 
-          mkdir -p "${HELPERS_DIR}" "${LA_DIR}"
+          mkdir -p "${HELPERS_DIR}"
 
           # Resolve the go binary. Xcode's build-phase PATH is restricted and
           # does not include the setup-go toolchain directory from CI, nor
@@ -136,9 +141,6 @@ targets:
           echo "Building ofem daemon..."
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
             "${GO}" build -o "${DAEMON_DEST}" "${REPO_ROOT}/cmd/ofem"
-
-          echo "Copying LaunchAgent plist..."
-          cp "${PLIST_SRC}" "${PLIST_DEST}"
 
           # Sign the daemon binary with the daemon entitlements when the build
           # is configured for signing. CODE_SIGN_IDENTITY is set by Xcode to
