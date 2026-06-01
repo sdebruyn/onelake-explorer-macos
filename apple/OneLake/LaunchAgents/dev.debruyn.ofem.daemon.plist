@@ -9,10 +9,13 @@
 
   The daemon binary lives at Contents/Helpers/ofem so it can be
   separately code-signed (daemon entitlements differ from the host app).
-  The path below uses @executable_path/../Helpers/ofem. For SMAppService
-  bundled LaunchAgents, launchd expands @executable_path relative to the
-  app bundle's executable directory (Contents/MacOS/), so the resolved
-  path is Contents/MacOS/../Helpers/ofem = Contents/Helpers/ofem.
+  We use the BundleProgram key (Apple's recommended form for SMAppService
+  bundled agents) with a path relative to the bundle root. @executable_path
+  is a dyld-runtime variable that launchd does NOT expand, despite what some
+  online tutorials claim — using it causes launchd to look for a file
+  literally named "@executable_path/../Helpers/ofem", which fails with
+  EX_CONFIG (exit code 78). BundleProgram is resolved by launchd itself
+  relative to the containing app bundle.
 
   Stdout/stderr are left unset intentionally: when launched by launchd
   via SMAppService the daemon writes to the unified log (os_log) and its
@@ -30,9 +33,11 @@
 <dict>
     <key>Label</key>
     <string>dev.debruyn.ofem.daemon</string>
+    <key>BundleProgram</key>
+    <string>Contents/Helpers/ofem</string>
     <key>ProgramArguments</key>
     <array>
-        <string>@executable_path/../Helpers/ofem</string>
+        <string>ofem</string>
         <string>daemon</string>
         <string>run</string>
     </array>
