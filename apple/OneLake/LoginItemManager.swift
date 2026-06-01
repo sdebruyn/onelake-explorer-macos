@@ -36,9 +36,9 @@ final class LoginItemManager: ObservableObject {
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "login-item")
 
-    /// The plist filename (without .plist) — must match the Label key in
-    /// the bundled plist at Contents/Library/LaunchAgents/.
-    private static let agentPlistName = "dev.debruyn.ofem.daemon"
+    /// The plist filename (including .plist) — required by SMAppService.agent(plistName:).
+    /// Note: the Label key inside the plist stays "dev.debruyn.ofem.daemon" (no extension).
+    private static let agentPlistName = "dev.debruyn.ofem.daemon.plist"
 
     // MARK: Published
 
