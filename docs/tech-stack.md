@@ -2,7 +2,7 @@
 
 ## Language: Go for the core + daemon, Swift for host app and File Provider Extension
 
-The core library and the bundled daemon binary are written in **Go**. The macOS `.app` host and the File Provider Extension are written in **Swift**. The Go engine runs inside the long-running daemon (`OneLake.app/Contents/Helpers/ofem`); the Swift targets are thin clients that reach it over JSON-RPC on a Unix-domain socket (see "Swift ↔ Go boundary" below). There is no cgo: the Swift targets link no Go archive.
+The core library and the bundled daemon binary are written in **Go**. The macOS `.app` host and the File Provider Extension are written in **Swift**. The Go engine runs inside the long-running daemon (`OneLake.app/Contents/MacOS/ofem`); the Swift targets are thin clients that reach it over JSON-RPC on a Unix-domain socket (see "Swift ↔ Go boundary" below). There is no cgo: the Swift targets link no Go archive.
 
 ## Go libraries
 
@@ -87,7 +87,7 @@ The core library and the bundled daemon binary are written in **Go**. The macOS 
 
 ## Build & release
 
-- `xcodebuild` builds the Swift `.app` and `.appex`. The Xcode postBuildScript compiles the Go daemon binary into `Contents/Helpers/ofem` and signs it with the daemon entitlements.
+- `xcodebuild` builds the Swift `.app` and `.appex`. The Xcode postBuildScript compiles the Go daemon binary into `Contents/MacOS/ofem` and signs it with the daemon entitlements.
 - `codesign --force --options runtime --sign "Developer ID Application: …"` re-seals the outer bundle.
 - `xcrun notarytool submit … --wait` and `xcrun stapler staple`.
 - DMG via `create-dmg` (Homebrew formula `create-dmg`).
@@ -100,7 +100,7 @@ See [docs/packaging-homebrew.md](packaging-homebrew.md) for the full pipeline.
 ```
 onelake-explorer-macos/
 ├── cmd/
-│   └── ofem/                 # daemon entry-point binary (bundled in OneLake.app/Contents/Helpers/)
+│   └── ofem/                 # daemon entry-point binary (bundled in OneLake.app/Contents/MacOS/)
 ├── internal/
 │   ├── auth/                # MSAL wrapper, Keychain cache, account registry
 │   ├── onelake/             # DFS API client, retries, pagination

@@ -54,6 +54,7 @@ targets:
           copyFiles:
             destination: wrapper
             subpath: Contents/Library/LaunchAgents
+        codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem
@@ -83,9 +84,12 @@ targets:
     postBuildScripts:
       # Bundle the ofem daemon binary.
       #
-      # The daemon lives at Contents/Helpers/ofem (the macOS convention for
-      # helper executables that are separately signed). The LaunchAgent plist
-      # is copied into Contents/Library/LaunchAgents/ by the copyFiles build
+      # The daemon lives at Contents/MacOS/ofem alongside the Swift host
+      # binary. Quinn "The Eskimo!" (Apple DTS) explicitly recommends
+      # Contents/MacOS/ for SMAppService helpers; Contents/Helpers/ is
+      # non-standard. The Go binary is named "ofem", the Swift host binary
+      # is named "OneLake" — no name collision. The LaunchAgent plist is
+      # copied into Contents/Library/LaunchAgents/ by the copyFiles build
       # phase above so that it is included in the code-signing seal before
       # xcodebuild signs the bundle. SMAppService validates that the plist is
       # part of the sealed bundle — copying it here (post-sign) would cause
@@ -113,11 +117,11 @@ targets:
           # The repo root (where cmd/ofem lives) is one level up.
           REPO_ROOT="${PROJECT_DIR}/.."
 
-          HELPERS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Helpers"
-          DAEMON_DEST="${HELPERS_DIR}/ofem"
+          MACOS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS"
+          DAEMON_DEST="${MACOS_DIR}/ofem"
           ENTITLEMENTS="${OFEM_DAEMON_ENTITLEMENTS:-${PROJECT_DIR}/OneLakeDaemon.entitlements}"
 
-          mkdir -p "${HELPERS_DIR}"
+          mkdir -p "${MACOS_DIR}"
 
           # Resolve the go binary. Xcode's build-phase PATH is restricted and
           # does not include the setup-go toolchain directory from CI, nor

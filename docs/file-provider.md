@@ -55,7 +55,7 @@ We use the **replication model**, which is what Apple recommends for cloud stora
 What each process does:
 - The **host app** holds the account-management UI, registers File Provider domains, talks to the system browser for auth, and polls the daemon for change signals. It is an IPC client of the daemon.
 - The **File Provider Extension** is sandboxed by Apple. macOS launches it on demand when Finder needs files. It implements the `NSFileProvider*` classes and calls the daemon's `fp.*` methods over IPC.
-- The **daemon** runs as a LaunchAgent (`OneLake.app/Contents/Helpers/ofem`, registered via SMAppService) and is the single owner of the Go engine, cache, and blob store. It holds the Unix socket the host app and the File Provider Extension share, batches telemetry, and runs adaptive polling against Fabric.
+- The **daemon** runs as a LaunchAgent (`OneLake.app/Contents/MacOS/ofem`, registered via SMAppService) and is the single owner of the Go engine, cache, and blob store. It holds the Unix socket the host app and the File Provider Extension share, batches telemetry, and runs adaptive polling against Fabric.
 
 ## Shared state via App Group
 
