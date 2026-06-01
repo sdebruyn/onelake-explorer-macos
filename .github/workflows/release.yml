@@ -167,6 +167,7 @@ jobs:
       - name: Archive (xcodebuild)
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           # Signing settings (Manual, Developer ID cert, per-target
           # provisioning profile) live in apple/project.yml on each
@@ -181,6 +182,8 @@ jobs:
             -derivedDataPath build/Release \
             -archivePath build/OneLake.xcarchive \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$VERSION" \
             archive
 
       - name: Export archive (Developer ID)
