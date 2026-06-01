@@ -114,7 +114,7 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             # No tag on a manual dry run; synthesise a throwaway CalVer so
             # the bundle version is well-formed. Nothing is published.
-            echo "version=0.0.0-dryrun" >> "$GITHUB_OUTPUT"
+            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
           else
             # Strip leading 'v' from the tag to get the CalVer string.
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"

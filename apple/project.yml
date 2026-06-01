@@ -29,6 +29,10 @@ settings:
     # macOS reports the domain as "Sync is not enabled" (FP -2011). We
     # don't use previews, so disable the split for every configuration.
     ENABLE_DEBUG_DYLIB: NO
+    # Fallback version for local dev and CI builds (no release tag).
+    # Release builds override these via the xcodebuild command line.
+    MARKETING_VERSION: "0.0.0-dev"
+    CURRENT_PROJECT_VERSION: "0"
 # The Go engine and cache live in the long-running daemon. Both Swift
 # targets reach it over the unix-socket IPC (apple/Shared/IPCClient.swift +
 # CoreBridge.swift) — there is no cgo archive to link, so no
