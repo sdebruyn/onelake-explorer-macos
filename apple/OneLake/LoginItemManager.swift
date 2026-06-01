@@ -81,6 +81,12 @@ final class LoginItemManager: ObservableObject {
     /// so that a user who explicitly denies the Login Items permission in
     /// System Settings is not re-prompted on every subsequent launch.
     ///
+    /// Failures are logged but not surfaced as an alert: unlike the manual
+    /// toggle, this registration is automatic and unsolicited, so an error
+    /// dialog would appear before the user has taken any action. If the
+    /// daemon did not start, the IPC retry loop in the host app will show
+    /// a degraded-state icon in the menu bar, which is sufficient feedback.
+    ///
     /// After the first launch this is a no-op, so explicit user toggles in
     /// Settings are never overridden.
     func bootstrapIfNeeded() {
@@ -89,7 +95,18 @@ final class LoginItemManager: ObservableObject {
             return
         }
         Self.log.info("First launch detected — attempting initial daemon registration")
-        register()
+        let svc = SMAppService.agent(plistName: Self.agentPlistName)
+        do {
+            try svc.register()
+            Self.log.info("SMAppService bootstrap registration succeeded")
+        } catch {
+            // Intentionally silent: the user may have denied the Login Items
+            // permission prompt that macOS just showed. No second dialog.
+            Self.log.info(
+                "SMAppService bootstrap registration failed (will not retry): \(error.localizedDescription, privacy: .public)"
+            )
+        }
+        refresh()
         UserDefaults.standard.set(true, forKey: Self.didBootstrapKey)
     }
 
