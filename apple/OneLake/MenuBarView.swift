@@ -134,8 +134,7 @@ struct MenuBarView: View {
     @ViewBuilder
     private var aboutItem: some View {
         Button("About OFEM\(model.daemonVersion.isEmpty ? "" : " v\(model.daemonVersion)")…") {
-            NSApplication.shared.orderFrontStandardAboutPanel(nil)
-            NSApplication.shared.activate(ignoringOtherApps: true)
+            AboutWindowController.shared.show()
         }
     }
 
