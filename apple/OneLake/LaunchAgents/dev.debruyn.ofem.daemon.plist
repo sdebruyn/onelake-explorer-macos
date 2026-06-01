@@ -17,6 +17,11 @@
   EX_CONFIG (exit code 78). BundleProgram is resolved by launchd itself
   relative to the containing app bundle.
 
+  BundleProgram and ProgramArguments are alternatives per launchd.plist(5)
+  — combining them is non-canonical. BundleProgram alone is sufficient:
+  launchd resolves the path relative to the bundle and does not need an
+  explicit argv[0].
+
   Stdout/stderr are left unset intentionally: when launched by launchd
   via SMAppService the daemon writes to the unified log (os_log) and its
   log dir under the App Group container. If you need file-level logging
@@ -35,12 +40,6 @@
     <string>dev.debruyn.ofem.daemon</string>
     <key>BundleProgram</key>
     <string>Contents/Helpers/ofem</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>ofem</string>
-        <string>daemon</string>
-        <string>run</string>
-    </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
