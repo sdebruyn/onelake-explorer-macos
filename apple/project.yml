@@ -98,9 +98,10 @@ targets:
       # Code signing:
       #   • When CODE_SIGNING_ALLOWED=YES (local dev / release): the daemon is
       #     signed with OneLakeDaemon.entitlements and the same team identity as
-      #     the host app. The entitlements grant app-groups, network.client,
-      #     network.server, and keychain-access-groups — but NOT app-sandbox, so
-      #     the daemon can access the filesystem freely (blob cache, sockets).
+      #     the host app. The entitlements grant app-sandbox, app-groups,
+      #     network.client, network.server, and keychain-access-groups.
+      #     app-sandbox is required by macOS 14.2+ (SMAppService rejects a
+      #     non-sandboxed helper when the host app is sandboxed).
       #   • When CODE_SIGNING_ALLOWED=NO (CI unsigned build): signing is skipped.
       #     The binary is still copied so the build succeeds; the plist path is
       #     still valid. Only runtime registration (SMAppService.register) needs
