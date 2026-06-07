@@ -12,6 +12,7 @@
 // App Group entitlement, so these reads/writes are permitted; the engine
 // stays the daemon's alone.
 
+import AppKit
 import Foundation
 import os.log
 
@@ -94,9 +95,16 @@ private struct AccountRemoveEnvelope: Decodable {
     let error: BridgeErrorPayload?
 }
 
-/// auth.login → {"alias": string, "username": string, "tenantId": string, "tenantName": string}
+/// auth.login.start → {"sessionId": string, "authUrl": string}
+private struct AuthLoginStartEnvelope: Decodable {
+    let sessionId: String?
+    let authUrl: String?
+    let error: BridgeErrorPayload?
+}
+
+/// auth.login.complete → {"alias": string, "username": string, "tenantId": string, "tenantName": string}
 /// Probed on "username" because the daemon always includes it on success.
-private struct AuthLoginEnvelope: Decodable {
+private struct AuthLoginCompleteEnvelope: Decodable {
     let accountInfo: AccountInfo?
     let error: BridgeErrorPayload?
 
@@ -286,45 +294,82 @@ final class CoreBridge {
 
     /// Open an interactive browser-loopback sign-in for `alias`.
     ///
-    /// This call is intentionally long-running: the daemon opens the system
-    /// browser, waits for the OAuth redirect, and only then returns the token.
-    /// A real human may take several minutes to complete the browser flow, so
-    /// we bypass the normal per-call IPCClient.withTimeout wrapper and drive
-    /// the connection directly — the only cap here is Swift Task cancellation
-    /// from the caller (i.e. the user hitting Cancel in the UI).
+    /// This uses a two-phase IPC protocol:
     ///
-    /// Note: cancelling the Swift Task dismisses the in-app wait, but does NOT
-    /// abort the daemon-side MSAL flow. The daemon's connection handler is
-    /// synchronous per connection; it will keep waiting for the OAuth callback
-    /// until MSAL's own session timeout fires (typically ~5 minutes). This is
-    /// acceptable: no credentials are persisted for the incomplete login, and
-    /// the daemon simply drops the connection once the task is done or the
-    /// client disconnects.
+    /// 1. `auth.login.start` — asks the daemon to prepare MSAL and returns
+    ///    the authorization URL immediately, without opening the browser.
+    ///    The daemon's MSAL goroutine keeps running in the background with
+    ///    its own localhost redirect listener.
+    ///
+    /// 2. The host app opens the URL via `NSWorkspace.shared.open` — this
+    ///    is permitted under App Sandbox, whereas the old approach
+    ///    (exec.Command("open", url) inside the daemon) is not.
+    ///
+    /// 3. `auth.login.complete` — blocks until the user completes the
+    ///    browser flow and the OAuth redirect arrives at MSAL's localhost
+    ///    server, then returns the account info and persists the tokens.
+    ///
+    /// Cancellation: cancelling the Swift Task before the URL is opened
+    /// cancels auth.login.start; cancelling it during the browser wait
+    /// closes the auth.login.complete connection. Either way no credentials
+    /// are persisted for an incomplete login.
     func login(alias: String, tenant: String?, clientID: String? = nil) async throws -> AccountInfo {
         guard let client = client else { throw BridgeError.notBootstrapped }
-        var params: [String: Any] = ["alias": alias]
+
+        // Phase 1: ask the daemon to prepare MSAL and return the auth URL.
+        var startParams: [String: Any] = ["alias": alias]
         if let tenant = tenant, !tenant.isEmpty {
-            params["tenant"] = tenant
+            startParams["tenant"] = tenant
         }
         // Bring Your Own App Registration. When clientID is nil/empty,
         // the daemon uses the built-in OFEM registration — see
         // docs/custom-app-registration.md for when an override is
         // appropriate.
         if let clientID = clientID, !clientID.isEmpty {
-            params["clientId"] = clientID
+            startParams["clientId"] = clientID
         }
-        let data: Data
+
+        let startData: Data
         do {
-            // Call directly without the withTimeout wrapper: the browser
-            // redirect can legitimately take minutes.
-            data = try await client.call(method: "auth.login", params: params)
+            startData = try await client.call(method: "auth.login.start", params: startParams)
         } catch let e as IPCError {
             throw BridgeError(ipc: e)
         }
-        let env: AuthLoginEnvelope = try decode(data)
-        if let payload = env.error { throw BridgeError(payload: payload) }
-        guard let info = env.accountInfo else {
-            throw BridgeError.decoding("auth.login envelope missing both result and error")
+        let startEnv: AuthLoginStartEnvelope = try decode(startData)
+        if let payload = startEnv.error { throw BridgeError(payload: payload) }
+        guard let sessionId = startEnv.sessionId, !sessionId.isEmpty,
+              let authUrlString = startEnv.authUrl, !authUrlString.isEmpty,
+              let authURL = URL(string: authUrlString)
+        else {
+            throw BridgeError.decoding("auth.login.start response missing sessionId or authUrl")
+        }
+
+        // Phase 2: open the authorization URL in the system browser.
+        // NSWorkspace.shared.open is permitted under App Sandbox, unlike
+        // exec.Command("open", …) which the daemon can no longer use.
+        await MainActor.run {
+            NSWorkspace.shared.open(authURL)
+        }
+
+        // Phase 3: wait for the user to complete the browser flow.
+        // auth.login.complete blocks until the OAuth redirect arrives at
+        // MSAL's localhost listener; a real human may take minutes, so we
+        // use the raw client.call without the short callTimeout wrapper.
+        var completeParams: [String: Any] = ["sessionId": sessionId, "alias": alias]
+        if let clientID = clientID, !clientID.isEmpty {
+            completeParams["clientId"] = clientID
+        }
+
+        let completeData: Data
+        do {
+            completeData = try await client.call(method: "auth.login.complete", params: completeParams)
+        } catch let e as IPCError {
+            throw BridgeError(ipc: e)
+        }
+        let completeEnv: AuthLoginCompleteEnvelope = try decode(completeData)
+        if let payload = completeEnv.error { throw BridgeError(payload: payload) }
+        guard let info = completeEnv.accountInfo else {
+            throw BridgeError.decoding("auth.login.complete envelope missing both result and error")
         }
         return info
     }
