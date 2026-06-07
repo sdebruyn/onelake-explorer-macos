@@ -9,32 +9,32 @@ struct HTTPGateTests {
     // MARK: - Token refill
 
     @Test("refills tokens based on elapsed time")
-    func tokenRefill() async {
+    func tokenRefill() async throws {
         let gate = HTTPGate(host: "example.com", maxConcurrent: 10, tokensPerSecond: 100, burst: 10)
         // Drain all tokens.
         for _ in 0..<10 {
-            await gate.acquire()
+            try await gate.acquire()
         }
         // Release all — triggers refill.
         for _ in 0..<10 {
             await gate.release()
         }
         // Should be able to acquire again immediately after release.
-        await gate.acquire()
+        try await gate.acquire()
         await gate.release()
     }
 
     // MARK: - Concurrency cap
 
     @Test("concurrency cap limits simultaneous in-flight")
-    func concurrencyCap() async {
+    func concurrencyCap() async throws {
         let gate = HTTPGate(host: "cap.example.com", maxConcurrent: 2, tokensPerSecond: 100, burst: 100)
         var count = 0
 
         // Acquire 2 — both should succeed instantly.
-        await gate.acquire()
+        try await gate.acquire()
         count += 1
-        await gate.acquire()
+        try await gate.acquire()
         count += 1
 
         #expect(count == 2)
@@ -47,7 +47,7 @@ struct HTTPGateTests {
     // MARK: - Penalty / pause window
 
     @Test("penalty blocks acquire until deadline passes")
-    func penaltyBlocksAcquire() async {
+    func penaltyBlocksAcquire() async throws {
         let gate = HTTPGate(host: "penalty.example.com", maxConcurrent: 10, tokensPerSecond: 100, burst: 100)
         let pause = Duration.milliseconds(200)
         let deadline = ContinuousClock.now + pause
@@ -55,7 +55,7 @@ struct HTTPGateTests {
         await gate.penalty(until: deadline)
 
         let start = ContinuousClock.now
-        await gate.acquire()
+        try await gate.acquire()
         await gate.release()
         let elapsed = start.duration(to: ContinuousClock.now)
 
@@ -64,7 +64,7 @@ struct HTTPGateTests {
     }
 
     @Test("penalty in past is ignored")
-    func penaltyInPastIgnored() async {
+    func penaltyInPastIgnored() async throws {
         let gate = HTTPGate(host: "pastpenalty.example.com", maxConcurrent: 10, tokensPerSecond: 100, burst: 100)
         let past = ContinuousClock.now - .seconds(1)
 
@@ -72,7 +72,7 @@ struct HTTPGateTests {
 
         // Should not block.
         let start = ContinuousClock.now
-        await gate.acquire()
+        try await gate.acquire()
         await gate.release()
         let elapsed = start.duration(to: ContinuousClock.now)
 
@@ -80,7 +80,7 @@ struct HTTPGateTests {
     }
 
     @Test("latest penalty deadline wins")
-    func latestPenaltyWins() async {
+    func latestPenaltyWins() async throws {
         let gate = HTTPGate(host: "latestpenalty.example.com", maxConcurrent: 10, tokensPerSecond: 100, burst: 100)
         let short = ContinuousClock.now + .milliseconds(50)
         let long = ContinuousClock.now + .milliseconds(250)
@@ -89,7 +89,7 @@ struct HTTPGateTests {
         await gate.penalty(until: short) // Earlier — should be ignored.
 
         let start = ContinuousClock.now
-        await gate.acquire()
+        try await gate.acquire()
         await gate.release()
         let elapsed = start.duration(to: ContinuousClock.now)
 
@@ -100,14 +100,14 @@ struct HTTPGateTests {
     // MARK: - State snapshot
 
     @Test("state snapshot reflects inflight count")
-    func stateInflight() async {
+    func stateInflight() async throws {
         let gate = HTTPGate(host: "state.example.com", maxConcurrent: 5, tokensPerSecond: 100, burst: 10)
 
-        await gate.acquire()
+        try await gate.acquire()
         let s1 = await gate.state()
         #expect(s1.inFlight == 1)
 
-        await gate.acquire()
+        try await gate.acquire()
         let s2 = await gate.state()
         #expect(s2.inFlight == 2)
 

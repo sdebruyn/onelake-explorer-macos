@@ -125,7 +125,13 @@ public final class HTTPClient: Sendable {
             try Task.checkCancellation()
 
             // Acquire gate slot (blocks on pause window + concurrency + QPS).
-            await gate.acquire()
+            // acquire() throws CancellationError when the task is cancelled
+            // while waiting; in that case no slot was claimed so no release().
+            do {
+                try await gate.acquire()
+            } catch is CancellationError {
+                throw HTTPClientError.cancelled
+            }
 
             // Build an authorised copy of the request.
             var authorised = request

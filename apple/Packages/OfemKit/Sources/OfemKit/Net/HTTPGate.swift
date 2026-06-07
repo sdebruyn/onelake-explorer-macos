@@ -83,16 +83,21 @@ public actor HTTPGate {
     /// - the concurrency cap admits one more in-flight caller, and
     /// - the token bucket grants a token.
     ///
+    /// Throws `CancellationError` if the calling `Task` is cancelled while
+    /// waiting in any of the three phases. Call ``release()`` only after a
+    /// successful (non-throwing) return.
+    ///
     /// Call ``release()`` exactly once when the round trip completes —
     /// success or failure.
     ///
     /// Mirrors `internal/httpgate/gate.go` — `Gate.Acquire`.
-    public func acquire() async {
+    public func acquire() async throws {
         // 1. Wait out any pending pause window.
-        await waitForPause()
+        try await waitForPause()
 
         // 2. Wait for a concurrency slot.
         while inFlight >= maxConcurrent {
+            try Task.checkCancellation()
             await withCheckedContinuation { continuation in
                 concurrencyWaiters.append(continuation)
             }
@@ -101,6 +106,7 @@ public actor HTTPGate {
         // 3. Refill and wait for a token.
         refill()
         while availableTokens < 1.0 {
+            try Task.checkCancellation()
             await withCheckedContinuation { continuation in
                 tokenWaiters.append(continuation)
             }
@@ -108,11 +114,24 @@ public actor HTTPGate {
         }
         availableTokens -= 1.0
 
-        // 4. Re-check pause after token acquisition — a Penalty posted
-        //    between step 1 and step 3 must still be honoured.
-        await waitForPause()
-
+        // 4. Claim the concurrency slot before the second pause check so that
+        //    inFlight is always in sync with how many callers have passed the
+        //    gate. Without this, a concurrent release() + drainWaiters() during
+        //    the second waitForPause could allow a second caller past the
+        //    concurrency-cap while-loop, causing inFlight to exceed maxConcurrent.
         inFlight += 1
+
+        // 5. Re-check pause after token acquisition — a Penalty posted
+        //    between step 1 and step 3 must still be honoured.
+        do {
+            try await waitForPause()
+        } catch {
+            // Undo the inFlight claim before propagating the cancellation so
+            // the gate state remains consistent.
+            inFlight -= 1
+            drainWaiters()
+            throw error
+        }
     }
 
     /// Releases one concurrency slot.
@@ -207,8 +226,11 @@ public actor HTTPGate {
     /// Loops because a concurrent ``penalty(until:)`` call may extend the
     /// deadline.
     ///
+    /// Throws `CancellationError` immediately when the calling `Task` is
+    /// cancelled, mirroring how Go's `waitPause` returns on `ctx.Done()`.
+    ///
     /// Mirrors `internal/httpgate/gate.go` — `waitPause`.
-    private func waitForPause() async {
+    private func waitForPause() async throws {
         while let until = pauseUntil {
             let now = ContinuousClock.now
             guard until > now else {
@@ -217,7 +239,10 @@ public actor HTTPGate {
                 return
             }
             let waitDuration = now.duration(to: until)
-            try? await Task.sleep(for: waitDuration, clock: ContinuousClock())
+            // Propagate CancellationError so callers are not stuck for the
+            // full penalty window after their Task is cancelled. This mirrors
+            // Go's select { case <-ctx.Done(): return ctx.Err() } in waitPause.
+            try await Task.sleep(for: waitDuration, clock: ContinuousClock())
             // Loop: re-read pauseUntil in case it was extended while we slept.
         }
     }
