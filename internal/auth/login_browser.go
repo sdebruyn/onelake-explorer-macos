@@ -21,12 +21,19 @@ import (
 //     tenant from the user's home directory at sign-in time;
 //   - a tenant GUID or a verified domain (e.g. "contoso.onmicrosoft.com").
 //
+// openURL, when non-nil, is called by MSAL with the authorization URL
+// instead of spawning a subprocess to open the system browser. Pass nil
+// to use MSAL's default behaviour (exec.Command("open", url)). Under
+// App Sandbox the subprocess spawn is blocked, so callers running inside
+// the sandbox must supply an openURL that delegates browser-opening to
+// the host app via IPC (see internal/daemon for the IPC flow).
+//
 // The returned [Account] is populated from the ID token's claims and
 // public.Account is the MSAL handle for the same identity. The byte
 // slice is the serialised MSAL token cache: the caller MUST pass it to
 // [Registry.Add] as the secret so subsequent silent acquisitions can
 // refresh tokens.
-func LoginInteractive(ctx context.Context, clientID, tenantHint string, kc Keychain) (Account, public.Account, []byte, error) {
+func LoginInteractive(ctx context.Context, clientID, tenantHint string, kc Keychain, openURL func(string) error) (Account, public.Account, []byte, error) {
 	if clientID == "" {
 		return Account{}, public.Account{}, nil, errors.New("auth: clientID is required")
 	}
@@ -52,12 +59,25 @@ func LoginInteractive(ctx context.Context, clientID, tenantHint string, kc Keych
 		"authority", authority,
 	)
 
-	// MSAL Go's interactive flow already manages the localhost redirect
-	// server and PKCE end to end. Passing "http://localhost:0" lets it
-	// pick a free port, which matches the docs/auth.md design.
-	res, err := client.AcquireTokenInteractive(ctx, LoginScopes,
+	// Build the option list. WithRedirectURI("http://localhost:0") lets
+	// MSAL pick a free port for the OAuth loopback listener — this works
+	// under App Sandbox because the daemon has the
+	// com.apple.security.network.server entitlement.
+	acquireOpts := []public.AcquireInteractiveOption{
 		public.WithRedirectURI("http://localhost:0"),
-	)
+	}
+	if openURL != nil {
+		// Override the default browser-open path (exec.Command("open",
+		// url)) with the caller-supplied function. The daemon uses this to
+		// forward the URL to the sandboxed host app via IPC so the host
+		// can call NSWorkspace.shared.open(URL) on its behalf — avoiding
+		// any subprocess spawn inside the sandbox.
+		acquireOpts = append(acquireOpts, public.WithOpenURL(openURL))
+	}
+
+	// MSAL Go's interactive flow manages the localhost redirect server
+	// and PKCE exchange end to end.
+	res, err := client.AcquireTokenInteractive(ctx, LoginScopes, acquireOpts...)
 	if err != nil {
 		return Account{}, public.Account{}, nil, fmt.Errorf("auth: interactive login: %w", err)
 	}

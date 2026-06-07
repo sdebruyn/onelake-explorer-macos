@@ -7,14 +7,14 @@ import (
 )
 
 func TestLoginInteractiveRejectsEmptyClientID(t *testing.T) {
-	_, _, _, err := LoginInteractive(context.Background(), "", "", NewMemoryKeychain())
+	_, _, _, err := LoginInteractive(context.Background(), "", "", NewMemoryKeychain(), nil)
 	if err == nil {
 		t.Fatal("expected error for empty clientID")
 	}
 }
 
 func TestLoginInteractiveRejectsNilKeychain(t *testing.T) {
-	_, _, _, err := LoginInteractive(context.Background(), EntraClientID, "", nil)
+	_, _, _, err := LoginInteractive(context.Background(), EntraClientID, "", nil, nil)
 	if err == nil {
 		t.Fatal("expected error for nil keychain")
 	}
@@ -31,7 +31,7 @@ func TestLoginInteractiveCancelsCleanlyOnContextCancel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, _, _, err := LoginInteractive(ctx, EntraClientID, "", NewMemoryKeychain())
+		_, _, _, err := LoginInteractive(ctx, EntraClientID, "", NewMemoryKeychain(), nil)
 		done <- err
 	}()
 
