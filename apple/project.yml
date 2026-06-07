@@ -121,6 +121,7 @@ targets:
           MACOS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS"
           DAEMON_DEST="${MACOS_DIR}/ofem"
           ENTITLEMENTS="${OFEM_DAEMON_ENTITLEMENTS:-${PROJECT_DIR}/OneLakeDaemon.entitlements}"
+          SELF_CONSTRAINT="${PROJECT_DIR}/OfemDaemonSelfConstraint.plist"
 
           mkdir -p "${MACOS_DIR}"
 
@@ -172,6 +173,7 @@ targets:
             codesign --force --options runtime --timestamp \
               --identifier "dev.debruyn.ofem.daemon" \
               --entitlements "${ENTITLEMENTS}" \
+              --launch-constraint-self "${SELF_CONSTRAINT}" \
               --sign "${EXPANDED_CODE_SIGN_IDENTITY}" \
               "${DAEMON_DEST}"
           else

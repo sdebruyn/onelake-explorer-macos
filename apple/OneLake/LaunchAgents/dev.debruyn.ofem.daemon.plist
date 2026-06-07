@@ -53,5 +53,10 @@
     <array>
         <string>dev.debruyn.ofem</string>
     </array>
+    <key>SpawnConstraint</key>
+    <dict>
+        <key>team-identifier</key>
+        <string>6D79CUWZ4J</string>
+    </dict>
 </dict>
 </plist>
