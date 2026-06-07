@@ -43,7 +43,7 @@ func newTestHandlers(t *testing.T) *Handlers {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 
-	return NewHandlers(store, reg, kc, c, nil, nil, nil)
+	return NewHandlers(context.Background(), store, reg, kc, c, nil, nil, nil)
 }
 
 // seedAccount persists an account directly via the registry so tests that

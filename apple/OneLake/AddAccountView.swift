@@ -4,16 +4,18 @@
 // The user picks a short alias (becomes OneLake-<alias> on disk and
 // "OneLake — <alias>" in the Finder sidebar), optionally pins a tenant
 // (GUID or domain; blank = Azure AD picks it from the login prompt), then
-// clicks Sign In. We call CoreBridge.login(), which sends auth.login to the
-// daemon. The daemon opens the system browser and blocks until the OAuth
-// redirect arrives — the call is intentionally long-running (see
-// CoreBridge.login() for the timeout rationale). A spinner + status label
-// give feedback while we wait.
+// clicks Sign In. We call CoreBridge.login(), which uses the two-phase
+// IPC protocol (auth.login.start / auth.login.complete). Phase 1 returns
+// the authorization URL; this view opens it via NSWorkspace (sandbox-safe).
+// Phase 2 blocks until the OAuth redirect arrives at MSAL's localhost
+// listener. A spinner + status label give feedback while we wait.
 //
-// Cancellation: tapping Cancel dismisses the UI. The Swift Task is
-// cancelled, which closes the IPC connection. The daemon-side MSAL flow
-// keeps running until its own session timeout fires (typically ~5 min) but
-// no credentials are persisted for an incomplete login — safe to ignore.
+// Cancellation: tapping Cancel dismisses the UI and cancels the Swift Task.
+// If cancelled during phase 1 the start call is aborted. If cancelled during
+// phase 2 the complete connection is closed; the daemon's MSAL goroutine
+// keeps running under the daemon-lifetime context until its own session
+// timeout fires, but no credentials are persisted for an incomplete login —
+// safe to ignore.
 //
 // On success: close the window, refresh MenuStatusModel, reconcile domains.
 

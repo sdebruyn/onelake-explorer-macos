@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestLoginSessionStoreRegisterAndClaim(t *testing.T) {
@@ -60,6 +61,35 @@ func TestLoginSessionStoreClaimEmptyIDErrors(t *testing.T) {
 	_, err := store.Claim("")
 	if err == nil {
 		t.Fatal("expected error for empty session id")
+	}
+}
+
+func TestLoginSessionStoreRegisterEvictsExpiredSessions(t *testing.T) {
+	store := NewLoginSessionStore()
+	expired := &LoginSession{
+		ID:       "old-session",
+		ResultCh: make(chan LoginSessionResult, 1),
+	}
+	store.Register(expired)
+	// Back-date the createdAt so it looks expired.
+	store.mu.Lock()
+	store.sessions["old-session"].createdAt = time.Now().Add(-(LoginSessionTTL + time.Second))
+	store.mu.Unlock()
+
+	// Registering a new session triggers the sweep.
+	fresh := &LoginSession{
+		ID:       "fresh-session",
+		ResultCh: make(chan LoginSessionResult, 1),
+	}
+	store.Register(fresh)
+
+	// The expired session should be gone.
+	if _, err := store.Claim("old-session"); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("expired session should have been evicted, got %v", err)
+	}
+	// The fresh session should still be claimable.
+	if _, err := store.Claim("fresh-session"); err != nil {
+		t.Errorf("fresh session should be claimable: %v", err)
 	}
 }
 

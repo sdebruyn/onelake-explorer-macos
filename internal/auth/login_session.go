@@ -4,9 +4,17 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/public"
 )
+
+// LoginSessionTTL is the maximum time a session may sit unclaimed in the
+// store. After this deadline the session is considered abandoned and will
+// be removed by the next call to [LoginSessionStore.Register]. MSAL's own
+// interactive-flow timeout is ~5 minutes; we allow a little more headroom
+// so a slow user is not evicted before MSAL gives up.
+const LoginSessionTTL = 10 * time.Minute
 
 // ErrSessionNotFound is returned by [LoginSessionStore.Claim] when no
 // session with the given ID exists (already claimed, never started, or
@@ -43,6 +51,10 @@ type LoginSession struct {
 	// goroutine never blocks if the client disconnects before calling
 	// auth.login.complete.
 	ResultCh chan LoginSessionResult
+
+	// createdAt is used by [LoginSessionStore.Register] to evict sessions
+	// that have exceeded [LoginSessionTTL] without being claimed.
+	createdAt time.Time
 }
 
 // LoginSessionStore is a concurrency-safe map of pending login sessions
@@ -64,12 +76,24 @@ func NewLoginSessionStore() *LoginSessionStore {
 
 // Register inserts sess into the store keyed by sess.ID. It panics if
 // sess or sess.ID is zero — both are programming errors.
+//
+// As a side effect, Register sweeps and removes any sessions that have
+// exceeded [LoginSessionTTL] without being claimed. This keeps the map
+// bounded for long-running daemons even if many logins are abandoned.
 func (s *LoginSessionStore) Register(sess *LoginSession) {
 	if sess == nil || sess.ID == "" {
 		panic("auth: LoginSessionStore.Register: nil or empty session")
 	}
+	now := time.Now()
+	sess.createdAt = now
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Evict abandoned sessions before inserting the new one.
+	for id, existing := range s.sessions {
+		if now.Sub(existing.createdAt) > LoginSessionTTL {
+			delete(s.sessions, id)
+		}
+	}
 	s.sessions[sess.ID] = sess
 }
 

@@ -171,19 +171,21 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// drains them via sync.pollChanges and calls signalEnumerator.
 	feed := NewChangefeed()
 
+	// Translate SIGINT/SIGTERM into context cancellation so a single
+	// path covers both manual ctrl-C and `launchctl kill SIGTERM`.
+	// runCtx must be set up before NewHandlers so the daemon-lifetime
+	// context is available to the MSAL goroutine started by auth.login.start.
+	runCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// IPC server.
 	srv := ipc.NewServer(logger)
-	NewHandlers(store, registry, comps.Keychain, c, eng, gates, feed).Register(srv)
+	NewHandlers(runCtx, store, registry, comps.Keychain, c, eng, gates, feed).Register(srv)
 
 	sockPath := opts.SocketPath
 	if sockPath == "" {
 		sockPath = paths.SocketPath
 	}
-
-	// Translate SIGINT/SIGTERM into context cancellation so a single
-	// path covers both manual ctrl-C and `launchctl kill SIGTERM`.
-	runCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	listenErr := make(chan error, 1)
 	go func() { listenErr <- srv.Listen(runCtx, sockPath) }()

@@ -53,6 +53,13 @@ type Handlers struct {
 	startedAt time.Time
 	version   string
 
+	// serverCtx is the daemon-lifetime context passed to Register. The
+	// MSAL goroutine started by auth.login.start uses this context so it
+	// is not cancelled when the per-connection context of the start call
+	// is cancelled (which happens as soon as the start response is sent,
+	// because the Swift client uses one connection per call).
+	serverCtx context.Context //nolint:containedctx // intentional: lifetime matches daemon
+
 	// loginSessions tracks in-flight two-phase interactive logins. A
 	// session is created by auth.login.start and consumed exactly once by
 	// auth.login.complete. The store is safe for concurrent use.
@@ -72,7 +79,10 @@ type Handlers struct {
 // engine may be nil for tests that don't exercise the fp.* handlers;
 // gates may be nil for tests (status returns an empty Gates list); feed
 // may be nil for tests (sync.pollChanges returns an empty result).
-func NewHandlers(store *config.Store, registry *auth.Registry, kc auth.Keychain, cache *cache.Cache, engine syncRefresher, gates *httpgate.Registry, feed *Changefeed) *Handlers {
+// ctx must be the daemon-lifetime context; it is stored so the MSAL
+// goroutine started by auth.login.start outlives the short-lived
+// per-connection context of that call.
+func NewHandlers(ctx context.Context, store *config.Store, registry *auth.Registry, kc auth.Keychain, cache *cache.Cache, engine syncRefresher, gates *httpgate.Registry, feed *Changefeed) *Handlers {
 	h := &Handlers{
 		store:         store,
 		registry:      registry,
@@ -83,6 +93,7 @@ func NewHandlers(store *config.Store, registry *auth.Registry, kc auth.Keychain,
 		feed:          feed,
 		startedAt:     time.Now().UTC(),
 		version:       buildinfo.Version,
+		serverCtx:     ctx,
 		loginSessions: auth.NewLoginSessionStore(),
 	}
 	// Wire the File Provider service only when the daemon owns a full
@@ -595,11 +606,17 @@ func (h *Handlers) handleAuthLoginStart(ctx context.Context, params json.RawMess
 
 	// Run MSAL in a background goroutine so this handler can return the
 	// auth URL to the client without blocking on the full OAuth exchange.
-	// The goroutine's context is the server's connection context so it
-	// unwinds naturally on daemon shutdown or client disconnect.
+	//
+	// IMPORTANT: use h.serverCtx, NOT the per-connection ctx. The Swift
+	// client opens a fresh connection for each IPC call and closes it as
+	// soon as the response is received, so ctx is cancelled almost
+	// immediately after this handler returns. MSAL's redirect listener
+	// must stay alive until the user completes the browser flow, which
+	// can take minutes. h.serverCtx lives for the daemon's lifetime and
+	// is only cancelled on daemon shutdown.
 	go func() {
 		account, msalAcct, cacheBytes, err := auth.LoginInteractive(
-			ctx, clientID, req.Tenant, h.kc, openURL,
+			h.serverCtx, clientID, req.Tenant, h.kc, openURL,
 		)
 		resultCh <- auth.LoginSessionResult{
 			Account:    account,
