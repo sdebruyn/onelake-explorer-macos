@@ -99,7 +99,7 @@ targets:
       #   • When CODE_SIGNING_ALLOWED=YES (local dev / release): the daemon is
       #     signed with OneLakeDaemon.entitlements and the same team identity as
       #     the host app. The entitlements grant app-sandbox, app-groups,
-      #     network.client, network.server, and keychain-access-groups.
+      #     network.client and network.server.
       #     app-sandbox is required by macOS 14.2+ (SMAppService rejects a
       #     non-sandboxed helper when the host app is sandboxed).
       #   • When CODE_SIGNING_ALLOWED=NO (CI unsigned build): signing is skipped.

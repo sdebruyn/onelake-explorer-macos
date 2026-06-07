@@ -18,9 +18,6 @@
     • The unix-domain socket (ofem.sock) it creates in the group container.
       network.server is required for the socket listener; network.client
       for outbound HTTPS to OneLake / Entra.
-    • The Keychain: keychain-access-groups lets it share the MSAL token
-      cache with the host app. This entitlement requires a paid Developer
-      Program team — it is a no-op in unsigned dev builds.
 
   Note: browser-based auth is handled by delegating to the host app via IPC
   (see the browser-IPC delegation PR) so the daemon itself no longer needs
@@ -49,10 +46,5 @@
     <!-- Unix-domain socket listener (IPC) + localhost loopback for browser auth callback -->
     <key>com.apple.security.network.server</key>
     <true/>
-    <!-- Shared MSAL Keychain token cache (requires paid Developer Program team) -->
-    <key>keychain-access-groups</key>
-    <array>
-        <string>$(AppIdentifierPrefix)group.dev.debruyn.ofem</string>
-    </array>
 </dict>
 </plist>
