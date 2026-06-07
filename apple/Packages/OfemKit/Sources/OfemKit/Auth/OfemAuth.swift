@@ -286,15 +286,18 @@ public final class OfemAuth {
         for signal in signals {
             if msg.contains(signal) { return true }
         }
-        // MSAL Swift reports interaction-required via MSALError codes.
+        // MSAL Swift also reports interaction-required via a typed error code.
+        // MSALError.interactionRequired covers expired refresh tokens, Conditional
+        // Access challenges, MFA re-prompts, and similar cases that require the
+        // user to interact again. MSALError.serverDeclinedScopes is intentionally
+        // excluded here: it means the server issued tokens for a subset of the
+        // requested scopes (e.g. OneLake granted but Fabric admin-consent missing).
+        // That is a partial-success case that callers should handle at a higher
+        // level (e.g. disable Fabric discovery) rather than forcing a full re-auth.
         let nsError = error as NSError
         if nsError.domain == MSALErrorDomain {
-            switch nsError.code {
-            case MSALError.interactionRequired.rawValue,
-                 MSALError.serverDeclinedScopes.rawValue:
+            if nsError.code == MSALError.interactionRequired.rawValue {
                 return true
-            default:
-                break
             }
         }
         return false

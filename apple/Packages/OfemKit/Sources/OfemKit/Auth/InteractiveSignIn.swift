@@ -67,6 +67,12 @@ public enum InteractiveSignIn {
         config.cacheConfig.keychainSharingGroup = OfemPaths.appGroupIdentifier
 
         // Wire the file-backed fallback cache if requested.
+        // The scratch alias is returned to the caller so it can copy (rename)
+        // the token bytes to the real alias after the user names the account.
+        // Without this round-trip the MsalAuthClient created by OfemAuth would
+        // look for the real alias in the FileTokenStore and find nothing, making
+        // every silent token acquisition fail with interaction-required.
+        var scratchAlias: String? = nil
         if cacheStrategy == .fileBackedFallback {
             guard let store = fileTokenStore else {
                 throw InteractiveSignInError.missingFileTokenStore
@@ -75,6 +81,7 @@ public enum InteractiveSignIn {
             // can be read back after the flow completes — then transferred
             // to the real alias when the user names the account.
             let tempAlias = temporaryAlias()
+            scratchAlias = tempAlias
             let delegate = FileTokenStoreCacheDelegate(store: store, alias: tempAlias)
             let serializedCache = try MSALSerializedADALCacheProvider(delegate: delegate)
             config.cacheConfig.serializedADALCache = serializedCache
@@ -107,7 +114,7 @@ public enum InteractiveSignIn {
 
         let account = accountFromMSALResult(result)
         log.info("InteractiveSignIn: succeeded username=\(result.account.username ?? "(nil)", privacy: .private)")
-        return InteractiveSignInResult(msalResult: result, account: account)
+        return InteractiveSignInResult(msalResult: result, account: account, scratchAlias: scratchAlias)
     }
 
     // MARK: - Private helpers
@@ -147,6 +154,26 @@ public struct InteractiveSignInResult: Sendable {
     /// The `OfemConfig.Account` extracted from the MSAL result, with an
     /// empty `alias`. The caller must set the alias before persisting.
     public let account: Account
+
+    /// The temporary FileTokenStore alias under which the MSAL cache bytes
+    /// were written during the interactive flow. Non-nil only when
+    /// `cacheStrategy == .fileBackedFallback`.
+    ///
+    /// The caller **must** transfer the bytes to the real alias before calling
+    /// `OfemAuth.addAccount`:
+    ///
+    /// ```swift
+    /// if let scratch = result.scratchAlias {
+    ///     let data = try fileTokenStore.read(alias: scratch)
+    ///     try fileTokenStore.write(alias: realAlias, data: data)
+    ///     try fileTokenStore.delete(alias: scratch)
+    /// }
+    /// ```
+    ///
+    /// Without this transfer, ``MsalAuthClient`` (created by ``OfemAuth``
+    /// with the real alias) cannot find the cached tokens and every silent
+    /// acquisition will fail with ``OfemAuthError/interactionRequired``.
+    public let scratchAlias: String?
 }
 
 // MARK: - InteractiveSignInError
