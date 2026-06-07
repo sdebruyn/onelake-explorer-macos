@@ -105,26 +105,25 @@ struct OfemPathsTests {
 
     // MARK: - Default init (outside sandbox / unit test environment)
 
-    @Test("default init resolves without throwing")
-    func defaultInitDoesNotThrow() throws {
+    @Test("default init resolves to a non-empty configDir")
+    func defaultInitNonEmpty() {
         // This test runs outside the App Group sandbox, so the fallback path
-        // ($HOME/Library/Group Containers/<GroupID>/) is used. We just verify
-        // the init does not throw and produces a non-empty configDir.
-        let paths = try OfemPaths()
+        // ($HOME/Library/Group Containers/<GroupID>/) is used.
+        let paths = OfemPaths()
         #expect(!paths.configDir.path(percentEncoded: false).isEmpty)
     }
 
     @Test("default init resolves configDir to Library/Group Containers/<GroupID>/")
-    func defaultInitConfigDirContainsGroupID() throws {
-        let paths = try OfemPaths()
+    func defaultInitConfigDirContainsGroupID() {
+        let paths = OfemPaths()
         let configDirPath = paths.configDir.path(percentEncoded: false)
         #expect(configDirPath.contains(OfemPaths.appGroupIdentifier))
         #expect(configDirPath.contains("Group Containers"))
     }
 
     @Test("default init: no legacy macOS locations appear in paths")
-    func defaultInitNoLegacyPaths() throws {
-        let paths = try OfemPaths()
+    func defaultInitNoLegacyPaths() {
+        let paths = OfemPaths()
         let legacyFragments = ["Application Support", "Library/Caches", "Library/Logs"]
 
         for fragment in legacyFragments {

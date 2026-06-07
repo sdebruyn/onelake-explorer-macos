@@ -235,6 +235,29 @@ struct OfemConfigTests {
         #expect(raw.contains("max_size_gb"), "canonical key must be present after save")
     }
 
+    // MARK: - Corrupted / invalid TOML
+
+    @Test("corrupted TOML throws parseFailed")
+    func corruptedTOMLThrowsParseFailed() throws {
+        let paths = makePaths()
+        // Write TOML that is syntactically valid but has wrong types for known keys
+        // (install_id expects a string, not an integer) — TOMLKit decodes successfully
+        // but Swift's Codable decode fails with a type mismatch.
+        try writeFile("install_id = 12345\n", at: paths.configFile)
+
+        #expect(throws: OfemConfigError.self) {
+            _ = try OfemConfigStore(paths: paths)
+        }
+        do {
+            _ = try OfemConfigStore(paths: paths)
+            Issue.record("Expected parseFailed error but no error was thrown")
+        } catch OfemConfigError.parseFailed {
+            // Expected — pass.
+        } catch {
+            Issue.record("Expected OfemConfigError.parseFailed, got \(error)")
+        }
+    }
+
     // MARK: - Snapshot isolation
 
     @Test("snapshot returns an independent copy")

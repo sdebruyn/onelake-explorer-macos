@@ -40,8 +40,7 @@ public final class FileTokenStore: Sendable {
     /// - Throws: ``FileTokenStoreError/createDirectoryFailed(_:)`` if the
     ///   directory cannot be created.
     public convenience init() throws {
-        let paths = try OfemPaths()
-        try self.init(tokensDir: paths.tokensDir)
+        try self.init(tokensDir: OfemPaths().tokensDir)
     }
 
     /// Creates a `FileTokenStore` rooted at an explicit directory. Use this

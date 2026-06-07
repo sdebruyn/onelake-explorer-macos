@@ -61,13 +61,8 @@ public struct OfemPaths: Sendable {
     /// container API first and only falls back to a `$HOME`-relative path when
     /// the container is unavailable (e.g. in unit tests or the Go daemon, which
     /// is not in the App Group).
-    ///
-    /// - Throws: `OfemPathsError.cannotResolveHomeDirectory` when the home
-    ///   directory cannot be determined and the App Group container lookup also
-    ///   fails.
-    public init() throws {
-        let root = try Self.resolveContainerRoot()
-        self.init(root: root)
+    public init() {
+        self.init(root: Self.resolveContainerRoot())
     }
 
     /// Initialises with an explicit root directory. Useful in tests to avoid
@@ -91,7 +86,7 @@ public struct OfemPaths: Sendable {
     /// (the same path the Go daemon resolves via `os.UserHomeDir`) when the
     /// container API is not available — e.g. when running unit tests outside
     /// the App Group entitlement.
-    private static func resolveContainerRoot() throws -> URL {
+    private static func resolveContainerRoot() -> URL {
         let fm = FileManager.default
 
         // Sandboxed processes: use the Apple-endorsed container API.
@@ -111,12 +106,3 @@ public struct OfemPaths: Sendable {
     }
 }
 
-// MARK: - Errors
-
-/// Errors that can be thrown by ``OfemPaths``.
-public enum OfemPathsError: Error, Equatable {
-    /// The home directory could not be determined and the App Group container
-    /// lookup also failed. This should never happen on a properly configured
-    /// macOS system.
-    case cannotResolveHomeDirectory
-}

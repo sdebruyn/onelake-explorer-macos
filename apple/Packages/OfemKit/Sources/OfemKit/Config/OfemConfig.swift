@@ -260,8 +260,7 @@ public final class OfemConfigStore: Sendable {
     ///
     /// - Throws: ``OfemConfigError`` on TOML parse failures or I/O errors.
     public convenience init() throws {
-        let paths = try OfemPaths()
-        try self.init(paths: paths)
+        try self.init(paths: OfemPaths())
     }
 
     /// Loads from explicit paths. Use in tests or sandboxed callers that
@@ -319,11 +318,11 @@ public final class OfemConfigStore: Sendable {
 
         // Decode. We need to handle the legacy `max_size_bytes` key, which is
         // not part of the canonical CacheConfig.CodingKeys. We use a temporary
-        // intermediate type to detect and migrate it.
+        // intermediate type to detect and migrate it. toOfemConfig() handles
+        // both the new and legacy schemas as well as the default-seeding case.
         do {
             let raw = try TOMLDecoder().decode(RawConfig.self, from: tomlString)
             cfg = raw.toOfemConfig()
-            migrateCacheConfig(&cfg)
         } catch {
             throw OfemConfigError.parseFailed(error)
         }
@@ -387,20 +386,6 @@ public final class OfemConfigStore: Sendable {
         }
     }
 
-    /// Migrates the legacy `max_size_bytes` key to `max_size_gb` on read.
-    ///
-    /// Mirrors `internal/config/config.go` — `migrateCacheConfig()`.
-    private static func migrateCacheConfig(_ cfg: inout OfemConfig) {
-        if cfg.cache.maxSizeGB > 0 {
-            // New schema present — nothing to do.
-            return
-        }
-        // maxSizeGB is 0 here, which means either:
-        //   1. The file omits [cache] entirely (fresh install).
-        //   2. The file has [cache] with max_size_gb = 0 (treated as default).
-        // In both cases, seed the default.
-        cfg.cache.maxSizeGB = CacheConfig.defaultSizeGB
-    }
 }
 
 // MARK: - Errors
