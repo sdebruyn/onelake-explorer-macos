@@ -3,30 +3,33 @@
 package telemetry
 
 import (
-	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 )
 
-// osVersionOnce caches the sw_vers result for the process lifetime so a
-// daemon that restarts the telemetry client (or a test that constructs
-// multiple Clients) does not re-fork the subprocess.
+// osVersionOnce caches the kern.osproductversion sysctl result for the
+// process lifetime so a daemon that restarts the telemetry client (or a
+// test that constructs multiple Clients) does not repeat the syscall.
 var (
 	osVersionOnce sync.Once
 	osVersionVal  string
 )
 
-// OSVersion returns the macOS ProductVersion (e.g. "14.5.1") via
-// `sw_vers -productVersion`. It returns an empty string when sw_vers is
-// missing or fails — telemetry treats osVersion as best-effort. The
-// result is cached after the first successful call.
+// OSVersion returns the macOS ProductVersion (e.g. "14.5.1") via the
+// kern.osproductversion sysctl. It returns an empty string on failure —
+// telemetry treats osVersion as best-effort. The result is cached after
+// the first successful call.
+//
+// syscall.Sysctl is used instead of exec.Command("sw_vers", ...) because
+// os/exec subprocess invocations are blocked under App Sandbox.
 func OSVersion() string {
 	osVersionOnce.Do(func() {
-		out, err := exec.Command("sw_vers", "-productVersion").Output()
+		ver, err := syscall.Sysctl("kern.osproductversion")
 		if err != nil {
 			return
 		}
-		osVersionVal = strings.TrimSpace(string(out))
+		osVersionVal = strings.TrimRight(strings.TrimSpace(ver), "\x00")
 	})
 	return osVersionVal
 }
