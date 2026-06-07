@@ -39,6 +39,17 @@ OFEM ships with a multi-tenant Entra App Registration that works for most users.
 
 [Issues](https://github.com/sdebruyn/onelake-explorer-macos/issues) · [Discussions](https://github.com/sdebruyn/onelake-explorer-macos/discussions) · [Security (private)](https://github.com/sdebruyn/onelake-explorer-macos/security/advisories/new)
 
+## Architecture
+
+OFEM is undergoing a phased migration from a Go daemon + Swift IPC-client architecture to a
+pure-Swift architecture where all engine logic lives inside the File Provider Extension.
+
+- [ADR 0001 — Swift Migration](docs/adr/0001-swift-migration.md) — records the decision and its rationale
+- [Swift Migration Plan](docs/swift-migration-plan.md) — seven-phase plan, risk register, and timeline
+
+The migration is driven by structural incompatibilities between Apple's sandbox/security stack
+(TCC, Launch Constraints, App Sandbox) and a Go binary embedded inside a Swift app bundle.
+
 ## Contributing
 
 Open source under the [MIT License](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, and [ofem.debruyn.dev/design/overview/](https://ofem.debruyn.dev/design/overview/) for the architecture overview.

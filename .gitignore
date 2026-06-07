@@ -89,5 +89,8 @@ apple/Local.xcconfig
 # cgo bridge build output (libofemcore.a + libofemcore.h)
 apple/build/cgo/
 
+# Swift Package Manager build output
+apple/Packages/**/.build/
+
 # Playwright MCP scratch dir (browser-automation traces/screenshots)
 .playwright-mcp/
