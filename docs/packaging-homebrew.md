@@ -9,7 +9,7 @@ See also: [Release runbook](release-runbook.md) for the step-by-step release pro
 A single signed and notarized DMG containing `OneLake.app`. The `.app` bundles:
 - The Swift host app (`OneLake`).
 - The Swift File Provider Extension (`OneLakeFileProvider.appex`).
-- The Go daemon binary (`ofem`), embedded at `OneLake.app/Contents/MacOS/ofem` and launched by the SMAppService-registered LaunchAgent plist at `OneLake.app/Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.plist`.
+- The Go daemon binary (`ofem`), packaged as a sub-bundle at `OneLake.app/Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/` and launched by the SMAppService-registered LaunchAgent plist at `OneLake.app/Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.plist`. The sub-bundle carries its own `Contents/Info.plist` with `CFBundleIdentifier=dev.debruyn.ofem.daemon`, required by libsecinit to provision the App Sandbox container for this pure-Go binary.
 
 There is no standalone CLI distribution. The bundled daemon is an
 internal helper; end users interact with OneLake through the menu bar
@@ -30,8 +30,9 @@ build-app (macos-15 runner)
 5.  Write apple/Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID.
 6.  make apple-gen  -> regenerate apple/OneLake.xcodeproj from project.yml.
 7.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
-    (the Xcode postBuildScript compiles the Go daemon into Contents/MacOS/ofem
-    and signs it with the daemon entitlements).
+    (the Xcode postBuildScript compiles the Go daemon into the sub-bundle at
+    Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/ and signs the
+    sub-bundle with the daemon entitlements).
 8.  xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
 9.  create-dmg -> dist-app/OneLake-$VERSION.dmg
 10. xcrun notarytool submit --wait --timeout 15m
