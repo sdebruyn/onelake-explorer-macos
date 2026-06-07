@@ -192,7 +192,7 @@ struct FabricClientTests {
     @Test("listAllWorkspaces: cross-host continuationUri throws continuationURIHostMismatch")
     func listAllWorkspacesCrossHostURI() async throws {
         let body = """
-        {"value":[{"id":"ws1"}],"continuationUri":"https://evil.example.com/v1/workspaces?cursor=x"}
+        {"value":[{"id":"ws1","displayName":"Alpha"}],"continuationUri":"https://evil.example.com/v1/workspaces?cursor=x"}
         """
         let session = MockURLSession(stubs: [stub(status: 200, body: body)])
         let client = makeClient(session: session)

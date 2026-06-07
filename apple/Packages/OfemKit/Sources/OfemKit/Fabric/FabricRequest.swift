@@ -5,6 +5,7 @@ import Foundation
 /// Default Fabric REST API endpoint.
 ///
 /// Mirrors `internal/fabric/client.go` — `defaultBaseURL`.
+@usableFromInline
 let fabricDefaultBaseURL = URL(string: "https://api.fabric.microsoft.com")!
 
 // MARK: - URL builders
