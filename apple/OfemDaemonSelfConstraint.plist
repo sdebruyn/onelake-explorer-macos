@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Self launch constraint for the OFEM daemon binary.
+
+  Sandboxed Developer ID-signed binaries receive an implicit category-5
+  self launch constraint on macOS 14+. Without an explicit self constraint
+  the OS cannot verify its own implicit constraint and the daemon crashes
+  at exec with:
+
+    AMFI: Launch Constraint Violation (enforcing),
+    error info: c[5]p[1]m[1]e[0], (Constraint not matched)
+
+  Embedding an explicit self constraint that matches the actual signing
+  identity satisfies AMFI and allows the daemon to launch normally.
+
+  This plist is passed to codesign via --launch-constraint-self in the
+  "Bundle ofem daemon helper" post-build script in apple/project.yml.
+
+  Reference: Microsoft Teams uses the identical pattern for its sandboxed
+  SMAppService agent (com.microsoft.teams2.agent), with slot -8 self
+  launch constraint requiring team-identifier="UBF8T346G9".
+-->
+<plist version="1.0">
+<dict>
+    <key>team-identifier</key>
+    <string>6D79CUWZ4J</string>
+    <key>signing-identifier</key>
+    <string>dev.debruyn.ofem.daemon</string>
+</dict>
+</plist>
