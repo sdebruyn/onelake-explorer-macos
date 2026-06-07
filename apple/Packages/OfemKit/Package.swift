@@ -16,12 +16,17 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/LebJe/TOMLKit.git", from: "0.6.0"),
+        .package(
+            url: "https://github.com/AzureAD/microsoft-authentication-library-for-objc",
+            from: "2.12.1"
+        ),
     ],
     targets: [
         .target(
             name: "OfemKit",
             dependencies: [
                 .product(name: "TOMLKit", package: "TOMLKit"),
+                .product(name: "MSAL", package: "microsoft-authentication-library-for-objc"),
             ]
         ),
         .testTarget(
