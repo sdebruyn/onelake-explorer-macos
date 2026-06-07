@@ -82,24 +82,36 @@ targets:
         embed: true
         codeSign: true
     postBuildScripts:
-      # Bundle the ofem daemon binary.
+      # Bundle the ofem daemon as a sub-bundle.
       #
-      # The daemon lives at Contents/MacOS/ofem alongside the Swift host
-      # binary. Quinn "The Eskimo!" (Apple DTS) explicitly recommends
-      # Contents/MacOS/ for SMAppService helpers; Contents/Helpers/ is
-      # non-standard. The Go binary is named "ofem", the Swift host binary
-      # is named "OneLake" — no name collision. The LaunchAgent plist is
-      # copied into Contents/Library/LaunchAgents/ by the copyFiles build
-      # phase above so that it is included in the code-signing seal before
-      # xcodebuild signs the bundle. SMAppService validates that the plist is
-      # part of the sealed bundle — copying it here (post-sign) would cause
-      # "Unable to read plist" at runtime.
+      # The daemon is packaged as a sub-bundle at
+      # Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/ following
+      # Apple's recommended pattern for SMAppService LaunchAgent helpers
+      # (TN3127 / WWDC22 session 10019). The sub-bundle has its own
+      # Contents/Info.plist carrying CFBundleIdentifier=dev.debruyn.ofem.daemon.
+      #
+      # Why a sub-bundle instead of a bare binary in Contents/MacOS/?
+      # The daemon is a pure-Go binary (CGO_ENABLED=0) and therefore has no
+      # __TEXT,__info_plist Mach-O section. libsecinit (_libsecinit_appsandbox)
+      # reads CFBundleIdentifier from that section to provision the App Sandbox
+      # container. When the section is absent, libsecinit crashes in dyld's
+      # initializer phase (_libsecinit_appsandbox.cold.6) before Go's main()
+      # runs — even when the binary is signed with --identifier. Packaging as a
+      # sub-bundle lets libsecinit read CFBundleIdentifier from the bundle's
+      # Contents/Info.plist instead, which is the same mechanism used by XPC
+      # services and File Provider Extensions.
+      #
+      # The LaunchAgent registrar plist is copied into Contents/Library/LaunchAgents/
+      # by the copyFiles build phase above so that it is included in the
+      # code-signing seal before xcodebuild signs the outer bundle. SMAppService
+      # validates that the plist is part of the sealed bundle — copying it here
+      # (post-sign) would cause "Unable to read plist" at runtime.
       #
       # Code signing:
-      #   • When CODE_SIGNING_ALLOWED=YES (local dev / release): the daemon is
-      #     signed with OneLakeDaemon.entitlements and the same team identity as
-      #     the host app. The entitlements grant app-sandbox, app-groups,
-      #     network.client and network.server.
+      #   • When CODE_SIGNING_ALLOWED=YES (local dev / release): the daemon
+      #     sub-bundle is signed with OneLakeDaemon.entitlements and the same
+      #     team identity as the host app. The entitlements grant app-sandbox,
+      #     app-groups, network.client and network.server.
       #     app-sandbox is required by macOS 14.2+ (SMAppService rejects a
       #     non-sandboxed helper when the host app is sandboxed).
       #   • When CODE_SIGNING_ALLOWED=NO (CI unsigned build): signing is skipped.
@@ -118,12 +130,25 @@ targets:
           # The repo root (where cmd/ofem lives) is one level up.
           REPO_ROOT="${PROJECT_DIR}/.."
 
-          MACOS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/MacOS"
-          DAEMON_DEST="${MACOS_DIR}/ofem"
+          # Sub-bundle paths. The daemon lives inside a .app sub-bundle under
+          # Contents/Library/LaunchAgents/ so that libsecinit can read
+          # CFBundleIdentifier from the bundle's Info.plist. Pure-Go binaries
+          # lack the __TEXT,__info_plist Mach-O section that libsecinit would
+          # otherwise consult, causing a cold-6 crash before main() runs.
+          BUNDLE_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/LaunchAgents/dev.debruyn.ofem.daemon.app"
+          BUNDLE_CONTENTS="${BUNDLE_DIR}/Contents"
+          BUNDLE_MACOS="${BUNDLE_CONTENTS}/MacOS"
+          DAEMON_DEST="${BUNDLE_MACOS}/ofem"
+          BUNDLE_INFOPLIST="${BUNDLE_CONTENTS}/Info.plist"
+
           ENTITLEMENTS="${OFEM_DAEMON_ENTITLEMENTS:-${PROJECT_DIR}/OneLakeDaemon.entitlements}"
           SELF_CONSTRAINT="${PROJECT_DIR}/OfemDaemonSelfConstraint.plist"
 
-          mkdir -p "${MACOS_DIR}"
+          # Source Info.plist for the sub-bundle (lives next to the LaunchAgent plist
+          # in the source tree at apple/OneLake/LaunchAgents/dev.debruyn.ofem.daemon.app/Contents/).
+          SOURCE_INFOPLIST="${PROJECT_DIR}/OneLake/LaunchAgents/dev.debruyn.ofem.daemon.app/Contents/Info.plist"
+
+          mkdir -p "${BUNDLE_MACOS}"
 
           # Resolve the go binary. Xcode's build-phase PATH is restricted and
           # does not include the setup-go toolchain directory from CI, nor
@@ -148,34 +173,52 @@ targets:
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
             "${GO}" build -o "${DAEMON_DEST}" "${REPO_ROOT}/cmd/ofem"
 
-          # Sign the daemon binary with the daemon entitlements when the build
-          # is configured for signing. CODE_SIGN_IDENTITY is set by Xcode to
-          # the actual signing identity ("-" for ad-hoc, "" when signing is off).
+          # Copy the sub-bundle Info.plist and expand Xcode build-setting
+          # placeholders ($(MARKETING_VERSION) and $(CURRENT_PROJECT_VERSION)).
+          # Xcode does not auto-process Info.plist files that live outside the
+          # INFOPLIST_FILE setting, so we do the substitution manually here with
+          # PlistBuddy — the same values are already set in the build environment.
+          echo "Installing daemon sub-bundle Info.plist..."
+          cp "${SOURCE_INFOPLIST}" "${BUNDLE_INFOPLIST}"
+          /usr/libexec/PlistBuddy -c \
+            "Set :CFBundleShortVersionString ${MARKETING_VERSION:-0.0.0-dev}" \
+            "${BUNDLE_INFOPLIST}"
+          /usr/libexec/PlistBuddy -c \
+            "Set :CFBundleVersion ${CURRENT_PROJECT_VERSION:-0}" \
+            "${BUNDLE_INFOPLIST}"
+
+          # Sign the daemon sub-bundle with the daemon entitlements when the
+          # build is configured for signing. CODE_SIGNING_ALLOWED is set by
+          # Xcode; it is NO in CI unsigned builds.
+          #
+          # Signing the sub-bundle (not just the binary) is required:
+          #   • codesign seals the bundle as a unit (binary + Info.plist +
+          #     _CodeSignature/CodeResources). The outer bundle's deep
+          #     verification (codesign --verify --deep) walks into sub-bundles
+          #     and verifies their seal.
+          #   • --launch-constraint-self restricts which process can launch the
+          #     daemon (must be signed by our team). Applied to the bundle, not
+          #     the binary directly.
+          #   • --identifier must match CFBundleIdentifier in Info.plist and the
+          #     LaunchAgent Label key so that SMAppService can correlate all
+          #     three.
           #
           # --timestamp is required: Apple notarytool rejects hardened-runtime
           # binaries without a secure timestamp, even when they are embedded
           # inside a bundle that is later re-sealed.
           if [ "${CODE_SIGNING_ALLOWED:-NO}" = "YES" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
-            echo "Signing daemon as ${EXPANDED_CODE_SIGN_IDENTITY_NAME:-?} with entitlements: ${ENTITLEMENTS}"
+            echo "Signing daemon sub-bundle as ${EXPANDED_CODE_SIGN_IDENTITY_NAME:-?} with entitlements: ${ENTITLEMENTS}"
             # Sign with EXPANDED_CODE_SIGN_IDENTITY (the SHA-1 hash Xcode already
             # resolved for the app), not the generic CODE_SIGN_IDENTITY name
             # ("Apple Development"), which is ambiguous when the keychain holds
             # more than one matching certificate. Using the hash also guarantees
             # the daemon is signed with the same identity as the host app.
-            # --identifier sets the signing identifier to a Bundle-ID-style
-            # value. Without it codesign defaults to the filename ("ofem"),
-            # which is not a valid Bundle ID. Apple sandbox-init
-            # (_libsecinit_appsandbox) requires a Bundle-ID-style identifier
-            # to provision a sandbox container; a plain filename causes a
-            # SIGTRAP in dyld's initializer phase before Go's main() runs.
-            # The identifier must match the LaunchAgent Label key so that
-            # SMAppService can correlate the plist with the binary.
             codesign --force --options runtime --timestamp \
               --identifier "dev.debruyn.ofem.daemon" \
               --entitlements "${ENTITLEMENTS}" \
               --launch-constraint-self "${SELF_CONSTRAINT}" \
               --sign "${EXPANDED_CODE_SIGN_IDENTITY}" \
-              "${DAEMON_DEST}"
+              "${BUNDLE_DIR}"
           else
             echo "Skipping daemon code signing (CODE_SIGNING_ALLOWED=${CODE_SIGNING_ALLOWED:-NO})"
           fi

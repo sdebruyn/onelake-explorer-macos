@@ -48,7 +48,7 @@ What each process does:
 
 - The **host app** holds the auth UI, registers the File Provider domain, and shows the menu bar status icon. It also registers the bundled daemon as a LaunchAgent via SMAppService.
 - The **File Provider Extension** is sandboxed and short-lived — macOS launches it on demand for each Finder request. It implements the `NSFileProvider*` classes and reaches the daemon over IPC.
-- The **daemon** runs as a LaunchAgent (`OneLake.app/Contents/MacOS/ofem`), batches telemetry, polls Fabric on an adaptive schedule, runs scheduled cache eviction, and serves the Unix socket the host app and File Provider Extension share.
+- The **daemon** runs as a LaunchAgent (`OneLake.app/Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/Contents/MacOS/ofem`), batches telemetry, polls Fabric on an adaptive schedule, runs scheduled cache eviction, and serves the Unix socket the host app and File Provider Extension share.
 
 All three share state through a macOS App Group (`6D79CUWZ4J.group.dev.debruyn.ofem`, team-prefixed for both Developer ID and Mac App Store): config TOML, the SQLite metadata cache, the cached blob shards, and the per-account Keychain entries.
 
@@ -56,7 +56,7 @@ All three share state through a macOS App Group (`6D79CUWZ4J.group.dev.debruyn.o
 
 ```
 onelake-explorer-macos/
-├── cmd/ofem/                    # daemon entry-point binary (bundled in OneLake.app/Contents/MacOS/)
+├── cmd/ofem/                    # daemon entry-point binary (bundled in OneLake.app/Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/Contents/MacOS/)
 ├── internal/
 │   ├── auth/                   # MSAL, Keychain cache, Account registry
 │   ├── api/                    # shared HTTP plumbing (retry, errors, token interface)

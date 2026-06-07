@@ -41,7 +41,7 @@ OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fa
 
 ## Where things live
 
-- `cmd/ofem/` — daemon entry-point binary bundled inside `OneLake.app/Contents/MacOS/ofem`. Exposes only `daemon run`; not a user-facing CLI.
+- `cmd/ofem/` — daemon entry-point binary bundled inside `OneLake.app/Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/Contents/MacOS/ofem`. Packaged as a sub-bundle so libsecinit can read `CFBundleIdentifier` from `Info.plist` (pure-Go binaries have no `__TEXT,__info_plist` Mach-O section). Exposes only `daemon run`; not a user-facing CLI.
 - `internal/auth/`, `internal/onelake/`, `internal/fabric/`, `internal/cache/`, `internal/sync/`, `internal/fp/`, `internal/ipc/`, `internal/daemon/`, `internal/telemetry/`, `internal/config/`, `internal/log/` — Go core packages. `internal/fp/` is the File Provider domain model the daemon serves over IPC.
 - `apple/` — Xcode project, host app, File Provider Extension. `apple/Shared/` holds the IPC client + CoreBridge shared by both Swift targets.
 - `docs/` — all design docs.

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist for the OFEM daemon sub-bundle.
+
+  The daemon binary is a pure-Go binary (CGO_ENABLED=0) and therefore has no
+  __TEXT,__info_plist Mach-O section. libsecinit (_libsecinit_appsandbox) reads
+  the signing identifier from that section to provision the App Sandbox container.
+  When the section is absent, libsecinit cannot resolve an identifier and crashes
+  in dyld's initializer phase (_libsecinit_appsandbox.cold.6) before Go's main()
+  runs — even when the binary is signed with --identifier.
+
+  The fix is to package the daemon as a sub-bundle (Apple's recommended pattern
+  for SMAppService LaunchAgent helpers, per TN3127 / WWDC22 session 10019).
+  libsecinit reads CFBundleIdentifier from the bundle's Contents/Info.plist
+  instead of the Mach-O section, which is present in cgo/Objective-C binaries
+  but not in pure-Go ones.
+
+  $(MARKETING_VERSION) and $(CURRENT_PROJECT_VERSION) are Xcode build-setting
+  variables. They are expanded by the postBuildScript via plutil/PlistBuddy after
+  copying this file into the built product — the same approach used for the host
+  app Info.plist (see apple/OneLake/Info.plist).
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>dev.debruyn.ofem.daemon</string>
+    <key>CFBundleName</key>
+    <string>ofem</string>
+    <key>CFBundleDisplayName</key>
+    <string>OneLake Daemon</string>
+    <key>CFBundleExecutable</key>
+    <string>ofem</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSBackgroundOnly</key>
+    <true/>
+</dict>
+</plist>
