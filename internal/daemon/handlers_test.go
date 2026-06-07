@@ -637,21 +637,21 @@ func TestHandleStatusIncludesPaths(t *testing.T) {
 	}
 }
 
-// TestHandleAuthLoginNilKeychainErrors verifies that auth.login returns a
-// descriptive error when the handler was constructed without a keychain
-// (i.e. in a test that did not wire a full engine).
-func TestHandleAuthLoginNilKeychainErrors(t *testing.T) {
+// TestHandleAuthLoginStartNilKeychainErrors verifies that auth.login.start
+// returns a descriptive error when the handler was constructed without a
+// keychain (i.e. in a test that did not wire a full engine).
+func TestHandleAuthLoginStartNilKeychainErrors(t *testing.T) {
 	h := newTestHandlers(t)
 	h.kc = nil // simulate a daemon built without a keychain
-	_, err := h.handleAuthLogin(context.Background(), mustJSON(t, AuthLoginRequest{Alias: "work"}))
+	_, err := h.handleAuthLoginStart(context.Background(), mustJSON(t, AuthLoginStartRequest{Alias: "work"}))
 	if err == nil {
 		t.Fatal("expected error when kc is nil")
 	}
 }
 
-// TestHandleAuthLoginInvalidAliasErrors verifies that auth.login validates
-// the alias before attempting any network I/O.
-func TestHandleAuthLoginInvalidAliasErrors(t *testing.T) {
+// TestHandleAuthLoginStartInvalidAliasErrors verifies that auth.login.start
+// validates the alias before attempting any network I/O.
+func TestHandleAuthLoginStartInvalidAliasErrors(t *testing.T) {
 	h := newTestHandlers(t)
 	cases := []string{
 		"",          // empty
@@ -661,24 +661,24 @@ func TestHandleAuthLoginInvalidAliasErrors(t *testing.T) {
 		"has/slash", // disallowed character
 	}
 	for _, alias := range cases {
-		_, err := h.handleAuthLogin(context.Background(), mustJSON(t, AuthLoginRequest{Alias: alias}))
+		_, err := h.handleAuthLoginStart(context.Background(), mustJSON(t, AuthLoginStartRequest{Alias: alias}))
 		if err == nil {
 			t.Errorf("alias=%q: expected error, got nil", alias)
 		}
 	}
 }
 
-// TestHandleAuthLoginCancelledContextErrors verifies that a cancelled context
-// causes auth.login to return promptly with an error rather than hanging.
-// This exercises the ctx-forwarding path through LoginInteractive.
-func TestHandleAuthLoginCancelledContextErrors(t *testing.T) {
+// TestHandleAuthLoginStartCancelledContextErrors verifies that a cancelled
+// context causes auth.login.start to return promptly with an error rather
+// than hanging while waiting for the authorization URL from MSAL.
+func TestHandleAuthLoginStartCancelledContextErrors(t *testing.T) {
 	h := newTestHandlers(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancelled before the call
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := h.handleAuthLogin(ctx, mustJSON(t, AuthLoginRequest{Alias: "work"}))
+		_, err := h.handleAuthLoginStart(ctx, mustJSON(t, AuthLoginStartRequest{Alias: "work"}))
 		done <- err
 	}()
 
@@ -688,7 +688,46 @@ func TestHandleAuthLoginCancelledContextErrors(t *testing.T) {
 			t.Error("expected error for cancelled context, got nil")
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatal("auth.login did not return within 15s after ctx cancel")
+		t.Fatal("auth.login.start did not return within 15s after ctx cancel")
+	}
+}
+
+// TestHandleAuthLoginCompleteUnknownSessionErrors verifies that
+// auth.login.complete returns an error when the session ID is not found.
+func TestHandleAuthLoginCompleteUnknownSessionErrors(t *testing.T) {
+	h := newTestHandlers(t)
+	_, err := h.handleAuthLoginComplete(
+		context.Background(),
+		mustJSON(t, AuthLoginCompleteRequest{SessionID: "does-not-exist", Alias: "work"}),
+	)
+	if err == nil {
+		t.Fatal("expected error for unknown session ID")
+	}
+}
+
+// TestHandleAuthLoginCompleteMissingSessionIDErrors verifies that
+// auth.login.complete validates the required sessionId field.
+func TestHandleAuthLoginCompleteMissingSessionIDErrors(t *testing.T) {
+	h := newTestHandlers(t)
+	_, err := h.handleAuthLoginComplete(
+		context.Background(),
+		mustJSON(t, AuthLoginCompleteRequest{Alias: "work"}),
+	)
+	if err == nil {
+		t.Fatal("expected error for empty sessionId")
+	}
+}
+
+// TestHandleAuthLoginCompleteMissingAliasErrors verifies that
+// auth.login.complete validates the required alias field.
+func TestHandleAuthLoginCompleteMissingAliasErrors(t *testing.T) {
+	h := newTestHandlers(t)
+	_, err := h.handleAuthLoginComplete(
+		context.Background(),
+		mustJSON(t, AuthLoginCompleteRequest{SessionID: "some-id"}),
+	)
+	if err == nil {
+		t.Fatal("expected error for empty alias")
 	}
 }
 

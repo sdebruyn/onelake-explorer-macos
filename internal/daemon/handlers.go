@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,8 +42,8 @@ type syncRefresher interface {
 type Handlers struct {
 	store    *config.Store
 	registry *auth.Registry
-	// kc is the keychain used by the registry. Needed by auth.login to
-	// pass the same keychain instance to LoginInteractive without
+	// kc is the keychain used by the registry. Needed by auth.login.start
+	// to pass the same keychain instance to LoginInteractive without
 	// opening a second file-backed store.
 	kc        auth.Keychain
 	cache     *cache.Cache
@@ -50,6 +52,11 @@ type Handlers struct {
 	feed      *Changefeed
 	startedAt time.Time
 	version   string
+
+	// loginSessions tracks in-flight two-phase interactive logins. A
+	// session is created by auth.login.start and consumed exactly once by
+	// auth.login.complete. The store is safe for concurrent use.
+	loginSessions *auth.LoginSessionStore
 
 	// fp serves the File Provider Extension's enumerate / item / fetch /
 	// create / modify / delete over IPC. nil when the daemon was built
@@ -67,15 +74,16 @@ type Handlers struct {
 // may be nil for tests (sync.pollChanges returns an empty result).
 func NewHandlers(store *config.Store, registry *auth.Registry, kc auth.Keychain, cache *cache.Cache, engine syncRefresher, gates *httpgate.Registry, feed *Changefeed) *Handlers {
 	h := &Handlers{
-		store:     store,
-		registry:  registry,
-		kc:        kc,
-		cache:     cache,
-		engine:    engine,
-		gates:     gates,
-		feed:      feed,
-		startedAt: time.Now().UTC(),
-		version:   buildinfo.Version,
+		store:         store,
+		registry:      registry,
+		kc:            kc,
+		cache:         cache,
+		engine:        engine,
+		gates:         gates,
+		feed:          feed,
+		startedAt:     time.Now().UTC(),
+		version:       buildinfo.Version,
+		loginSessions: auth.NewLoginSessionStore(),
 	}
 	// Wire the File Provider service only when the daemon owns a full
 	// engine (production). The narrow syncRefresher stub used in tests does
@@ -98,7 +106,13 @@ func (h *Handlers) Register(srv *ipc.Server) {
 	srv.Register("config.set", h.handleConfigSet)
 	srv.Register("cache.evict", h.handleCacheEvict)
 	srv.Register("cache.clear", h.handleCacheClear)
-	srv.Register("auth.login", h.handleAuthLogin)
+	// Two-phase interactive login: start returns the auth URL for the
+	// host app to open in the browser; complete waits for the OAuth
+	// redirect and persists the account. This replaces the old blocking
+	// auth.login which required subprocess spawning (exec.Command("open",
+	// url)) that is forbidden under App Sandbox.
+	srv.Register("auth.login.start", h.handleAuthLoginStart)
+	srv.Register("auth.login.complete", h.handleAuthLoginComplete)
 	srv.Register("sync.pollChanges", h.handleSyncPollChanges)
 
 	// File Provider Extension surface (replaces the cgo bridge).
@@ -470,8 +484,8 @@ func (h *Handlers) handleConfigSet(_ context.Context, params json.RawMessage) (a
 	}, nil
 }
 
-// AuthLoginRequest is the payload accepted by "auth.login".
-type AuthLoginRequest struct {
+// AuthLoginStartRequest is the payload accepted by "auth.login.start".
+type AuthLoginStartRequest struct {
 	// Alias is the user-chosen short name for the new account (required).
 	Alias string `json:"alias"`
 	// Tenant is an optional tenant GUID or domain hint. When empty, MSAL
@@ -484,31 +498,60 @@ type AuthLoginRequest struct {
 	ClientID string `json:"clientId,omitempty"`
 }
 
-// AuthLoginResponse is the payload returned by "auth.login".
-type AuthLoginResponse struct {
+// AuthLoginStartResponse is the payload returned by "auth.login.start".
+// The host app must open AuthURL in the system browser (via
+// NSWorkspace.shared.open) and then call "auth.login.complete" with the
+// returned SessionID to wait for the OAuth redirect.
+type AuthLoginStartResponse struct {
+	// SessionID is the opaque token the host app passes back in
+	// auth.login.complete to identify this login attempt.
+	SessionID string `json:"sessionId"`
+	// AuthURL is the Microsoft Entra authorization URL. The host app
+	// must open this in the system browser.
+	AuthURL string `json:"authUrl"`
+}
+
+// AuthLoginCompleteRequest is the payload accepted by "auth.login.complete".
+type AuthLoginCompleteRequest struct {
+	// SessionID is the token returned by "auth.login.start".
+	SessionID string `json:"sessionId"`
+	// Alias is the user-chosen short name assigned to this account.
+	// Repeated here so auth.login.complete is self-contained and does
+	// not require shared state between the two calls beyond SessionID.
+	Alias string `json:"alias"`
+	// ClientID mirrors the optional override from auth.login.start so
+	// the handler can persist it alongside the account.
+	ClientID string `json:"clientId,omitempty"`
+}
+
+// AuthLoginCompleteResponse is the payload returned by "auth.login.complete"
+// on a successful interactive sign-in. Mirrors the old auth.login response.
+type AuthLoginCompleteResponse struct {
 	Alias      string `json:"alias"`
 	Username   string `json:"username"`
 	TenantID   string `json:"tenantId"`
 	TenantName string `json:"tenantName,omitempty"`
 }
 
-// handleAuthLogin runs the MSAL interactive-browser login flow
-// in-process and persists the account via the registry.
+// handleAuthLoginStart begins the two-phase interactive browser login.
 //
-// This handler is long-running (the user interacts with a browser).
-// Context cancellation is forwarded all the way into the MSAL library
-// so the server can abort a pending login (e.g. on daemon shutdown).
-// Note: the IPC server dispatches requests sequentially per connection,
-// so a client that sends auth.login must wait for it to return before
-// sending further requests on the same connection; other connections
-// (e.g. a "status" call from a second client) proceed concurrently.
+// It starts MSAL's AcquireTokenInteractive in a background goroutine,
+// intercepts the authorization URL via public.WithOpenURL (instead of
+// spawning a subprocess), and returns that URL to the host app so the
+// host can open it via NSWorkspace.shared.open — which is permitted
+// under App Sandbox whereas exec.Command("open", url) is not.
 //
-// NOTE for packaging: the interactive (loopback redirect) flow binds a
-// temporary localhost HTTP server. The daemon binary therefore needs the
+// The MSAL goroutine keeps running with its own localhost redirect
+// listener until the user completes the browser sign-in or ctx is
+// cancelled. The host app then calls auth.login.complete to collect the
+// result.
+//
+// NOTE for packaging: the loopback redirect listener binds a temporary
+// localhost HTTP server. The daemon binary therefore needs the
 // com.apple.security.network.server entitlement — handled in the sibling
 // Swift/signing PR, not here.
-func (h *Handlers) handleAuthLogin(ctx context.Context, params json.RawMessage) (any, error) {
-	var req AuthLoginRequest
+func (h *Handlers) handleAuthLoginStart(ctx context.Context, params json.RawMessage) (any, error) {
+	var req AuthLoginStartRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, fmt.Errorf("decode params: %w", err)
 	}
@@ -522,40 +565,152 @@ func (h *Handlers) handleAuthLogin(ctx context.Context, params json.RawMessage) 
 		return nil, fmt.Errorf("keychain not wired (daemon built without full engine)")
 	}
 
-	var (
-		account    auth.Account
-		cacheBytes []byte
-		err        error
-	)
-	// Resolve which Entra App Registration to authenticate against: the
-	// caller's override if supplied (Bring Your Own App Registration —
-	// see docs/custom-app-registration.md), otherwise the built-in
-	// multi-tenant OFEM registration.
 	clientID := req.ClientID
 	if clientID == "" {
 		clientID = auth.EntraClientID
 	}
-	account, _, cacheBytes, err = auth.LoginInteractive(ctx, clientID, req.Tenant, h.kc)
-	if err != nil {
-		return nil, fmt.Errorf("sign in: %w", err)
+
+	// urlCh receives the authorization URL from the WithOpenURL callback.
+	// Buffered so the callback never blocks even if the handler times out
+	// before reading.
+	urlCh := make(chan string, 1)
+
+	// openURL is the callback MSAL calls (synchronously, inside
+	// AcquireTokenInteractive) when it has built the authorization URL.
+	// We capture the URL and return nil immediately so MSAL continues to
+	// listen on its localhost redirect server; the actual browser open
+	// happens on the host app side.
+	openURL := func(u string) error {
+		select {
+		case urlCh <- u:
+		default:
+			// Should never happen (channel is buffered-1 and MSAL calls
+			// this exactly once), but be defensive.
+		}
+		return nil
 	}
 
+	// resultCh carries the final MSAL outcome back to handleAuthLoginComplete.
+	resultCh := make(chan auth.LoginSessionResult, 1)
+
+	// Run MSAL in a background goroutine so this handler can return the
+	// auth URL to the client without blocking on the full OAuth exchange.
+	// The goroutine's context is the server's connection context so it
+	// unwinds naturally on daemon shutdown or client disconnect.
+	go func() {
+		account, msalAcct, cacheBytes, err := auth.LoginInteractive(
+			ctx, clientID, req.Tenant, h.kc, openURL,
+		)
+		resultCh <- auth.LoginSessionResult{
+			Account:    account,
+			MSALAcct:   msalAcct,
+			CacheBytes: cacheBytes,
+			Err:        err,
+		}
+	}()
+
+	// Wait for MSAL to call back with the authorization URL. We also
+	// watch ctx so a cancelled context (daemon shutdown or IPC disconnect)
+	// does not leave this handler blocked forever — the goroutine above
+	// will also unwind and deliver an error result to resultCh shortly
+	// after ctx is cancelled.
+	var authURL string
+	select {
+	case authURL = <-urlCh:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("auth.login.start: context cancelled before auth URL was ready: %w", ctx.Err())
+	}
+
+	// Build the session and register it so auth.login.complete can claim it.
+	sessionID := newLoginSessionID()
+	sess := &auth.LoginSession{
+		ID:       sessionID,
+		AuthURL:  authURL,
+		ResultCh: resultCh,
+	}
+	h.loginSessions.Register(sess)
+
+	slog.Info("auth: login session started",
+		slog.String("session_id", sessionID),
+		slog.String("alias", req.Alias),
+	)
+
+	return AuthLoginStartResponse{
+		SessionID: sessionID,
+		AuthURL:   authURL,
+	}, nil
+}
+
+// handleAuthLoginComplete waits for the MSAL goroutine started by
+// auth.login.start to deliver its result, then persists the account.
+//
+// This call is long-running: the user must complete the browser sign-in
+// before MSAL returns. Context cancellation unblocks the wait.
+func (h *Handlers) handleAuthLoginComplete(ctx context.Context, params json.RawMessage) (any, error) {
+	var req AuthLoginCompleteRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("decode params: %w", err)
+	}
+	if req.SessionID == "" {
+		return nil, fmt.Errorf("sessionId is required")
+	}
+	if req.Alias == "" {
+		return nil, fmt.Errorf("alias is required")
+	}
+	if err := auth.ValidateAlias(req.Alias); err != nil {
+		return nil, err
+	}
+
+	sess, err := h.loginSessions.Claim(req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Block until MSAL delivers the result or the context is cancelled.
+	var result auth.LoginSessionResult
+	select {
+	case result = <-sess.ResultCh:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("auth.login.complete: context cancelled while waiting for browser sign-in: %w", ctx.Err())
+	}
+
+	if result.Err != nil {
+		return nil, fmt.Errorf("sign in: %w", result.Err)
+	}
+
+	account := result.Account
 	account.Alias = req.Alias
 	// Persist the caller's client-ID override so silent refresh on a
 	// later daemon start reaches for the same App Registration. Empty
 	// stays empty — the registry falls back to the built-in OFEM
 	// client ID transparently.
 	account.ClientID = req.ClientID
-	if err := h.registry.Add(account, cacheBytes); err != nil {
+	if err := h.registry.Add(account, result.CacheBytes); err != nil {
 		return nil, fmt.Errorf("register account: %w", err)
 	}
 
-	return AuthLoginResponse{
+	slog.Info("auth: login session completed",
+		slog.String("alias", account.Alias),
+		slog.String("username", account.Username),
+		slog.String("tenant_id", account.TenantID),
+	)
+
+	return AuthLoginCompleteResponse{
 		Alias:      account.Alias,
 		Username:   account.Username,
 		TenantID:   account.TenantID,
 		TenantName: account.TenantName,
 	}, nil
+}
+
+// newLoginSessionID returns a fresh opaque session identifier for a
+// two-phase login. 16 random hex bytes give 128 bits of entropy — more
+// than enough to make accidental collision within one daemon lifetime
+// effectively impossible.
+func newLoginSessionID() string {
+	var buf [16]byte
+	_, _ = rand.Read(buf[:])
+	return hex.EncodeToString(buf[:])
 }
 
 // --- small helpers kept private so they don't pollute the package API.
