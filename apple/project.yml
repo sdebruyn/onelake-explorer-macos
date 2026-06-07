@@ -161,7 +161,16 @@ targets:
             # ("Apple Development"), which is ambiguous when the keychain holds
             # more than one matching certificate. Using the hash also guarantees
             # the daemon is signed with the same identity as the host app.
+            # --identifier sets the signing identifier to a Bundle-ID-style
+            # value. Without it codesign defaults to the filename ("ofem"),
+            # which is not a valid Bundle ID. Apple sandbox-init
+            # (_libsecinit_appsandbox) requires a Bundle-ID-style identifier
+            # to provision a sandbox container; a plain filename causes a
+            # SIGTRAP in dyld's initializer phase before Go's main() runs.
+            # The identifier must match the LaunchAgent Label key so that
+            # SMAppService can correlate the plist with the binary.
             codesign --force --options runtime --timestamp \
+              --identifier "dev.debruyn.ofem.daemon" \
               --entitlements "${ENTITLEMENTS}" \
               --sign "${EXPANDED_CODE_SIGN_IDENTITY}" \
               "${DAEMON_DEST}"
