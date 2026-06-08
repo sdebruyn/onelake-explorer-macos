@@ -1,6 +1,15 @@
 {
-  "originHash" : "dd3a748033f2671e3f9f6e4e590cb1942d85fa19ec5566d98a938be58a0433ca",
+  "originHash" : "202e7b0cb374bacee4f154c1b794e3ea9c5968eaa2119212f3e75ef72f6baf9b",
   "pins" : [
+    {
+      "identity" : "grdb.swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/groue/GRDB.swift.git",
+      "state" : {
+        "revision" : "9ed8c8457e00ff9c7aedb3bf213f20a2cfdf509e",
+        "version" : "7.11.0"
+      }
+    },
     {
       "identity" : "microsoft-authentication-library-for-objc",
       "kind" : "remoteSourceControl",
