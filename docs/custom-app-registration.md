@@ -14,7 +14,7 @@ If none of the above applies, leave the **Client ID** field in *Add Account → 
 
 ## What to register
 
-In your own tenant (the one whose data you want to access), create a new App Registration with the values below. All of them are required; OFEM's IPC flow will fail with confusing MSAL errors if any is missing.
+In your own tenant (the one whose data you want to access), create a new App Registration with the values below. All of them are required; OFEM will fail with confusing MSAL errors if any is missing.
 
 | Setting | Value |
 |---|---|

@@ -46,7 +46,7 @@ We use the **replication model**, which is what Apple recommends for cloud stora
 What each process does:
 
 - The **host app** holds the account-management UI, registers File Provider domains, talks to the system browser for auth, and polls the FPE for change signals. It communicates with the FPE via `NSFileProviderManager.service(name:for:)` + `NSXPCConnection` (protocol `OfemClientControlProtocol`).
-- The **File Provider Extension** is sandboxed by Apple. macOS launches it on demand when Finder needs files. It implements the `NSFileProvider*` classes and owns all engine logic: auth (MSAL Swift), OneLake DFS, Fabric REST, cache (SQLite + blobs), sync, and telemetry. There is no daemon, no Unix socket, and no separate process.
+- The **File Provider Extension** is sandboxed by Apple. macOS launches it on demand when Finder needs files. It implements the `NSFileProvider*` classes and owns all engine logic: auth (MSAL Swift), OneLake DFS, Fabric REST, cache (SQLite + blobs), sync, and telemetry.
 
 ## Shared state via App Group
 

@@ -126,7 +126,7 @@ and Google Drive integrate".
      user thinks `~/OneLake/` is a real folder they control.
   3. **Rename / move fragility.** Any user move or rename of
      `~/OneLake/` or one of its children breaks every account at once
-     and we have to detect and repair it on every daemon start, plus
+     and we have to detect and repair it on every app start, plus
      on every account add / remove.
   Documenting a one-line `ln -s` that users can run themselves keeps
   the cosmetic option open without us owning the maintenance.

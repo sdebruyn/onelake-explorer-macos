@@ -32,8 +32,7 @@ logic (auth, network, cache, sync) directly inside the extension via
 **OfemKit**, a local Swift Package linked into the FPE target.
 
 The host app communicates with the extension through Apple's standard
-`NSFileProviderService` + `NSXPCConnection` mechanism — no Unix sockets,
-no daemons, no LaunchAgents. The XPC protocol is defined in
+`NSFileProviderService` + `NSXPCConnection` mechanism. The XPC protocol is defined in
 `Shared/OfemClientControlProtocol.swift`. The FPE calls
 `NSFileProviderManager.signalEnumerator(for:)` to nudge re-enumeration
 when Fabric's adaptive polling spots a change.
