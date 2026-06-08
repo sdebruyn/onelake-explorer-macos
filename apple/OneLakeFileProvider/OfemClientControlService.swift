@@ -89,7 +89,7 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
         // listAccounts reply: ([XPCAccountInfo], Error?)
         // Argument index 0 of the reply block is an NSArray of XPCAccountInfo.
         iface.setClasses(
-            [NSArray.self, XPCAccountInfo.self] as NSSet,
+            NSSet(array: [NSArray.self, XPCAccountInfo.self]) as! Set<AnyHashable>,
             for: #selector(OfemClientControlProtocol.listAccounts(reply:)),
             argumentIndex: 0,
             ofReply: true
@@ -98,7 +98,7 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
         // addAccount reply: (XPCAccountInfo?, Error?)
         // Argument index 0 is XPCAccountInfo or nil.
         iface.setClasses(
-            [XPCAccountInfo.self] as NSSet,
+            NSSet(array: [XPCAccountInfo.self]) as! Set<AnyHashable>,
             for: #selector(
                 OfemClientControlProtocol.addAccount(alias:tenant:clientID:reply:)
             ),

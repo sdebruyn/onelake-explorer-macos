@@ -10,6 +10,7 @@
 // names, so the host app can adapt quickly.
 
 import Foundation
+import OfemKit
 
 /// NSSecureCoding-conformant account info for XPC transport.
 ///
@@ -66,7 +67,7 @@ import Foundation
 
 extension XPCAccountInfo {
     /// Creates an XPCAccountInfo from an OfemKit Account.
-    public convenience init(from account: OfemKit.Account) {
+    public convenience init(from account: Account) {
         self.init(
             alias: account.alias,
             username: account.username,
@@ -76,9 +77,4 @@ extension XPCAccountInfo {
     }
 }
 
-// MARK: - Import guard
 
-// OfemKit is imported by both the host app and the FPE; the convenience
-// init above brings in the type. The Shared/ folder compiles into both
-// targets, so no conditional compilation is needed.
-import OfemKit

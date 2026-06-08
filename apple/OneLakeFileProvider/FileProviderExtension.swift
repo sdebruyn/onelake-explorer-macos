@@ -25,6 +25,12 @@ import Foundation
 import OfemKit
 import os.log
 
+// The FPE target's legacy IPC parser is now named `BridgeItemIdentifierParser`
+// (returns `EnumScope` from `NSFileProviderItemIdentifier`).
+// OfemKit exports `ItemIdentifierParser` (returns `ItemIdentifier` from `String`).
+// This file calls the OfemKit version via `parseOfemItemIdentifier` (defined in
+// OfemFPEEnumerator.swift) to keep call sites readable.
+
 /// File Provider Extension entry point. Sandboxed; each registered
 /// OneLake account-alias gets its own instance.
 ///
@@ -90,7 +96,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         // Parse identifier — use OfemKit's parser.
         let ofemID: ItemIdentifier
         do {
-            ofemID = try OfemKit.ItemIdentifierParser.parse(identifier.rawValue)
+            ofemID = try parseOfemItemIdentifier(identifier.rawValue)
         } catch {
             completionHandler(nil, NSFileProviderError(.noSuchItem))
             return progress
@@ -139,7 +145,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         let ofemID: ItemIdentifier
         do {
-            ofemID = try OfemKit.ItemIdentifierParser.parse(itemIdentifier.rawValue)
+            ofemID = try parseOfemItemIdentifier(itemIdentifier.rawValue)
         } catch {
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
             return progress
@@ -218,7 +224,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         let parentID: ItemIdentifier
         do {
-            parentID = try OfemKit.ItemIdentifierParser.parse(
+            parentID = try parseOfemItemIdentifier(
                 template.parentItemIdentifier.rawValue
             )
         } catch {
@@ -289,7 +295,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         let ofemID: ItemIdentifier
         do {
-            ofemID = try OfemKit.ItemIdentifierParser.parse(item.itemIdentifier.rawValue)
+            ofemID = try parseOfemItemIdentifier(item.itemIdentifier.rawValue)
         } catch {
             completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
             return progress
@@ -350,7 +356,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         let ofemID: ItemIdentifier
         do {
-            ofemID = try OfemKit.ItemIdentifierParser.parse(identifier.rawValue)
+            ofemID = try parseOfemItemIdentifier(identifier.rawValue)
         } catch {
             completionHandler(NSFileProviderError(.noSuchItem))
             return progress
@@ -430,7 +436,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             return WorkingSetEnumerator(domain: domain)
         }
 
-        let ofemID = try OfemKit.ItemIdentifierParser.parse(containerItemIdentifier.rawValue)
+        let ofemID = try parseOfemItemIdentifier(containerItemIdentifier.rawValue)
         FileProviderExtension.log.debug(
             "enumerator(for:) for \(containerItemIdentifier.rawValue, privacy: .public) [engine-path]"
         )
@@ -488,7 +494,7 @@ private func engineFetchItem(
             path: path
         )
         // Try cache first; on miss fall back to parent enumerate.
-        if let record = try? engine.cache.fetch(key: key) {
+        if let record = try? await engine.cache.fetch(key: key) {
             return OfemFPEItem(from: try DomainItem.from(record: record))
         }
         // Cache miss → enumerate parent to populate, then retry.
@@ -505,7 +511,7 @@ private func engineFetchItem(
             path: parentPath
         )
         _ = try await engine.sync.enumerate(key: parentKey)
-        if let record = try? engine.cache.fetch(key: key) {
+        if let record = try? await engine.cache.fetch(key: key) {
             return OfemFPEItem(from: try DomainItem.from(record: record))
         }
         throw FPError.noSuchItem(path)

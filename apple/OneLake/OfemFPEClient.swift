@@ -210,13 +210,13 @@ final class OfemFPEClient {
     private func makeInterface() -> NSXPCInterface {
         let iface = NSXPCInterface(with: OfemClientControlProtocol.self)
         iface.setClasses(
-            [NSArray.self, XPCAccountInfo.self] as NSSet,
+            NSSet(array: [NSArray.self, XPCAccountInfo.self]) as! Set<AnyHashable>,
             for: #selector(OfemClientControlProtocol.listAccounts(reply:)),
             argumentIndex: 0,
             ofReply: true
         )
         iface.setClasses(
-            [XPCAccountInfo.self] as NSSet,
+            NSSet(array: [XPCAccountInfo.self]) as! Set<AnyHashable>,
             for: #selector(
                 OfemClientControlProtocol.addAccount(alias:tenant:clientID:reply:)
             ),

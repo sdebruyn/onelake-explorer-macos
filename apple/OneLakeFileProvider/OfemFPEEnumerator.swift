@@ -34,6 +34,17 @@ import os.log
 
 private let staticSyncAnchorFPE = NSFileProviderSyncAnchor(Data())
 
+// MARK: - Identifier parsing helper
+
+/// Parses a raw NSFileProviderItemIdentifier string into an OfemKit ItemIdentifier.
+///
+/// The FPE target's legacy bridge parser is now `BridgeItemIdentifierParser`
+/// (returns `EnumScope`). OfemKit's `ItemIdentifierParser` (returns `ItemIdentifier`)
+/// is unambiguous here and in all callers via this wrapper.
+func parseOfemItemIdentifier(_ rawIdentifier: String) throws -> ItemIdentifier {
+    try ItemIdentifierParser.parse(rawIdentifier)
+}
+
 /// Engine-backed enumerator for one container in one FPE domain.
 final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
     private static let log = Logger(
@@ -59,6 +70,23 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
         self.alias = alias
         self.engineHost = engineHost
         super.init()
+    }
+
+    /// Convenience init that parses the raw identifier via OfemKit's
+    /// ItemIdentifierParser. Unambiguous here since the legacy bridge
+    /// parser is now named `BridgeItemIdentifierParser`.
+    convenience init(
+        containerItemIdentifier: NSFileProviderItemIdentifier,
+        alias: String,
+        engineHost: FPEEngineHost
+    ) throws {
+        let identifier = try ItemIdentifierParser.parse(containerItemIdentifier.rawValue)
+        self.init(
+            containerItemIdentifier: containerItemIdentifier,
+            identifier: identifier,
+            alias: alias,
+            engineHost: engineHost
+        )
     }
 
     func invalidate() {

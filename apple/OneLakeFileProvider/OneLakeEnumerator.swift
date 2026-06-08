@@ -99,7 +99,7 @@ final class OneLakeEnumerator: NSObject, NSFileProviderEnumerator {
             return
         }
 
-        let bridgeId = ItemIdentifierParser.bridgeIdentifier(for: scope)
+        let bridgeId = BridgeItemIdentifierParser.bridgeIdentifier(for: scope)
         let aliasCopy = self.alias
 
         // Decode the cursor from the page's raw UTF-8 bytes.

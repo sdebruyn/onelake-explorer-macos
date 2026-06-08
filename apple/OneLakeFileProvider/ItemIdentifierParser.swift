@@ -37,7 +37,13 @@ enum EnumScope: Equatable {
     case trashContainer
 }
 
-enum ItemIdentifierParser {
+/// Bridge-side item identifier parser (IPC / Go daemon path).
+///
+/// Returns ``EnumScope`` from a `NSFileProviderItemIdentifier`.
+/// Renamed from `ItemIdentifierParser` to avoid a name collision with
+/// `OfemKit.ItemIdentifierParser` (which returns ``ItemIdentifier``
+/// from a raw `String`).
+enum BridgeItemIdentifierParser {
     /// Parse a `NSFileProviderItemIdentifier` into an `EnumScope`.
     /// Throws `BridgeError.noSuchItem` for malformed input so callers
     /// can map it straight to `NSFileProviderError(.noSuchItem)`.
