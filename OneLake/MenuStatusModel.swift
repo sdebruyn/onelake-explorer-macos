@@ -230,6 +230,19 @@ final class MenuStatusModel: ObservableObject {
             if !status.logLevel.isEmpty, !pendingWrites.contains(.logLevel) {
                 logLevel = status.logLevel
             }
+
+            // Fase 7.4: map XPCPausedWorkspace entries to PausedWorkspaceInfo.
+            pausedWorkspaces = status.pausedWorkspaces.map { xpc in
+                PausedWorkspaceInfo(
+                    accountAlias: xpc.accountAlias,
+                    workspaceId: xpc.workspaceID,
+                    reason: xpc.reason,
+                    detectedAt: xpc.detectedAtSec > 0
+                        ? Date(timeIntervalSince1970: xpc.detectedAtSec)
+                        : Date(),
+                    probedAt: nil
+                )
+            }
         } catch {
             // FPE not yet reachable — fields stay at last-known values or defaults.
             Self.log.debug(

@@ -314,8 +314,10 @@ final class OfemFPEClient {
             ofReply: true
         )
         // getEngineStatus reply: (XPCEngineStatus?, Error?)
+        // XPCEngineStatus carries an NSArray of XPCPausedWorkspace; all three
+        // types must be listed so XPC's secure-coding policy allows them.
         iface.setClasses(
-            NSSet(array: [XPCEngineStatus.self]) as! Set<AnyHashable>,
+            NSSet(array: [XPCEngineStatus.self, NSArray.self, XPCPausedWorkspace.self]) as! Set<AnyHashable>,
             for: #selector(OfemClientControlProtocol.getEngineStatus(reply:)),
             argumentIndex: 0,
             ofReply: true
