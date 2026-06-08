@@ -17,13 +17,10 @@
 // account is visible in the shared config — it does NOT drive the MSAL
 // flow itself.
 //
-// Fase 7.3b-1: three new XPC methods replace the remaining CoreBridge calls
-// in the host app:
+// XPC methods exposed (Fase 7.3b-1 additions; CoreBridge/IPC removed in 7.3b-2):
 //   - getEngineStatus(reply:)    — cache stats + config snapshot
 //   - setConfig(key:value:reply:) — write one config field and reload
 //   - clearCache(reply:)          — wipe all cached blobs
-// After these additions, CoreBridge is dead code in the host app.
-// Full removal of CoreBridge/IPCClient/IPCTransport happens in Fase 7.3b-2.
 //
 // NSXPCInterface setup notes:
 //   - allowedClasses must include XPCAccountInfo and NSArray for

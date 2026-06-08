@@ -13,12 +13,7 @@
 // OfemEngine.init is @MainActor. The Task in `engine()` hops to the
 // main actor for the build step, then returns the result.
 //
-// Fase 7.2 scope: the Go-daemon Unix-socket IPC in CoreBridge.swift
-// remains active as a fallback for account management commands not yet
-// routed through the FPE's NSFileProviderServiceSource. Fase 7.3 will
-// remove that path entirely.
-//
-// Fase 7.3b-1: `configStore` is now a public property so the XPC handler
+// `configStore` is a shared property so the XPC handler
 // (OfemClientControlService.swift) can read and mutate config directly
 // for getEngineStatus / setConfig without having to open a second store.
 

@@ -1,16 +1,20 @@
+// ItemIdentifierParserTests.swift
 // Smoke-level logic tests for the File Provider identifier grammar.
 //
-// This bundle compiles BridgeItemIdentifierParser.swift and apple/Shared
-// directly (no host application), so it runs unsigned in CI with no
-// daemon and no signing identity. Its job is to catch Swift compile
-// regressions and the most basic identifier-grammar mistakes on every
-// PR.
+// This bundle compiles BridgeItemIdentifierParser.swift (the FPE target's
+// legacy flat-format identifier parser) and apple/Shared directly (no
+// host application), so it runs unsigned in CI with no signing identity.
+// Its job is to catch Swift compile regressions and the most basic
+// identifier-grammar mistakes on every PR.
+//
+// Note: OfemKit's ItemIdentifierParser (the / -prefixed new format) is
+// covered by apple/Packages/OfemKit/Tests/OfemKitTests/FP/.
 
 import FileProvider
 import XCTest
 
 final class ItemIdentifierParserTests: XCTestCase {
-    /// Every scope the Go core can address must survive a
+    /// Every scope the FPE can address must survive a
     /// bridgeIdentifier → parse round-trip unchanged.
     func testRoundTripAddressableScopes() throws {
         let scopes: [EnumScope] = [

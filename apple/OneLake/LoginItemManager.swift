@@ -1,50 +1,38 @@
 // LoginItemManager.swift
-// Manages the daemon LaunchAgent via SMAppService (ServiceManagement).
+// Manages the OneLake host app as a login item via SMAppService.
 //
-// SMAppService is the sandbox-compatible replacement for legacy launchctl-
-// based LaunchAgent management. It requires:
-//   1. The daemon plist at Contents/Library/LaunchAgents/<label>.plist.
-//   2. The Label in that plist to match the filename without ".plist".
-//   3. The host app to be signed with a real Developer ID (or during
-//      development, a paid-team provisioned signing identity).
+// SMAppService.mainApp registers the .app bundle itself as a login item
+// so it launches at every subsequent login. This is the sandbox-compatible
+// "Open at Login" mechanism available since macOS 13 Ventura.
 //
-// Registration state survives across reboots: once registered, launchd
-// starts the daemon at every login without further action from the app.
-// Unregistering removes it from launchd's per-login set.
+// After the Swift migration (Fase 7.3b-2) there is no separate daemon
+// LaunchAgent. The host app is the only process that needs to start at
+// login; it in turn wakes the File Provider Extension via the standard
+// NSFileProviderManager domain lifecycle.
 //
-// Verification gap: SMAppService.register() and .unregister() can only
-// be runtime-verified in a SIGNED, INSTALLED app running in a real login
-// session. The compile path (make apple-build-ci) does not run the app
-// and cannot exercise these calls. See the PR body for the real-device
-// checklist.
+// Verification note: SMAppService calls can only be runtime-verified in
+// a signed, installed app running in a real login session. The CI unsigned
+// build (make apple-build-ci) does not exercise these calls.
 
 import AppKit
 import Foundation
 import ServiceManagement
 import os.log
 
-/// Manages the bundled daemon as a login-item LaunchAgent using SMAppService.
+/// Manages the host app as a login item using SMAppService.mainApp.
 ///
 /// The singleton is accessed from the main actor only; all SMAppService
-/// calls are synchronous and short (no I/O), so dispatching them on the
-/// main thread is safe. The status property is refreshed on every call to
-/// `refresh()` and on every register/unregister action so the menu item
-/// checkmark stays accurate without a background timer.
+/// calls are synchronous and short (no I/O).
 @MainActor
 final class LoginItemManager: ObservableObject {
     static let shared = LoginItemManager()
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "login-item")
 
-    /// The plist filename (including .plist) — required by SMAppService.agent(plistName:).
-    /// Note: the Label key inside the plist stays "dev.debruyn.ofem.daemon" (no extension).
-    private static let agentPlistName = "dev.debruyn.ofem.daemon.plist"
-
     // MARK: Published
 
-    /// True when the daemon LaunchAgent is registered with launchd via
-    /// SMAppService (i.e. it will start at login). This is NOT the same as
-    /// "daemon is currently running" — use MenuStatusModel.isRunning for that.
+    /// True when the OneLake app is registered as a login item with launchd
+    /// (i.e. it will launch at the next login). Refreshed on every action.
     @Published private(set) var isRegistered: Bool = false
 
     // MARK: Init
@@ -58,52 +46,47 @@ final class LoginItemManager: ObservableObject {
     /// Re-read the SMAppService status and update `isRegistered`.
     /// Call this when the menu opens or after a register/unregister attempt.
     func refresh() {
-        let svc = SMAppService.agent(plistName: Self.agentPlistName)
-        isRegistered = (svc.status == .enabled)
+        isRegistered = (SMAppService.mainApp.status == .enabled)
         Self.log.debug(
-            "SMAppService status for \(Self.agentPlistName, privacy: .public): \(svc.status.rawValue, privacy: .public)"
+            "SMAppService.mainApp status: \(SMAppService.mainApp.status.rawValue, privacy: .public)"
         )
     }
 
     // MARK: - First-launch bootstrap
 
     /// UserDefaults key that records whether we have already attempted the
-    /// initial daemon registration. Stored in standard (per-app) defaults
-    /// because this flag is only meaningful to the host app itself — the
-    /// daemon and the File Provider Extension do not read it.
-    private static let didBootstrapKey = "dev.debruyn.ofem.didAttemptInitialDaemonRegistration"
+    /// initial login-item registration. Stored in standard (per-app) defaults
+    /// because this flag is only meaningful to the host app itself.
+    private static let didBootstrapKey = "dev.debruyn.ofem.didAttemptInitialLoginItemRegistration"
 
-    /// Register the daemon on the very first launch so the app works out of
-    /// the box after a fresh Homebrew install, without requiring the user to
-    /// manually enable "Open at Login" in Settings first.
+    /// Register the app as a login item on the very first launch so it opens
+    /// at login automatically after a fresh Homebrew install, without requiring
+    /// the user to manually enable "Open at Login" in Settings first.
     ///
     /// The flag is set to `true` regardless of whether `register()` succeeds
-    /// so that a user who explicitly denies the Login Items permission in
-    /// System Settings is not re-prompted on every subsequent launch.
+    /// so that a user who explicitly denies the Login Items permission is not
+    /// re-prompted on every subsequent launch.
     ///
-    /// Failures are logged but not surfaced as an alert: unlike the manual
-    /// toggle, this registration is automatic and unsolicited, so an error
-    /// dialog would appear before the user has taken any action. If the
-    /// daemon did not start, the IPC retry loop in the host app will show
-    /// a degraded-state icon in the menu bar, which is sufficient feedback.
+    /// Failures are logged but not surfaced as an alert: this registration
+    /// is automatic and unsolicited, so an error dialog would appear before
+    /// the user has taken any action.
     ///
     /// After the first launch this is a no-op, so explicit user toggles in
     /// Settings are never overridden.
     func bootstrapIfNeeded() {
         guard !UserDefaults.standard.bool(forKey: Self.didBootstrapKey) else {
-            Self.log.debug("Initial daemon bootstrap already attempted — skipping")
+            Self.log.debug("Initial login-item bootstrap already attempted — skipping")
             return
         }
-        Self.log.info("First launch detected — attempting initial daemon registration")
-        let svc = SMAppService.agent(plistName: Self.agentPlistName)
+        Self.log.info("First launch detected — attempting initial login-item registration")
         do {
-            try svc.register()
-            Self.log.info("SMAppService bootstrap registration succeeded")
+            try SMAppService.mainApp.register()
+            Self.log.info("SMAppService.mainApp bootstrap registration succeeded")
         } catch {
             // Intentionally silent: the user may have denied the Login Items
             // permission prompt that macOS just showed. No second dialog.
             Self.log.info(
-                "SMAppService bootstrap registration failed (will not retry): \(error.localizedDescription, privacy: .public)"
+                "SMAppService.mainApp bootstrap registration failed (will not retry): \(error.localizedDescription, privacy: .public)"
             )
         }
         refresh()
@@ -112,7 +95,7 @@ final class LoginItemManager: ObservableObject {
 
     // MARK: - Toggle
 
-    /// Register or unregister the daemon LaunchAgent in one call.
+    /// Register or unregister the app as a login item in one call.
     /// Errors are surfaced as an NSAlert rather than crashing.
     func toggle() {
         if isRegistered {
@@ -124,26 +107,22 @@ final class LoginItemManager: ObservableObject {
 
     // MARK: - Register
 
-    /// Register the daemon as a login-item LaunchAgent so it starts at
-    /// every subsequent login and immediately on the first call.
+    /// Register the app as a login item so it starts at every subsequent login.
     ///
-    /// Real-device note: this call throws in three known situations:
-    ///   • The app is not signed / not installed (SMError.notFound).
-    ///   • The app was denied by the user in System Settings → Login Items.
-    ///   • The plist Label does not match the filename or the plist is
-    ///     missing from the bundle (SMError.invalidSignature / .notFound).
+    /// Real-device note: this call throws in two known situations:
+    ///   - The app is not signed / not installed (SMError.notFound).
+    ///   - The user has denied the Login Items permission in System Settings.
     func register() {
-        let svc = SMAppService.agent(plistName: Self.agentPlistName)
         do {
-            try svc.register()
-            Self.log.info("SMAppService registered \(Self.agentPlistName, privacy: .public)")
+            try SMAppService.mainApp.register()
+            Self.log.info("SMAppService.mainApp registered")
         } catch {
             Self.log.error(
-                "SMAppService register failed: \(error.localizedDescription, privacy: .public)"
+                "SMAppService.mainApp register failed: \(error.localizedDescription, privacy: .public)"
             )
             showAlert(
                 title: "Could Not Enable Open at Login",
-                message: "The daemon LaunchAgent could not be registered: \(error.localizedDescription)\n\nIf this persists, check System Settings → General → Login Items and ensure OneLake is listed.",
+                message: "OneLake could not be registered as a login item: \(error.localizedDescription)\n\nIf this persists, check System Settings → General → Login Items and ensure OneLake is listed.",
                 style: .warning
             )
         }
@@ -152,21 +131,18 @@ final class LoginItemManager: ObservableObject {
 
     // MARK: - Unregister
 
-    /// Remove the daemon from launchd's login-item set.
-    /// The daemon process already running is NOT killed; it keeps running
-    /// until the user quits the host app or the daemon exits naturally.
+    /// Remove the app from the login-item set.
     func unregister() {
-        let svc = SMAppService.agent(plistName: Self.agentPlistName)
         do {
-            try svc.unregister()
-            Self.log.info("SMAppService unregistered \(Self.agentPlistName, privacy: .public)")
+            try SMAppService.mainApp.unregister()
+            Self.log.info("SMAppService.mainApp unregistered")
         } catch {
             Self.log.error(
-                "SMAppService unregister failed: \(error.localizedDescription, privacy: .public)"
+                "SMAppService.mainApp unregister failed: \(error.localizedDescription, privacy: .public)"
             )
             showAlert(
                 title: "Could Not Disable Open at Login",
-                message: "The daemon LaunchAgent could not be unregistered: \(error.localizedDescription)",
+                message: "OneLake could not be unregistered as a login item: \(error.localizedDescription)",
                 style: .warning
             )
         }

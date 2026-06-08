@@ -2,7 +2,7 @@
 Thanks for contributing! A few quick checks before you click "Create pull request":
 
 - The PR title follows Conventional Commits (e.g. `feat(auth): persist tenant hint per-account`).
-- You ran `gofmt`, `goimports`, and `golangci-lint run` locally.
+- You built the app locally (`make apple-build`) and it compiles without errors.
 - You added/updated unit tests for changed behavior.
 - You updated relevant docs in `docs/` if user-visible behavior changes.
 -->

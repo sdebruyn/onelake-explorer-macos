@@ -12,10 +12,8 @@
 //   • Open at Login toggle
 //   • Open Logs Folder, Open Config File items
 //
-// Fase 7.3a: account list and status are sourced from SharedOfemAuth
-// (config.toml) rather than the Go daemon. The "Add Account" and account
-// actions work without the daemon running. "Daemon not running" state is
-// no longer shown — model.isRunning is always true.
+// Account list and status are sourced from SharedOfemAuth (config.toml).
+// model.isRunning is always true once the first refresh completes.
 
 import AppKit
 import SwiftUI
@@ -65,7 +63,6 @@ struct MenuBarView: View {
     private var accountRows: some View {
         if model.accounts.isEmpty {
             // Empty state (no accounts yet): guide the user to add the first.
-            // Fase 7.3a: isRunning is always true so Add Account is always enabled.
             Button("Add Account…") {
                 openAddAccountWindow()
             }
@@ -125,8 +122,6 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var aboutItem: some View {
-        // daemonVersion is populated when the daemon happens to be running;
-        // in Fase 7.3a the app version is the authoritative label regardless.
         Button("About OFEM…") {
             AboutWindowController.shared.show()
         }

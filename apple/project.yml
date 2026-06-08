@@ -33,19 +33,13 @@ settings:
     # Release builds override these via the xcodebuild command line.
     MARKETING_VERSION: "0.0.0-dev"
     CURRENT_PROJECT_VERSION: "0"
-# OfemKit is a local Swift Package that houses the engine modules being
-# migrated from the Go daemon (see docs/swift-migration-plan.md). It is
-# linked into both the host app and the FPE. The Go daemon IPC clients
-# remain active during migration (Phases 1–6); OfemKit is compile-only
-# in this phase (Phase 7.1).
+# OfemKit is a local Swift Package that houses all engine modules after
+# the Swift migration (see docs/adr/0001-swift-migration.md). It is
+# linked into both the host app and the FPE.
 packages:
   OfemKit:
     path: apple/Packages/OfemKit
 
-# The Go engine and cache live in the long-running daemon. Both Swift
-# targets reach it over the unix-socket IPC (apple/Shared/IPCClient.swift +
-# CoreBridge.swift) — there is no cgo archive to link, so no
-# settingGroups / bridging headers are needed.
 targets:
   OneLake:
     type: application
@@ -56,14 +50,7 @@ targets:
           - "**/*.xcconfig"
           - "**/Info.plist"
           - "**/*.entitlements"
-          - "**/LaunchAgents/**"
       - path: apple/Shared
-      - path: apple/OneLake/LaunchAgents/dev.debruyn.ofem.daemon.plist
-        buildPhase:
-          copyFiles:
-            destination: wrapper
-            subpath: Contents/Library/LaunchAgents
-        codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem
@@ -71,10 +58,6 @@ targets:
         INFOPLIST_FILE: OneLake/Info.plist
         CODE_SIGN_ENTITLEMENTS: OneLake/OneLake.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        # Path to the daemon entitlements used when signing the bundled helper.
-        # The build script reads OFEM_DAEMON_ENTITLEMENTS to locate this file.
-        # PROJECT_DIR is the apple/ directory; OneLakeDaemon.entitlements is next to it.
-        OFEM_DAEMON_ENTITLEMENTS: $(PROJECT_DIR)/OneLakeDaemon.entitlements
       configs:
         # Release builds pin manual signing to the Developer ID
         # Application cert + the per-target provisioning profile.
@@ -91,149 +74,6 @@ targets:
       - target: OneLakeFileProvider
         embed: true
         codeSign: true
-    postBuildScripts:
-      # Bundle the ofem daemon as a sub-bundle.
-      #
-      # The daemon is packaged as a sub-bundle at
-      # Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/ following
-      # Apple's recommended pattern for SMAppService LaunchAgent helpers
-      # (TN3127 / WWDC22 session 10019). The sub-bundle has its own
-      # Contents/Info.plist carrying CFBundleIdentifier=dev.debruyn.ofem.daemon.
-      #
-      # Why a sub-bundle instead of a bare binary in Contents/MacOS/?
-      # The daemon is a pure-Go binary (CGO_ENABLED=0) and therefore has no
-      # __TEXT,__info_plist Mach-O section. libsecinit (_libsecinit_appsandbox)
-      # reads CFBundleIdentifier from that section to provision the App Sandbox
-      # container. When the section is absent, libsecinit crashes in dyld's
-      # initializer phase (_libsecinit_appsandbox.cold.6) before Go's main()
-      # runs — even when the binary is signed with --identifier. Packaging as a
-      # sub-bundle lets libsecinit read CFBundleIdentifier from the bundle's
-      # Contents/Info.plist instead, which is the same mechanism used by XPC
-      # services and File Provider Extensions.
-      #
-      # The LaunchAgent registrar plist is copied into Contents/Library/LaunchAgents/
-      # by the copyFiles build phase above so that it is included in the
-      # code-signing seal before xcodebuild signs the outer bundle. SMAppService
-      # validates that the plist is part of the sealed bundle — copying it here
-      # (post-sign) would cause "Unable to read plist" at runtime.
-      #
-      # Code signing:
-      #   • When CODE_SIGNING_ALLOWED=YES (local dev / release): the daemon
-      #     sub-bundle is signed with OneLakeDaemon.entitlements and the same
-      #     team identity as the host app. The entitlements grant app-sandbox,
-      #     app-groups, network.client and network.server.
-      #     app-sandbox is required by macOS 14.2+ (SMAppService rejects a
-      #     non-sandboxed helper when the host app is sandboxed).
-      #   • When CODE_SIGNING_ALLOWED=NO (CI unsigned build): signing is skipped.
-      #     The binary is still copied so the build succeeds; the plist path is
-      #     still valid. Only runtime registration (SMAppService.register) needs
-      #     a signed+installed app and is not exercised in CI.
-      #
-      # The Go build produces a statically-linked arm64 binary (CGO_ENABLED=0).
-      # No extra linker flags from the Makefile LDFLAGS are applied here; those
-      # inject version/commit metadata that is only meaningful in release builds.
-      - name: "Bundle ofem daemon helper"
-        script: |
-          set -euo pipefail
-
-          # PROJECT_DIR is the apple/ directory containing OneLake.xcodeproj.
-          # The repo root (where cmd/ofem lives) is one level up.
-          REPO_ROOT="${PROJECT_DIR}/.."
-
-          # Sub-bundle paths. The daemon lives inside a .app sub-bundle under
-          # Contents/Library/LaunchAgents/ so that libsecinit can read
-          # CFBundleIdentifier from the bundle's Info.plist. Pure-Go binaries
-          # lack the __TEXT,__info_plist Mach-O section that libsecinit would
-          # otherwise consult, causing a cold-6 crash before main() runs.
-          BUNDLE_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/LaunchAgents/dev.debruyn.ofem.daemon.app"
-          BUNDLE_CONTENTS="${BUNDLE_DIR}/Contents"
-          BUNDLE_MACOS="${BUNDLE_CONTENTS}/MacOS"
-          DAEMON_DEST="${BUNDLE_MACOS}/ofem"
-          BUNDLE_INFOPLIST="${BUNDLE_CONTENTS}/Info.plist"
-
-          ENTITLEMENTS="${OFEM_DAEMON_ENTITLEMENTS:-${PROJECT_DIR}/OneLakeDaemon.entitlements}"
-          SELF_CONSTRAINT="${PROJECT_DIR}/OfemDaemonSelfConstraint.plist"
-
-          # Source Info.plist for the sub-bundle (lives next to the LaunchAgent plist
-          # in the source tree at apple/OneLake/LaunchAgents/dev.debruyn.ofem.daemon.app/Contents/).
-          SOURCE_INFOPLIST="${PROJECT_DIR}/OneLake/LaunchAgents/dev.debruyn.ofem.daemon.app/Contents/Info.plist"
-
-          mkdir -p "${BUNDLE_MACOS}"
-
-          # Resolve the go binary. Xcode's build-phase PATH is restricted and
-          # does not include the setup-go toolchain directory from CI, nor
-          # Homebrew when Xcode is launched from the Dock. Resolution order:
-          #   1. $GOROOT/bin/go — set by setup-go in CI and `go env GOROOT`
-          #      in terminal builds.
-          #   2. /opt/homebrew/bin/go — Homebrew-installed Go for developers
-          #      launching Xcode from the Dock (arm64 Macs).
-          #   3. bare `go` — fallback for any other setup (e.g. custom PATH).
-          if [ -n "${GOROOT:-}" ] && [ -x "${GOROOT}/bin/go" ]; then
-            GO="${GOROOT}/bin/go"
-          elif [ -x "/opt/homebrew/bin/go" ]; then
-            GO="/opt/homebrew/bin/go"
-          else
-            GO="go"
-          fi
-          echo "Using Go: ${GO} ($(${GO} version))"
-
-          # Build the daemon binary. CGO_ENABLED=0 produces a fully static
-          # arm64 binary — no dependency on system libs or Go runtime.dylib.
-          echo "Building ofem daemon..."
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
-            "${GO}" build -o "${DAEMON_DEST}" "${REPO_ROOT}/cmd/ofem"
-
-          # Copy the sub-bundle Info.plist and expand Xcode build-setting
-          # placeholders ($(MARKETING_VERSION) and $(CURRENT_PROJECT_VERSION)).
-          # Xcode does not auto-process Info.plist files that live outside the
-          # INFOPLIST_FILE setting, so we do the substitution manually here with
-          # PlistBuddy — the same values are already set in the build environment.
-          echo "Installing daemon sub-bundle Info.plist..."
-          cp "${SOURCE_INFOPLIST}" "${BUNDLE_INFOPLIST}"
-          /usr/libexec/PlistBuddy -c \
-            "Set :CFBundleShortVersionString ${MARKETING_VERSION:-0.0.0-dev}" \
-            "${BUNDLE_INFOPLIST}"
-          /usr/libexec/PlistBuddy -c \
-            "Set :CFBundleVersion ${CURRENT_PROJECT_VERSION:-0}" \
-            "${BUNDLE_INFOPLIST}"
-
-          # Sign the daemon sub-bundle with the daemon entitlements when the
-          # build is configured for signing. CODE_SIGNING_ALLOWED is set by
-          # Xcode; it is NO in CI unsigned builds.
-          #
-          # Signing the sub-bundle (not just the binary) is required:
-          #   • codesign seals the bundle as a unit (binary + Info.plist +
-          #     _CodeSignature/CodeResources). The outer bundle's deep
-          #     verification (codesign --verify --deep) walks into sub-bundles
-          #     and verifies their seal.
-          #   • --launch-constraint-self restricts which process can launch the
-          #     daemon (must be signed by our team). Applied to the bundle, not
-          #     the binary directly.
-          #   • --identifier must match CFBundleIdentifier in Info.plist and the
-          #     LaunchAgent Label key so that SMAppService can correlate all
-          #     three.
-          #
-          # --timestamp is required: Apple notarytool rejects hardened-runtime
-          # binaries without a secure timestamp, even when they are embedded
-          # inside a bundle that is later re-sealed.
-          if [ "${CODE_SIGNING_ALLOWED:-NO}" = "YES" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
-            echo "Signing daemon sub-bundle as ${EXPANDED_CODE_SIGN_IDENTITY_NAME:-?} with entitlements: ${ENTITLEMENTS}"
-            # Sign with EXPANDED_CODE_SIGN_IDENTITY (the SHA-1 hash Xcode already
-            # resolved for the app), not the generic CODE_SIGN_IDENTITY name
-            # ("Apple Development"), which is ambiguous when the keychain holds
-            # more than one matching certificate. Using the hash also guarantees
-            # the daemon is signed with the same identity as the host app.
-            codesign --force --options runtime --timestamp \
-              --identifier "dev.debruyn.ofem.daemon" \
-              --entitlements "${ENTITLEMENTS}" \
-              --launch-constraint-self "${SELF_CONSTRAINT}" \
-              --sign "${EXPANDED_CODE_SIGN_IDENTITY}" \
-              "${BUNDLE_DIR}"
-          else
-            echo "Skipping daemon code signing (CODE_SIGNING_ALLOWED=${CODE_SIGNING_ALLOWED:-NO})"
-          fi
-        shell: /bin/bash
-        basedOnDependencyAnalysis: false
   OneLakeFileProvider:
     type: app-extension
     platform: macOS
@@ -259,8 +99,8 @@ targets:
       - package: OfemKit
   # Host-less logic-test bundle: it compiles the unit under test
   # (ItemIdentifierParser) and apple/Shared directly rather than loading a
-  # host app, so it runs unsigned in CI with no daemon and no signing
-  # identity. Smoke-level only.
+  # host app, so it runs unsigned in CI with no signing identity. Smoke-level only.
+  # OfemKit is required because apple/Shared (XPCAccountInfo.swift) imports it.
   OneLakeTests:
     type: bundle.unit-test
     platform: macOS
@@ -268,6 +108,8 @@ targets:
       - path: apple/OneLakeTests
       - path: apple/OneLakeFileProvider/ItemIdentifierParser.swift
       - path: apple/Shared
+    dependencies:
+      - package: OfemKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem.tests

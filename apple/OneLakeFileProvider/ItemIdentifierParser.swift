@@ -1,8 +1,8 @@
 // ItemIdentifierParser.swift
-// Maps between `NSFileProviderItemIdentifier` and the bridge-side
-// identifier format the Go core understands.
+// Maps between `NSFileProviderItemIdentifier` and the flat string format
+// OFEM uses internally.
 //
-// The Go core speaks a flat string format:
+// Flat string format:
 //
 //   ""                          -> root container of the alias
 //   "<wsId>"                    -> a workspace inside the alias
@@ -16,6 +16,12 @@
 
 import FileProvider
 import Foundation
+import os.log
+
+private let bridgeParserLog = Logger(
+    subsystem: "dev.debruyn.ofem.fileprovider",
+    category: "bridge-identifier-parser"
+)
 
 /// Logical container scope a File Provider enumeration / item lookup
 /// is targeting. `parse(_:)` produces these from raw item
@@ -37,7 +43,7 @@ enum EnumScope: Equatable {
     case trashContainer
 }
 
-/// Bridge-side item identifier parser (IPC / Go daemon path).
+/// FPE-side item identifier parser (legacy flat-string format).
 ///
 /// Returns ``EnumScope`` from a `NSFileProviderItemIdentifier`.
 /// Renamed from `ItemIdentifierParser` to avoid a name collision with
@@ -45,8 +51,8 @@ enum EnumScope: Equatable {
 /// from a raw `String`).
 enum BridgeItemIdentifierParser {
     /// Parse a `NSFileProviderItemIdentifier` into an `EnumScope`.
-    /// Throws `BridgeError.noSuchItem` for malformed input so callers
-    /// can map it straight to `NSFileProviderError(.noSuchItem)`.
+    /// Throws `NSFileProviderError(.noSuchItem)` for malformed input so callers
+    /// can pass it straight to completion handlers.
     static func parse(_ raw: NSFileProviderItemIdentifier) throws -> EnumScope {
         if raw == .rootContainer {
             return .rootContainer
@@ -76,14 +82,16 @@ enum BridgeItemIdentifierParser {
         case 1:
             let ws = String(parts[0])
             guard !ws.isEmpty else {
-                throw BridgeError.noSuchItem("empty workspace identifier")
+                bridgeParserLog.error("empty workspace identifier in \(value, privacy: .public)")
+                throw NSFileProviderError(.noSuchItem)
             }
             return .workspace(workspaceId: ws)
         case 2:
             let ws = String(parts[0])
             let item = String(parts[1])
             guard !ws.isEmpty, !item.isEmpty else {
-                throw BridgeError.noSuchItem("empty workspace or item identifier")
+                bridgeParserLog.error("empty workspace or item identifier in \(value, privacy: .public)")
+                throw NSFileProviderError(.noSuchItem)
             }
             return .itemRoot(workspaceId: ws, itemId: item)
         case 3:
@@ -91,11 +99,13 @@ enum BridgeItemIdentifierParser {
             let item = String(parts[1])
             let path = String(parts[2])
             guard !ws.isEmpty, !item.isEmpty, !path.isEmpty else {
-                throw BridgeError.noSuchItem("empty segment in nested identifier")
+                bridgeParserLog.error("empty segment in nested identifier \(value, privacy: .public)")
+                throw NSFileProviderError(.noSuchItem)
             }
             return .itemPath(workspaceId: ws, itemId: item, path: path)
         default:
-            throw BridgeError.noSuchItem("could not parse identifier \(value)")
+            bridgeParserLog.error("could not parse identifier \(value, privacy: .public)")
+            throw NSFileProviderError(.noSuchItem)
         }
     }
 

@@ -46,9 +46,9 @@ final class DomainSyncManager {
     /// without this prefix is left alone — even if it lives in our
     /// process — to avoid clobbering domains another tool registered.
     ///
-    /// Mirrored in the File Provider Extension's `OneLakeEnumerator`
-    /// (`ofemDomainIdentifierPrefix`); the two targets do not share
-    /// source files, so the constant is defined twice on purpose.
+    /// Mirrored in `FileProviderExtension.extractAlias` (`ofemDomainIdentifierPrefix`);
+    /// the two targets do not share source files, so the constant is defined
+    /// twice on purpose.
     private let identifierPrefix = "ofem."
 
     private init() {}

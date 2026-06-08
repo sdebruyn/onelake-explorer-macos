@@ -1,9 +1,7 @@
 // OfemFPEItem.swift
 // NSFileProviderItem backed by OfemKit's DomainItem.
 //
-// This is the engine-path counterpart of OneLakeItem (which is backed
-// by BridgeItem from the Go-daemon IPC path). Once Fase 7.3 removes
-// the daemon, OneLakeItem can be deleted. Until then, both coexist.
+// Single NSFileProviderItem implementation backed by OfemKit's DomainItem.
 
 import FileProvider
 import Foundation

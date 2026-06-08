@@ -23,36 +23,29 @@ gh repo clone sdebruyn/onelake-explorer-macos
 cd onelake-explorer-macos
 
 # install dev tools
-brew install go golangci-lint commitlint
+brew install commitlint xcodegen
 
-# fetch deps
-go mod download
+# generate the Xcode project
+make apple-gen
 
-# build the daemon binary (needed by the IPC integration test in apple/)
-go build -o bin/ofem ./cmd/ofem
-./bin/ofem --version
+# build the signed app (requires Developer ID certificate in keychain)
+make apple-build
 
-# shortcut — fmt + vet + lint + test + build (matches CI)
-make ci
-
-# individual targets
-make build
-make test
-make lint
-make fmt
+# run Swift unit tests (OfemKit)
+cd apple/Packages/OfemKit && swift test
 
 # run integration tests (requires a Fabric workspace you can sign in to)
-OFEM_INTEGRATION=1 go test ./...
+OFEM_INTEGRATION=1 swift test
 ```
 
-You only need Xcode if you are working on the Swift host app or File Provider Extension. For pure Go work on `internal/*` you can stay in your shell of choice.
+You need Xcode for all work on this project. The entire codebase is Swift.
 
 ## Branching and pull requests
 
 - Branch off `main`.
 - Name your branch like `feat/<short-description>`, `fix/<short-description>`, `docs/<short-description>`.
 - Keep PRs small and focused. If a change touches multiple areas, see if it can be split.
-- All PRs need passing CI: `gofmt`, `golangci-lint`, `go test`, `commitlint`.
+- All PRs need passing CI: Swift build, `commitlint`.
 - All PRs need at least one approving review (the maintainer's, for now). If you are the maintainer, you can self-merge.
 
 ## Commit messages
@@ -82,28 +75,19 @@ The release workflow uses these to auto-generate the release notes on each GitHu
 
 ## Code style
 
-### Go
-
-- `gofmt` and `goimports` on save. Pre-commit hook recommended.
-- Run `golangci-lint run` locally before pushing — same config CI runs.
-- Prefer small packages with clear responsibilities. Avoid `util` and `helpers` packages.
-- Tests live next to the code they test (`foo_test.go` alongside `foo.go`).
-- Use table-driven tests for anything with multiple input shapes.
-- No `panic()` outside `main()`'s early-init unless a programmer error genuinely cannot happen; return errors instead.
-- Use `slog` from stdlib for logging; never `fmt.Println` from non-CLI code.
-- All shared logic lives in `internal/*`; `cmd/ofem/` is just the daemon entry point that calls `internal/daemon`.
-
 ### Swift
 
 - SwiftLint with the included `.swiftlint.yml`.
 - Use `os.log` (unified logging) for everything that should land in Console.app.
 - Avoid blocking the File Provider Extension's main queue; everything should be async via `Task { … }`.
+- Tests live next to the code they test inside `Tests/` in the OfemKit package or `apple/OneLakeTests/`.
+- Use `XCTest` for unit tests. Prefer small, focused test functions with descriptive names.
 
 ## Testing
 
-- **Unit tests**: run on every PR and merge to main. Should not require network. Use `httpmock` for OneLake/Fabric responses.
+- **Unit tests**: run on every PR and merge to main. Should not require network. Mock HTTP responses for OneLake/Fabric calls.
 - **Integration tests**: run weekly on `main` and on PRs with a `/integration` comment from the maintainer. Hit real Fabric. Gated behind `OFEM_INTEGRATION=1`.
-- Aim for >80% line coverage on `internal/*`.
+- Aim for >80% line coverage on `apple/Packages/OfemKit/Sources/`.
 
 ## Documentation
 

@@ -1,10 +1,6 @@
 // OfemFPEEnumerator.swift
 // NSFileProviderEnumerator backed by the Swift OfemEngine.
 //
-// Replaces the IPC-over-CoreBridge path in OneLakeEnumerator for
-// FPE domains that have a live engine. The Go-daemon path (OneLakeEnumerator)
-// remains active as a fallback and will be removed in Fase 7.3.
-//
 // Design notes:
 //
 // - The engine's SyncEngine.enumerate(key:) method operates on
@@ -16,16 +12,12 @@
 //   file/folder enumeration uses SyncEngine.enumerate(key:) which
 //   hits the cache + remote refresh.
 //
-// - Cursor / page tokens: the Go daemon uses opaque string cursors
-//   passed as NSFileProviderPage raw bytes. The Swift engine's
-//   enumerate(key:) returns the full listing in one call (no
-//   server-side pagination at the DFS level). We mirror the existing
-//   behaviour: one page, nil cursor.
+// - Cursor / page tokens: the Swift engine's enumerate(key:) returns
+//   the full listing in one call (no server-side pagination at the DFS
+//   level). We use one page, nil cursor.
 //
-// - enumerateChanges: same expiry strategy as OneLakeEnumerator —
-//   answer syncAnchorExpired so macOS drops its cache and re-runs
-//   enumerateItems on every Finder refresh. Fase 7.3 will add real
-//   change tracking.
+// - enumerateChanges: answers syncAnchorExpired so macOS drops its
+//   cache and re-runs enumerateItems on every Finder refresh.
 
 import FileProvider
 import Foundation
@@ -38,9 +30,9 @@ private let staticSyncAnchorFPE = NSFileProviderSyncAnchor(Data())
 
 /// Parses a raw NSFileProviderItemIdentifier string into an OfemKit ItemIdentifier.
 ///
-/// The FPE target's legacy bridge parser is now `BridgeItemIdentifierParser`
-/// (returns `EnumScope`). OfemKit's `ItemIdentifierParser` (returns `ItemIdentifier`)
-/// is unambiguous here and in all callers via this wrapper.
+/// OfemKit's `ItemIdentifierParser` (returns `ItemIdentifier`) is the primary
+/// parser for engine operations. `BridgeItemIdentifierParser` (returns `EnumScope`)
+/// is used only by `ItemIdentifierParserTests`.
 func parseOfemItemIdentifier(_ rawIdentifier: String) throws -> ItemIdentifier {
     try ItemIdentifierParser.parse(rawIdentifier)
 }

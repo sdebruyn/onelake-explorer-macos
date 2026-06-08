@@ -9,10 +9,9 @@ See also: [Release runbook](release-runbook.md) for the step-by-step release pro
 A single signed and notarized DMG containing `OneLake.app`. The `.app` bundles:
 - The Swift host app (`OneLake`).
 - The Swift File Provider Extension (`OneLakeFileProvider.appex`).
-- The Go daemon binary (`ofem`), packaged as a sub-bundle at `OneLake.app/Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/` and launched by the SMAppService-registered LaunchAgent plist at `OneLake.app/Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.plist`. The sub-bundle carries its own `Contents/Info.plist` with `CFBundleIdentifier=dev.debruyn.ofem.daemon`, required by libsecinit to provision the App Sandbox container for this pure-Go binary.
 
-There is no standalone CLI distribution. The bundled daemon is an
-internal helper; end users interact with OneLake through the menu bar
+There is no standalone CLI and no daemon binary. The File Provider Extension
+owns all engine logic; end users interact with OneLake through the menu bar
 app and Finder.
 
 ## Build pipeline
@@ -22,7 +21,7 @@ The full pipeline is implemented in `.github/workflows/release.yml` as a single 
 ```
 build-app (macos-15 runner)
 ───────────────────────────────────────────────────────────────────────────────
-1.  checkout + setup-go
+1.  checkout
 2.  brew install xcodegen create-dmg
 3.  Import Developer ID Application cert from APPLE_CERT_P12 into a
     temporary keychain (deleted after the job).
@@ -30,12 +29,10 @@ build-app (macos-15 runner)
 5.  Write apple/Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID.
 6.  make apple-gen  -> regenerate apple/OneLake.xcodeproj from project.yml.
 7.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
-    (the Xcode postBuildScript compiles the Go daemon into the sub-bundle at
-    Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/ and signs the
-    sub-bundle with the daemon entitlements).
+    (pure Swift build: host app + File Provider Extension; no Go step).
 8.  xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
 9.  create-dmg -> dist-app/OneLake-$VERSION.dmg
-10. xcrun notarytool submit --wait --timeout 15m
+10. xcrun notarytool submit --wait --timeout 45m
 11. xcrun stapler staple
 12. Compute DMG SHA-256
 13. Upload DMG to the GitHub Release (softprops/action-gh-release)
@@ -62,11 +59,7 @@ cask "ofem" do
 
   app "OneLake.app"
 
-  # The host app registers (and unregisters) the bundled daemon as a
-  # LaunchAgent via SMAppService on first launch / on quit, so no
-  # postflight or launchctl hookup is needed from the cask itself.
-  uninstall launchctl: "dev.debruyn.ofem.daemon",
-            quit:      "dev.debruyn.ofem.app"
+  uninstall quit: "dev.debruyn.ofem"
 
   zap trash: [
     "~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem",
@@ -195,7 +188,7 @@ No formal beta tap. Pre-release versions are tagged like `v2026.05.0-rc.1`. User
 
 ## Update mechanism
 
-`brew upgrade --cask ofem`. No in-app update check; no Sparkle. The daemon logs the running version on startup so users can compare against `brew info ofem` output.
+`brew upgrade --cask ofem`. No in-app update check; no Sparkle. The running version is visible in the About window (menu bar → OneLake → About OneLake); users can compare it against `brew info ofem` output.
 
 ## Uninstall
 
@@ -204,7 +197,7 @@ brew uninstall --cask ofem          # removes app, keeps data
 brew uninstall --cask --zap ofem    # removes app + all user data
 ```
 
-The `uninstall launchctl:` directive in the cask stops the daemon. The `app` directive removes `OneLake.app`. `zap` removes everything else.
+The `uninstall quit:` directive terminates the running OneLake app. The `app` directive removes `OneLake.app`. `zap` removes everything else.
 
 ## Local development distribution
 
