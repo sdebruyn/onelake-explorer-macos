@@ -79,7 +79,6 @@ final class MenuStatusModel: ObservableObject {
     @Published private(set) var accounts: [AccountInfo] = []
     @Published private(set) var defaultAccount: String = ""
     @Published private(set) var telemetryEnabled: Bool = true
-    @Published private(set) var paths: StatusPaths = StatusPaths()
 
     /// Max parallel uploads per account (Settings → Network).
     @Published private(set) var netMaxUploads: Int = 0
