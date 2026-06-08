@@ -20,7 +20,6 @@ struct OfemPathsTests {
             ("cacheDir", paths.cacheDir),
             ("logDir", paths.logDir),
             ("tokensDir", paths.tokensDir),
-            ("socketPath", paths.socketPath),
         ]
 
         for (name, url) in allPaths {
@@ -68,14 +67,6 @@ struct OfemPathsTests {
         let paths = OfemPaths(root: root)
         let expected = root.appending(path: "tokens", directoryHint: .isDirectory)
         #expect(paths.tokensDir == expected)
-    }
-
-    @Test("socketPath is root/ofem.sock")
-    func socketPathIsRootSocket() {
-        let root = URL(filePath: "/tmp/test-root")
-        let paths = OfemPaths(root: root)
-        let expected = root.appending(path: "ofem.sock", directoryHint: .notDirectory)
-        #expect(paths.socketPath == expected)
     }
 
     // MARK: - Constants
