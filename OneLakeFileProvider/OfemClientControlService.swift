@@ -120,16 +120,6 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
             ofReply: true
         )
 
-        // status reply: ([String: Any]?, Error?)
-        // Argument index 0 is NSDictionary containing NSArray of NSDictionary of NSString.
-        // All three container types must be listed so XPC's secure-coding policy allows them.
-        iface.setClasses(
-            NSSet(array: [NSDictionary.self, NSArray.self, NSString.self]) as! Set<AnyHashable>,
-            for: #selector(OfemClientControlProtocol.status(reply:)),
-            argumentIndex: 0,
-            ofReply: true
-        )
-
         // getEngineStatus reply: (XPCEngineStatus?, Error?)
         // Argument index 0 is XPCEngineStatus (which contains an NSArray of
         // XPCPausedWorkspace). All three types must be listed so XPC's
@@ -269,38 +259,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
         }
     }
 
-    // MARK: - status
-
-    func status(reply: @escaping ([String: Any]?, Error?) -> Void) {
-        Task { [self] in
-            do {
-                let engine = try await engineHost.engine()
-                let accounts = await MainActor.run {
-                    engine.auth.listAccounts()
-                }
-                let defaultAlias = await MainActor.run {
-                    engine.auth.defaultAccount() ?? ""
-                }
-                let accountDicts: [[String: String]] = accounts.map { acc in
-                    [
-                        "alias": acc.alias,
-                        "username": acc.username,
-                        "tenantId": acc.tenantID,
-                        "tenantName": acc.tenantName ?? "",
-                    ]
-                }
-                let result: [String: Any] = [
-                    "accounts": accountDicts,
-                    "defaultAccount": defaultAlias,
-                ]
-                reply(result, nil)
-            } catch {
-                reply(nil, error)
-            }
-        }
-    }
-
-    // MARK: - getEngineStatus
+    // MARK: - getEngineStatus (Fase 7.3b-1, extended in Fase 7.4)
 
     func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
         Task { [self] in

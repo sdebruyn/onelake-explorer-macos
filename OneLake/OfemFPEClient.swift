@@ -92,21 +92,7 @@ final class OfemFPEClient {
         }
     }
 
-    /// Fetches a status snapshot from the FPE for the given domain alias.
-    func status(alias: String) async throws -> [String: Any] {
-        let proxy = try await proxy(for: alias)
-        return try await withCheckedThrowingContinuation { continuation in
-            proxy.status { dict, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: dict ?? [:])
-                }
-            }
-        }
-    }
-
-    // MARK: - Engine status
+    // MARK: - Engine status (Fase 7.3b-1)
 
     /// Fetches the engine status (cache stats + config snapshot) via XPC.
     ///
@@ -292,24 +278,10 @@ final class OfemFPEClient {
     private func makeInterface() -> NSXPCInterface {
         let iface = NSXPCInterface(with: OfemClientControlProtocol.self)
         iface.setClasses(
-            NSSet(array: [NSArray.self, XPCAccountInfo.self]) as! Set<AnyHashable>,
-            for: #selector(OfemClientControlProtocol.listAccounts(reply:)),
-            argumentIndex: 0,
-            ofReply: true
-        )
-        iface.setClasses(
             NSSet(array: [XPCAccountInfo.self]) as! Set<AnyHashable>,
             for: #selector(
                 OfemClientControlProtocol.addAccount(alias:tenant:clientID:reply:)
             ),
-            argumentIndex: 0,
-            ofReply: true
-        )
-        // status reply: ([String: Any]?, Error?)
-        // NSDictionary contains NSArray of NSDictionary of NSString.
-        iface.setClasses(
-            NSSet(array: [NSDictionary.self, NSArray.self, NSString.self]) as! Set<AnyHashable>,
-            for: #selector(OfemClientControlProtocol.status(reply:)),
             argumentIndex: 0,
             ofReply: true
         )
