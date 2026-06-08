@@ -5,8 +5,7 @@
 // "dev.debruyn.ofem.control". The host app connects to this service
 // via NSFileProviderManager.service(name:for:) and obtains an
 // NSXPCConnection that it uses to call OfemClientControlProtocol
-// methods (addAccount, listAccounts, removeAccount, setDefaultAccount,
-// status, getEngineStatus, setConfig, clearCache).
+// methods (addAccount, removeAccount, getEngineStatus, setConfig, clearCache).
 //
 // addAccount is now fully implemented. The host app drives
 // interactive sign-in via SharedOfemAuth.signIn (MSAL in the host
@@ -23,8 +22,7 @@
 //   - clearCache(reply:)          — wipe all cached blobs
 //
 // NSXPCInterface setup notes:
-//   - allowedClasses must include XPCAccountInfo and NSArray for
-//     the listAccounts reply.
+//   - XPCAccountInfo must be listed for the addAccount reply.
 //   - XPCEngineStatus must be listed for the getEngineStatus reply.
 //   - The "reply" closures in the protocol are ObjC blocks; they
 //     must be listed as reply blocks in the XPC interface via
@@ -99,15 +97,6 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
 
     private func makeInterface() -> NSXPCInterface {
         let iface = NSXPCInterface(with: OfemClientControlProtocol.self)
-
-        // listAccounts reply: ([XPCAccountInfo], Error?)
-        // Argument index 0 of the reply block is an NSArray of XPCAccountInfo.
-        iface.setClasses(
-            NSSet(array: [NSArray.self, XPCAccountInfo.self]) as! Set<AnyHashable>,
-            for: #selector(OfemClientControlProtocol.listAccounts(reply:)),
-            argumentIndex: 0,
-            ofReply: true
-        )
 
         // addAccount reply: (XPCAccountInfo?, Error?)
         // Argument index 0 is XPCAccountInfo or nil.
@@ -214,45 +203,6 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
             } catch {
                 Self.log.error(
                     "removeAccount failed: alias=\(alias, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-                )
-                reply(error)
-            }
-        }
-    }
-
-    // MARK: - listAccounts
-
-    func listAccounts(reply: @escaping ([XPCAccountInfo], Error?) -> Void) {
-        Task { [self] in
-            do {
-                let engine = try await engineHost.engine()
-                let accounts = await MainActor.run {
-                    engine.auth.listAccounts()
-                }
-                let xpcAccounts = accounts.map { XPCAccountInfo(from: $0) }
-                reply(xpcAccounts, nil)
-            } catch {
-                Self.log.error(
-                    "listAccounts failed: \(error.localizedDescription, privacy: .public)"
-                )
-                reply([], error)
-            }
-        }
-    }
-
-    // MARK: - setDefaultAccount
-
-    func setDefaultAccount(alias: String, reply: @escaping (Error?) -> Void) {
-        Task { [self] in
-            do {
-                let engine = try await engineHost.engine()
-                try await MainActor.run {
-                    try engine.auth.setDefaultAccount(alias: alias)
-                }
-                reply(nil)
-            } catch {
-                Self.log.error(
-                    "setDefaultAccount failed: \(error.localizedDescription, privacy: .public)"
                 )
                 reply(error)
             }

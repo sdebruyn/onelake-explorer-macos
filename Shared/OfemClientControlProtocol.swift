@@ -30,21 +30,21 @@ import Foundation
 
     // MARK: - Account management
 
-    /// Adds a new account via the interactive browser sign-in flow.
+    /// Warms up the FPE engine for a newly signed-in account.
     ///
-    /// The FPE's OfemAuth drives MSAL interactively; the host app is
-    /// responsible for opening the returned `authURL` in the system
-    /// browser via NSWorkspace.open(_:). After the browser flow
-    /// completes, the FPE persists the tokens and calls back via
-    /// `reply` with the new account info (or an error).
+    /// The host app drives the MSAL interactive sign-in via
+    /// `SharedOfemAuth.signIn`, persists the account to config.toml, and
+    /// registers the NSFileProviderDomain. Once macOS starts the FPE
+    /// instance for that domain, the host calls this method so the FPE
+    /// can warm its engine and confirm the account is visible in config.
     ///
     /// - Parameters:
-    /// - alias: Short user-chosen account name (e.g. "work").
-    /// - tenant: Optional Entra tenant GUID or domain. Pass nil or ""
-    /// to use Azure AD home-tenant routing.
-    /// - clientID: Optional custom Entra App Registration GUID.
-    /// Pass nil or "" to use the built-in OFEM registration.
-    /// - reply: Called on completion with the new account or an error.
+    ///   - alias: Short user-chosen account name (e.g. "work").
+    ///   - tenant: Entra tenant GUID or domain passed through for logging;
+    ///     the FPE reads the persisted value from config.toml.
+    ///   - clientID: Entra App Registration GUID passed through for logging;
+    ///     the FPE reads the persisted value from config.toml.
+    ///   - reply: Called on completion with the confirmed account or an error.
     func addAccount(
         alias: String,
         tenant: String,
@@ -58,18 +58,6 @@ import Foundation
     /// - alias: The account alias to remove.
     /// - reply: Called on completion with nil on success, or an error.
     func removeAccount(alias: String, reply: @escaping (Error?) -> Void)
-
-    /// Returns all accounts known to the FPE.
-    ///
-    /// - Parameter reply: Called with the account list or an error.
-    func listAccounts(reply: @escaping ([XPCAccountInfo], Error?) -> Void)
-
-    /// Sets the default account alias in the FPE's config.
-    ///
-    /// - Parameters:
-    /// - alias: The alias to make the default.
-    /// - reply: Called on completion with nil on success, or an error.
-    func setDefaultAccount(alias: String, reply: @escaping (Error?) -> Void)
 
     // MARK: - Engine status (Fase 7.3b-1)
 
