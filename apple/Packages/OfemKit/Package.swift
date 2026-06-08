@@ -20,6 +20,7 @@ let package = Package(
             url: "https://github.com/AzureAD/microsoft-authentication-library-for-objc",
             from: "2.12.1"
         ),
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.0"),
     ],
     targets: [
         .target(
@@ -27,6 +28,7 @@ let package = Package(
             dependencies: [
                 .product(name: "TOMLKit", package: "TOMLKit"),
                 .product(name: "MSAL", package: "microsoft-authentication-library-for-objc"),
+                .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
         .testTarget(
