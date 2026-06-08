@@ -383,7 +383,10 @@ final class MenuStatusModel: ObservableObject {
     /// in-memory OfemConfigStore inside each FPE process is updated
     /// without waiting for the next time it reads the file from disk.
     private func writeConfigToAllAliases(key: String, value: String) async {
-        let currentAccounts = accounts
+        // Read directly from SharedOfemAuth so this works even before the first
+        // doRefresh() has populated the published `accounts` property — e.g. when
+        // the user changes a setting immediately after app launch.
+        let currentAccounts = SharedOfemAuth.shared.auth.listAccounts()
         for acc in currentAccounts {
             do {
                 try await OfemFPEClient.shared.setConfig(

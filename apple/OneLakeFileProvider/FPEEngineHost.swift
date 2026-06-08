@@ -70,10 +70,15 @@ final class FPEEngineHost: Sendable {
     ///
     /// - Throws: `OfemConfigError` on TOML parse failure (first call only).
     func configStore() throws -> OfemConfigStore {
-        if let cs = lock.withLock({ _configStore }) { return cs }
-        let cs = try OfemConfigStore()
-        lock.withLock { _configStore = cs }
-        return cs
+        // Double-checked locking: check inside the lock on the slow path so two
+        // concurrent callers cannot each construct a separate OfemConfigStore and
+        // end up with diverged in-memory snapshots.
+        try lock.withLock {
+            if let cs = _configStore { return cs }
+            let cs = try OfemConfigStore()
+            _configStore = cs
+            return cs
+        }
     }
 
     // MARK: - Engine access
