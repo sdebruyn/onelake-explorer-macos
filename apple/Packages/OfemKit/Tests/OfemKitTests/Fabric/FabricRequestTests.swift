@@ -94,6 +94,39 @@ struct FabricRequestTests {
         #expect(resolved.query?.contains("cursor=abc") == true)
     }
 
+    @Test("resolveContinuationURI: http:// on same host is rejected (scheme guard)")
+    func resolveHttpSchemeRejected() throws {
+        let raw = "http://api.fabric.microsoft.com/v1/workspaces?cursor=x"
+        do {
+            _ = try resolveContinuationURI(raw, base: base)
+            Issue.record("expected throw for http:// scheme")
+        } catch FabricError.continuationURIHostMismatch {
+            // expected
+        }
+    }
+
+    @Test("resolveContinuationURI: file:// URI is rejected (no host, scheme present)")
+    func resolveFileSchemeRejected() throws {
+        let raw = "file:///v1/workspaces"
+        do {
+            _ = try resolveContinuationURI(raw, base: base)
+            Issue.record("expected throw for file:// scheme")
+        } catch FabricError.continuationURIHostMismatch {
+            // expected
+        }
+    }
+
+    @Test("resolveContinuationURI: evil-fabric.com.attacker.com does not match base host")
+    func resolveSubdomainSpoofRejected() throws {
+        let raw = "https://api.fabric.microsoft.com.attacker.com/v1/workspaces"
+        do {
+            _ = try resolveContinuationURI(raw, base: base)
+            Issue.record("expected throw for spoofed host")
+        } catch FabricError.continuationURIHostMismatch {
+            // expected
+        }
+    }
+
     // MARK: - fabricRequest
 
     @Test("fabricRequest: sets correct HTTP method")

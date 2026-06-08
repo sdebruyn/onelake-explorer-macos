@@ -5,8 +5,7 @@ import Foundation
 /// Default Fabric REST API endpoint.
 ///
 /// Mirrors `internal/fabric/client.go` — `defaultBaseURL`.
-@usableFromInline
-let fabricDefaultBaseURL = URL(string: "https://api.fabric.microsoft.com")!
+public let fabricDefaultBaseURL = URL(string: "https://api.fabric.microsoft.com")!
 
 // MARK: - URL builders
 
@@ -77,6 +76,22 @@ func resolveContinuationURI(_ raw: String, base: URL) throws -> URL {
         if uriHost.lowercased() != baseHost.lowercased() {
             throw FabricError.continuationURIHostMismatch(
                 "continuationUri host \"\(uriHost)\" does not match base \"\(baseHost)\""
+            )
+        }
+        // Enforce HTTPS — a same-host but non-HTTPS URI would still redirect
+        // traffic off the secure channel (e.g. http:// downgrade).
+        let scheme = parsed.scheme?.lowercased() ?? ""
+        if scheme != "https" {
+            throw FabricError.continuationURIHostMismatch(
+                "continuationUri scheme \"\(scheme)\" is not https"
+            )
+        }
+    } else {
+        // Relative URI (no host). If a scheme is present it is not a plain
+        // path-relative URI — reject it (covers file://, javascript:, etc.).
+        if let scheme = parsed.scheme, !scheme.isEmpty {
+            throw FabricError.continuationURIHostMismatch(
+                "continuationUri has unexpected scheme \"\(scheme)\" without a host"
             )
         }
     }

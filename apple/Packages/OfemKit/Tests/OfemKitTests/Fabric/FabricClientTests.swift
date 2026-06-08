@@ -204,6 +204,25 @@ struct FabricClientTests {
         }
     }
 
+    @Test("listAllWorkspaces: looping continuationUri throws loopingPagination")
+    func listAllWorkspacesLoopingURI() async throws {
+        let body = """
+        {"value":[{"id":"ws1","displayName":"Alpha"}],"continuationUri":"https://api.fabric.microsoft.com/v1/workspaces?cursor=STUCK"}
+        """
+        // Return the same URI twice — client should bail on second page.
+        let session = MockURLSession(stubs: [
+            stub(status: 200, body: body),
+            stub(status: 200, body: body),
+        ])
+        let client = makeClient(session: session)
+        do {
+            _ = try await client.listAllWorkspaces(alias: "work")
+            Issue.record("expected throw")
+        } catch FabricError.loopingPagination {
+            // expected
+        }
+    }
+
     // MARK: - listWorkspaces (single page)
 
     @Test("listWorkspaces: returns page with items and continuation token")
@@ -240,6 +259,21 @@ struct FabricClientTests {
         _ = try await client.listWorkspaces(alias: "work", continuation: "my-token")
         let q = session.requests.first?.url?.query
         #expect(q?.contains("continuationToken=my-token") == true)
+    }
+
+    @Test("listWorkspaces: continuationUri-only response returns nil continuationToken")
+    func listWorkspacesContinuationURIReturnsNilToken() async throws {
+        // When the server returns only continuationUri (no continuationToken),
+        // the single-page API cannot round-trip it as a query parameter —
+        // it returns nil so callers know to use listAllWorkspaces instead.
+        let body = """
+        {"value":[{"id":"ws1","displayName":"Alpha"}],"continuationUri":"https://api.fabric.microsoft.com/v1/workspaces?cursor=abc"}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        let page = try await client.listWorkspaces(alias: "work")
+        #expect(page.items.count == 1)
+        #expect(page.continuationToken == nil)
     }
 
     // MARK: - listAllItems

@@ -351,15 +351,13 @@ public final class FabricClient: Sendable {
 
 /// Extracts the effective continuation token from a page response.
 ///
-/// Prefers `continuationToken`; falls back to `continuationUri` as an opaque
-/// string when the caller only needs to know "is there a next page?" without
-/// following it immediately.
-///
-/// Single-page callers (``FabricClient/listWorkspaces(alias:continuation:)``,
-/// etc.) pass the token back to the caller for manual pagination. The
-/// `continuationUri` branch is rare but documented in the Fabric API.
+/// Returns `continuationToken` when present. Returns `nil` when only
+/// `continuationUri` is present — the single-page API cannot safely round-trip
+/// a URI as an opaque token (it would be misinterpreted as a query parameter).
+/// Callers that need to follow `continuationUri` pagination must use the
+/// exhaust-all variants (``FabricClient/listAllWorkspaces(alias:)`` etc.),
+/// which handle both branches internally.
 private func resolvedContinuationToken<T>(_ page: FabricPageResponse<T>) -> String? {
     if let tok = page.continuationToken, !tok.isEmpty { return tok }
-    if let uri = page.continuationUri, !uri.isEmpty { return uri }
     return nil
 }
