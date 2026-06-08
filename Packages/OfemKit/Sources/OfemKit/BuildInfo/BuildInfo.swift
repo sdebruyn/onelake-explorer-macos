@@ -71,7 +71,7 @@ public enum BuildInfo {
 /// tests these default to empty strings, matching the Go behaviour
 /// (`var Commit = ""` / `var Date = ""`).
 ///
-/// The generated file at `apple/Packages/OfemKit/Sources/OfemKit/BuildInfo/BuildInfoConstants.swift`
+/// The generated file at `Packages/OfemKit/Sources/OfemKit/BuildInfo/BuildInfoConstants.swift`
 /// is in `.gitignore`; the Xcode build phase writes it before compilation.
 enum _BuildInfoConstants {
     static let commit: String = {

@@ -2,13 +2,13 @@
 // Smoke-level logic tests for the File Provider identifier grammar.
 //
 // This bundle compiles BridgeItemIdentifierParser.swift (the FPE target's
-// legacy flat-format identifier parser) and apple/Shared directly (no
+// legacy flat-format identifier parser) and Shared directly (no
 // host application), so it runs unsigned in CI with no signing identity.
 // Its job is to catch Swift compile regressions and the most basic
 // identifier-grammar mistakes on every PR.
 //
 // Note: OfemKit's ItemIdentifierParser (the / -prefixed new format) is
-// covered by apple/Packages/OfemKit/Tests/OfemKitTests/FP/.
+// covered by Packages/OfemKit/Tests/OfemKitTests/FP/.
 
 import FileProvider
 import XCTest

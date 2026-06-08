@@ -49,7 +49,7 @@ import Security
 ///
 /// To run manually from the command line (with a signed build):
 /// ```bash
-/// cd apple/Packages/OfemKit
+/// cd Packages/OfemKit
 /// swift test --filter KeychainVolumeIntegrationTests
 /// ```
 ///
