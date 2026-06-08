@@ -1,97 +1,82 @@
 # Tech stack
 
-## Language: Go for the core + daemon, Swift for host app and File Provider Extension
+## Language: 100% Swift
 
-The core library and the bundled daemon binary are written in **Go**. The macOS `.app` host and the File Provider Extension are written in **Swift**. The Go engine runs inside the long-running daemon (`OneLake.app/Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/Contents/MacOS/ofem`); the Swift targets are thin clients that reach it over JSON-RPC on a Unix-domain socket (see "Swift ↔ Go boundary" below). There is no cgo: the Swift targets link no Go archive.
+OFEM is written entirely in Swift. The engine, cache, auth, and sync logic
+live in the **OfemKit** Swift Package (`apple/Packages/OfemKit/`). The macOS
+`.app` host and the File Provider Extension are also Swift. There is no Go
+code, no daemon process, no Unix-socket IPC, and no cgo.
 
-## Go libraries
+## OfemKit modules
 
 ### Authentication
 
-- [`github.com/AzureAD/microsoft-authentication-library-for-go`](https://github.com/AzureAD/microsoft-authentication-library-for-go) — MSAL Go. Public client app, interactive browser flow, silent refresh, cache extensibility.
-- [`github.com/zalando/go-keyring`](https://github.com/zalando/go-keyring) — macOS Keychain access without cgo dependencies. Implements MSAL's `cache.ExportReplace`.
+- **MSAL for Apple Platforms** (MSAL Swift SDK) — public client app,
+  interactive browser flow, silent refresh, Keychain-backed token cache.
+  Per-account `PublicClientApplication` instances, one authority per
+  tenant for clean cache scoping.
 
 ### HTTP & OneLake
 
-- `net/http` from stdlib for the OneLake DFS calls. Custom client wrapper for:
+- `URLSession` for OneLake DFS and Fabric REST calls. Custom wrappers for:
   - Token injection (`Authorization: Bearer …`).
   - Retry-After honoring on 429 / 503.
   - Per-account concurrency limiter (default 4, configurable).
-- [`github.com/hashicorp/go-retryablehttp`](https://github.com/hashicorp/go-retryablehttp) — battle-tested retry wrapper that respects `Retry-After`.
-- Native JSON via stdlib `encoding/json` (no need for a faster JSON lib at our volume).
-
-### Daemon entry point
-
-- [`github.com/spf13/cobra`](https://github.com/spf13/cobra) — used only for the daemon binary's `daemon run` subcommand wiring and `--version` flag. Not a user-facing CLI surface.
 
 ### Config & data
 
-- TOML via [`github.com/BurntSushi/toml`](https://github.com/BurntSushi/toml) — the Go standard. Viper supports it natively.
-- SQLite via [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) (pure-Go, no cgo) — for the local file metadata cache (paths, etags, mtimes, sync state).
+- TOML for config files (`apple/Packages/OfemKit/Sources/OfemKit/Config/`).
+- SQLite (Swift wrapper, no cgo) for the local file metadata cache
+  (paths, ETags, mtimes, sync state).
 
 ### Logging
 
-- `log/slog` from stdlib (Go 1.21+). Structured logging with JSON or text handler. No external dependency.
-- Log files in `~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem/log/ofem.log`, rotated with [`gopkg.in/natefinch/lumberjack.v2`](https://github.com/natefinch/lumberjack).
+- `os.log` (unified logging) — integrates with Console.app out of the box.
+  Structured log entries with privacy annotations.
 
 ### Telemetry
 
-- [`github.com/microsoft/ApplicationInsights-Go`](https://github.com/microsoft/ApplicationInsights-Go) — official App Insights SDK for Go. Telemetry client with batching and offline buffer.
-- Custom panic-handler that flushes telemetry before re-panicking.
+- Custom App Insights client over `URLSession` — opt-out, anonymous, tenant
+  IDs only (no UPN / workspace names / file paths). See `docs/telemetry.md`.
 
-### IPC (host app / extension ↔ daemon)
+### IPC (host app ↔ FPE)
 
-- `net.Listen("unix", …)` from stdlib for the Unix domain socket.
-- JSON-RPC 2.0 over the socket using `net/rpc/jsonrpc` from stdlib, or a lightweight custom protocol if jsonrpc proves limiting.
-
-### LaunchAgent
-
-- `dev.debruyn.ofem.daemon.plist` ships inside `OneLake.app/Contents/Library/LaunchAgents/`. The host app registers it via `SMAppService.agent(plistName:)` on first launch and unregisters it on quit. No `launchctl` calls from our own code.
-
-### Testing
-
-- `testing` from stdlib.
-- [`github.com/stretchr/testify`](https://github.com/stretchr/testify) for assertions and table-driven test ergonomics.
-- [`github.com/jarcoal/httpmock`](https://github.com/jarcoal/httpmock) for HTTP-level mocking of OneLake responses in unit tests.
-- Integration tests use a real Fabric workspace dedicated to OFEM testing, gated behind an env var `OFEM_INTEGRATION=1` so they only run when explicitly requested.
-
-### Code quality
-
-- `gofmt` + `goimports` on save / pre-commit.
-- [`github.com/golangci/golangci-lint`](https://github.com/golangci/golangci-lint) in CI with a curated config (errcheck, govet, staticcheck, revive, gosec, etc.).
-- [`commitlint`](https://commitlint.js.org/) in CI for Conventional Commits enforcement.
+- `NSFileProviderService` + `NSXPCConnection` — the only inter-process
+  boundary is the standard Apple XPC channel between the host app and the
+  File Provider Extension. No Unix sockets, no custom JSON-RPC.
 
 ## Swift libraries
 
-### Host app
+### Host app (`apple/OneLake/`)
 
-- SwiftUI (macOS 14+ baseline) for the account-management UI.
-- [`Sparkle`](https://sparkle-project.org/) is **not** used — updates are Homebrew-only.
+- SwiftUI (macOS 14+ baseline) for the account-management UI and Settings.
+- `ServiceManagement` (`SMAppService.mainApp`) for the "Open at Login"
+  login-item registration.
 
-### File Provider Extension
+### File Provider Extension (`apple/OneLakeFileProvider/`)
 
-- Apple's `FileProvider` framework (built-in).
-- Apple's `os.log` for unified logging that integrates with Console.app.
+- Apple's `FileProvider` framework.
+- `NSFileProviderReplicatedExtension` for on-demand (placeholder) sync.
+- `NSFileProviderServicing` to expose the XPC control service to the host app.
 
-### Swift ↔ Go boundary
+### Shared (`apple/Shared/`)
 
-- The daemon owns the Go engine, cache, and blob store and exposes them as
-  JSON-RPC 2.0 methods (`fp.enumerate`, `fp.fetchContents`, `fp.createItem`,
-  …) over a Unix-domain socket in the App Group container.
-- Both Swift targets share `apple/Shared/IPCClient.swift` (the JSON-RPC
-  client) and `apple/Shared/CoreBridge.swift` (typed wrappers + error
-  mapping). No cgo, no static Go archive linked into Swift.
-- File contents cross the boundary through the shared App Group container:
-  a fetch is staged there by the daemon and moved to the macOS-supplied
-  URL; an upload's source is copied in for the daemon to read.
+- `OfemClientControlProtocol` — the `@objc` XPC protocol shared between host
+  and FPE.
+- `XPCAccountInfo`, `XPCEngineStatus` — `NSSecureCoding` wrappers for XPC
+  transport.
 
 ## Build & release
 
-- `xcodebuild` builds the Swift `.app` and `.appex`. The Xcode postBuildScript compiles the Go daemon binary into `Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/Contents/MacOS/ofem`, populates the sub-bundle's `Info.plist`, and signs the sub-bundle with the daemon entitlements.
-- `codesign --force --options runtime --sign "Developer ID Application: …"` re-seals the outer bundle.
+- `xcodebuild` builds the Swift `.app` and `.appex` from
+  `apple/OneLake.xcodeproj` (generated by XcodeGen from `apple/project.yml`).
+- No Go toolchain required at any stage.
+- `codesign --force --options runtime --sign "Developer ID Application: …"`
+  seals the bundle.
 - `xcrun notarytool submit … --wait` and `xcrun stapler staple`.
 - DMG via `create-dmg` (Homebrew formula `create-dmg`).
-- The release workflow uploads the DMG to GitHub Releases and pushes the rendered cask to the `homebrew-ofem` tap repo.
+- The release workflow uploads the DMG to GitHub Releases and pushes the
+  rendered cask to the `homebrew-ofem` tap repo.
 
 See [docs/packaging-homebrew.md](packaging-homebrew.md) for the full pipeline.
 
@@ -99,30 +84,18 @@ See [docs/packaging-homebrew.md](packaging-homebrew.md) for the full pipeline.
 
 ```
 onelake-explorer-macos/
-├── cmd/
-│   └── ofem/                 # daemon entry-point binary (bundled in OneLake.app/Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/Contents/MacOS/)
-├── internal/
-│   ├── auth/                # MSAL wrapper, Keychain cache, account registry
-│   ├── onelake/             # DFS API client, retries, pagination
-│   ├── fabric/              # Fabric REST API client (discovery)
-│   ├── cache/               # SQLite metadata cache, LRU eviction
-│   ├── sync/                # Sync engine, write queue, conflict resolution
-│   ├── fp/                  # File Provider model served to the extension over IPC
-│   ├── daemon/             # Long-running service: owns the engine + IPC server
-│   ├── ipc/                 # Unix socket server + client
-│   ├── telemetry/           # App Insights client
-│   ├── config/              # TOML config loading
-│   └── log/                 # slog setup, lumberjack rotation
 ├── apple/
-│   ├── OneLake.xcodeproj
-│   ├── OneLake/             # host app (Swift)
-│   └── OneLakeFileProvider/ # extension (.appex, Swift)
+│   ├── OneLake.xcodeproj        # generated by XcodeGen from project.yml
+│   ├── project.yml              # XcodeGen spec
+│   ├── OneLake/                 # host app (Swift)
+│   ├── OneLakeFileProvider/     # File Provider Extension (Swift)
+│   ├── Shared/                  # XPC protocol + types shared by both targets
+│   └── Packages/
+│       └── OfemKit/             # local Swift Package: engine, auth, cache, sync
 ├── docs/
 ├── homebrew/
-│   └── Casks/ofem.rb.tmpl    # cask template, rendered and pushed by the release workflow
+│   └── Casks/ofem.rb.tmpl       # cask template, rendered by the release workflow
 ├── .github/
-├── go.mod
-├── go.sum
 ├── LICENSE
 ├── README.md
 ├── CONTRIBUTING.md

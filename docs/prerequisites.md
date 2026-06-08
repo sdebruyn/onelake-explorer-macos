@@ -14,12 +14,10 @@ If you only want to contribute code, you only need the **Local development** sec
 | Tool | Minimum version | Recommended | How to install |
 |---|---|---|---|
 | macOS | 14 Sonoma (arm64) | latest stable | – |
-| Go | 1.26 | 1.26.x | `brew install go` |
 | Xcode | 15 | 26.x | App Store |
 | git | 2.40 | latest | comes with Xcode CLT |
 | Homebrew | any recent | latest | https://brew.sh |
 | `gh` CLI | 2.40 | latest | `brew install gh` |
-| `golangci-lint` | 1.55 | latest | `brew install golangci-lint` |
 | `commitlint` | 18 | latest | `brew install commitlint` (or `npm i -g @commitlint/cli @commitlint/config-conventional`) |
 | `make` (optional) | any | any | comes with Xcode CLT |
 
@@ -30,17 +28,8 @@ Plus a configured **Microsoft Entra tenant** with at least one workspace you can
 - `direnv` — for project-local env vars (`brew install direnv`).
 - `delta` — nicer diffs in git (`brew install git-delta`).
 - `entr` — auto-run tests on file save (`brew install entr`).
-- `dlv` — Go debugger (`brew install delve`).
 
-### Go-only work does NOT require
-
-- Xcode (technically — but you have it anyway for the standard Mac dev environment).
-- Apple Developer Program membership.
-- Any signing certificates.
-
-`go build ./cmd/ofem` produces an unsigned daemon binary you can run locally (`./bin/ofem daemon run`). The IPC integration test in `apple/OneLakeTests/` exercises that binary against a temp socket.
-
-### Working on the `.app` and File Provider Extension also requires
+### Working on the `.app` and File Provider Extension requires
 
 - Xcode 15+ (you already need it).
 - A free Apple ID and **ad-hoc signing** are enough to install the `.app` on your own Mac. Other people cannot install your build without disabling Gatekeeper.
@@ -61,6 +50,15 @@ Then:
 make apple-bootstrap   # writes apple/Local.xcconfig (gitignored); edit it
 make apple-gen         # regenerates apple/OneLake.xcodeproj
 make apple-build       # Debug build via xcodebuild
+```
+
+#### Swift Package tests
+
+The OfemKit engine modules have their own test suite:
+
+```bash
+cd apple/Packages/OfemKit
+swift test
 ```
 
 ---
