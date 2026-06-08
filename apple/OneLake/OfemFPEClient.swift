@@ -114,6 +114,70 @@ final class OfemFPEClient {
         }
     }
 
+    // MARK: - Engine status (Fase 7.3b-1)
+
+    /// Fetches the engine status (cache stats + config snapshot) via XPC.
+    ///
+    /// - Parameter alias: Account alias identifying the domain.
+    /// - Returns: `XPCEngineStatus` on success.
+    func getEngineStatus(alias: String) async throws -> XPCEngineStatus {
+        let proxy = try await proxy(for: alias)
+        return try await withCheckedThrowingContinuation { continuation in
+            proxy.getEngineStatus { status, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let status {
+                    continuation.resume(returning: status)
+                } else {
+                    continuation.resume(throwing: OfemFPEClientError.connectionFailed(
+                        "getEngineStatus returned nil status for alias \(alias)"
+                    ))
+                }
+            }
+        }
+    }
+
+    // MARK: - Config mutation (Fase 7.3b-1)
+
+    /// Writes a config key/value pair through the FPE.
+    ///
+    /// - Parameters:
+    ///   - alias: Account alias identifying the domain.
+    ///   - key:   Config key in dot notation.
+    ///   - value: New value as a string.
+    func setConfig(alias: String, key: String, value: String) async throws {
+        let proxy = try await proxy(for: alias)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            proxy.setConfig(key: key, value: value) { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    // MARK: - Cache (Fase 7.3b-1)
+
+    /// Clears all cached blobs via the FPE.
+    ///
+    /// - Parameter alias: Account alias identifying the domain.
+    /// - Returns: Byte count remaining after the wipe (always 0 on success).
+    @discardableResult
+    func clearCache(alias: String) async throws -> Int64 {
+        let proxy = try await proxy(for: alias)
+        return try await withCheckedThrowingContinuation { continuation in
+            proxy.clearCache { remaining, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: remaining)
+                }
+            }
+        }
+    }
+
     // MARK: - Connection management
 
     /// Cache of open connections keyed by domain identifier string.
@@ -254,6 +318,13 @@ final class OfemFPEClient {
         iface.setClasses(
             NSSet(array: [NSDictionary.self, NSArray.self, NSString.self]) as! Set<AnyHashable>,
             for: #selector(OfemClientControlProtocol.status(reply:)),
+            argumentIndex: 0,
+            ofReply: true
+        )
+        // getEngineStatus reply: (XPCEngineStatus?, Error?)
+        iface.setClasses(
+            NSSet(array: [XPCEngineStatus.self]) as! Set<AnyHashable>,
+            for: #selector(OfemClientControlProtocol.getEngineStatus(reply:)),
             argumentIndex: 0,
             ofReply: true
         )
