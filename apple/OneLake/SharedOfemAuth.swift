@@ -37,20 +37,20 @@ final class SharedOfemAuth {
     let configStore: OfemConfigStore
     let auth: OfemAuth
 
-    private nonisolated init() {
-        // OfemConfigStore() throws only on TOML parse failure. On a fresh
-        // install the file doesn't exist and a default config is returned;
-        // that path never throws. If the TOML is corrupt we crash-to-log:
-        // the initialiser is called lazily on first use, after the app is
-        // already running, so a panic here is visible in Console.app.
+    // Designated initialiser. `@MainActor` is inherited from the class;
+    // `static let shared` therefore runs on the main actor (Swift guarantees
+    // this for @MainActor-isolated static stored properties).
+    //
+    // OfemConfigStore() throws only on TOML parse failure. On a fresh install
+    // the file doesn't exist and a default config is returned — never throws.
+    // A corrupt TOML is a fatal misconfiguration; crashing early surfaces the
+    // root cause in crash logs.
+    init() {
         do {
             let store = try OfemConfigStore()
             self.configStore = store
             self.auth = OfemAuth(configStore: store)
         } catch {
-            // If config is genuinely unreadable the app can't do anything
-            // useful anyway. Log and fatalError so the crash report carries
-            // the root cause.
             fatalError("SharedOfemAuth: OfemConfigStore init failed: \(error)")
         }
     }

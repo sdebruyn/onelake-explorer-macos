@@ -21,6 +21,7 @@
 // On success: close the window after a brief pause so the user sees "Signed in".
 
 import AppKit
+import OfemKit
 import SwiftUI
 import os.log
 
