@@ -111,7 +111,14 @@ final class OfemFPEClient {
 
         // Check for a cached, still-valid connection.
         if let conn = connections[domainIdentifier] {
-            guard let proxy = conn.remoteObjectProxy as? any OfemClientControlProtocol else {
+            // Use remoteObjectProxyWithErrorHandler so that a connection fault (FPE
+            // process crash, interruption) delivers an error to the reply block rather
+            // than raising an ObjC exception that would crash the host app.
+            guard let proxy = conn.remoteObjectProxyWithErrorHandler({ error in
+                OfemFPEClient.log.error(
+                    "FPE XPC proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }) as? any OfemClientControlProtocol else {
                 connections.removeValue(forKey: domainIdentifier)
                 throw OfemFPEClientError.connectionFailed("proxy cast failed for \(domainIdentifier)")
             }
@@ -182,7 +189,11 @@ final class OfemFPEClient {
         connection.resume()
         connections[domainIdentifier] = connection
 
-        guard let proxy = connection.remoteObjectProxy as? any OfemClientControlProtocol else {
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+            OfemFPEClient.log.error(
+                "FPE XPC proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+        }) as? any OfemClientControlProtocol else {
             throw OfemFPEClientError.connectionFailed("proxy cast failed after connection setup")
         }
         Self.log.info(
@@ -220,6 +231,14 @@ final class OfemFPEClient {
             for: #selector(
                 OfemClientControlProtocol.addAccount(alias:tenant:clientID:reply:)
             ),
+            argumentIndex: 0,
+            ofReply: true
+        )
+        // status reply: ([String: Any]?, Error?)
+        // NSDictionary contains NSArray of NSDictionary of NSString.
+        iface.setClasses(
+            NSSet(array: [NSDictionary.self, NSArray.self, NSString.self]) as! Set<AnyHashable>,
+            for: #selector(OfemClientControlProtocol.status(reply:)),
             argumentIndex: 0,
             ofReply: true
         )

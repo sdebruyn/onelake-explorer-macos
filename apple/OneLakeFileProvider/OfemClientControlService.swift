@@ -43,22 +43,29 @@ final class OfemClientControlService: NSObject, NSFileProviderServiceSource {
 
     private let engineHost: FPEEngineHost
 
+    // NSXPCListener.delegate is a weak property, so we must retain the delegate
+    // ourselves for as long as the listener lives. Both listener and delegate are
+    // stored here so they are released together when the service source is released.
+    private var listener: NSXPCListener?
+    private var listenerDelegate: OfemXPCListenerDelegate?
+
     init(engineHost: FPEEngineHost) {
         self.engineHost = engineHost
         super.init()
     }
 
     func makeListenerEndpoint() throws -> NSXPCListenerEndpoint {
-        let listener = NSXPCListener.anonymous()
-        // Retain the delegate on the listener; NSXPCListener holds it weakly so we must
-        // keep it alive as long as the listener exists. The service source is held by
-        // the extension instance so this is safe.
-        listener.delegate = OfemXPCListenerDelegate(engineHost: engineHost)
-        listener.resume()
+        let delegate = OfemXPCListenerDelegate(engineHost: engineHost)
+        let l = NSXPCListener.anonymous()
+        l.delegate = delegate
+        l.resume()
+        // Retain both strongly so neither is released before the endpoint is used.
+        self.listenerDelegate = delegate
+        self.listener = l
         Self.log.info(
             "OfemClientControlService: XPC listener endpoint created for alias=\(self.engineHost.alias, privacy: .public)"
         )
-        return listener.endpoint
+        return l.endpoint
     }
 }
 
@@ -102,6 +109,16 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
             for: #selector(
                 OfemClientControlProtocol.addAccount(alias:tenant:clientID:reply:)
             ),
+            argumentIndex: 0,
+            ofReply: true
+        )
+
+        // status reply: ([String: Any]?, Error?)
+        // Argument index 0 is NSDictionary containing NSArray of NSDictionary of NSString.
+        // All three container types must be listed so XPC's secure-coding policy allows them.
+        iface.setClasses(
+            NSSet(array: [NSDictionary.self, NSArray.self, NSString.self]) as! Set<AnyHashable>,
+            for: #selector(OfemClientControlProtocol.status(reply:)),
             argumentIndex: 0,
             ofReply: true
         )
