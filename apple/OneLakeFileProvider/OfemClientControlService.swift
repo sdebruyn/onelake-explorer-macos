@@ -6,7 +6,7 @@
 // via NSFileProviderManager.service(name:for:) and obtains an
 // NSXPCConnection that it uses to call OfemClientControlProtocol
 // methods (addAccount, listAccounts, removeAccount, setDefaultAccount,
-// status).
+// status, getEngineStatus, setConfig, clearCache).
 //
 // Fase 7.3a: addAccount is now fully implemented. The host app drives
 // interactive sign-in via SharedOfemAuth.signIn (MSAL in the host
@@ -17,14 +17,18 @@
 // account is visible in the shared config — it does NOT drive the MSAL
 // flow itself.
 //
-// The Go-daemon Unix-socket IPC in CoreBridge.swift remains compiled
-// and in the app bundle but is no longer called for add-account in
-// Fase 7.3a. Full removal of CoreBridge/IPCClient/IPC transport
-// happens in Fase 7.3b.
+// Fase 7.3b-1: three new XPC methods replace the remaining CoreBridge calls
+// in the host app:
+//   - getEngineStatus(reply:)    — cache stats + config snapshot
+//   - setConfig(key:value:reply:) — write one config field and reload
+//   - clearCache(reply:)          — wipe all cached blobs
+// After these additions, CoreBridge is dead code in the host app.
+// Full removal of CoreBridge/IPCClient/IPCTransport happens in Fase 7.3b-2.
 //
 // NSXPCInterface setup notes:
 //   - allowedClasses must include XPCAccountInfo and NSArray for
 //     the listAccounts reply.
+//   - XPCEngineStatus must be listed for the getEngineStatus reply.
 //   - The "reply" closures in the protocol are ObjC blocks; they
 //     must be listed as reply blocks in the XPC interface via
 //     setClasses(_:for:argumentIndex:ofReply:).
@@ -125,6 +129,15 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
         iface.setClasses(
             NSSet(array: [NSDictionary.self, NSArray.self, NSString.self]) as! Set<AnyHashable>,
             for: #selector(OfemClientControlProtocol.status(reply:)),
+            argumentIndex: 0,
+            ofReply: true
+        )
+
+        // getEngineStatus reply: (XPCEngineStatus?, Error?)
+        // Argument index 0 is XPCEngineStatus or nil.
+        iface.setClasses(
+            NSSet(array: [XPCEngineStatus.self]) as! Set<AnyHashable>,
+            for: #selector(OfemClientControlProtocol.getEngineStatus(reply:)),
             argumentIndex: 0,
             ofReply: true
         )
@@ -295,6 +308,111 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                 reply(result, nil)
             } catch {
                 reply(nil, error)
+            }
+        }
+    }
+
+    // MARK: - getEngineStatus (Fase 7.3b-1)
+
+    func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
+        Task { [self] in
+            do {
+                // Read config snapshot via the shared configStore — does NOT
+                // require the engine to be built yet (cheaper for first call).
+                let configStore = try engineHost.configStore()
+                let cfg = configStore.snapshot()
+
+                // Measure cached blob bytes only if the engine is already up;
+                // if the engine has never been started we return -1 (not measured).
+                let cacheBytes: Int64
+                if let engine = engineHost.existingEngine() {
+                    cacheBytes = (try? await engine.cache.blobBytes()) ?? -1
+                } else {
+                    cacheBytes = -1
+                }
+
+                let cacheMaxGB = cfg.cache.maxSizeGB
+                let cacheMaxBytes = cfg.cache.maxBytes
+
+                let status = XPCEngineStatus(
+                    cacheBytes: cacheBytes,
+                    cacheMaxBytes: cacheMaxBytes,
+                    cacheMaxSizeGB: cacheMaxGB,
+                    telemetryEnabled: cfg.telemetry,
+                    netMaxUploads: cfg.net.maxConcurrentUploadsPerAccount,
+                    netMaxDownloads: cfg.net.maxConcurrentDownloadsPerAccount,
+                    logLevel: cfg.log.level
+                )
+                reply(status, nil)
+            } catch {
+                Self.log.error(
+                    "getEngineStatus failed: \(error.localizedDescription, privacy: .public)"
+                )
+                reply(nil, error)
+            }
+        }
+    }
+
+    // MARK: - setConfig (Fase 7.3b-1)
+
+    func setConfig(key: String, value: String, reply: @escaping (Error?) -> Void) {
+        Task { [self] in
+            do {
+                let configStore = try engineHost.configStore()
+                try configStore.updateAndSave { cfg in
+                    switch key {
+                    case "telemetry":
+                        cfg.telemetry = (value == "on")
+                    case "cache.max_size_gb":
+                        if let gb = Int(value) {
+                            cfg.cache.maxSizeGB = min(max(gb, 1), 100)
+                        }
+                    case "net.max_concurrent_uploads_per_account":
+                        if let n = Int(value) {
+                            cfg.net.maxConcurrentUploadsPerAccount = min(max(n, 1), 16)
+                        }
+                    case "net.max_concurrent_downloads_per_account":
+                        if let n = Int(value) {
+                            cfg.net.maxConcurrentDownloadsPerAccount = min(max(n, 1), 32)
+                        }
+                    case "log.level":
+                        let allowed = ["debug", "info", "warn", "error"]
+                        if allowed.contains(value) {
+                            cfg.log.level = value
+                        }
+                    default:
+                        Self.log.warning(
+                            "setConfig: unknown key '\(key, privacy: .public)' — ignoring"
+                        )
+                    }
+                }
+                Self.log.info(
+                    "setConfig: key='\(key, privacy: .public)' value='\(value, privacy: .public)' applied"
+                )
+                reply(nil)
+            } catch {
+                Self.log.error(
+                    "setConfig failed: key='\(key, privacy: .public)' error=\(error.localizedDescription, privacy: .public)"
+                )
+                reply(error)
+            }
+        }
+    }
+
+    // MARK: - clearCache (Fase 7.3b-1)
+
+    func clearCache(reply: @escaping (Int64, Error?) -> Void) {
+        Task { [self] in
+            do {
+                let engine = try await engineHost.engine()
+                let (_, _) = try await engine.cache.wipe()
+                Self.log.info("clearCache: blobs wiped")
+                reply(0, nil)
+            } catch {
+                Self.log.error(
+                    "clearCache failed: \(error.localizedDescription, privacy: .public)"
+                )
+                reply(0, error)
             }
         }
     }

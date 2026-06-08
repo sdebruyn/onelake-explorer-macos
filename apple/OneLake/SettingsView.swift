@@ -11,6 +11,7 @@
 // in the slimmed-down menu-bar dropdown.
 
 import AppKit
+import OfemKit
 import SwiftUI
 
 /// The Settings scene's root tab container.
@@ -310,7 +311,7 @@ private struct AdvancedSettingsTab: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Logs folder")
-                        Text("Open the rotating daemon log in Finder.")
+                        Text("Open the log folder in Finder.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -318,13 +319,13 @@ private struct AdvancedSettingsTab: View {
                     Button("Reveal in Finder") {
                         openLogsFolder()
                     }
-                    .disabled(!model.isRunning || model.paths.logDir.isEmpty)
+                    .disabled(!model.isRunning)
                 }
             }
 
             Section {
-                LabeledContent("Daemon version") {
-                    Text(model.daemonVersion.isEmpty ? "—" : "v\(model.daemonVersion)")
+                LabeledContent("App version") {
+                    Text("v\(BuildInfo.version)")
                         .font(.body.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -335,11 +336,9 @@ private struct AdvancedSettingsTab: View {
     }
 
     private func openLogsFolder() {
-        let path = model.paths.logDir
-        guard !path.isEmpty else { return }
-        let url = URL(fileURLWithPath: path, isDirectory: true)
-        if NSWorkspace.shared.open(url) { return }
+        let logDir = OfemPaths().logDir
+        if NSWorkspace.shared.open(logDir) { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(path, forType: .string)
+        NSPasteboard.general.setString(logDir.path(percentEncoded: false), forType: .string)
     }
 }

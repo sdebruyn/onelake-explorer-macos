@@ -1,23 +1,21 @@
 // ChangeWatcher.swift
-// Polls the daemon for OneLake changes and signals Finder to re-enumerate.
+// Triggers Finder re-enumeration when OneLake content changes.
 //
-// Architecture decision:
+// Fase 7.3b-1 (FPE-only architecture):
 //
-//   The daemon detects changes via adaptive polling and stores them in an
-//   in-memory Changefeed. The host app (this class) polls the daemon every
-//   5 seconds via the sync.pollChanges JSON-RPC method over the daemon's
-//   Unix-domain socket. When changes are reported, the host app calls
-//   NSFileProviderManager.signalEnumerator(for:) for each affected
-//   container so Finder re-enumerates and picks up new/modified/removed items.
+//   With the Go daemon removed, the FPE is the engine owner. The FPE
+//   calls NSFileProviderManager.signalEnumerator() directly from within
+//   the extension process whenever its sync engine detects changes —
+//   the host app no longer needs to poll a daemon over a Unix socket.
 //
-// Trade-off:
+//   ChangeWatcher is therefore reduced to a single one-shot "full resync"
+//   signal emitted at app launch. This ensures Finder re-enumerates all
+//   domains after the host app starts (e.g. after a login-item boot),
+//   which covers any changes that accumulated while the host was stopped.
 //
-//   Automatic Finder refresh requires the host app to be running. If the user
-//   quits OneLake.app, Finder's File Provider Extension continues to work
-//   (files can be opened, uploaded, downloaded) but it will not receive
-//   proactive refresh signals. Finder performs its own periodic re-enumeration
-//   as a fallback; the cadence is controlled by macOS and is typically slower
-//   than our 5-second polling interval.
+//   Ongoing change signaling is the FPE's responsibility and will be
+//   implemented as part of the sync engine's change-observer integration
+//   (Fase 7.4+).
 //
 // This class is @MainActor because NSFileProviderManager calls are
 // documented as main-thread-only.
@@ -32,104 +30,26 @@ final class ChangeWatcher {
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "change-watcher")
 
-    /// How often the watcher polls the daemon for new change events.
-    private static let pollInterval: TimeInterval = 5
-
-    private var task: Task<Void, Never>?
-    private var anchor: Date?
-
     private init() {}
 
     // MARK: - Lifecycle
 
-    /// Start the polling loop. Safe to call multiple times; a second call
-    /// cancels the previous loop and starts a fresh one.
+    /// Emit a one-shot full-resync signal to all registered domains so
+    /// Finder re-enumerates after app launch. Safe to call multiple times;
+    /// each call triggers a new resync.
     func start() {
-        task?.cancel()
-        task = Task { [weak self] in
-            await self?.runLoop()
+        Task { [weak self] in
+            await self?.signalAllDomains()
         }
-        Self.log.info("ChangeWatcher started (poll interval \(Self.pollInterval, privacy: .public)s)")
+        Self.log.info("ChangeWatcher: one-shot launch resync triggered (FPE-owned change signaling)")
     }
 
-    /// Stop the polling loop. Safe to call when already stopped.
+    /// No-op in the FPE-only architecture. Kept for call-site compatibility.
     func stop() {
-        task?.cancel()
-        task = nil
-        Self.log.info("ChangeWatcher stopped")
-    }
-
-    // MARK: - Polling loop
-
-    private func runLoop() async {
-        guard let socketPath = IPCClient.defaultSocketPath() else {
-            Self.log.error("ChangeWatcher: cannot resolve daemon socket path")
-            return
-        }
-        let client = IPCClient(socketPath: socketPath)
-        var conn: IPCPersistentConnection?
-
-        defer {
-            if let c = conn { client.closePersistentConnection(c) }
-        }
-
-        while !Task.isCancelled {
-            do {
-                if conn == nil {
-                    conn = try await client.openPersistentConnection()
-                    // On reconnect, use nil anchor so the daemon sends all
-                    // events it currently holds and we signal a full-resync
-                    // to recover anything missed while disconnected.
-                    anchor = nil
-                    Self.log.debug("ChangeWatcher: connected to daemon")
-                }
-
-                let result = try await client.pollChanges(conn: conn!, since: anchor)
-                anchor = result.anchor
-
-                if result.fullResync {
-                    Self.log.info("ChangeWatcher: full-resync requested by daemon")
-                    await signalAllDomains()
-                } else {
-                    await signal(events: result.events)
-                }
-            } catch {
-                Self.log.warning(
-                    "ChangeWatcher: poll failed, will retry: \(error.localizedDescription, privacy: .public)"
-                )
-                // Reset connection so next iteration reconnects.
-                if let c = conn {
-                    client.closePersistentConnection(c)
-                    conn = nil
-                }
-                // If the daemon reported FullResync in a response that we fail
-                // to process (e.g. signalEnumerator threw), the flag is lost.
-                // On reconnect we reset anchor to nil, which causes the daemon
-                // to return all events it currently holds; if the feed itself was
-                // truncated the daemon will set FullResync again. A persistent
-                // pendingFullResync flag would be more robust but adds complexity
-                // that is not yet warranted.
-                anchor = nil
-            }
-
-            // Wait before next poll, but stop immediately on cancellation.
-            try? await Task.sleep(nanoseconds: UInt64(Self.pollInterval * 1_000_000_000))
-        }
+        Self.log.debug("ChangeWatcher: stop() called (no-op in FPE-only mode)")
     }
 
     // MARK: - Signaling
-
-    private func signal(events: [(domainId: String, containerId: String)]) async {
-        guard !events.isEmpty else { return }
-
-        // Deduplicate: one signal per (domain, container) pair is enough.
-        var seen = Set<String>()
-        for ev in events {
-            let key = "\(ev.domainId)||\(ev.containerId)"
-            guard seen.insert(key).inserted else { continue }
-            await signalContainer(domainId: ev.domainId, containerId: ev.containerId)
-        }
-    }
 
     private func signalAllDomains() async {
         do {
@@ -140,9 +60,12 @@ final class ChangeWatcher {
                     containerId: NSFileProviderItemIdentifier.workingSet.rawValue
                 )
             }
+            Self.log.info(
+                "ChangeWatcher: resync signal sent to \(domains.count, privacy: .public) domain(s)"
+            )
         } catch {
             Self.log.error(
-                "ChangeWatcher: could not list domains for full-resync: \(error.localizedDescription, privacy: .public)"
+                "ChangeWatcher: could not list domains for resync: \(error.localizedDescription, privacy: .public)"
             )
         }
     }
@@ -175,8 +98,7 @@ final class ChangeWatcher {
                 "ChangeWatcher: signalled \(domainId, privacy: .public)/\(containerId, privacy: .public)"
             )
         } catch {
-            // signalEnumerator errors are non-fatal; Finder's own periodic
-            // refresh will catch up eventually.
+            // Non-fatal: Finder's own periodic refresh will catch up.
             Self.log.warning(
                 "ChangeWatcher: signalEnumerator failed for \(domainId, privacy: .public)/\(containerId, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
