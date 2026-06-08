@@ -12,11 +12,10 @@
 //   • Open at Login toggle
 //   • Open Logs Folder, Open Config File items
 //
-// "Open Config File" is gone entirely — users must never need to hand-
-// edit the TOML file (the daemon owns it; everything actionable now
-// lives in the Settings window). The Open Logs Folder affordance moved
-// to the Advanced tab, where it's the natural neighbour of the log
-// level Picker.
+// Fase 7.3a: account list and status are sourced from SharedOfemAuth
+// (config.toml) rather than the Go daemon. The "Add Account" and account
+// actions work without the daemon running. "Daemon not running" state is
+// no longer shown — model.isRunning is always true.
 
 import AppKit
 import SwiftUI
@@ -65,15 +64,10 @@ struct MenuBarView: View {
     @ViewBuilder
     private var accountRows: some View {
         if model.accounts.isEmpty {
-            if model.isRunning {
-                // Empty state: guide the user to add their first account.
-                Button("Add Account…") {
-                    openAddAccountWindow()
-                }
-            } else {
-                Text("Daemon not running")
-                    .foregroundStyle(.secondary)
-                    .disabled(true)
+            // Empty state (no accounts yet): guide the user to add the first.
+            // Fase 7.3a: isRunning is always true so Add Account is always enabled.
+            Button("Add Account…") {
+                openAddAccountWindow()
             }
         } else {
             ForEach(model.accounts) { account in
@@ -90,12 +84,10 @@ struct MenuBarView: View {
                     }
                 }
             }
-            // Always-visible item so existing users can add more
-            // accounts at any time.
+            // Always-visible item so existing users can add more accounts.
             Button("Add Account…") {
                 openAddAccountWindow()
             }
-            .disabled(!model.isRunning)
         }
     }
 
@@ -133,7 +125,9 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var aboutItem: some View {
-        Button("About OFEM\(model.daemonVersion.isEmpty ? "" : " v\(model.daemonVersion)")…") {
+        // daemonVersion is populated when the daemon happens to be running;
+        // in Fase 7.3a the app version is the authoritative label regardless.
+        Button("About OFEM…") {
             AboutWindowController.shared.show()
         }
     }

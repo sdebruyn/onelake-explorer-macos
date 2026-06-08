@@ -95,6 +95,16 @@ public struct AccountInfo: Decodable, Identifiable {
     public let tenantId: String
     public let tenantName: String
 
+    /// Memberwise initialiser used by MenuStatusModel's native refresh path
+    /// (Fase 7.3a) to construct AccountInfo from an OfemKit.Account without
+    /// going through JSON decoding.
+    public init(alias: String, username: String, tenantId: String, tenantName: String) {
+        self.alias = alias
+        self.username = username
+        self.tenantId = tenantId
+        self.tenantName = tenantName
+    }
+
     private enum CodingKeys: String, CodingKey {
         case alias, username, tenantId, tenantName
     }

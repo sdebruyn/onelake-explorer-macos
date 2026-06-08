@@ -40,6 +40,21 @@ final class OfemFPEClient {
 
     // MARK: - Public API
 
+    /// Registers a new account with the system by adding a File Provider domain
+    /// for the given alias.
+    ///
+    /// Call this after `SharedOfemAuth.signIn` persists the account to config.toml.
+    /// The FPE process is started by macOS when the domain is added; it reads
+    /// the account from the shared config.toml on first enumeration.
+    ///
+    /// This replaces the previous `CoreBridge.login()` flow for domain registration.
+    ///
+    /// - Parameter info: The account info returned by `SharedOfemAuth.signIn`.
+    func addAccount(_ info: XPCAccountInfo) async {
+        await DomainSyncManager.shared.addDomain(alias: info.alias)
+        Self.log.info("addAccount: domain registered for alias=\(info.alias, privacy: .public)")
+    }
+
     /// Returns the list of accounts from the FPE for the given domain alias.
     ///
     /// - Parameter alias: The account alias identifying the domain.
