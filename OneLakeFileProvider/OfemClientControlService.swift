@@ -269,17 +269,6 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
         }
     }
 
-    // MARK: - notifyAuthComplete
-
-    func notifyAuthComplete(sessionID: String, reply: @escaping (Error?) -> Void) {
-        // Reserved for the future two-phase auth flow (Fase 7.3).
-        // In Fase 7.2 the host app drives the entire MSAL interactive flow.
-        Self.log.debug(
-            "notifyAuthComplete(sessionID:\(sessionID, privacy: .private)) — no-op in Fase 7.2"
-        )
-        reply(nil)
-    }
-
     // MARK: - status
 
     func status(reply: @escaping ([String: Any]?, Error?) -> Void) {

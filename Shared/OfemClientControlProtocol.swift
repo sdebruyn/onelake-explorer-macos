@@ -71,23 +71,6 @@ import Foundation
     ///   - reply: Called on completion with nil on success, or an error.
     func setDefaultAccount(alias: String, reply: @escaping (Error?) -> Void)
 
-    // MARK: - Auth URL relay
-
-    /// Phase-2 relay for the interactive login flow.
-    ///
-    /// After `addAccount` responds with an `authURL`, the host app
-    /// opens it in the browser and then calls this method with the
-    /// `sessionID` to unblock the FPE's MSAL wait loop. The FPE
-    /// completes token acquisition internally; the result was already
-    /// delivered via the `addAccount` reply block.
-    ///
-    /// Note: in the current OfemKit implementation MSAL drives the
-    /// full OAuth round-trip in-process (host app), so this relay
-    /// method is reserved for a future two-phase split if the
-    /// interactive flow ever moves inside the FPE process. The host
-    /// app performs the MSAL interactive call itself in Fase 7.2.
-    func notifyAuthComplete(sessionID: String, reply: @escaping (Error?) -> Void)
-
     // MARK: - Status
 
     /// Returns a lightweight status snapshot from the FPE engine.
