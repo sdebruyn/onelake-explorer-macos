@@ -340,13 +340,22 @@ public actor CacheStore {
         let (sha, size) = try blobs.store(data)
 
         // Update metadata row's blob columns.
-        try dbPool.write { db in
+        let affected = try dbPool.write { db -> Int in
             try db.execute(sql: """
                 UPDATE path_metadata
                 SET blob_sha256 = ?, blob_size = ?, last_accessed_ns = ?
                 WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
                 """, arguments: [sha, size, currentNs(),
                                  key.accountAlias, key.workspaceID, key.itemID, key.path])
+            return db.changesCount
+        }
+        if affected == 0 {
+            // The blob was written to disk but no metadata row exists — surface
+            // the error so the caller can upsert the row first. The orphaned
+            // blob will be reclaimed by a subsequent eviction pass.
+            throw CacheError.notFound(
+                "\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)"
+            )
         }
     }
 

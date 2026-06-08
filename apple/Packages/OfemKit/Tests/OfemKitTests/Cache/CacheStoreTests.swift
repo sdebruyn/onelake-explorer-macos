@@ -257,6 +257,21 @@ struct CacheStoreTests {
         #expect(row.contentLength == 77)
     }
 
+    // MARK: - StoreBlob
+
+    @Test("StoreBlob throws notFound when metadata row is missing")
+    func storeBlobMissingRowThrows() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = try CacheStore(root: tmp)
+        let key = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "ghost.txt")
+        await #expect(throws: CacheError.self) {
+            try await store.storeBlob(key: key, data: Data("hello".utf8))
+        }
+    }
+
+    // MARK: - Reader
+
     @Test("Reader.children returns correct rows")
     func readerChildrenWorks() async throws {
         let store = try makeInMemoryStore()

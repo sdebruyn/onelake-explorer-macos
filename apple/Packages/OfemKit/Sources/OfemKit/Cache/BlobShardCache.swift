@@ -159,15 +159,9 @@ public struct BlobShardCache: Sendable {
             options: [.skipsHiddenFiles]
         )
         while let url = enumerator?.nextObject() as? URL {
-            var isRegular: ObjCBool = false
-            FileManager.default.fileExists(atPath: url.path, isDirectory: &isRegular)
-            guard !isRegular.boolValue else {
-                // This is a directory — skip.
-                continue
-            }
             // Skip temp files.
             if url.pathExtension == "tmp" { continue }
-            // Check it's a regular file.
+            // Only count regular files (excludes shard subdirectories).
             guard let vals = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
                   vals.isRegularFile == true else { continue }
             count += 1
@@ -187,7 +181,13 @@ public struct BlobShardCache: Sendable {
             includingPropertiesForKeys: nil
         )
         for entry in entries {
-            try? FileManager.default.removeItem(at: entry)
+            do {
+                try FileManager.default.removeItem(at: entry)
+            } catch {
+                Self.log.warning(
+                    "BlobShardCache: wipeAll failed to remove entry=\(entry.lastPathComponent, privacy: .public) error=\(error, privacy: .public)"
+                )
+            }
         }
     }
 
