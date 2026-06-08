@@ -2,9 +2,9 @@
 // The Settings scene the host app exposes via SwiftUI's Settings { … }
 // scene. Layout follows System Settings conventions: LabeledContent rows
 // inside Form sections (`.grouped` style), values right-aligned, controls
-// sized for inline reading. Every IPC write goes through MenuStatusModel's
+// sized for inline reading. Every config write goes through MenuStatusModel's
 // debounced setters so dragging a Slider or holding a Stepper arrow does
-// not flood the daemon with config.set calls.
+// not flood the FPE with config.set calls.
 //
 // Hard rule: the user must never need to hand-edit the TOML config file.
 // There is no "Open Config File" affordance anywhere in this window or
@@ -59,7 +59,7 @@ private struct GeneralSettingsTab: View {
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Open at Login")
-                        Text("Start the OneLake daemon automatically when you sign in.")
+                        Text("Start OneLake automatically when you sign in.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

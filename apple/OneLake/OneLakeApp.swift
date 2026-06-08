@@ -25,11 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.log.info("OneLake host app did finish launching")
 
-        // On the very first launch after a Homebrew install the daemon
-        // LaunchAgent has never been registered with launchd, so the app
-        // would spin indefinitely waiting for an IPC peer that never starts.
-        // One-shot bootstrap: register and never do it again (the flag
-        // persists across restarts). The Settings "Open at Login" toggle
+        // One-shot login-item bootstrap: register the app as a login item
+        // on the very first launch so it opens at login automatically after
+        // a fresh Homebrew install. The Settings "Open at Login" toggle
         // remains the authoritative control for every subsequent launch.
         Task { @MainActor in
             LoginItemManager.shared.bootstrapIfNeeded()
