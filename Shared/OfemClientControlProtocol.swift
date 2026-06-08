@@ -71,16 +71,6 @@ import Foundation
     ///   - reply: Called on completion with nil on success, or an error.
     func setDefaultAccount(alias: String, reply: @escaping (Error?) -> Void)
 
-    // MARK: - Status
-
-    /// Returns a lightweight status snapshot from the FPE engine.
-    ///
-    /// - Parameter reply: Called with an optional status dictionary or
-    ///   an error. The dictionary contains:
-    ///   - "accounts": [[String: String]] (alias, username, tenantId, tenantName)
-    ///   - "defaultAccount": String
-    func status(reply: @escaping ([String: Any]?, Error?) -> Void)
-
     // MARK: - Engine status (Fase 7.3b-1)
 
     /// Returns a rich engine status snapshot: cache usage, config fields,
