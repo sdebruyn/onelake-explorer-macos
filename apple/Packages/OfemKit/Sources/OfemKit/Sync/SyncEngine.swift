@@ -259,8 +259,7 @@ public actor SyncEngine {
             name: "item_list",
             accountAliasHash: TelemetryRedaction.hashAlias(alias),
             durationMs: elapsedMs(since: start),
-            success: false,
-            errorCode: ""
+            success: true
         ))
         return items
     }
