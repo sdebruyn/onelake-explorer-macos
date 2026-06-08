@@ -169,9 +169,12 @@ public final class RotatingFileWriter: @unchecked Sendable {
     /// Gzip-compresses `source` into `destination` using `Data`-level zlib.
     ///
     /// Apple's `NSData` compression infrastructure is used rather than a
-    /// third-party dependency. The `.zlib` algorithm writes a raw zlib stream;
-    /// we wrap it in a gzip container via `FileHandle`-level byte writes so that
-    /// standard `gunzip` / log viewers understand the file.
+    /// third-party dependency. Despite the `.zlib` algorithm name,
+    /// `NSData.compressed(.zlib)` on macOS produces raw DEFLATE (RFC 1951)
+    /// without a zlib wrapper — exactly what the gzip format (RFC 1952)
+    /// requires as its compressed payload. The gzip envelope (10-byte
+    /// header + CRC-32/ISIZE trailer) is assembled manually so that
+    /// standard `gunzip` / log viewers can open the rotated files.
     ///
     /// If compression fails the raw bytes are copied verbatim so that no log
     /// data is lost.
