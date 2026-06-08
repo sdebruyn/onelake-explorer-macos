@@ -42,7 +42,7 @@ jobs:
         run: make apple-gen
 
       - name: Verify project.pbxproj exists
-        run: test -f apple/OneLake.xcodeproj/project.pbxproj
+        run: test -f OneLake.xcodeproj/project.pbxproj
 
       - name: Smoke tests (unsigned, host-less)
         # OneLakeTests bundle: File Provider identifier grammar (pure logic).

@@ -8,8 +8,8 @@
 #   make apple-clean    — remove build artefacts + unregister from LaunchServices
 #   make apple-gen      — regenerate OneLake.xcodeproj from project.yml
 
-XCODE_PROJECT := apple/OneLake.xcodeproj
-APPLE_CONFIG  := apple/Local.xcconfig
+XCODE_PROJECT := OneLake.xcodeproj
+APPLE_CONFIG  := Local.xcconfig
 
 .PHONY: app apple-bootstrap apple-gen apple-build apple-build-ci apple-test apple-clean help
 
@@ -25,9 +25,9 @@ APPLE_UNSIGNED := CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDE
 
 # First-time setup: copy the xcconfig sample if it's missing and tell the
 # user to fill in their team ID.
-apple-bootstrap: ## Write apple/Local.xcconfig from the sample (first-time setup)
+apple-bootstrap: ## Write Local.xcconfig from the sample (first-time setup)
 	@if [ ! -f $(APPLE_CONFIG) ]; then \
-		cp apple/Local.xcconfig.sample $(APPLE_CONFIG); \
+		cp Local.xcconfig.sample $(APPLE_CONFIG); \
 		echo "Created $(APPLE_CONFIG). Edit it and set DEVELOPMENT_TEAM."; \
 	else \
 		echo "$(APPLE_CONFIG) already exists. Nothing to do."; \
@@ -35,18 +35,18 @@ apple-bootstrap: ## Write apple/Local.xcconfig from the sample (first-time setup
 
 # Regenerate the .xcodeproj from project.yml. Run after touching project.yml.
 # --project-root . lets the spec reference source paths from the repo root
-# (e.g. "apple/OneLake") while --project apple drops the generated
-# .xcodeproj next to the spec.
-apple-gen: ## Regenerate OneLake.xcodeproj from apple/project.yml
+# (e.g. "OneLake") while --project . drops the generated .xcodeproj at the
+# repo root, next to the spec.
+apple-gen: ## Regenerate OneLake.xcodeproj from project.yml
 	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: brew install xcodegen"; exit 1; }
-	xcodegen generate --spec apple/project.yml --project-root . --project apple
+	xcodegen generate --spec project.yml --project-root . --project .
 
 # Build the OneLake.app target (Debug, arm64) for local dogfooding.
 apple-build: apple-gen ## Build OneLake.app (Debug, signed) for local use
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLake \
 		-configuration Debug \
-		-derivedDataPath apple/DerivedData \
+		-derivedDataPath DerivedData \
 		-allowProvisioningUpdates \
 		build
 
@@ -59,7 +59,7 @@ apple-build-ci: apple-gen ## Compile app + .appex unsigned (CI gate)
 		-scheme OneLake \
 		-configuration Debug \
 		-destination 'platform=macOS,arch=arm64' \
-		-derivedDataPath apple/DerivedData \
+		-derivedDataPath DerivedData \
 		$(APPLE_UNSIGNED) \
 		build
 
@@ -70,12 +70,12 @@ apple-test: apple-gen ## Run Swift unit tests (unsigned, host-less)
 		-scheme OneLakeTests \
 		-configuration Debug \
 		-destination 'platform=macOS,arch=arm64' \
-		-derivedDataPath apple/DerivedData \
+		-derivedDataPath DerivedData \
 		$(APPLE_UNSIGNED) \
 		test
 
 # Removes generated/build artefacts AND unregisters the built app from
-# LaunchServices. apple/Local.xcconfig is preserved (per-developer
+# LaunchServices. Local.xcconfig is preserved (per-developer
 # DEVELOPMENT_TEAM, not a build output) — use `make apple-bootstrap` to recreate.
 #
 # The unregister matters: building the .app in multiple locations (e.g.
@@ -84,10 +84,10 @@ apple-test: apple-gen ## Run Swift unit tests (unsigned, host-less)
 # (-2001) and the Finder mount never appears. Always run `make apple-clean`
 # before removing a worktree you built the app in.
 apple-clean: ## Remove build artefacts and unregister app from LaunchServices
-	@app="$(PWD)/apple/DerivedData/Build/Products/Debug/OneLake.app"; \
+	@app="$(PWD)/DerivedData/Build/Products/Debug/OneLake.app"; \
 	lsreg="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"; \
 	if [ -d "$$app" ] && [ -x "$$lsreg" ]; then "$$lsreg" -u "$$app" 2>/dev/null || true; fi
-	rm -rf apple/OneLake.xcodeproj apple/OneLake.xcworkspace apple/build apple/DerivedData
+	rm -rf OneLake.xcodeproj OneLake.xcworkspace build DerivedData
 
 help: ## Show available targets
 	@echo "Targets:"
