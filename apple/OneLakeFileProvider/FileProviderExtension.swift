@@ -1,62 +1,72 @@
 // FileProviderExtension.swift
 // `NSFileProviderReplicatedExtension` subclass for OFEM.
 //
-// macOS instantiates one of these per registered domain (one domain
-// per account-alias). Every protocol method dispatches into the Go
-// core through `CoreBridge`, mapping bridge-level errors to typed
-// `NSFileProviderError` values the framework retries / surfaces
-// appropriately.
+// Fase 7.2: The FPE now hosts an OfemEngine (via FPEEngineHost) and
+// drives enumeration, fetch and write operations directly through the
+// Swift engine rather than the Go-daemon Unix-socket IPC.
 //
-// Enumeration, fetch, and the full write path (create / modify / delete)
-// are wired up. Metadata-only modifications (rename, reparent, xattr)
-// return NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)
-// — `NSFileProviderError.Code.featureUnsupported` is iOS-only, so we use
-// Foundation's generic equivalent — and are not yet implemented.
+// Architecture transition:
+//   - FPE creates one FPEEngineHost per domain (one per account alias).
+//   - Engine-backed enumerators (OfemFPEEnumerator) replace
+//     CoreBridge calls for all list/enumerate operations.
+//   - Fetch and write operations call SyncEngine.open / put / delete /
+//     mkdir directly.
+//   - The CoreBridge / Unix-socket IPC code in apple/Shared/ remains
+//     compiled and in use for the host app's account management (status,
+//     addAccount, etc.). It is removed in Fase 7.3.
+//
+// Error mapping: FPError.classify(error) maps any OfemKit error to a
+// stable FPError.Code which nsFileProviderError(for:) then maps to
+// NSFileProviderError. This replaces the BridgeError.nsFileProviderError
+// extension used on the IPC path.
 
 import FileProvider
 import Foundation
+import OfemKit
 import os.log
+
+// The FPE target's legacy IPC parser is now named `BridgeItemIdentifierParser`
+// (returns `EnumScope` from `NSFileProviderItemIdentifier`).
+// OfemKit exports `ItemIdentifierParser` (returns `ItemIdentifier` from `String`).
+// This file calls the OfemKit version via `parseOfemItemIdentifier` (defined in
+// OfemFPEEnumerator.swift) to keep call sites readable.
 
 /// File Provider Extension entry point. Sandboxed; each registered
 /// OneLake account-alias gets its own instance.
-final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
+///
+/// `NSFileProviderServicing` is the optional protocol for exposing
+/// `NSFileProviderService` sources to the host app over XPC.
+final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderServicing {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
         category: "extension"
     )
 
-    /// The domain this extension instance was created for. Used to
-    /// derive the account-alias every bridge call must be scoped to.
+    /// The domain this extension instance was created for.
     let domain: NSFileProviderDomain
 
     /// Cached alias so we don't re-strip the prefix on every call.
     private let alias: String
 
-    /// Designated initializer the File Provider framework calls.
+    /// Per-domain engine container.
+    ///
+    /// One engine per FPE domain instance = one engine per alias.
+    /// Built lazily on first use by FPEEngineHost.
+    private let engineHost: FPEEngineHost
+
+    // MARK: - Designated initializer
+
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
         self.alias = OneLakeEnumerator.alias(from: domain)
+        self.engineHost = FPEEngineHost(alias: self.alias, domain: domain)
         super.init()
         FileProviderExtension.log.info(
-            "Initialised extension for domain \(domain.identifier.rawValue, privacy: .public) (alias=\(self.alias, privacy: .public))"
+            "Initialised extension for domain \(domain.identifier.rawValue, privacy: .public) (alias=\(self.alias, privacy: .public)) [engine-path]"
         )
-        // Lazily boot the Go core. Idempotent — multiple extension
-        // instances for different domains share one Go runtime in
-        // this process.
-        let ok = CoreBridge.shared.bootstrap()
-        if !ok {
-            FileProviderExtension.log.error(
-                "CoreBridge.bootstrap() returned false for domain \(domain.identifier.rawValue, privacy: .public)"
-            )
-        }
     }
 
-    /// Directory for staging fetched file contents before handing the
-    /// URL back to the system. We use the framework-managed per-domain
-    /// temporary directory: files written here are imported and then
-    /// reaped by the system, so the extension never deletes them itself
-    /// (deleting races the system's asynchronous import and yields a
-    /// POSIX ENOENT materialization failure).
+    /// Directory for staging fetched file contents.
     private func fetchScratchDirectory() throws -> URL {
         guard let manager = NSFileProviderManager(for: domain) else {
             throw NSError(domain: NSCocoaErrorDomain, code: NSFileNoSuchFileError)
@@ -64,12 +74,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         return try manager.temporaryDirectoryURL()
     }
 
-    /// Called when macOS is done with this extension instance. The
-    /// completion handler must be invoked exactly once.
+    /// Called when macOS is done with this extension instance.
     func invalidate() {
         FileProviderExtension.log.info(
             "Invalidating extension for domain \(self.domain.identifier.rawValue, privacy: .public)"
         )
+        Task {
+            await engineHost.shutdown()
+        }
     }
 
     // MARK: - Item metadata
@@ -79,56 +91,42 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         request _: NSFileProviderRequest,
         completionHandler: @escaping (NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
-        // Indeterminate progress: the work runs on a background queue and
-        // NSProgress is not safe to mutate there while the framework reads
-        // it, so we never touch completedUnitCount. Completion is signalled
-        // by the completion handler, which is the framework's real done
-        // signal. (Same pattern in every method below.)
         let progress = Progress(totalUnitCount: -1)
-        let scope: EnumScope
-        do {
-            scope = try ItemIdentifierParser.parse(identifier)
-        } catch let error as BridgeError {
-            completionHandler(nil, error.nsFileProviderError)
-            return progress
-        } catch {
-            completionHandler(nil, error)
-            return progress
-        }
 
-        // Working set / trash containers have synthetic identities;
-        // macOS sometimes asks for `item(for:)` on them. Returning
-        // `.noSuchItem` is safe — the framework treats it as "the
-        // container exists but has no entry of its own".
-        switch scope {
-        case .workingSet, .trashContainer:
+        // Parse identifier — use OfemKit's parser.
+        let ofemID: ItemIdentifier
+        do {
+            ofemID = try parseOfemItemIdentifier(identifier.rawValue)
+        } catch {
             completionHandler(nil, NSFileProviderError(.noSuchItem))
             return progress
-        default:
-            break
         }
 
-        let bridgeId = ItemIdentifierParser.bridgeIdentifier(for: scope)
-        let aliasCopy = self.alias
+        // Working set / trash are synthetic; return noSuchItem.
+        if identifier == .workingSet || identifier == .trashContainer {
+            completionHandler(nil, NSFileProviderError(.noSuchItem))
+            return progress
+        }
+
+        let aliasCopy = alias
+        let hostCopy = engineHost
         let task = Task {
             do {
-                let item = try await CoreBridge.shared.item(alias: aliasCopy, identifier: bridgeId)
-                completionHandler(OneLakeItem(from: item), nil)
+                let engine = try await hostCopy.engine()
+                let item = try await engineFetchItem(
+                    identifier: ofemID,
+                    alias: aliasCopy,
+                    engine: engine
+                )
+                completionHandler(item, nil)
             } catch is CancellationError {
-                FileProviderExtension.log.debug(
-                    "item(for:) cancelled for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public)"
-                )
                 completionHandler(nil, NSFileProviderError(.cannotSynchronize))
-            } catch let error as BridgeError {
-                FileProviderExtension.log.error(
-                    "item(for:) failed for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-                completionHandler(nil, error.nsFileProviderError)
             } catch {
+                let code = FPError.classify(error)
                 FileProviderExtension.log.error(
-                    "item(for:) failed for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "item(for:) failed for \(aliasCopy, privacy: .public)/\(ofemID.identifierString, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
-                completionHandler(nil, error)
+                completionHandler(nil, nsFileProviderError(for: code))
             }
         }
         progress.cancellationHandler = { task.cancel() }
@@ -144,75 +142,66 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: -1)
-        let scope: EnumScope
-        do {
-            scope = try ItemIdentifierParser.parse(itemIdentifier)
-        } catch let error as BridgeError {
-            completionHandler(nil, nil, error.nsFileProviderError)
-            return progress
-        } catch {
-            completionHandler(nil, nil, error)
-            return progress
-        }
 
-        // Fetching contents only makes sense for an item below the
-        // root — never the root container, never the working set.
-        switch scope {
-        case .rootContainer, .workingSet, .trashContainer:
+        let ofemID: ItemIdentifier
+        do {
+            ofemID = try parseOfemItemIdentifier(itemIdentifier.rawValue)
+        } catch {
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
             return progress
-        default:
-            break
         }
 
-        let bridgeId = ItemIdentifierParser.bridgeIdentifier(for: scope)
-        let aliasCopy = self.alias
-        // Ask macOS where to drop the file by allocating a temp file
-        // under the per-extension scratch directory. The framework
-        // then atomically moves it into its own replicated store
-        // once we hand the URL back.
+        // Only file-level paths make sense for content fetch.
+        guard case .path = ofemID else {
+            // root / workspace / item root don't have file contents.
+            completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+            return progress
+        }
+
         let dest: URL
         do {
-            // The system takes ownership of the file we hand back: it
-            // imports the bytes asynchronously AFTER the completion
-            // handler returns. We must NOT delete the file (or its parent)
-            // ourselves — doing so races the import and the system then
-            // sees POSIX ENOENT and fails materialization. We therefore
-            // write into the per-domain temporary directory the framework
-            // manages and reaps for exactly this purpose.
             let tmpDir = try fetchScratchDirectory()
             dest = tmpDir.appendingPathComponent(UUID().uuidString)
         } catch {
             FileProviderExtension.log.error(
-                "fetchContents: temp dir resolution failed: \(error.localizedDescription, privacy: .public)"
+                "fetchContents: temp dir failed: \(error.localizedDescription, privacy: .public)"
             )
             completionHandler(nil, nil, error)
             return progress
         }
 
+        let aliasCopy = alias
+        let hostCopy = engineHost
         let task = Task {
             do {
-                let item = try await CoreBridge.shared.fetchContents(
+                let engine = try await hostCopy.engine()
+                let domainItem = try await engineFetchItem(
+                    identifier: ofemID,
                     alias: aliasCopy,
-                    identifier: bridgeId,
-                    dest: dest
+                    engine: engine
                 )
-                completionHandler(dest, OneLakeItem(from: item), nil)
+                // Download via the sync engine (returns Data).
+                guard case let .path(wsID, itemID, path) = ofemID else {
+                    completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+                    return
+                }
+                let key = CacheKey(
+                    accountAlias: aliasCopy,
+                    workspaceID: wsID,
+                    itemID: itemID,
+                    path: path
+                )
+                let data = try await engine.sync.open(key: key)
+                try data.write(to: dest)
+                completionHandler(dest, domainItem, nil)
             } catch is CancellationError {
-                FileProviderExtension.log.debug(
-                    "fetchContents cancelled for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public)"
-                )
                 completionHandler(nil, nil, NSFileProviderError(.cannotSynchronize))
-            } catch let error as BridgeError {
-                FileProviderExtension.log.error(
-                    "fetchContents failed for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-                completionHandler(nil, nil, error.nsFileProviderError)
             } catch {
+                let code = FPError.classify(error)
                 FileProviderExtension.log.error(
-                    "fetchContents failed for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "fetchContents failed for \(aliasCopy, privacy: .public)/\(ofemID.identifierString, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
-                completionHandler(nil, nil, error)
+                completionHandler(nil, nil, nsFileProviderError(for: code))
             }
         }
         progress.cancellationHandler = { task.cancel() }
@@ -232,51 +221,47 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         ) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: -1)
-        let aliasCopy = self.alias
 
-        let parentScope: EnumScope
+        let parentID: ItemIdentifier
         do {
-            parentScope = try ItemIdentifierParser.parse(template.parentItemIdentifier)
-        } catch let error as BridgeError {
-            completionHandler(nil, [], false, error.nsFileProviderError)
-            return progress
+            parentID = try parseOfemItemIdentifier(
+                template.parentItemIdentifier.rawValue
+            )
         } catch {
-            completionHandler(nil, [], false, error)
+            completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
             return progress
         }
-        let parentBridgeId = ItemIdentifierParser.bridgeIdentifier(for: parentScope)
+
+        let aliasCopy = alias
+        let hostCopy = engineHost
         let isDir = template.contentType == .folder
-        let srcPath = contents?.path
+        let filename = template.filename
+        let srcURL = contents
 
         FileProviderExtension.log.debug(
-            "createItem \(template.filename, privacy: .public) isDir=\(isDir, privacy: .public) parent=\(parentBridgeId, privacy: .public)"
+            "createItem \(filename, privacy: .public) isDir=\(isDir, privacy: .public) parent=\(parentID.identifierString, privacy: .public)"
         )
 
         let task = Task {
             do {
-                let bridgeItem = try await CoreBridge.shared.createItem(
-                    alias: aliasCopy,
-                    parentIdentifier: parentBridgeId,
-                    filename: template.filename,
+                let engine = try await hostCopy.engine()
+                let item = try await engineCreateItem(
+                    parentID: parentID,
+                    filename: filename,
                     isDir: isDir,
-                    srcPath: srcPath
+                    contents: srcURL,
+                    alias: aliasCopy,
+                    engine: engine
                 )
-                completionHandler(OneLakeItem(from: bridgeItem), [], false, nil)
+                completionHandler(item, [], false, nil)
             } catch is CancellationError {
-                FileProviderExtension.log.debug(
-                    "createItem cancelled for \(aliasCopy, privacy: .public)/\(parentBridgeId, privacy: .public)/\(template.filename, privacy: .public)"
-                )
                 completionHandler(nil, [], false, NSFileProviderError(.cannotSynchronize))
-            } catch let error as BridgeError {
-                FileProviderExtension.log.error(
-                    "createItem failed for \(aliasCopy, privacy: .public)/\(parentBridgeId, privacy: .public)/\(template.filename, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-                completionHandler(nil, [], false, error.nsFileProviderError)
             } catch {
+                let code = FPError.classify(error)
                 FileProviderExtension.log.error(
                     "createItem failed: \(error.localizedDescription, privacy: .public)"
                 )
-                completionHandler(nil, [], false, error)
+                completionHandler(nil, [], false, nsFileProviderError(for: code))
             }
         }
         progress.cancellationHandler = { task.cancel() }
@@ -296,14 +281,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     ) -> Progress {
         let progress = Progress(totalUnitCount: -1)
 
-        // Content-bearing modifications only. Metadata-only changes (rename,
-        // reparent, xattr) come back as NSFeatureUnsupportedError so macOS does
-        // not retry them in a loop. NSFileProviderError has no featureUnsupported
-        // case on macOS, so Foundation's generic equivalent is the conventional
-        // fallback.
+        // Content-bearing modifications only.
         guard changedFields.contains(.contents), let contentsURL = contents else {
             FileProviderExtension.log.debug(
-                "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — metadata-only, not yet supported"
+                "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — metadata-only, not supported"
             )
             completionHandler(
                 nil, [], false,
@@ -312,45 +293,52 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return progress
         }
 
-        let aliasCopy = self.alias
-        let scope: EnumScope
+        let ofemID: ItemIdentifier
         do {
-            scope = try ItemIdentifierParser.parse(item.itemIdentifier)
-        } catch let error as BridgeError {
-            completionHandler(nil, [], false, error.nsFileProviderError)
-            return progress
+            ofemID = try parseOfemItemIdentifier(item.itemIdentifier.rawValue)
         } catch {
-            completionHandler(nil, [], false, error)
+            completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
             return progress
         }
-        let identifier = ItemIdentifierParser.bridgeIdentifier(for: scope)
-        let srcPath = contentsURL.path
 
-        FileProviderExtension.log.debug("modifyItem \(identifier, privacy: .public)")
+        guard case let .path(wsID, itemID, path) = ofemID else {
+            completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
+            return progress
+        }
+
+        let aliasCopy = alias
+        let hostCopy = engineHost
+
+        FileProviderExtension.log.debug(
+            "modifyItem \(ofemID.identifierString, privacy: .public)"
+        )
 
         let task = Task {
             do {
-                let bridgeItem = try await CoreBridge.shared.modifyItem(
+                let engine = try await hostCopy.engine()
+                let data = try Data(contentsOf: contentsURL)
+                let key = CacheKey(
+                    accountAlias: aliasCopy,
+                    workspaceID: wsID,
+                    itemID: itemID,
+                    path: path
+                )
+                try await engine.sync.put(key: key, content: data)
+                // Re-fetch the item metadata after upload.
+                let updated = try await engineFetchItem(
+                    identifier: ofemID,
                     alias: aliasCopy,
-                    identifier: identifier,
-                    srcPath: srcPath
+                    engine: engine
                 )
-                completionHandler(OneLakeItem(from: bridgeItem), [], false, nil)
+                completionHandler(updated, [], false, nil)
             } catch is CancellationError {
-                FileProviderExtension.log.debug(
-                    "modifyItem cancelled for \(aliasCopy, privacy: .public)/\(identifier, privacy: .public)"
-                )
                 completionHandler(nil, [], false, NSFileProviderError(.cannotSynchronize))
-            } catch let error as BridgeError {
-                FileProviderExtension.log.error(
-                    "modifyItem failed for \(aliasCopy, privacy: .public)/\(identifier, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-                completionHandler(nil, [], false, error.nsFileProviderError)
             } catch {
+                let code = FPError.classify(error)
                 FileProviderExtension.log.error(
                     "modifyItem failed: \(error.localizedDescription, privacy: .public)"
                 )
-                completionHandler(nil, [], false, error)
+                completionHandler(nil, [], false, nsFileProviderError(for: code))
             }
         }
         progress.cancellationHandler = { task.cancel() }
@@ -365,43 +353,72 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         completionHandler: @escaping (Error?) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: -1)
-        let aliasCopy = self.alias
-        let scope: EnumScope
+
+        let ofemID: ItemIdentifier
         do {
-            scope = try ItemIdentifierParser.parse(identifier)
-        } catch let error as BridgeError {
-            completionHandler(error.nsFileProviderError)
-            return progress
+            ofemID = try parseOfemItemIdentifier(identifier.rawValue)
         } catch {
-            completionHandler(error)
+            completionHandler(NSFileProviderError(.noSuchItem))
             return progress
         }
-        let rawId = ItemIdentifierParser.bridgeIdentifier(for: scope)
 
-        FileProviderExtension.log.debug("deleteItem \(rawId, privacy: .public)")
+        guard case let .path(wsID, itemID, path) = ofemID else {
+            completionHandler(NSFileProviderError(.noSuchItem))
+            return progress
+        }
+
+        let aliasCopy = alias
+        let hostCopy = engineHost
+
+        FileProviderExtension.log.debug(
+            "deleteItem \(ofemID.identifierString, privacy: .public)"
+        )
 
         let task = Task {
             do {
-                try await CoreBridge.shared.deleteItem(alias: aliasCopy, identifier: rawId)
+                let engine = try await hostCopy.engine()
+                let key = CacheKey(
+                    accountAlias: aliasCopy,
+                    workspaceID: wsID,
+                    itemID: itemID,
+                    path: path
+                )
+                try await engine.sync.delete(key: key)
                 completionHandler(nil)
             } catch is CancellationError {
-                FileProviderExtension.log.debug(
-                    "deleteItem cancelled for \(aliasCopy, privacy: .public)/\(rawId, privacy: .public)"
-                )
                 completionHandler(NSFileProviderError(.cannotSynchronize))
-            } catch let error as BridgeError {
-                FileProviderExtension.log.error(
-                    "deleteItem failed for \(aliasCopy, privacy: .public)/\(rawId, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-                completionHandler(error.nsFileProviderError)
             } catch {
+                let code = FPError.classify(error)
                 FileProviderExtension.log.error(
                     "deleteItem failed: \(error.localizedDescription, privacy: .public)"
                 )
-                completionHandler(error)
+                completionHandler(nsFileProviderError(for: code))
             }
         }
         progress.cancellationHandler = { task.cancel() }
+        return progress
+    }
+
+    // MARK: - NSFileProviderService (XPC for host app)
+
+    /// Exposes the OfemClientControlProtocol XPC service to the host app.
+    ///
+    /// The NSFileProviderReplicatedExtension protocol's async variant takes a
+    /// completionHandler and returns NSProgress. The host app connects via
+    /// NSFileProviderManager.service(named:for:) then calls
+    /// NSFileProviderService.getFileProviderConnectionWithCompletionHandler:
+    /// to obtain the NSXPCConnection.
+    func supportedServiceSources(
+        for itemIdentifier: NSFileProviderItemIdentifier,
+        completionHandler: @escaping ([any NSFileProviderServiceSource]?, Error?) -> Void
+    ) -> Progress {
+        let progress = Progress(totalUnitCount: -1)
+        // Only expose the service from the root container.
+        if itemIdentifier == .rootContainer {
+            completionHandler([OfemClientControlService(engineHost: engineHost)], nil)
+        } else {
+            completionHandler([], nil)
+        }
         return progress
     }
 
@@ -411,20 +428,147 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         for containerItemIdentifier: NSFileProviderItemIdentifier,
         request _: NSFileProviderRequest
     ) throws -> NSFileProviderEnumerator {
-        let scope = try ItemIdentifierParser.parse(containerItemIdentifier)
-        if case .workingSet = scope {
+        // Working set → lightweight enumerator (no engine needed).
+        if containerItemIdentifier == .workingSet {
             FileProviderExtension.log.debug(
                 "enumerator(for: .workingSet) for \(self.alias, privacy: .public)"
             )
             return WorkingSetEnumerator(domain: domain)
         }
+
+        let ofemID = try parseOfemItemIdentifier(containerItemIdentifier.rawValue)
         FileProviderExtension.log.debug(
-            "enumerator(for:) for \(containerItemIdentifier.rawValue, privacy: .public) (scope=\(String(describing: scope), privacy: .public))"
+            "enumerator(for:) for \(containerItemIdentifier.rawValue, privacy: .public) [engine-path]"
         )
-        return OneLakeEnumerator(
+
+        return OfemFPEEnumerator(
             containerItemIdentifier: containerItemIdentifier,
-            scope: scope,
-            domain: domain
+            identifier: ofemID,
+            alias: alias,
+            engineHost: engineHost
         )
+    }
+}
+
+// MARK: - Engine helper functions
+
+/// Fetches a single item's metadata from the engine.
+private func engineFetchItem(
+    identifier: ItemIdentifier,
+    alias: String,
+    engine: OfemEngine
+) async throws -> OfemFPEItem {
+    switch identifier {
+    case .root:
+        return OfemFPEItem(from: DomainItem.root(alias: alias))
+
+    case let .workspace(workspaceID):
+        // Look up workspace display name from the cache / discovery.
+        let workspaces = try await engine.sync.listWorkspaces(alias: alias)
+        if let ws = workspaces.first(where: { $0.id == workspaceID }) {
+            return OfemFPEItem(from: DomainItem.from(workspace: ws))
+        }
+        // Not found → return a stub.
+        return OfemFPEItem(from: DomainItem.stubDirectory(
+            identifier: identifier,
+            parentIdentifier: .root,
+            name: workspaceID
+        ))
+
+    case let .item(workspaceID, itemID):
+        let items = try await engine.sync.listItems(alias: alias, workspaceID: workspaceID)
+        if let fi = items.first(where: { $0.id == itemID }) {
+            return OfemFPEItem(from: DomainItem.from(fabricItem: fi, workspaceID: workspaceID))
+        }
+        return OfemFPEItem(from: DomainItem.stubDirectory(
+            identifier: identifier,
+            parentIdentifier: .workspace(workspaceID: workspaceID),
+            name: itemID
+        ))
+
+    case let .path(workspaceID, itemID, path):
+        let key = CacheKey(
+            accountAlias: alias,
+            workspaceID: workspaceID,
+            itemID: itemID,
+            path: path
+        )
+        // Try cache first; on miss fall back to parent enumerate.
+        if let record = try? await engine.cache.fetch(key: key) {
+            return OfemFPEItem(from: try DomainItem.from(record: record))
+        }
+        // Cache miss → enumerate parent to populate, then retry.
+        let parentPath: String
+        if let slashIdx = path.lastIndex(of: "/") {
+            parentPath = String(path[path.startIndex..<slashIdx])
+        } else {
+            parentPath = ""
+        }
+        let parentKey = CacheKey(
+            accountAlias: alias,
+            workspaceID: workspaceID,
+            itemID: itemID,
+            path: parentPath
+        )
+        _ = try await engine.sync.enumerate(key: parentKey)
+        if let record = try? await engine.cache.fetch(key: key) {
+            return OfemFPEItem(from: try DomainItem.from(record: record))
+        }
+        throw FPError.noSuchItem(path)
+    }
+}
+
+/// Creates a directory or file via the engine.
+private func engineCreateItem(
+    parentID: ItemIdentifier,
+    filename: String,
+    isDir: Bool,
+    contents: URL?,
+    alias: String,
+    engine: OfemEngine
+) async throws -> OfemFPEItem {
+    // Derive key for the new item based on its parent.
+    let (wsID, itemID, parentPath): (String, String, String)
+    switch parentID {
+    case let .item(w, i):
+        wsID = w; itemID = i; parentPath = ""
+    case let .path(w, i, p):
+        wsID = w; itemID = i; parentPath = p
+    default:
+        throw FPError.invalidIdentifier("createItem: parent must be item or path, got \(parentID)")
+    }
+
+    let newPath = parentPath.isEmpty ? filename : "\(parentPath)/\(filename)"
+    let key = CacheKey(accountAlias: alias, workspaceID: wsID, itemID: itemID, path: newPath)
+
+    if isDir {
+        try await engine.sync.mkdir(key: key)
+    } else if let url = contents {
+        let data = try Data(contentsOf: url)
+        try await engine.sync.put(key: key, content: data)
+    } else {
+        // Empty file.
+        try await engine.sync.put(key: key, content: Data())
+    }
+
+    // Build a synthetic item for the completion — cache row will be
+    // populated after the first enumerate of the parent.
+    return OfemFPEItem(from: DomainItem.synthetic(
+        identifier: .path(workspaceID: wsID, itemID: itemID, path: newPath),
+        parentIdentifier: parentID,
+        name: filename,
+        isDirectory: isDir
+    ))
+}
+
+// MARK: - FPError.Code → NSFileProviderError
+
+private func nsFileProviderError(for code: FPError.Code) -> Error {
+    switch code {
+    case .noSuchItem:        return NSFileProviderError(.noSuchItem)
+    case .notAuthenticated:  return NSFileProviderError(.notAuthenticated)
+    case .serverBusy:        return NSFileProviderError(.serverUnreachable)
+    case .serverUnreachable: return NSFileProviderError(.serverUnreachable)
+    case .cannotSynchronize: return NSFileProviderError(.cannotSynchronize)
     }
 }
