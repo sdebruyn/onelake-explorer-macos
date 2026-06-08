@@ -1,35 +1,26 @@
 // FileProviderExtension.swift
 // `NSFileProviderReplicatedExtension` subclass for OFEM.
 //
-// Fase 7.2: The FPE now hosts an OfemEngine (via FPEEngineHost) and
-// drives enumeration, fetch and write operations directly through the
-// Swift engine rather than the Go-daemon Unix-socket IPC.
-//
-// Architecture transition:
+// Architecture:
 //   - FPE creates one FPEEngineHost per domain (one per account alias).
-//   - Engine-backed enumerators (OfemFPEEnumerator) replace
-//     CoreBridge calls for all list/enumerate operations.
+//   - Engine-backed enumerators (OfemFPEEnumerator) handle all
+//     list/enumerate operations.
 //   - Fetch and write operations call SyncEngine.open / put / delete /
-//     mkdir directly.
-//   - The CoreBridge / Unix-socket IPC code in apple/Shared/ remains
-//     compiled and in use for the host app's account management (status,
-//     addAccount, etc.). It is removed in Fase 7.3.
+//     mkdir directly through OfemKit.
 //
 // Error mapping: FPError.classify(error) maps any OfemKit error to a
 // stable FPError.Code which nsFileProviderError(for:) then maps to
-// NSFileProviderError. This replaces the BridgeError.nsFileProviderError
-// extension used on the IPC path.
+// NSFileProviderError.
 
 import FileProvider
 import Foundation
 import OfemKit
 import os.log
 
-// The FPE target's legacy IPC parser is now named `BridgeItemIdentifierParser`
-// (returns `EnumScope` from `NSFileProviderItemIdentifier`).
-// OfemKit exports `ItemIdentifierParser` (returns `ItemIdentifier` from `String`).
-// This file calls the OfemKit version via `parseOfemItemIdentifier` (defined in
-// OfemFPEEnumerator.swift) to keep call sites readable.
+// `BridgeItemIdentifierParser` (FPE-internal, returns `EnumScope`) and
+// OfemKit's `ItemIdentifierParser` (returns `ItemIdentifier`) co-exist in this
+// target. This file calls the OfemKit version via `parseOfemItemIdentifier`
+// (defined in OfemFPEEnumerator.swift) to keep call sites readable.
 
 /// File Provider Extension entry point. Sandboxed; each registered
 /// OneLake account-alias gets its own instance.
@@ -58,7 +49,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
-        self.alias = OneLakeEnumerator.alias(from: domain)
+        self.alias = FileProviderExtension.extractAlias(from: domain)
         self.engineHost = FPEEngineHost(alias: self.alias, domain: domain)
         super.init()
         FileProviderExtension.log.info(
@@ -433,7 +424,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             FileProviderExtension.log.debug(
                 "enumerator(for: .workingSet) for \(self.alias, privacy: .public)"
             )
-            return WorkingSetEnumerator(domain: domain)
+            return OfemWorkingSetEnumerator(alias: alias)
         }
 
         let ofemID = try parseOfemItemIdentifier(containerItemIdentifier.rawValue)
@@ -561,6 +552,25 @@ private func engineCreateItem(
     ))
 }
 
+// MARK: - Domain identifier → alias
+
+/// Identifier prefix every OFEM-owned domain carries.
+/// Mirrored in `DomainSyncManager` in the host app target; the two
+/// targets do not share source files, so it is defined in both.
+private let ofemDomainIdentifierPrefix = "ofem."
+
+extension FileProviderExtension {
+    /// Strips the `ofem.` prefix from the domain identifier to recover
+    /// the user-chosen account alias (e.g. `"ofem.work"` → `"work"`).
+    static func extractAlias(from domain: NSFileProviderDomain) -> String {
+        let raw = domain.identifier.rawValue
+        if raw.hasPrefix(ofemDomainIdentifierPrefix) {
+            return String(raw.dropFirst(ofemDomainIdentifierPrefix.count))
+        }
+        return raw
+    }
+}
+
 // MARK: - FPError.Code → NSFileProviderError
 
 private func nsFileProviderError(for code: FPError.Code) -> Error {
@@ -570,5 +580,63 @@ private func nsFileProviderError(for code: FPError.Code) -> Error {
     case .serverBusy:        return NSFileProviderError(.serverUnreachable)
     case .serverUnreachable: return NSFileProviderError(.serverUnreachable)
     case .cannotSynchronize: return NSFileProviderError(.cannotSynchronize)
+    }
+}
+
+// MARK: - Working set enumerator
+
+private let workingSetSyncAnchor = NSFileProviderSyncAnchor(Data())
+
+/// Minimal enumerator for the `.workingSet` container.
+///
+/// The working set is macOS's bag of "recently used / actively
+/// referenced" items used for cross-folder search, badges, and the
+/// recents list. We hand back an empty page and a constant zero-byte
+/// sync anchor. Returning a real (empty) enumerator rather than refusing
+/// keeps Finder, Spotlight, and the framework's badge machinery happy.
+final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
+    private static let log = Logger(
+        subsystem: "dev.debruyn.ofem.fileprovider",
+        category: "working-set"
+    )
+
+    private let alias: String
+
+    init(alias: String) {
+        self.alias = alias
+        super.init()
+    }
+
+    func invalidate() {
+        OfemWorkingSetEnumerator.log.debug(
+            "Invalidate working set enumerator for \(self.alias, privacy: .public)"
+        )
+    }
+
+    func enumerateItems(
+        for observer: NSFileProviderEnumerationObserver,
+        startingAt _: NSFileProviderPage
+    ) {
+        OfemWorkingSetEnumerator.log.debug(
+            "enumerateItems (working set) for \(self.alias, privacy: .public) -> empty"
+        )
+        observer.didEnumerate([])
+        observer.finishEnumerating(upTo: nil)
+    }
+
+    func enumerateChanges(
+        for observer: NSFileProviderChangeObserver,
+        from _: NSFileProviderSyncAnchor
+    ) {
+        OfemWorkingSetEnumerator.log.debug(
+            "enumerateChanges (working set) for \(self.alias, privacy: .public) -> no changes"
+        )
+        observer.finishEnumeratingChanges(upTo: workingSetSyncAnchor, moreComing: false)
+    }
+
+    func currentSyncAnchor(
+        completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void
+    ) {
+        completionHandler(workingSetSyncAnchor)
     }
 }
