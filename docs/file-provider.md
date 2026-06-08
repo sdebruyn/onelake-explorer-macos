@@ -173,25 +173,25 @@ Signing out from the menu bar (account submenu -> **Sign Out…**):
 ## Build flow
 
 The Xcode project is not committed. The source of truth is
-`apple/project.yml`, which [XcodeGen](https://github.com/yonaskolb/XcodeGen)
-turns into `apple/OneLake.xcodeproj`. Keeping the spec as YAML avoids the
+`project.yml`, which [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+turns into `OneLake.xcodeproj`. Keeping the spec as YAML avoids the
 churn and merge conflicts of a hand-maintained `.pbxproj`.
 
 Typical local workflow:
 
 ```bash
-# Once, per developer: write apple/Local.xcconfig (gitignored) and put
+# Once, per developer: write Local.xcconfig (gitignored) and put
 # your Apple Developer team ID in it.
 make apple-bootstrap
 
-# After every change to apple/project.yml, or when cloning fresh:
+# After every change to project.yml, or when cloning fresh:
 make apple-gen
 
 # Clean Debug build via xcodebuild (also re-runs apple-gen).
 make apple-build
 
 # Or open the generated project in Xcode for run / debug.
-open apple/OneLake.xcodeproj
+open OneLake.xcodeproj
 ```
 
 The bundled targets are:
@@ -213,7 +213,7 @@ the `com.apple.developer.file-provider` entitlement family; no
 
 Building the Swift host app and the File Provider Extension requires a paid
 Apple Developer Program membership (a free Personal Team cannot sign the
-extension). With your team set in `apple/Local.xcconfig`, build both with:
+extension). With your team set in `Local.xcconfig`, build both with:
 
 ```
 make apple-build

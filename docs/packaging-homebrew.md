@@ -26,8 +26,8 @@ build-app (macos-15 runner)
 3.  Import Developer ID Application cert from APPLE_CERT_P12 into a
     temporary keychain (deleted after the job).
 4.  Write App Store Connect API key from APPLE_API_KEY_JSON to a tmp .p8 file.
-5.  Write apple/Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID.
-6.  make apple-gen  -> regenerate apple/OneLake.xcodeproj from project.yml.
+5.  Write Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID.
+6.  make apple-gen  -> regenerate OneLake.xcodeproj from project.yml.
 7.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
     (pure Swift build: host app + File Provider Extension; no Go step).
 8.  xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
@@ -119,14 +119,14 @@ We need:
 
 ## Entitlements
 
-`apple/OneLake.entitlements`:
+`OneLake/OneLake.entitlements`:
 - `com.apple.security.app-sandbox` = true.
 - `com.apple.security.application-groups` = `[$(TeamIdentifierPrefix)group.dev.debruyn.ofem]` (Xcode expands to `6D79CUWZ4J.group.dev.debruyn.ofem` at sign-time; team-prefixed so the same value is valid for both Developer ID and Mac App Store).
 - `com.apple.security.network.client` = true.
 - `com.apple.security.files.user-selected.read-write` = true.
 - `com.apple.security.keychain-access-groups` = `[$(AppIdentifierPrefix)group.dev.debruyn.ofem]`.
 
-`apple/OneLakeFileProvider.entitlements` adds:
+`OneLakeFileProvider/OneLakeFileProvider.entitlements` adds:
 - `NSExtension` plist with `NSExtensionFileProviderSupportedItemActions` enumerated.
 
 Note: `com.apple.developer.file-provider.testing-mode` is **not** used. The paid

@@ -36,7 +36,7 @@ Plus a configured **Microsoft Entra tenant** with at least one workspace you can
 
 #### Xcode project generation
 
-The Xcode project is generated from `apple/project.yml` by XcodeGen, so the
+The Xcode project is generated from `project.yml` by XcodeGen, so the
 spec stays human-readable and merge-friendly. The generated `.xcodeproj`
 is gitignored.
 
@@ -47,8 +47,8 @@ is gitignored.
 Then:
 
 ```bash
-make apple-bootstrap   # writes apple/Local.xcconfig (gitignored); edit it
-make apple-gen         # regenerates apple/OneLake.xcodeproj
+make apple-bootstrap   # writes Local.xcconfig (gitignored); edit it
+make apple-gen         # regenerates OneLake.xcodeproj
 make apple-build       # Debug build via xcodebuild
 ```
 
@@ -57,7 +57,7 @@ make apple-build       # Debug build via xcodebuild
 The OfemKit engine modules have their own test suite:
 
 ```bash
-cd apple/Packages/OfemKit
+cd Packages/OfemKit
 swift test
 ```
 

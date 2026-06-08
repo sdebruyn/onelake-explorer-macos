@@ -21,7 +21,7 @@ We register a **multi-tenant public client application** in our own tenant:
 | Allow public client flows | **Yes** |
 | API permissions | `https://storage.azure.com/user_impersonation` (Azure Storage, delegated) **and** Power BI Service `Workspace.Read.All` + `Item.Read.All` (delegated, admin-consented) for Fabric REST discovery. |
 
-The client ID lives in `apple/Packages/OfemKit/Sources/OfemKit/Auth/` as a constant — it is a public identifier, not a secret.
+The client ID lives in `Packages/OfemKit/Sources/OfemKit/Auth/` as a constant — it is a public identifier, not a secret.
 
 ## Token acquisition flow
 
