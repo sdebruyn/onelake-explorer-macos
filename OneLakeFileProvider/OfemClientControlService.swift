@@ -131,9 +131,11 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
         )
 
         // getEngineStatus reply: (XPCEngineStatus?, Error?)
-        // Argument index 0 is XPCEngineStatus or nil.
+        // Argument index 0 is XPCEngineStatus (which contains an NSArray of
+        // XPCPausedWorkspace). All three types must be listed so XPC's
+        // secure-coding policy allows them to cross the boundary.
         iface.setClasses(
-            NSSet(array: [XPCEngineStatus.self]) as! Set<AnyHashable>,
+            NSSet(array: [XPCEngineStatus.self, NSArray.self, XPCPausedWorkspace.self]) as! Set<AnyHashable>,
             for: #selector(OfemClientControlProtocol.getEngineStatus(reply:)),
             argumentIndex: 0,
             ofReply: true
@@ -309,7 +311,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
         }
     }
 
-    // MARK: - getEngineStatus (Fase 7.3b-1)
+    // MARK: - getEngineStatus (Fase 7.3b-1, extended in Fase 7.4)
 
     func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
         Task { [self] in
@@ -322,8 +324,26 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                 // Measure cached blob bytes only if the engine is already up;
                 // if the engine has never been started we return -1 (not measured).
                 let cacheBytes: Int64
+                var pausedWorkspaces: [XPCPausedWorkspace] = []
+
                 if let engine = engineHost.existingEngine() {
                     cacheBytes = (try? await engine.cache.blobBytes()) ?? -1
+
+                    // Fase 7.4: query the workspace_status table for paused entries.
+                    // Best-effort — a failure leaves the list empty rather than
+                    // causing the whole status call to fail.
+                    if let rows = try? await engine.cache.listPausedWorkspaces() {
+                        pausedWorkspaces = rows.map { row in
+                            XPCPausedWorkspace(
+                                accountAlias: row.accountAlias,
+                                workspaceID: row.workspaceID,
+                                reason: row.reason,
+                                detectedAtSec: row.detectedAtNs > 0
+                                    ? Double(row.detectedAtNs) / 1_000_000_000
+                                    : 0
+                            )
+                        }
+                    }
                 } else {
                     cacheBytes = -1
                 }
@@ -338,7 +358,8 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                     telemetryEnabled: cfg.telemetry,
                     netMaxUploads: cfg.net.maxConcurrentUploadsPerAccount,
                     netMaxDownloads: cfg.net.maxConcurrentDownloadsPerAccount,
-                    logLevel: cfg.log.level
+                    logLevel: cfg.log.level,
+                    pausedWorkspaces: pausedWorkspaces
                 )
                 reply(status, nil)
             } catch {
