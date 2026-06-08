@@ -1,18 +1,20 @@
 // MenuStatusModel.swift
-// Observable model that fetches daemon status + account list + config snapshot
-// via IPC and publishes the results for the menu-bar dropdown.
+// Observable model that fetches status + account list + config snapshot
+// and publishes the results for the menu-bar dropdown.
 //
 // The wire types (StatusInfo, AccountListInfo, AccountInfo, PausedWorkspaceInfo,
 // ConfigInfo, StatusPaths) live in apple/Shared/StatusTypes.swift so they
 // compile into both targets.
 //
-// Refresh strategy:
-//   - Triggered manually when the menu opens (see MenuBarView.onAppear).
-//     No background timer: one fetch per open is sufficient for a status
-//     display; a polling timer would be added in a later phase if live
-//     updates are needed while the menu stays open.
-//   - On daemon-unreachable the model publishes isRunning = false so the
-//     menu shows "Not running" instead of stale data.
+// Refresh strategy (Fase 7.3a):
+//   - Primary path: read accounts from SharedOfemAuth (config.toml).
+//     This works whether or not the Go daemon is running.
+//   - Secondary path: if the daemon IS reachable, also fetch status /
+//     config snapshot for cache stats, version info, and paused workspaces.
+//   - `isRunning` is true whenever any account exists — the FPE is always
+//     reachable through NSFileProviderManager once domains are registered.
+//     It is also true when no accounts exist (fresh install, not yet signed in)
+//     so the "Add Account…" button stays enabled.
 //
 // Action methods (setDefault, signOut, cacheClear, setCacheLimitGB,
 // setTelemetry) are called from MenuBarView. They always call refresh()
@@ -21,6 +23,7 @@
 // setCacheLimitDebounce) so a held-down Stepper does not flood the daemon.
 
 import Foundation
+import OfemKit
 import os.log
 
 // MARK: - MenuIconState
@@ -216,40 +219,43 @@ final class MenuStatusModel: ObservableObject {
     }
 
     private func doRefresh() async {
+        // Primary path (Fase 7.3a): read accounts from SharedOfemAuth.
+        // This path works whether or not the Go daemon is running — the
+        // FPE is the authoritative source of account state from here on.
+        let nativeAccounts = SharedOfemAuth.shared.auth.listAccounts()
+        let nativeDefault = SharedOfemAuth.shared.auth.defaultAccount() ?? ""
+        isRunning = true
+        accounts = nativeAccounts.map { acc in
+            AccountInfo(
+                alias: acc.alias,
+                username: acc.username,
+                tenantId: acc.tenantID,
+                tenantName: acc.tenantName ?? ""
+            )
+        }
+        defaultAccount = nativeDefault
+
+        // Secondary path: try the Go daemon for cache stats / version.
+        // This is best-effort; failures are silently ignored because the
+        // daemon is not required in Fase 7.3a — those fields show stale/zero.
         do {
             async let statusFetch = bridge.status()
-            async let listFetch = bridge.accountList()
             async let configFetch = bridge.configSnapshot()
-            let (status, list, config) = try await (statusFetch, listFetch, configFetch)
+            let (status, config) = try await (statusFetch, configFetch)
 
-            isRunning = true
             daemonVersion = status.daemonVersion
-            // cacheBytes / pausedWorkspaces / paths / accounts /
-            // defaultAccount are daemon-owned read-only values — no
-            // setter writes them, so no fence is needed.
             cacheBytes = status.cacheBytes
             pausedWorkspaces = status.pausedWorkspaces
             paths = status.paths
-            accounts = list.accounts
-            defaultAccount = list.defaultAccount
-            // cacheMaxBytes mirrors cacheMaxSizeGB on the daemon side; the
-            // optimistic setter writes both, so fence them as one unit.
             if !pendingWrites.contains(.cacheMaxSize) {
                 cacheMaxBytes = status.cacheMaxBytes
             }
             if !pendingWrites.contains(.telemetry) {
                 telemetryEnabled = config.telemetryEnabled
             }
-            // Only update the GB-precision value when the daemon answered
-            // with one; a transport blip that returns 0 must not snap the
-            // Stepper to an out-of-range value the user never asked for.
             if config.cacheMaxSizeGB > 0, !pendingWrites.contains(.cacheMaxSize) {
                 cacheMaxSizeGB = config.cacheMaxSizeGB
             }
-            // Same reasoning for the Settings tab values — only update
-            // when the daemon gave us a non-zero answer. An older daemon
-            // (pre-this-PR) returns 0 because the JSON keys are absent,
-            // and we'd rather show stale-but-correct numbers than zeroes.
             if config.netMaxConcurrentUploadsPerAccount > 0, !pendingWrites.contains(.netMaxUploads) {
                 netMaxUploads = config.netMaxConcurrentUploadsPerAccount
             }
@@ -260,41 +266,41 @@ final class MenuStatusModel: ObservableObject {
                 logLevel = config.logLevel
             }
         } catch {
-            // Daemon not running, or IPC failure — show degraded state.
-            Self.log.warning("Daemon status fetch failed: \(error.localizedDescription, privacy: .public)")
-            isRunning = false
-            daemonVersion = ""
-            accounts = []
-            defaultAccount = ""
+            // Daemon not running — that's fine in Fase 7.3a. Cache / version
+            // fields stay at their last-known values or defaults.
+            Self.log.debug("Daemon status fetch skipped (not running): \(error.localizedDescription, privacy: .public)")
         }
     }
 
     // MARK: - Actions
 
     /// Make `alias` the default account and refresh.
+    ///
+    /// Fase 7.3a: uses SharedOfemAuth (config.toml) as the primary path.
     func setDefaultAccount(alias: String) {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await bridge.setDefaultAccount(alias: alias)
+                try SharedOfemAuth.shared.auth.setDefaultAccount(alias: alias)
             } catch {
-                Self.log.error("account.setDefault failed: \(error.localizedDescription, privacy: .public)")
+                Self.log.error("setDefaultAccount failed: \(error.localizedDescription, privacy: .public)")
             }
             refresh()
         }
     }
 
-    /// Remove the account and reconcile the File Provider domain list so the
-    /// unmounted domain is dropped from Finder immediately.
+    /// Remove the account and drop the File Provider domain from Finder.
+    ///
+    /// Fase 7.3a: removes the account from config.toml via SharedOfemAuth
+    /// and drops the domain via DomainSyncManager.removeDomain.
     func removeAccount(alias: String) {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await bridge.removeAccount(alias: alias)
-                // Reconcile drops the now-orphan domain from the Finder sidebar.
-                try await DomainSyncManager.shared.reconcile()
+                try SharedOfemAuth.shared.auth.removeAccount(alias: alias)
+                await DomainSyncManager.shared.removeDomain(alias: alias)
             } catch {
-                Self.log.error("account.remove/reconcile failed: \(error.localizedDescription, privacy: .public)")
+                Self.log.error("removeAccount failed: \(error.localizedDescription, privacy: .public)")
             }
             refresh()
         }
