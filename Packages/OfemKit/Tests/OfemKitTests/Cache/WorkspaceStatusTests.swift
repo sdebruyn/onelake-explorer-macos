@@ -128,6 +128,40 @@ struct WorkspaceStatusTests {
         #expect(statuses.isEmpty)
     }
 
+    // MARK: - ListPausedWorkspaces
+
+    @Test("ListPausedWorkspaces returns only paused rows ordered by (alias, workspaceID)")
+    func listPausedFiltersCorrectly() async throws {
+        let store = try makeInMemoryStore()
+        try await store.setWorkspaceStatus(WorkspaceStatusRecord(
+            accountAlias: "z", workspaceID: "z-ws", state: .active
+        ))
+        try await store.setWorkspaceStatus(WorkspaceStatusRecord(
+            accountAlias: "a", workspaceID: "a-ws2", state: .paused,
+            reason: "capacity_paused", detectedAtNs: 2_000_000_000
+        ))
+        try await store.setWorkspaceStatus(WorkspaceStatusRecord(
+            accountAlias: "a", workspaceID: "a-ws1", state: .paused,
+            reason: "capacity_paused", detectedAtNs: 1_000_000_000
+        ))
+
+        let paused = try await store.listPausedWorkspaces()
+        #expect(paused.count == 2)
+        #expect(paused[0].accountAlias == "a")
+        #expect(paused[0].workspaceID == "a-ws1")
+        #expect(paused[1].workspaceID == "a-ws2")
+    }
+
+    @Test("ListPausedWorkspaces returns empty list when no paused rows")
+    func listPausedEmpty() async throws {
+        let store = try makeInMemoryStore()
+        try await store.setWorkspaceStatus(WorkspaceStatusRecord(
+            accountAlias: "a", workspaceID: "w", state: .active
+        ))
+        let paused = try await store.listPausedWorkspaces()
+        #expect(paused.isEmpty)
+    }
+
     // MARK: - Validation
 
     @Test("Empty accountAlias throws missingArgument")

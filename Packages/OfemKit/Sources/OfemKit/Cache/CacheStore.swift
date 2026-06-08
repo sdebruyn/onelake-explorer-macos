@@ -547,6 +547,22 @@ public actor CacheStore {
         }
     }
 
+    /// Returns only the workspace status rows whose state is `.paused`,
+    /// ordered by `(account_alias, workspace_id)`.
+    ///
+    /// Used by the menu-bar host to build the paused-workspaces badge.
+    public func listPausedWorkspaces() throws -> [WorkspaceStatusRecord] {
+        try dbPool.read { db in
+            try WorkspaceStatusRecord
+                .filter(WorkspaceStatusRecord.Columns.state == WorkspaceStatusRecord.State.paused.rawValue)
+                .order(
+                    WorkspaceStatusRecord.Columns.accountAlias,
+                    WorkspaceStatusRecord.Columns.workspaceID
+                )
+                .fetchAll(db)
+        }
+    }
+
     // MARK: - Private helpers
 
     /// Evicts the single LRU blob-bearing row.

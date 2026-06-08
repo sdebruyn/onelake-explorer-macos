@@ -7,18 +7,15 @@
 //
 // Fields mirror the subset of the old Go-daemon "status" IPC response that
 // the menu-bar UI actually displays:
-//   - cacheBytes      — deduplicated on-disk blob bytes (Int64)
-//   - cacheMaxBytes   — configured LRU ceiling in bytes (Int64)
-//   - cacheMaxSizeGB  — ceiling expressed in whole GBs for the Stepper
+//   - cacheBytes       — deduplicated on-disk blob bytes (Int64)
+//   - cacheMaxBytes    — configured LRU ceiling in bytes (Int64)
+//   - cacheMaxSizeGB   — ceiling expressed in whole GBs for the Stepper
 //   - telemetryEnabled
-//   - netMaxUploads   — max parallel uploads per account
-//   - netMaxDownloads — max parallel downloads per account
-//   - logLevel        — "debug" | "info" | "warn" | "error"
-//
-// PausedWorkspaceInfo is omitted intentionally: paused-workspace detection
-// lives in the sync engine, which is not yet fully wired in 7.3b-1. The
-// menu-bar "paused" icon state will be restored in a later phase once the
-// Swift sync engine emits workspace-status updates.
+//   - netMaxUploads    — max parallel uploads per account
+//   - netMaxDownloads  — max parallel downloads per account
+//   - logLevel         — "debug" | "info" | "warn" | "error"
+//   - pausedWorkspaces — workspaces whose Fabric capacity is currently paused
+//                        (Fase 7.4). Empty array = no workspaces paused.
 
 import Foundation
 
@@ -32,6 +29,8 @@ import Foundation
     @objc public let netMaxUploads: Int
     @objc public let netMaxDownloads: Int
     @objc public let logLevel: String
+    /// Workspaces whose Fabric capacity is currently paused. Empty when none.
+    @objc public let pausedWorkspaces: [XPCPausedWorkspace]
 
     // MARK: - Init
 
@@ -42,7 +41,8 @@ import Foundation
         telemetryEnabled: Bool,
         netMaxUploads: Int,
         netMaxDownloads: Int,
-        logLevel: String
+        logLevel: String,
+        pausedWorkspaces: [XPCPausedWorkspace] = []
     ) {
         self.cacheBytes = cacheBytes
         self.cacheMaxBytes = cacheMaxBytes
@@ -51,6 +51,7 @@ import Foundation
         self.netMaxUploads = netMaxUploads
         self.netMaxDownloads = netMaxDownloads
         self.logLevel = logLevel
+        self.pausedWorkspaces = pausedWorkspaces
         super.init()
     }
 
@@ -61,6 +62,7 @@ import Foundation
         case telemetryEnabled
         case netMaxUploads, netMaxDownloads
         case logLevel
+        case pausedWorkspaces
     }
 
     @objc public func encode(with coder: NSCoder) {
@@ -71,6 +73,7 @@ import Foundation
         coder.encode(netMaxUploads, forKey: Keys.netMaxUploads.rawValue)
         coder.encode(netMaxDownloads, forKey: Keys.netMaxDownloads.rawValue)
         coder.encode(logLevel, forKey: Keys.logLevel.rawValue)
+        coder.encode(pausedWorkspaces as NSArray, forKey: Keys.pausedWorkspaces.rawValue)
     }
 
     @objc public required init?(coder: NSCoder) {
@@ -81,6 +84,11 @@ import Foundation
         netMaxUploads = coder.decodeInteger(forKey: Keys.netMaxUploads.rawValue)
         netMaxDownloads = coder.decodeInteger(forKey: Keys.netMaxDownloads.rawValue)
         logLevel = (coder.decodeObject(of: NSString.self, forKey: Keys.logLevel.rawValue) as? String) ?? "info"
+        let decoded = coder.decodeObject(
+            of: [NSArray.self, XPCPausedWorkspace.self],
+            forKey: Keys.pausedWorkspaces.rawValue
+        ) as? [XPCPausedWorkspace]
+        pausedWorkspaces = decoded ?? []
         super.init()
     }
 }
