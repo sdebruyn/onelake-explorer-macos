@@ -31,16 +31,14 @@ cask "ofem" do
 
   app "OneLake.app"
 
-  # The host app registers the bundled daemon via SMAppService on first
-  # launch. We open the app post-install so that first launch happens
-  # immediately, instead of forcing the user to manually launch the app
-  # before the menu bar / Finder integration starts working.
+  # Open the app post-install so the first launch happens immediately,
+  # registering the login item and starting the File Provider Extension
+  # without requiring the user to manually launch the app first.
   postflight do
     system_command "/usr/bin/open", args: ["-a", "OneLake"]
   end
 
-  uninstall launchctl: "dev.debruyn.ofem.daemon",
-            quit:      "dev.debruyn.ofem.app"
+  uninstall quit: "dev.debruyn.ofem"
 
   zap trash: [
     "~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem",
