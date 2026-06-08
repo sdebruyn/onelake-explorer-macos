@@ -189,12 +189,7 @@ public actor TelemetryClient {
         }
         ev.commonProps = merged
 
-        let full = await batch.enqueue(ev)
-        if full {
-            // Buffer hit maxSize — flush immediately (non-blocking fire-and-forget).
-            // Mirrors signalFlush() in client.go.
-            Task { await self.flush() }
-        }
+        await batch.enqueue(ev)
     }
 
     /// Convenience shorthand for emitting the `"error"` event.
