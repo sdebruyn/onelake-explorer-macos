@@ -46,12 +46,6 @@ public struct OfemPaths: Sendable {
     /// Corresponds to `<configDir>/tokens/`.
     public let tokensDir: URL
 
-    /// Unix-domain socket path used by the Go daemon's IPC server.
-    /// Retained for compatibility during the migration period; the FPE-only
-    /// architecture (Option 3) does not use this socket.
-    /// Corresponds to `<configDir>/ofem.sock`.
-    public let socketPath: URL
-
     // MARK: - Initialiser
 
     /// Resolves the canonical OFEM paths for the current user.
@@ -73,7 +67,6 @@ public struct OfemPaths: Sendable {
         cacheDir = root.appending(path: "cache", directoryHint: .isDirectory)
         logDir = root.appending(path: "log", directoryHint: .isDirectory)
         tokensDir = root.appending(path: "tokens", directoryHint: .isDirectory)
-        socketPath = root.appending(path: "ofem.sock", directoryHint: .notDirectory)
     }
 
     // MARK: - Private helpers
