@@ -188,7 +188,7 @@ No formal beta tap. Pre-release versions are tagged like `v2026.05.0-rc.1`. User
 
 ## Update mechanism
 
-`brew upgrade --cask ofem`. No in-app update check; no Sparkle. The daemon logs the running version on startup so users can compare against `brew info ofem` output.
+`brew upgrade --cask ofem`. No in-app update check; no Sparkle. The running version is visible in the About window (menu bar → OneLake → About OneLake); users can compare it against `brew info ofem` output.
 
 ## Uninstall
 
@@ -197,7 +197,7 @@ brew uninstall --cask ofem          # removes app, keeps data
 brew uninstall --cask --zap ofem    # removes app + all user data
 ```
 
-The `uninstall launchctl:` directive in the cask stops the daemon. The `app` directive removes `OneLake.app`. `zap` removes everything else.
+The `uninstall quit:` directive terminates the running OneLake app. The `app` directive removes `OneLake.app`. `zap` removes everything else.
 
 ## Local development distribution
 

@@ -3,7 +3,7 @@
 ## Principles
 
 - **Opt-out**, enabled by default, clearly disclosed on first run and in README.
-- **Disable any time** by unchecking **Send Anonymous Telemetry** in the OneLake menu bar, or by setting `OFEM_TELEMETRY=0` in the environment of a self-started daemon (the daemon picks the change up on next start; the menu bar always shows the current state).
+- **Disable any time** by unchecking **Send Anonymous Telemetry** in the OneLake menu bar. The change takes effect immediately; the menu bar always shows the current state.
 - **No PII**: no UPN, no workspace name, no item name, no file name, no folder path.
 - **Tenant IDs are collected.** Tenant IDs are aggregate-level enough to be useful for understanding adoption per tenant without identifying individual users.
 - **Pseudonymous install ID** is generated locally on first run (a random UUIDv4 stored in config) so we can deduplicate events from the same install without identifying the user.
@@ -13,7 +13,7 @@
 
 Chosen for:
 - 5 GB/month ingestion free (a comfortable headroom — even at 1 M events/month we are well under).
-- Native Go SDK ([`microsoft/ApplicationInsights-Go`](https://github.com/microsoft/ApplicationInsights-Go)).
+- Swift client via the REST ingestion API (no runtime dependency on an SDK binary).
 - Out-of-the-box dashboards in the Azure portal.
 - Workbooks for custom analysis without needing Fabric.
 
@@ -41,8 +41,8 @@ Every event is sent as an App Insights `customEvent` with a fixed property set:
 
 | Event | When | Properties beyond defaults |
 |---|---|---|
-| `app_start` | Daemon process starts | — |
-| `app_stop` | Daemon process exits cleanly | — |
+| `app_start` | Host app process starts | — |
+| `app_stop` | Host app process exits cleanly | — |
 | `account_added` | After successful sign-in (menu bar -> **Add Account…**) | `tenantId`, `accountAliasHash` |
 | `account_removed` | After successful sign-out (menu bar account submenu -> **Sign Out…**) | `tenantId`, `accountAliasHash` |
 | `workspace_list` | Fabric REST list-workspaces call completes | `tenantId`, `accountAliasHash`, `durationMs`, `success` |
@@ -57,7 +57,7 @@ Every event is sent as an App Insights `customEvent` with a fixed property set:
 | `mount_stop` | File Provider domain removed | `accountAliasHash` |
 | `sync_pulled` | Adaptive-poll refresh detected and pulled changes | `tenantId`, `accountAliasHash`, `itemsChanged` |
 | `error` | Recoverable error logged | `errorCode`, `event` (the operation that errored as a string) |
-| `panic` | Go panic recovered or process unwound | `errorCode` (hashed stack trace prefix), `appVersion` |
+| `crash` | Unhandled error or unexpected termination | `errorCode` (hashed stack trace prefix), `appVersion` |
 
 ## Sync-engine error-code vocabulary
 
@@ -73,12 +73,12 @@ them.
 | `blob_store_failed` | `file_download` | Local blob store rejected the downloaded bytes (out of disk, etc.). |
 | `capacity_paused` | `file_upload`, `file_download` | Workspace's backing Fabric capacity is paused or suspended. |
 | `lww_exhausted` | `file_upload` | Last-write-wins replay loop hit its cap (default 3 cycles) on 412 PreconditionFailed. The local change is dropped — no conflict copy. |
-| `queued_offline` | `file_upload` | Host was offline at the time of the write; bytes were spooled to the persistent offline queue under `<cacheRoot>/offline-queue/` and the caller saw a nil-success. Spool file is fsync'd and the filename encodes the `cache.Key` so a daemon restart can rebuild the queue. |
+| `queued_offline` | `file_upload` | Host was offline at the time of the write; bytes were spooled to the persistent offline queue under `<cacheRoot>/offline-queue/` and the caller saw a nil-success. Spool file is fsync'd and the filename encodes the cache key so the FPE can rebuild the queue on restart. |
 | `served_stale_offline` | `file_download` | Host was offline AND the cache held a fully stored blob; the cached bytes were served (with `success=true`) instead of refusing the read. Matches OneDrive / Dropbox offline behaviour. |
 
 ## Connection string distribution
 
-The Application Insights connection string is a committed source constant in `internal/buildinfo/buildinfo.go`. Every OFEM build — official release, source build, or fork — reports to the same endpoint. The string is rotated by issuing a new one for the resource and bumping `internal/buildinfo/buildinfo.go`; old binaries then stop reporting on the next release.
+The Application Insights connection string is a committed source constant in `apple/Packages/OfemKit/Sources/OfemKit/Telemetry/BuildInfo.swift`. Every OFEM build — official release, source build, or fork — reports to the same endpoint. The string is rotated by issuing a new one for the resource and bumping that file; old binaries then stop reporting on the next release.
 
 ## First-run disclosure
 
@@ -87,7 +87,6 @@ OFEM collects anonymous usage events plus tenant IDs to help understand adoption
 and improve the tool. We never collect workspace names, file names, or your UPN.
 
 Disable any time:  uncheck "Send Anonymous Telemetry" in the OneLake menu bar
-                   (or set OFEM_TELEMETRY=0 in the environment of a self-started daemon)
 
 Learn more:        https://github.com/sdebruyn/onelake-explorer-macos/blob/main/docs/telemetry.md
 ```
@@ -96,7 +95,7 @@ Shown on first launch of `OneLake.app` as a small banner in the host app.
 
 ## Local buffering and offline
 
-App Insights Go SDK buffers events in memory and flushes every 10 seconds or when the buffer exceeds a size threshold. If the daemon process exits cleanly, buffered events are flushed first. If it crashes, pending events are lost (acceptable).
+The telemetry module in OfemKit buffers events in memory and flushes every 10 seconds or when the buffer exceeds a size threshold. If the host app or FPE exits cleanly, buffered events are flushed first. If it crashes, pending events are lost (acceptable).
 
 If the user has no network, events accumulate in memory up to a hard cap of 1000 events (~250 KB), after which oldest events are dropped. Once connectivity returns, the flush succeeds.
 
@@ -104,12 +103,12 @@ No persistent on-disk telemetry queue — keeps complexity down.
 
 ## Crash reporting
 
-Panics and unhandled errors go through the same telemetry pipeline:
+Unhandled errors go through the same telemetry pipeline:
 
-- A `defer recover()` in main captures Go panics. We send a `panic` event with a SHA256 of the stack trace as `errorCode`, plus `appVersion`. We do NOT send the stack trace itself (which can contain file paths or memory addresses).
+- Swift fatal errors and unhandled exceptions send a `crash` event with a SHA256 of the call stack prefix as `errorCode`, plus `appVersion`. We do NOT send the stack trace itself (which can contain file paths or memory addresses).
 - Unhandled errors in the OneLake / Fabric clients emit `error` events with the API error code.
 
-This is enough to detect "version X has a new panic class" without leaking user data.
+This is enough to detect "version X has a new crash class" without leaking user data.
 
 ## Querying
 
@@ -132,7 +131,7 @@ customEvents
 
 // Top errors per version
 customEvents
-| where name in ("error", "panic")
+| where name in ("error", "crash")
 | summarize count() by tostring(customDimensions.appVersion),
                        tostring(customDimensions.errorCode)
 | order by count_ desc

@@ -6,7 +6,7 @@
 brew uninstall --cask ofem
 ```
 
-Removes the app and unregisters its background helper. Your local cache and sign-in state stay on disk so a future re-install picks up where you left off.
+Removes the app. Your local cache and sign-in state stay on disk so a future re-install picks up where you left off.
 
 ## Remove everything
 
@@ -14,7 +14,7 @@ Removes the app and unregisters its background helper. Your local cache and sign
 brew uninstall --cask --zap ofem
 ```
 
-Also deletes the local cache, the daemon's config, and your sign-in state.
+Also deletes the local cache, config, and your sign-in state.
 
 ## Revoke access in your tenant
 
