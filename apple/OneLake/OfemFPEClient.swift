@@ -1,22 +1,14 @@
 // OfemFPEClient.swift
 // Host-app client for the FPE's OfemClientControlProtocol XPC service.
 //
-// The host app uses this class to call account-management operations on
-// the FPE over NSXPCConnection, replacing (or supplementing) the existing
-// CoreBridge / Unix-socket path.
+// The host app uses this class to call account-management and engine-status
+// operations on the FPE over NSXPCConnection.
 //
 // Connection model:
 //   - One connection per domain. Connections are created on demand and
 //     cached weakly (the FPE may restart the service after an invalidation).
 //   - Connections are per-domain because NSFileProviderManager.service is
 //     domain-scoped.
-//
-// Fase 7.2 usage:
-//   The host app's DomainSyncManager and MenuStatusModel continue to use
-//   CoreBridge for status / account list. OfemFPEClient is wired in as an
-//   addition — the host app calls it for removeAccount and setDefaultAccount
-//   so the FPE's engine state is kept in sync without needing the Go daemon.
-//   Phase 7.3 will replace CoreBridge calls entirely.
 //
 // Error handling:
 //   NSXPCConnection can fail at any point (FPE process terminated, service

@@ -1,7 +1,6 @@
 import OfemKit
 
-// Compile-time only — confirms that OfemKit is available in the host app.
-// This file will be replaced by real OfemKit usage in Phase 7.2.
+// Compile-time check that OfemKit is available in the host app.
 private enum OfemKitProbe {
     static let version = OfemKit.version
 }

@@ -48,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ChangeWatcher.shared.start()
         }
 
-        // Start periodic status polling so the icon + menu reflect daemon
+        // Start periodic status polling so the icon + menu reflect engine
         // state immediately on launch and stay current — MenuBarExtra(.menu)
         // does not fire SwiftUI .onAppear on menu open, so a timer (not the
         // menu lifecycle) is what keeps the state fresh and self-healing.
@@ -134,7 +134,7 @@ struct OneLakeApp: App {
 // MARK: - MenuBarIconView
 
 /// Menu-bar label that shows the brand template image and overlays a small
-/// SF Symbol badge when the daemon state is not normal.
+/// SF Symbol badge when the engine state is not normal.
 ///
 /// States:
 ///   - normal      → plain brand icon (macOS tints it automatically)
@@ -155,7 +155,7 @@ private struct MenuBarIconView: View {
                 .opacity(state == .notRunning ? 0.4 : 1.0)
 
             // Small badge overlaid at the bottom-trailing corner.
-            // Visible only when the daemon reports a non-normal state.
+            // Visible only when the engine reports a non-normal state.
             if let badge = badgeSystemName {
                 Image(systemName: badge)
                     .font(.system(size: 7, weight: .bold))
