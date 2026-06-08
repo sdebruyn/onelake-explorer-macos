@@ -10,9 +10,7 @@ A single signed and notarized DMG containing `OneLake.app`. The `.app` bundles:
 - The Swift host app (`OneLake`).
 - The Swift File Provider Extension (`OneLakeFileProvider.appex`).
 
-There is no standalone CLI and no daemon binary. The File Provider Extension
-owns all engine logic; end users interact with OneLake through the menu bar
-app and Finder.
+The File Provider Extension owns all engine logic; end users interact with OneLake through the menu bar app and Finder.
 
 ## Build pipeline
 
@@ -29,7 +27,7 @@ build-app (macos-15 runner)
 5.  Write Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID.
 6.  make apple-gen  -> regenerate OneLake.xcodeproj from project.yml.
 7.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
-    (pure Swift build: host app + File Provider Extension; no Go step).
+    (host app + File Provider Extension).
 8.  xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
 9.  create-dmg -> dist-app/OneLake-$VERSION.dmg
 10. xcrun notarytool submit --wait --timeout 45m

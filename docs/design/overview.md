@@ -10,7 +10,7 @@ Settled during product discovery and unchanged since:
 - **Authentication only via interactive browser**. Users only, never service principals or client secrets.
 - **Multi-tenant and multi-account simultaneously**, identified by user-chosen short aliases (`work`, `client-a`).
 - **Install via Homebrew cask**.
-- **No external runtime dependency** for end users (no Python, no .NET, no Node, no Go).
+- **No external runtime dependency** for end users (no Python, no .NET, no Node).
 - **macOS 14 Sonoma or later on Apple Silicon (arm64) only**.
 - **Project communication, code, comments, commit messages, PR descriptions all in English** so anyone can contribute.
 
@@ -42,7 +42,7 @@ Settled during product discovery and unchanged since:
 What each process does:
 
 - The **host app** holds the account-management UI, registers File Provider domains, and shows the menu bar status icon. It communicates with the FPE via `NSFileProviderManager.service(name:for:)` + XPC (protocol `OfemClientControlProtocol`). The host app also registers itself as a login item via `SMAppService.mainApp`.
-- The **File Provider Extension** is sandboxed and macOS launches it on demand when Finder needs files. It implements the `NSFileProvider*` classes and owns all engine logic: auth (MSAL Swift), OneLake DFS, Fabric REST, cache (SQLite + blobs), sync, and telemetry. There is no daemon, no Unix socket, and no separate process.
+- The **File Provider Extension** is sandboxed and macOS launches it on demand when Finder needs files. It implements the `NSFileProvider*` classes and owns all engine logic: auth (MSAL Swift), OneLake DFS, Fabric REST, cache (SQLite + blobs), sync, and telemetry.
 
 Both processes share state through a macOS App Group (`6D79CUWZ4J.group.dev.debruyn.ofem`, team-prefixed for both Developer ID and Mac App Store): config TOML, the SQLite metadata cache, the cached blob shards, and the per-account Keychain entries.
 
@@ -75,4 +75,4 @@ onelake-explorer-macos/
 | Telemetry schema + redaction | [Telemetry](../telemetry.md) |
 | Build, sign, notarize, ship | [Packaging](../packaging-homebrew.md) |
 | Local-dev vs publishing prerequisites | [Prerequisites](../prerequisites.md) |
-| Swift migration rationale | [ADR 0001](../adr/0001-swift-migration.md) |
+| Swift architecture rationale | [ADR 0001](../adr/0001-swift-migration.md) |
