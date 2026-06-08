@@ -116,44 +116,17 @@ final class OneLakeEnumerator: NSObject, NSFileProviderEnumerator {
             cursor = String(bytes: page.rawValue, encoding: .utf8) ?? ""
         }
 
-        inFlightTask?.cancel()
-        inFlightTask = Task {
-            do {
-                let result = try await CoreBridge.shared.enumerate(
-                    alias: aliasCopy,
-                    identifier: bridgeId,
-                    cursor: cursor
-                )
-                let provided = result.items.map { OneLakeItem(from: $0) }
-                OneLakeEnumerator.log.debug(
-                    "enumerateItems \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public) cursor='\(cursor, privacy: .private)' -> \(provided.count, privacy: .public) items nextCursor='\(result.nextCursor, privacy: .private)'"
-                )
-                observer.didEnumerate(provided)
-                // Signal the next page when the daemon provides a cursor,
-                // or nil to indicate this is the last (or only) page.
-                if result.nextCursor.isEmpty {
-                    observer.finishEnumerating(upTo: nil)
-                } else {
-                    let nextPage = NSFileProviderPage(Data(result.nextCursor.utf8))
-                    observer.finishEnumerating(upTo: nextPage)
-                }
-            } catch is CancellationError {
-                OneLakeEnumerator.log.debug(
-                    "enumerateItems cancelled for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public)"
-                )
-                observer.finishEnumeratingWithError(NSFileProviderError(.cannotSynchronize))
-            } catch let error as BridgeError {
-                OneLakeEnumerator.log.error(
-                    "enumerateItems failed for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-                observer.finishEnumeratingWithError(error.nsFileProviderError)
-            } catch {
-                OneLakeEnumerator.log.error(
-                    "enumerateItems failed for \(aliasCopy, privacy: .public)/\(bridgeId, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                )
-                observer.finishEnumeratingWithError(error)
-            }
-        }
+        // Fase 7.3b-1: OneLakeEnumerator is superseded by OfemFPEEnumerator.
+        // FileProviderExtension.enumerator(for:) never creates an
+        // OneLakeEnumerator instance any more — this path is unreachable.
+        // Expire the sync anchor so macOS re-enumerates via the engine-backed
+        // path if this ever gets called unexpectedly. The Go-daemon
+        // CoreBridge call has been removed; it will be cleaned up with
+        // CoreBridge itself in Fase 7.3b-2.
+        _ = aliasCopy   // suppress unused-variable warning
+        _ = bridgeId    // suppress unused-variable warning
+        _ = cursor      // suppress unused-variable warning
+        observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
     }
 
     func enumerateChanges(
