@@ -40,10 +40,10 @@ OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fa
 
 ## Where things live
 
-- `apple/Packages/OfemKit/` — local Swift Package: auth (MSAL), OneLake DFS + Fabric REST clients, SQLite metadata cache, sync engine, telemetry. Linked into both the host app and the FPE.
-- `apple/OneLake/` — host app (Swift). Menu bar UI, account management, domain registration, XPC client to the FPE.
-- `apple/OneLakeFileProvider/` — File Provider Extension (Swift). `NSFileProviderReplicatedExtension`, `OfemFPEEnumerator`, `FPEEngineHost`. Owns all engine logic.
-- `apple/Shared/` — XPC protocol + types shared by both targets: `OfemClientControlProtocol`, `XPCAccountInfo`, `XPCEngineStatus`.
+- `Packages/OfemKit/` — local Swift Package: auth (MSAL), OneLake DFS + Fabric REST clients, SQLite metadata cache, sync engine, telemetry. Linked into both the host app and the FPE.
+- `OneLake/` — host app (Swift). Menu bar UI, account management, domain registration, XPC client to the FPE.
+- `OneLakeFileProvider/` — File Provider Extension (Swift). `NSFileProviderReplicatedExtension`, `OfemFPEEnumerator`, `FPEEngineHost`. Owns all engine logic.
+- `Shared/` — XPC protocol + types shared by both targets: `OfemClientControlProtocol`, `XPCAccountInfo`, `XPCEngineStatus`.
 - `docs/` — all design docs.
 - `homebrew/` — cask template (also lives in separate `homebrew-ofem` tap repo for release publishing).
 - `.github/` — workflows, issue templates, FUNDING.yml.
@@ -64,7 +64,7 @@ make apple-build-ci
 make apple-test
 
 # Run OfemKit tests
-cd apple/Packages/OfemKit && swift test
+cd Packages/OfemKit && swift test
 
 # Regenerate Xcode project from project.yml
 make apple-gen

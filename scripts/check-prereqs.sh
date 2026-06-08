@@ -148,7 +148,7 @@ else
     hint "go install golang.org/x/tools/cmd/goimports@latest"
 fi
 
-# xcodegen owns the Xcode project (apple/project.yml); required for
+# xcodegen owns the Xcode project (project.yml); required for
 # `make apple-gen` / `make apple-build`. Treat absence as a warning
 # (not a hard miss) because Go-only work doesn't need it, but if it *is*
 # installed, compare the version against the 2.40 minimum from

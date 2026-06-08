@@ -122,7 +122,7 @@ would validate the above estimates against the real macOS Keychain API
 (`SecItemAdd` / `SecItemCopyMatching`). They can be run manually:
 
 ```bash
-cd apple/Packages/OfemKit
+cd Packages/OfemKit
 swift test --filter KeychainVolumeIntegrationTests
 ```
 

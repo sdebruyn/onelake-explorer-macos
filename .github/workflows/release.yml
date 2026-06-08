@@ -121,8 +121,8 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          cp apple/Local.xcconfig.sample apple/Local.xcconfig
-          sed -i '' "s/DEVELOPMENT_TEAM =.*/DEVELOPMENT_TEAM = $APPLE_TEAM_ID/" apple/Local.xcconfig
+          cp Local.xcconfig.sample Local.xcconfig
+          sed -i '' "s/DEVELOPMENT_TEAM =.*/DEVELOPMENT_TEAM = $APPLE_TEAM_ID/" Local.xcconfig
 
       - name: Generate Xcode project
         run: make apple-gen
@@ -161,12 +161,12 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           # Signing settings (Manual, Developer ID cert, per-target
-          # provisioning profile) live in apple/project.yml on each
+          # provisioning profile) live in project.yml on each
           # target's Release config. xcodebuild's command-line
           # `KEY[bundle.identifier=...]=VALUE` syntax does not parse,
           # so per-target overrides have to be in the project file.
           xcodebuild \
-            -project apple/OneLake.xcodeproj \
+            -project OneLake.xcodeproj \
             -scheme OneLake \
             -configuration Release \
             -destination "generic/platform=macOS" \

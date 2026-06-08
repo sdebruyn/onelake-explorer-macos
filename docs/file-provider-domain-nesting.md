@@ -90,7 +90,7 @@ and Google Drive integrate".
 - **B — one domain, virtual "accounts" top-level enumerator.** Auth
   isolation is not the issue here — MSAL token storage, Keychain
   scoping, and per-account demultiplexing all live in OfemKit
-  (`apple/Packages/OfemKit/Sources/OfemKit/Auth/`), so a single
+  (`Packages/OfemKit/Sources/OfemKit/Auth/`), so a single
   super-domain that passes `<account_alias>` as the first path
   component on every call would still get the right token. The real costs are framework
   features that File Provider only exposes per domain:

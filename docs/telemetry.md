@@ -78,7 +78,7 @@ them.
 
 ## Connection string distribution
 
-The Application Insights connection string is a committed source constant in `apple/Packages/OfemKit/Sources/OfemKit/Telemetry/BuildInfo.swift`. Every OFEM build — official release, source build, or fork — reports to the same endpoint. The string is rotated by issuing a new one for the resource and bumping that file; old binaries then stop reporting on the next release.
+The Application Insights connection string is a committed source constant in `Packages/OfemKit/Sources/OfemKit/Telemetry/BuildInfo.swift`. Every OFEM build — official release, source build, or fork — reports to the same endpoint. The string is rotated by issuing a new one for the resource and bumping that file; old binaries then stop reporting on the next release.
 
 ## First-run disclosure
 

@@ -10,7 +10,7 @@ The two APIs require **different** token audiences — a single audience does no
 - **OneLake DFS** uses `https://storage.azure.com/` (`OneLakeScopes`).
 - **Fabric REST** uses the Power BI Service audience `https://analysis.windows.net/powerbi/api` (`FabricScopes`); `api.fabric.microsoft.com` accepts it. A `storage.azure.com` token returns **401 InvalidToken** on Fabric REST.
 
-OFEM acquires the OneLake token interactively at sign-in and the Fabric token silently from the same refresh token. See `docs/auth.md` "Two-audience scope model" and `apple/Packages/OfemKit/Sources/OfemKit/Auth/TokenScope.swift`.
+OFEM acquires the OneLake token interactively at sign-in and the Fabric token silently from the same refresh token. See `docs/auth.md` "Two-audience scope model" and `Packages/OfemKit/Sources/OfemKit/Auth/TokenScope.swift`.
 
 ## URI shapes
 

@@ -6,13 +6,13 @@ options:
   groupSortPosition: top
   generateEmptyDirectories: true
 fileGroups:
-  - apple/Local.xcconfig.sample
+  - Local.xcconfig.sample
 configs:
   Debug: debug
   Release: release
 configFiles:
-  Debug: apple/Local.xcconfig
-  Release: apple/Local.xcconfig
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
 settings:
   base:
     ARCHS: arm64
@@ -38,19 +38,19 @@ settings:
 # linked into both the host app and the FPE.
 packages:
   OfemKit:
-    path: apple/Packages/OfemKit
+    path: Packages/OfemKit
 
 targets:
   OneLake:
     type: application
     platform: macOS
     sources:
-      - path: apple/OneLake
+      - path: OneLake
         excludes:
           - "**/*.xcconfig"
           - "**/Info.plist"
           - "**/*.entitlements"
-      - path: apple/Shared
+      - path: Shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem
@@ -78,12 +78,12 @@ targets:
     type: app-extension
     platform: macOS
     sources:
-      - path: apple/OneLakeFileProvider
+      - path: OneLakeFileProvider
         excludes:
           - "**/*.xcconfig"
           - "**/Info.plist"
           - "**/*.entitlements"
-      - path: apple/Shared
+      - path: Shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem.fileprovider
@@ -98,16 +98,16 @@ targets:
     dependencies:
       - package: OfemKit
   # Host-less logic-test bundle: it compiles the unit under test
-  # (ItemIdentifierParser) and apple/Shared directly rather than loading a
+  # (ItemIdentifierParser) and Shared directly rather than loading a
   # host app, so it runs unsigned in CI with no signing identity. Smoke-level only.
-  # OfemKit is required because apple/Shared (XPCAccountInfo.swift) imports it.
+  # OfemKit is required because Shared (XPCAccountInfo.swift) imports it.
   OneLakeTests:
     type: bundle.unit-test
     platform: macOS
     sources:
-      - path: apple/OneLakeTests
-      - path: apple/OneLakeFileProvider/ItemIdentifierParser.swift
-      - path: apple/Shared
+      - path: OneLakeTests
+      - path: OneLakeFileProvider/ItemIdentifierParser.swift
+      - path: Shared
     dependencies:
       - package: OfemKit
     settings:
