@@ -47,42 +47,11 @@ final class OfemFPEClient {
         Self.log.info("addAccount: domain registered for alias=\(info.alias, privacy: .public)")
     }
 
-    /// Returns the list of accounts from the FPE for the given domain alias.
-    ///
-    /// - Parameter alias: The account alias identifying the domain.
-    /// - Returns: Array of XPCAccountInfo, or empty on error.
-    func listAccounts(alias: String) async throws -> [XPCAccountInfo] {
-        let proxy = try await proxy(for: alias)
-        return try await withCheckedThrowingContinuation { continuation in
-            proxy.listAccounts { accounts, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: accounts)
-                }
-            }
-        }
-    }
-
     /// Removes an account via the FPE XPC service.
     func removeAccount(alias: String) async throws {
         let proxy = try await proxy(for: alias)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             proxy.removeAccount(alias: alias) { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            }
-        }
-    }
-
-    /// Sets the default account via the FPE XPC service.
-    func setDefaultAccount(alias: String) async throws {
-        let proxy = try await proxy(for: alias)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            proxy.setDefaultAccount(alias: alias) { error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else {
