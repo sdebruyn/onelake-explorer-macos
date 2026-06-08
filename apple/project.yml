@@ -100,6 +100,7 @@ targets:
   # Host-less logic-test bundle: it compiles the unit under test
   # (ItemIdentifierParser) and apple/Shared directly rather than loading a
   # host app, so it runs unsigned in CI with no signing identity. Smoke-level only.
+  # OfemKit is required because apple/Shared (XPCAccountInfo.swift) imports it.
   OneLakeTests:
     type: bundle.unit-test
     platform: macOS
@@ -107,6 +108,8 @@ targets:
       - path: apple/OneLakeTests
       - path: apple/OneLakeFileProvider/ItemIdentifierParser.swift
       - path: apple/Shared
+    dependencies:
+      - package: OfemKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem.tests
