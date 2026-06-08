@@ -17,6 +17,10 @@
 // remains active as a fallback for account management commands not yet
 // routed through the FPE's NSFileProviderServiceSource. Fase 7.3 will
 // remove that path entirely.
+//
+// Fase 7.3b-1: `configStore` is now a public property so the XPC handler
+// (OfemClientControlService.swift) can read and mutate config directly
+// for getEngineStatus / setConfig without having to open a second store.
 
 import FileProvider
 import Foundation
@@ -44,6 +48,9 @@ final class FPEEngineHost: Sendable {
     private let lock = NSLock()
     private nonisolated(unsafe) var _engine: OfemEngine?
     private nonisolated(unsafe) var _buildError: Error?
+    /// The config store, loaded lazily on first use (by the engine build or
+    /// by the XPC handler's getEngineStatus / setConfig calls).
+    private nonisolated(unsafe) var _configStore: OfemConfigStore?
 
     // MARK: - Init
 
@@ -52,7 +59,33 @@ final class FPEEngineHost: Sendable {
         self.domain = domain
     }
 
+    // MARK: - Config store access
+
+    /// Returns the shared config store, creating it on first call.
+    ///
+    /// OfemConfigStore is Sendable and uses an NSLock internally, so the
+    /// returned reference may be used from any context. The store is shared
+    /// between the engine build path and the XPC handler so both read and
+    /// write the same in-memory snapshot.
+    ///
+    /// - Throws: `OfemConfigError` on TOML parse failure (first call only).
+    func configStore() throws -> OfemConfigStore {
+        if let cs = lock.withLock({ _configStore }) { return cs }
+        let cs = try OfemConfigStore()
+        lock.withLock { _configStore = cs }
+        return cs
+    }
+
     // MARK: - Engine access
+
+    /// Returns the already-built engine without triggering a build.
+    ///
+    /// Returns `nil` if the engine has never been requested (or if the
+    /// build has not completed yet). Used by the XPC status handler to
+    /// skip the blob-bytes query when the engine is not yet warm.
+    func existingEngine() -> OfemEngine? {
+        lock.withLock { _engine }
+    }
 
     /// Returns the engine, building it on first call.
     ///
@@ -97,9 +130,11 @@ final class FPEEngineHost: Sendable {
         Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: building OfemEngine")
 
         do {
-            let configStore = try OfemConfigStore()
+            // Use the shared configStore so the XPC handler and the engine
+            // read from the same in-memory snapshot.
+            let cs = try configStore()
             let paths = OfemPaths()
-            let engine = try OfemEngine(configStore: configStore, paths: paths)
+            let engine = try OfemEngine(configStore: cs, paths: paths)
             lock.withLock { _engine = engine }
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine built")
             // Fire-and-forget start (telemetry flush timer, etc.)
