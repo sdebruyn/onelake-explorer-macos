@@ -33,6 +33,15 @@ settings:
     # Release builds override these via the xcodebuild command line.
     MARKETING_VERSION: "0.0.0-dev"
     CURRENT_PROJECT_VERSION: "0"
+# OfemKit is a local Swift Package that houses the engine modules being
+# migrated from the Go daemon (see docs/swift-migration-plan.md). It is
+# linked into both the host app and the FPE. The Go daemon IPC clients
+# remain active during migration (Phases 1–6); OfemKit is compile-only
+# in this phase (Phase 7.1).
+packages:
+  OfemKit:
+    path: apple/Packages/OfemKit
+
 # The Go engine and cache live in the long-running daemon. Both Swift
 # targets reach it over the unix-socket IPC (apple/Shared/IPCClient.swift +
 # CoreBridge.swift) — there is no cgo archive to link, so no
@@ -78,6 +87,7 @@ targets:
           CODE_SIGN_IDENTITY: "Developer ID Application"
           PROVISIONING_PROFILE_SPECIFIER: "OFEM distribution developer ID"
     dependencies:
+      - package: OfemKit
       - target: OneLakeFileProvider
         embed: true
         codeSign: true
@@ -245,6 +255,8 @@ targets:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "Developer ID Application"
           PROVISIONING_PROFILE_SPECIFIER: "OFEM FP distribution developer ID"
+    dependencies:
+      - package: OfemKit
   # Host-less logic-test bundle: it compiles the unit under test
   # (ItemIdentifierParser) and apple/Shared directly rather than loading a
   # host app, so it runs unsigned in CI with no daemon and no signing
