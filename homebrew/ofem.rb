@@ -42,12 +42,7 @@ cask "ofem" do
   # template the release workflow renders into the tap). This dummy only
   # validates the tap pipeline, but stale uninstall/zap rules here would
   # mislead anyone reading it.
-  #
-  # The host app registers (and unregisters) the bundled daemon as a
-  # LaunchAgent via SMAppService on first launch / on quit, so no
-  # postflight script or launchctl hookup is needed from the cask.
-  uninstall launchctl: "dev.debruyn.ofem.daemon",
-            quit:      "dev.debruyn.ofem.app"
+  uninstall quit: "dev.debruyn.ofem"
 
   zap trash: [
     "~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem",

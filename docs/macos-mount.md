@@ -23,24 +23,17 @@ See [docs/file-provider.md](file-provider.md) for the technical design.
 - **macOS 14 Sonoma minimum.** Latest File Provider APIs (placeholder icons, fast cache reclamation, advanced enumeration) get incremental improvements through macOS 14.
 - **arm64 only.** No Intel binaries.
 
-## Daemon ↔ Extension boundary
+## Host app ↔ Extension boundary
 
 The File Provider Extension is sandboxed and short-lived — macOS
 launches it on demand for each Finder request and tears it down again.
-It cannot hold long-lived network sockets, run scheduled polling, or
-perform interactive auth flows. To bridge that gap a separate
-**daemon** process (`OneLake.app/Contents/Library/LaunchAgents/dev.debruyn.ofem.daemon.app/Contents/MacOS/ofem daemon run`,
-started by the LaunchAgent the host app registers via SMAppService on
-first launch) handles those long-running concerns and signals the
-extension when it has news.
+OFEM solves the long-running-engine problem by embedding all engine
+logic (auth, network, cache, sync) directly inside the extension via
+**OfemKit**, a local Swift Package linked into the FPE target.
 
-The wire protocol the host app and the extension use to talk to the
-daemon is the local-only JSON-RPC 2.0 socket described in
-[`internal/ipc`](../internal/ipc). It binds at
-`~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem/ofem.sock`, owner-only
-0600 permissions, length-prefixed frames capped at 1 MiB.
-
-The daemon → extension direction is wrapped over an XPC service (the
-extension's Apple-blessed inbound API) and calls
+The host app communicates with the extension through Apple's standard
+`NSFileProviderService` + `NSXPCConnection` mechanism — no Unix sockets,
+no daemons, no LaunchAgents. The XPC protocol is defined in
+`apple/Shared/OfemClientControlProtocol.swift`. The FPE calls
 `NSFileProviderManager.signalEnumerator(for:)` to nudge re-enumeration
 when Fabric's adaptive polling spots a change.
