@@ -5,8 +5,6 @@ import Testing
 
 /// Tests for ``ItemIdentifierParser`` — parsing opaque identifier strings that
 /// the FPE stores / retrieves via `NSFileProviderItemIdentifier`.
-///
-/// Mirrors `internal/fp/fp_test.go` — `TestParseIdentifier`.
 struct ItemIdentifierParserTests {
 
     // MARK: - Root

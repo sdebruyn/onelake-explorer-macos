@@ -5,10 +5,9 @@ import Foundation
 /// Parses opaque File Provider identifier strings into typed ``ItemIdentifier``
 /// values.
 ///
-/// The grammar is identical to the Go daemon's `parseIdentifier` in
-/// `internal/fp/fp.go`. Strict validation: any identifier with an empty
-/// segment (leading slash, double slash, empty workspace or item component)
-/// is rejected with ``FPError/invalidIdentifier(_:)``.
+/// Strict validation: any identifier with an empty segment (leading slash,
+/// double slash, empty workspace or item component) is rejected with
+/// ``FPError/invalidIdentifier(_:)``.
 public enum ItemIdentifierParser {
 
     // MARK: - Parse
@@ -16,7 +15,7 @@ public enum ItemIdentifierParser {
     /// Parses an opaque identifier string.
     ///
     /// - Parameter raw: The identifier string from the File Provider stack.
-    ///   `""` and `".rootContainer"` both map to `.root`.
+    /// `""` and `".rootContainer"` both map to `.root`.
     /// - Returns: The structured ``ItemIdentifier``.
     /// - Throws: ``FPError/invalidIdentifier(_:)`` for malformed identifiers.
     public static func parse(_ raw: String) throws -> ItemIdentifier {

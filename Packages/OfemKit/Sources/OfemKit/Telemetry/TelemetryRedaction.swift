@@ -2,8 +2,6 @@ import CryptoKit
 import Foundation
 
 /// Privacy-safe field filtering for OFEM telemetry.
-///
-/// This is a direct Swift port of `internal/telemetry/redact.go`. The
 /// functions here are the **structural** privacy boundary: every property
 /// value that flows to the App Insights sink passes through `scrubProperty`
 /// (and error codes through `safeErrorCode`) inside `AppInsightsEnvelope`,
@@ -39,7 +37,7 @@ public enum TelemetryRedaction {
 
     /// Returns the first 8 hex characters of `SHA256(alias)`.
     ///
-    /// Mirrors `HashAlias` in `internal/telemetry/redact.go`. The empty
+    ///
     /// string maps to the empty string so callers can pass through a missing
     /// alias without branching.
     public static func hashAlias(_ alias: String) -> String {
@@ -52,7 +50,7 @@ public enum TelemetryRedaction {
     /// Returns `errorCode` unchanged when it is short and drawn only from
     /// the safe charset; collapses everything else to `"redacted"`.
     ///
-    /// Mirrors `SafeErrorCode` in `internal/telemetry/redact.go`.
+    ///
     public static func safeErrorCode(_ errorCode: String) -> String {
         guard !errorCode.isEmpty else { return "" }
         guard errorCode.utf8.count <= safeErrorCodeMaxLen else { return "redacted" }
@@ -62,7 +60,7 @@ public enum TelemetryRedaction {
     /// Returns `value` unchanged when it passes the charset and length
     /// check; collapses to `"redacted"` otherwise.
     ///
-    /// Mirrors `scrubProperty` in `internal/telemetry/redact.go`.
+    ///
     public static func scrubProperty(_ value: String) -> String {
         guard !value.isEmpty else { return "" }
         guard value.utf8.count <= maxPropertyLen else { return "redacted" }

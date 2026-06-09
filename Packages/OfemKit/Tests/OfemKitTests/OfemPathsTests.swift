@@ -88,7 +88,7 @@ struct OfemPathsTests {
         #expect(OfemPaths.bundleID == "dev.debruyn.ofem")
     }
 
-    @Test("appGroupIdentifier matches Go GroupID constant")
+    @Test("appGroupIdentifier has stable value")
     func appGroupIdentifierMatchesGoConst() {
         // Go: GroupID = "6D79CUWZ4J.group.dev.debruyn.ofem"
         #expect(OfemPaths.appGroupIdentifier == "6D79CUWZ4J.group.dev.debruyn.ofem")

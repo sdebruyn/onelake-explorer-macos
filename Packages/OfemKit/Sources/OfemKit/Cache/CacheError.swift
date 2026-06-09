@@ -3,17 +3,9 @@ import Foundation
 // MARK: - CacheError
 
 /// Errors surfaced by the ``CacheStore``.
-///
-/// Mirrors the error patterns in `internal/cache/` — the Go implementation
-/// wraps `os.ErrNotExist` for missing rows; Swift surfaces a typed enum
-/// instead.
 public enum CacheError: Error, Sendable {
     /// The requested metadata row or blob does not exist in the cache.
     case notFound(String)
-
-    /// The on-disk schema version is newer than the version this binary
-    /// supports. The database was written by a newer OFEM release.
-    case schemaTooNew(onDisk: Int, supported: Int)
 
     /// A SHA-256 digest is malformed (must be 64 lowercase hex characters).
     case invalidSHA(String)
@@ -33,8 +25,6 @@ extension CacheError: LocalizedError {
         switch self {
         case .notFound(let desc):
             return "Cache entry not found: \(desc)"
-        case .schemaTooNew(let onDisk, let supported):
-            return "On-disk schema v\(onDisk) is newer than supported v\(supported)"
         case .invalidSHA(let sha):
             return "Invalid SHA-256 digest: '\(sha)'"
         case .missingArgument(let name):

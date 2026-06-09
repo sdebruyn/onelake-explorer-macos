@@ -4,11 +4,9 @@ import Foundation
 
 /// File-backed token store that holds per-account opaque byte blobs under
 /// `<configDir>/tokens/<hex-encoded-alias>.bin`.
-///
-/// This is a 1:1 port of `internal/auth/keychain.go` — `fileKeychain`. The
 /// name "token store" is used here because the type is a pure file-I/O
 /// primitive; the macOS Keychain (`SecItem*`) integration is deferred to
-/// Phase 3 when MSAL Swift takes over.
+/// when MSAL Swift takes over.
 ///
 /// **Thread safety**: all public methods are safe for concurrent use.
 ///
@@ -25,9 +23,6 @@ import Foundation
 ///
 /// **Empty-value semantics**: calling `write` with `Data()` or a zero-length
 /// buffer is equivalent to `delete` — the existing entry is removed and no
-/// file is written. This matches the Go `Set(account, nil)` contract.
-///
-/// Mirrors `internal/auth/keychain.go` — `fileKeychain` + `Keychain` interface.
 public final class FileTokenStore: Sendable {
     private let root: URL
     private let lock = NSLock()
@@ -38,7 +33,7 @@ public final class FileTokenStore: Sendable {
     /// The directory is created (0700) if it does not exist.
     ///
     /// - Throws: ``FileTokenStoreError/createDirectoryFailed(_:)`` if the
-    ///   directory cannot be created.
+    /// directory cannot be created.
     public convenience init() throws {
         try self.init(tokensDir: OfemPaths().tokensDir)
     }
@@ -48,7 +43,7 @@ public final class FileTokenStore: Sendable {
     ///
     /// - Parameter tokensDir: Directory under which token files are stored.
     /// - Throws: ``FileTokenStoreError/createDirectoryFailed(_:)`` if the
-    ///   directory cannot be created.
+    /// directory cannot be created.
     public init(tokensDir: URL) throws {
         self.root = tokensDir
         do {
@@ -69,10 +64,8 @@ public final class FileTokenStore: Sendable {
     /// - Parameter alias: The user-chosen account alias.
     /// - Returns: The stored bytes.
     /// - Throws: ``FileTokenStoreError/notFound(_:)`` (wrapping
-    ///   `CocoaError.fileReadNoSuchFile`) when no entry exists for `alias`;
-    ///   ``FileTokenStoreError/readFailed(_:_:)`` for other I/O failures.
-    ///
-    /// Mirrors `internal/auth/keychain.go` — `fileKeychain.Get()`.
+    /// `CocoaError.fileReadNoSuchFile`) when no entry exists for `alias`;
+    /// ``FileTokenStoreError/readFailed(_:_:)`` for other I/O failures.
     public func read(alias: String) throws -> Data {
         let url = tokenURL(for: alias)
         do {
@@ -88,11 +81,9 @@ public final class FileTokenStore: Sendable {
     /// calling ``delete(alias:)``.
     ///
     /// - Parameters:
-    ///   - alias: The user-chosen account alias.
-    ///   - data: The opaque byte blob to store.
+    /// - alias: The user-chosen account alias.
+    /// - data: The opaque byte blob to store.
     /// - Throws: ``FileTokenStoreError`` variants on I/O failures.
-    ///
-    /// Mirrors `internal/auth/keychain.go` — `fileKeychain.Set()`.
     public func write(alias: String, data: Data) throws {
         guard !data.isEmpty else {
             try delete(alias: alias)
@@ -141,9 +132,7 @@ public final class FileTokenStore: Sendable {
     ///
     /// - Parameter alias: The user-chosen account alias.
     /// - Throws: ``FileTokenStoreError/deleteFailed(_:_:)`` on unexpected
-    ///   I/O errors.
-    ///
-    /// Mirrors `internal/auth/keychain.go` — `fileKeychain.Delete()`.
+    /// I/O errors.
     public func delete(alias: String) throws {
         let url = tokenURL(for: alias)
         do {

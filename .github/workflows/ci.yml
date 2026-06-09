@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  apple-build:
-    name: Apple build + smoke tests
+  build:
+    name: Build + smoke tests
     runs-on: macos-15
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -36,10 +36,10 @@ jobs:
         # CI has no signing identity; the sample file's placeholder
         # DEVELOPMENT_TEAM is harmless because every xcodebuild invocation
         # below disables code signing (CODE_SIGNING_ALLOWED=NO).
-        run: make apple-bootstrap
+        run: make bootstrap
 
       - name: Generate Xcode project
-        run: make apple-gen
+        run: make gen
 
       - name: Verify project.pbxproj exists
         run: test -f OneLake.xcodeproj/project.pbxproj
@@ -48,13 +48,13 @@ jobs:
         # OneLakeTests bundle: File Provider identifier grammar (pure logic).
         # Runs before the slower full app build so a Swift compile regression
         # surfaces in seconds.
-        run: make apple-test
+        run: make test
 
       - name: Build app + extension (unsigned)
         # Compiles the OneLake app and the File Provider .appex with code
         # signing disabled. Catches Swift compile regressions on every PR
         # so they no longer surface for the first time on a release tag.
-        run: make apple-build-ci
+        run: make build-ci
 
   commitlint:
     name: Commitlint

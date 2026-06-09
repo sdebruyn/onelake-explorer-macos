@@ -1,20 +1,20 @@
 # Convenience targets for OFEM development.
 #
 # Day-to-day:
-#   make app            — signed macOS app; THE build to run after pulling
-#   make apple-build    — Debug build of OneLake.app via xcodebuild
-#   make apple-test     — run Swift unit tests (unsigned, host-less)
-#   make apple-build-ci — unsigned compile-only build (used in CI)
-#   make apple-clean    — remove build artefacts + unregister from LaunchServices
-#   make apple-gen      — regenerate OneLake.xcodeproj from project.yml
+#   make app        — signed macOS app; THE build to run after pulling
+#   make build      — Debug build of OneLake.app via xcodebuild
+#   make test       — run Swift unit tests (unsigned, host-less)
+#   make build-ci   — unsigned compile-only build (used in CI)
+#   make clean      — remove build artefacts + unregister from LaunchServices
+#   make gen        — regenerate OneLake.xcodeproj from project.yml
 
 XCODE_PROJECT := OneLake.xcodeproj
 APPLE_CONFIG  := Local.xcconfig
 
-.PHONY: app apple-bootstrap apple-gen apple-build apple-build-ci apple-test apple-clean help
+.PHONY: app bootstrap gen build build-ci test clean help
 
 # Build the signed macOS app. This is THE single build to run after pulling main.
-app: apple-build ## Build signed macOS app (THE build to run after pulling)
+app: build ## Build signed macOS app (THE build to run after pulling)
 
 # Signing knobs that turn a normal build into an unsigned compile-only
 # build. CI has no Developer ID identity, so it must NOT pass
@@ -25,7 +25,7 @@ APPLE_UNSIGNED := CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDE
 
 # First-time setup: copy the xcconfig sample if it's missing and tell the
 # user to fill in their team ID.
-apple-bootstrap: ## Write Local.xcconfig from the sample (first-time setup)
+bootstrap: ## Write Local.xcconfig from the sample (first-time setup)
 	@if [ ! -f $(APPLE_CONFIG) ]; then \
 		cp Local.xcconfig.sample $(APPLE_CONFIG); \
 		echo "Created $(APPLE_CONFIG). Edit it and set DEVELOPMENT_TEAM."; \
@@ -37,12 +37,12 @@ apple-bootstrap: ## Write Local.xcconfig from the sample (first-time setup)
 # --project-root . lets the spec reference source paths from the repo root
 # (e.g. "OneLake") while --project . drops the generated .xcodeproj at the
 # repo root, next to the spec.
-apple-gen: ## Regenerate OneLake.xcodeproj from project.yml
+gen: ## Regenerate OneLake.xcodeproj from project.yml
 	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: brew install xcodegen"; exit 1; }
 	xcodegen generate --spec project.yml --project-root . --project .
 
 # Build the OneLake.app target (Debug, arm64) for local dogfooding.
-apple-build: apple-gen ## Build OneLake.app (Debug, signed) for local use
+build: gen ## Build OneLake.app (Debug, signed) for local use
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLake \
 		-configuration Debug \
@@ -54,7 +54,7 @@ apple-build: apple-gen ## Build OneLake.app (Debug, signed) for local use
 # round-trip). This is the CI build gate: it catches Swift compile
 # regressions on every PR without needing a Developer ID. The product is
 # not runnable.
-apple-build-ci: apple-gen ## Compile app + .appex unsigned (CI gate)
+build-ci: gen ## Compile app + .appex unsigned (CI gate)
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLake \
 		-configuration Debug \
@@ -65,7 +65,7 @@ apple-build-ci: apple-gen ## Compile app + .appex unsigned (CI gate)
 
 # Run the host-less XCTest bundle unsigned. Includes pure logic tests
 # for the identifier grammar.
-apple-test: apple-gen ## Run Swift unit tests (unsigned, host-less)
+test: gen ## Run Swift unit tests (unsigned, host-less)
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLakeTests \
 		-configuration Debug \
@@ -76,14 +76,14 @@ apple-test: apple-gen ## Run Swift unit tests (unsigned, host-less)
 
 # Removes generated/build artefacts AND unregisters the built app from
 # LaunchServices. Local.xcconfig is preserved (per-developer
-# DEVELOPMENT_TEAM, not a build output) — use `make apple-bootstrap` to recreate.
+# DEVELOPMENT_TEAM, not a build output) — use `make bootstrap` to recreate.
 #
 # The unregister matters: building the .app in multiple locations (e.g.
 # throwaway git worktrees) registers duplicate File Provider providers for the
 # same bundle id, after which macOS returns NSFileProviderError.providerNotFound
-# (-2001) and the Finder mount never appears. Always run `make apple-clean`
+# (-2001) and the Finder mount never appears. Always run `make clean`
 # before removing a worktree you built the app in.
-apple-clean: ## Remove build artefacts and unregister app from LaunchServices
+clean: ## Remove build artefacts and unregister app from LaunchServices
 	@app="$(PWD)/DerivedData/Build/Products/Debug/OneLake.app"; \
 	lsreg="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"; \
 	if [ -d "$$app" ] && [ -x "$$lsreg" ]; then "$$lsreg" -u "$$app" 2>/dev/null || true; fi
@@ -91,4 +91,4 @@ apple-clean: ## Remove build artefacts and unregister app from LaunchServices
 
 help: ## Show available targets
 	@echo "Targets:"
-	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-18s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)

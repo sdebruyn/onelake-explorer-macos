@@ -3,16 +3,11 @@ import Foundation
 // MARK: - SyncError
 
 /// Typed errors produced by the ``SyncEngine``.
-///
-/// Mirrors the error sentinels in `internal/sync/` and the classification
-/// in `internal/fp/fp.go` — `Classify`.
 public enum SyncError: Error, Sendable, CustomStringConvertible {
 
     // MARK: - Cases
 
     /// The workspace's Fabric capacity is paused; all reads and writes fail.
-    ///
-    /// Mirrors `internal/sync/paused.go` — `ErrWorkspacePaused`.
     case workspacePaused
 
     /// A required dependency was nil or not provided to `SyncEngine.init`.

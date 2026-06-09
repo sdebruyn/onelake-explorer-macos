@@ -1,18 +1,17 @@
 // LoginItemManager.swift
 // Manages the OneLake host app as a login item via SMAppService.
 //
-// SMAppService.mainApp registers the .app bundle itself as a login item
+// SMAppService.mainApp registers the.app bundle itself as a login item
 // so it launches at every subsequent login. This is the sandbox-compatible
 // "Open at Login" mechanism available since macOS 13 Ventura.
 //
-// After the Swift migration (Fase 7.3b-2) there is no separate daemon
-// LaunchAgent. The host app is the only process that needs to start at
-// login; it in turn wakes the File Provider Extension via the standard
+// The host app is the only process that needs to start at login; it in
+// turn wakes the File Provider Extension via the standard
 // NSFileProviderManager domain lifecycle.
 //
 // Verification note: SMAppService calls can only be runtime-verified in
 // a signed, installed app running in a real login session. The CI unsigned
-// build (make apple-build-ci) does not exercise these calls.
+// build (make build-ci) does not exercise these calls.
 
 import AppKit
 import Foundation
@@ -110,8 +109,8 @@ final class LoginItemManager: ObservableObject {
     /// Register the app as a login item so it starts at every subsequent login.
     ///
     /// Real-device note: this call throws in two known situations:
-    ///   - The app is not signed / not installed (SMError.notFound).
-    ///   - The user has denied the Login Items permission in System Settings.
+    /// - The app is not signed / not installed (SMError.notFound).
+    /// - The user has denied the Login Items permission in System Settings.
     func register() {
         do {
             try SMAppService.mainApp.register()

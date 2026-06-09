@@ -1,8 +1,6 @@
 import Foundation
 
 /// Build-time identity for the running OFEM binary.
-///
-/// Mirrors `internal/buildinfo/buildinfo.go` — provides version, commit
 /// hash, build date, and the Application Insights connection string that
 /// every OFEM build reports to.
 ///

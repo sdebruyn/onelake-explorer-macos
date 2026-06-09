@@ -9,19 +9,17 @@ import os.log
 /// ``acquire()`` call:
 ///
 /// 1. **Pause window** — if ``penalty(until:)`` was called with a deadline
-///    in the future, `acquire` suspends until that deadline passes. All
-///    concurrent callers share the same window, so a single 429 stalls
-///    every in-flight request against the host.
+/// in the future, `acquire` suspends until that deadline passes. All
+/// concurrent callers share the same window, so a single 429 stalls
+/// every in-flight request against the host.
 /// 2. **Concurrency cap** — at most `maxConcurrent` callers may hold the
-///    gate simultaneously; further calls suspend until one is released.
+/// gate simultaneously; further calls suspend until one is released.
 /// 3. **Token-bucket QPS budget** — callers leave the gate at
-///    `tokensPerSecond` per second (up to `burst`), which smears a wave
-///    of post-pause retries rather than releasing them all at once.
+/// `tokensPerSecond` per second (up to `burst`), which smears a wave
+/// of post-pause retries rather than releasing them all at once.
 ///
 /// All mutable state lives inside the `actor` body; no external locking is
 /// needed by callers.
-///
-/// Mirrors `internal/httpgate/gate.go` — `Gate`.
 public actor HTTPGate {
     // MARK: - Configuration
 
@@ -63,8 +61,6 @@ public actor HTTPGate {
     ///
     /// Invalid values are clamped to sensible minimums so callers can pass
     /// zero defaults.
-    ///
-    /// Mirrors `internal/httpgate/gate.go` — `New`.
     public init(host: String, maxConcurrent: Int, tokensPerSecond: Double, burst: Int) {
         self.host = host
         self.maxConcurrent = max(1, maxConcurrent)
@@ -89,8 +85,6 @@ public actor HTTPGate {
     ///
     /// Call ``release()`` exactly once when the round trip completes —
     /// success or failure.
-    ///
-    /// Mirrors `internal/httpgate/gate.go` — `Gate.Acquire`.
     public func acquire() async throws {
         // 1. Wait out any pending pause window.
         try await waitForPause()
@@ -115,14 +109,14 @@ public actor HTTPGate {
         availableTokens -= 1.0
 
         // 4. Claim the concurrency slot before the second pause check so that
-        //    inFlight is always in sync with how many callers have passed the
-        //    gate. Without this, a concurrent release() + drainWaiters() during
-        //    the second waitForPause could allow a second caller past the
-        //    concurrency-cap while-loop, causing inFlight to exceed maxConcurrent.
+        // inFlight is always in sync with how many callers have passed the
+        // gate. Without this, a concurrent release() + drainWaiters() during
+        // the second waitForPause could allow a second caller past the
+        // concurrency-cap while-loop, causing inFlight to exceed maxConcurrent.
         inFlight += 1
 
         // 5. Re-check pause after token acquisition — a Penalty posted
-        //    between step 1 and step 3 must still be honoured.
+        // between step 1 and step 3 must still be honoured.
         do {
             try await waitForPause()
         } catch {
@@ -137,8 +131,6 @@ public actor HTTPGate {
     /// Releases one concurrency slot.
     ///
     /// Must be called exactly once for every successful ``acquire()``.
-    ///
-    /// Mirrors `internal/httpgate/gate.go` — implicit release via `sync.Once`.
     public func release() {
         inFlight -= 1
         refill()
@@ -155,8 +147,6 @@ public actor HTTPGate {
     ///
     /// Does not suspend. Callers waiting in ``acquire()`` will observe the
     /// new pause on their next `waitForPause` iteration.
-    ///
-    /// Mirrors `internal/httpgate/gate.go` — `Gate.Penalty`.
     public func penalty(until deadline: ContinuousClock.Instant) {
         guard deadline > .now else {
             Self.log.debug("HTTPGate[\(self.host, privacy: .public)]: penalty in past, ignored")
@@ -174,8 +164,6 @@ public actor HTTPGate {
     /// A point-in-time snapshot of the gate's internal counters.
     ///
     /// Cheap to call; safe to use from a status handler.
-    ///
-    /// Mirrors `internal/httpgate/gate.go` — `Gate.State`.
     public func state() -> HTTPGateState {
         refill()
         return HTTPGateState(
@@ -228,8 +216,6 @@ public actor HTTPGate {
     ///
     /// Throws `CancellationError` immediately when the calling `Task` is
     /// cancelled, mirroring how Go's `waitPause` returns on `ctx.Done()`.
-    ///
-    /// Mirrors `internal/httpgate/gate.go` — `waitPause`.
     private func waitForPause() async throws {
         while let until = pauseUntil {
             let now = ContinuousClock.now
@@ -243,7 +229,7 @@ public actor HTTPGate {
             // full penalty window after their Task is cancelled. This mirrors
             // Go's select { case <-ctx.Done(): return ctx.Err() } in waitPause.
             try await Task.sleep(for: waitDuration, clock: ContinuousClock())
-            // Loop: re-read pauseUntil in case it was extended while we slept.
+        // Loop: re-read pauseUntil in case it was extended while we slept.
         }
     }
 }
@@ -251,8 +237,6 @@ public actor HTTPGate {
 // MARK: - HTTPGateState
 
 /// Point-in-time snapshot of an ``HTTPGate``'s counters.
-///
-/// Mirrors `internal/httpgate/gate.go` — `State`.
 public struct HTTPGateState: Sendable {
     /// The host this gate guards.
     public let host: String
@@ -277,8 +261,6 @@ public struct HTTPGateState: Sendable {
 /// Pre-register expected hosts via ``register(host:maxConcurrent:tokensPerSecond:burst:)``
 /// at startup to get curated budgets. Unknown hosts are lazily created with
 /// the configured ``HTTPGateDefaults``.
-///
-/// Mirrors `internal/httpgate/registry.go` — `Registry`.
 public actor HTTPGateRegistry {
     // MARK: - State
 
@@ -288,8 +270,6 @@ public actor HTTPGateRegistry {
     // MARK: - Initialisers
 
     /// Constructs a registry with the given fallback defaults.
-    ///
-    /// Mirrors `internal/httpgate/registry.go` — `NewRegistry`.
     public init(defaults: HTTPGateDefaults) {
         var d = defaults
         d.maxConcurrent = max(1, d.maxConcurrent)
@@ -301,8 +281,6 @@ public actor HTTPGateRegistry {
     // MARK: - Registration
 
     /// Installs or replaces the gate for `host` with explicit budgets.
-    ///
-    /// Mirrors `internal/httpgate/registry.go` — `Registry.Register`.
     @discardableResult
     public func register(
         host: String,
@@ -319,8 +297,6 @@ public actor HTTPGateRegistry {
     /// was previously registered.
     ///
     /// Always returns non-nil.
-    ///
-    /// Mirrors `internal/httpgate/registry.go` — `Registry.Gate`.
     public func gate(for host: String) -> HTTPGate {
         if let g = gates[host] { return g }
         let g = HTTPGate(
@@ -335,13 +311,9 @@ public actor HTTPGateRegistry {
 
     /// The configured defaults, for callers that need to compute a
     /// missing-Retry-After fallback duration.
-    ///
-    /// Mirrors `internal/httpgate/registry.go` — `Registry.Defaults`.
     public var registryDefaults: HTTPGateDefaults { defaults }
 
     /// Returns snapshots of all gates, sorted by host.
-    ///
-    /// Mirrors `internal/httpgate/registry.go` — `Registry.States`.
     public func states() async -> [HTTPGateState] {
         var out: [HTTPGateState] = []
         for (_, gate) in gates {
@@ -354,8 +326,6 @@ public actor HTTPGateRegistry {
 // MARK: - HTTPGateDefaults
 
 /// Fall-back configuration for gates auto-created by ``HTTPGateRegistry``.
-///
-/// Mirrors `internal/httpgate/registry.go` — `Defaults`.
 public struct HTTPGateDefaults: Sendable {
     /// In-flight cap for lazily created gates.
     public var maxConcurrent: Int
@@ -383,20 +353,14 @@ public struct HTTPGateDefaults: Sendable {
 // MARK: - Known hosts and default registry
 
 /// Known OneLake DFS host.
-///
-/// Mirrors `internal/httpgate/known.go` — `HostOneLake`.
 public let httpGateHostOneLake = "onelake.dfs.fabric.microsoft.com"
 
 /// Known Fabric REST host.
-///
-/// Mirrors `internal/httpgate/known.go` — `HostFabric`.
 public let httpGateHostFabric = "api.fabric.microsoft.com"
 
 extension HTTPGateRegistry {
     /// Builds a registry pre-registered with OneLake and Fabric gates using
     /// curated budgets.
-    ///
-    /// Mirrors `internal/httpgate/known.go` — `DefaultRegistry`.
     public static func makeDefault() -> HTTPGateRegistry {
         let reg = HTTPGateRegistry(defaults: HTTPGateDefaults(
             maxConcurrent: 8,

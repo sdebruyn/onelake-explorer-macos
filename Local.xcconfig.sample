@@ -1,6 +1,5 @@
-// Copy to apple/Local.xcconfig (gitignored) and fill in your Apple Developer
-// team ID. For local dev with a free Apple ID, find this in Xcode →
-// Settings → Accounts → (your Apple ID) → Manage Certificates. The ID is
-// a 10-char alphanumeric string.
+// Copy to Local.xcconfig (gitignored) and fill in your Apple Developer
+// team ID — a 10-char alphanumeric string. The easiest place to find it
+// is https://developer.apple.com/account (Membership details).
 
 DEVELOPMENT_TEAM = REPLACE_WITH_YOUR_TEAM_ID

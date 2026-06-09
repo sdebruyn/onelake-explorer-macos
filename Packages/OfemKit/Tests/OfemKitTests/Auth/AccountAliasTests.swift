@@ -4,9 +4,6 @@ import Testing
 // MARK: - AccountAliasTests
 
 /// Tests for ``AccountAlias`` and ``AccountAlias/validate(_:)``.
-///
-/// Each test mirrors a case from `internal/auth/account_test.go` so that
-/// the Swift and Go validation rules stay in sync.
 @Suite("AccountAlias")
 struct AccountAliasTests {
     // MARK: - Valid aliases

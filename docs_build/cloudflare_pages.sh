@@ -8,8 +8,8 @@
 #   Environment:          PYTHON_VERSION = 3.12   (or 3.13, both work)
 #
 # CF Pages auto-installs requirements.txt if present in the root
-# directory; we have one under docs_build/ instead so the project root
-# stays a clean Go project. The pip install below covers it.
+# directory; we keep ours under docs_build/ to scope Python tooling to
+# the docs build only. The pip install below covers it.
 #
 # We sideload Umami's /t.js at the end so the analytics partial in
 # overrides/partials/integrations/analytics/custom.html keeps working

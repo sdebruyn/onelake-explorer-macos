@@ -1,24 +1,16 @@
 // ChangeWatcher.swift
 // Triggers Finder re-enumeration when OneLake content changes.
 //
-// Fase 7.3b-1 (FPE-only architecture):
+// The FPE owns the sync engine and calls NSFileProviderManager.signalEnumerator()
+// directly from within the extension process whenever it detects changes.
 //
-//   With the Go daemon removed, the FPE is the engine owner. The FPE
-//   calls NSFileProviderManager.signalEnumerator() directly from within
-//   the extension process whenever its sync engine detects changes —
-//   the host app no longer needs to poll a daemon over a Unix socket.
+// ChangeWatcher emits a single one-shot "full resync" signal at host-app launch
+// so Finder re-enumerates all domains after the host starts (e.g. after a
+// login-item boot), covering any changes that accumulated while the host was
+// stopped.
 //
-//   ChangeWatcher is therefore reduced to a single one-shot "full resync"
-//   signal emitted at app launch. This ensures Finder re-enumerates all
-//   domains after the host app starts (e.g. after a login-item boot),
-//   which covers any changes that accumulated while the host was stopped.
-//
-//   Ongoing change signaling is the FPE's responsibility and will be
-//   implemented as part of the sync engine's change-observer integration
-//   (Fase 7.4+).
-//
-// This class is @MainActor because NSFileProviderManager calls are
-// documented as main-thread-only.
+// This class is @MainActor because NSFileProviderManager calls are documented
+// as main-thread-only.
 
 import FileProvider
 import Foundation

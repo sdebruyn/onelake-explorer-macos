@@ -2,7 +2,7 @@
 // Observable model that fetches account list + engine status
 // and publishes the results for the menu-bar dropdown.
 //
-// Fase 7.3b-1: CoreBridge has been removed entirely. All state now comes
+// CoreBridge has been removed entirely. All state now comes
 // from two sources:
 //   1. SharedOfemAuth (reads config.toml in-process) — accounts, default.
 //   2. OfemFPEClient.getEngineStatus(alias:) over XPC — cache stats, config
@@ -70,9 +70,9 @@ final class MenuStatusModel: ObservableObject {
     @Published private(set) var cacheBytes: Int64 = -1
     @Published private(set) var cacheMaxBytes: Int64 = 0
     /// User-editable LRU ceiling in whole gigabytes; the menubar Stepper
-    /// reads and writes this. Mirrors `cacheMaxBytes` (which is the
-    /// GB → bytes conversion used for the live used/limit math) but kept
-    /// in GBs so the Stepper round-trips cleanly without losing precision.
+    /// reads and writes this. Mirrors `cacheMaxBytes` (the byte-level
+    /// counterpart used for the live used/limit math) but kept in GBs
+    /// so the Stepper round-trips cleanly without losing precision.
     /// 0 means "unknown / not yet fetched"; once populated stays in [1, 100].
     @Published private(set) var cacheMaxSizeGB: Int = 0
     @Published private(set) var pausedWorkspaces: [PausedWorkspaceInfo] = []
@@ -231,7 +231,7 @@ final class MenuStatusModel: ObservableObject {
                 logLevel = status.logLevel
             }
 
-            // Fase 7.4: map XPCPausedWorkspace entries to PausedWorkspaceInfo.
+            // Map XPCPausedWorkspace entries to PausedWorkspaceInfo.
             pausedWorkspaces = status.pausedWorkspaces.map { xpc in
                 PausedWorkspaceInfo(
                     accountAlias: xpc.accountAlias,

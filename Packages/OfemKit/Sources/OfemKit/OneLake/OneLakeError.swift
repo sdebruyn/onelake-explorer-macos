@@ -6,9 +6,6 @@ import Foundation
 ///
 /// Wraps ``HTTPClientError`` for transport/API failures and adds
 /// OneLake-specific semantic errors.
-///
-/// Mirrors `internal/httpretry/errors.go` sentinels as used by the
-/// `internal/onelake` package.
 public enum OneLakeError: Error, Sendable {
     // MARK: - Validation errors (client-side, no network call made)
 

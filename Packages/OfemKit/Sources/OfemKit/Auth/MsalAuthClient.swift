@@ -8,7 +8,6 @@ import os.log
 ///
 /// Declared here rather than imported from MSAL directly so tests can
 /// substitute a stub without depending on the real MSAL transport.
-/// Mirrors `internal/auth/msal.go` — `MSALClient` interface.
 public protocol MsalAuthClientProtocol: Sendable {
     /// Attempts silent token acquisition from cache or via refresh token.
     func acquireTokenSilent(
@@ -32,9 +31,6 @@ public protocol MsalAuthClientProtocol: Sendable {
 /// Concurrency: `MSALPublicClientApplication` is thread-safe. The wrapper
 /// is `Sendable` and does not add its own locking beyond MSAL's internal
 /// synchronisation.
-///
-/// Mirrors `internal/auth/msal.go` — `DefaultClientFactory` +
-/// `publicClientAdapter`.
 public final class MsalAuthClient: MsalAuthClientProtocol {
     private let inner: MSALPublicClientApplication
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "MsalAuthClient")
@@ -44,13 +40,13 @@ public final class MsalAuthClient: MsalAuthClientProtocol {
     /// Creates a `MsalAuthClient` for the given `(clientID, tenantID)` pair.
     ///
     /// - Parameters:
-    ///   - clientID: The Microsoft Entra App Registration GUID.
-    ///   - tenantID: The Entra tenant GUID for this account. Pass `""` or
-    ///     omit to use `"organizations"` (home-tenant routing).
-    ///   - cacheStrategy: Where to persist tokens. Default: `.msalKeychain`.
-    ///   - fileTokenStore: Required when `cacheStrategy == .fileBackedFallback`.
+    /// - clientID: The Microsoft Entra App Registration GUID.
+    /// - tenantID: The Entra tenant GUID for this account. Pass `""` or
+    /// omit to use `"organizations"` (home-tenant routing).
+    /// - cacheStrategy: Where to persist tokens. Default: `.msalKeychain`.
+    /// - fileTokenStore: Required when `cacheStrategy ==.fileBackedFallback`.
     /// - Throws: ``MsalAuthClientError`` on configuration or MSAL
-    ///   initialisation failure.
+    /// initialisation failure.
     public init(
         clientID: String,
         tenantID: String,
@@ -131,17 +127,11 @@ public final class MsalAuthClient: MsalAuthClientProtocol {
 /// Bridges MSAL's `MSALSerializedADALCacheProviderDelegate` to
 /// `OfemKit`'s `FileTokenStore`.
 ///
-/// Used when `TokenCacheStrategy == .fileBackedFallback`. MSAL calls
+/// Used when `TokenCacheStrategy ==.fileBackedFallback`. MSAL calls
 /// `willWriteCache` / `didWriteCache` around every token write, and
 /// `willAccessCache` / `didAccessCache` around every token read. The
 /// delegate serialises the in-memory MSAL cache to disk via
 /// `FileTokenStore.write(alias:data:)` after each write.
-///
-/// Compatibility note: the serialised format produced by
-/// `MSALSerializedADALCacheProvider.serializeDataWithError` is the ADAL
-/// JSON format. The Go MSAL library produces a compatible JSON format
-/// (Microsoft's MSAL cache schema v1.1), so token blobs written by this
-/// delegate are cross-readable by the Go daemon during the migration period.
 final class FileTokenStoreCacheDelegate: NSObject, MSALSerializedADALCacheProviderDelegate, @unchecked Sendable {
     private let store: FileTokenStore
     private let alias: String
@@ -160,15 +150,15 @@ final class FileTokenStoreCacheDelegate: NSObject, MSALSerializedADALCacheProvid
             let data = try store.read(alias: alias)
             try cache.deserialize(data)
         } catch FileTokenStoreError.notFound {
-            // No token yet for this alias — first login. MSAL starts with an
-            // empty in-memory cache; the subsequent write populates the store.
+        // No token yet for this alias — first login. MSAL starts with an
+        // empty in-memory cache; the subsequent write populates the store.
         } catch {
             Self.log.error("FileTokenStoreCacheDelegate: willAccessCache failed for alias=\(self.alias, privacy: .public): \(error)")
         }
     }
 
     func didAccessCache(_ cache: MSALSerializedADALCacheProvider) {
-        // No-op: we only need to load from disk before access, not after.
+    // No-op: we only need to load from disk before access, not after.
     }
 
     func willWriteCache(_ cache: MSALSerializedADALCacheProvider) {
@@ -178,7 +168,7 @@ final class FileTokenStoreCacheDelegate: NSObject, MSALSerializedADALCacheProvid
             let data = try store.read(alias: alias)
             try cache.deserialize(data)
         } catch FileTokenStoreError.notFound {
-            // First login: no existing cache to merge.
+        // First login: no existing cache to merge.
         } catch {
             Self.log.error("FileTokenStoreCacheDelegate: willWriteCache load failed for alias=\(self.alias, privacy: .public): \(error)")
         }

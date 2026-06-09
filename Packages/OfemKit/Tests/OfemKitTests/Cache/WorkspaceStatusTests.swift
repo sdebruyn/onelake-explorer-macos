@@ -6,8 +6,6 @@ import Testing
 // MARK: - WorkspaceStatusTests
 
 /// Tests for workspace pause/resume state transitions.
-///
-/// Mirrors `internal/cache/workspace_status_test.go`.
 @Suite("WorkspaceStatus")
 struct WorkspaceStatusTests {
 
@@ -186,7 +184,7 @@ struct WorkspaceStatusTests {
 
     // MARK: - WorkspaceStatusRecord model
 
-    @Test("State raw value matches Go constants")
+    @Test("State raw values are stable")
     func stateRawValues() {
         #expect(WorkspaceStatusRecord.State.active.rawValue == "active")
         #expect(WorkspaceStatusRecord.State.paused.rawValue == "paused")

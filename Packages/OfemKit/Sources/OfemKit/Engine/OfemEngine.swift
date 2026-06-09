@@ -6,19 +6,12 @@ import os.log
 /// Façade that assembles all OfemKit subsystems into a single, ready-to-use
 /// engine object.
 ///
-/// `OfemEngine` mirrors the Go `engine.Build` function
-/// (`internal/engine/wire.go`) — it builds the full dependency graph
-/// (auth → HTTP client → Fabric + OneLake clients → cache → sync engine)
-/// in the correct order and exposes the subsystems to callers via public
-/// properties.
-///
-/// ## Fase 6.2 scope
-///
-/// `OfemEngine` is a **facade / wire-up container**. It does not start an
-/// IPC server (the Go daemon's role) and does not integrate with
-/// `NSFileProvider` (Fase 7). In Fase 7 the File Provider Extension will
-/// instantiate `OfemEngine` and forward `NSFileProviderEnumerator` / change
-/// observer calls to `SyncEngine`.
+/// `OfemEngine` is a **facade / wire-up container** that builds the full
+/// dependency graph (auth → HTTP client → Fabric + OneLake clients → cache →
+/// sync engine) in the correct order and exposes the subsystems to callers
+/// via public properties. The File Provider Extension instantiates one
+/// `OfemEngine` and forwards `NSFileProviderEnumerator` / change-observer
+/// calls to `SyncEngine`.
 ///
 /// ## Thread safety
 ///
@@ -55,15 +48,13 @@ public actor OfemEngine {
     /// Builds all subsystems from a loaded ``OfemConfigStore`` and
     /// ``OfemPaths``.
     ///
-    /// Mirrors `internal/engine/wire.go` — `Build`.
-    ///
     /// - Parameters:
-    ///   - configStore: The loaded TOML config. The config snapshot is read
-    ///     once at initialisation time; subsequent config changes require
-    ///     building a new `OfemEngine`.
-    ///   - paths: Resolved on-disk paths (cache dir, log dir, etc.).
-    ///   - httpBaseURLs: Override the default DFS / Fabric base URLs. Pass
-    ///     `nil` to use the production endpoints.
+    /// - configStore: The loaded TOML config. The config snapshot is read
+    /// once at initialisation time; subsequent config changes require
+    /// building a new `OfemEngine`.
+    /// - paths: Resolved on-disk paths (cache dir, log dir, etc.).
+    /// - httpBaseURLs: Override the default DFS / Fabric base URLs. Pass
+    /// `nil` to use the production endpoints.
     @MainActor
     public init(
         configStore: OfemConfigStore,
@@ -82,9 +73,9 @@ public actor OfemEngine {
         self.logger = logger
 
         // 2. Telemetry.
-        //    `AppInsightsSink.init` throws only if the connection string is
-        //    malformed; the constant in `BuildInfo` is always well-formed, so
-        //    the `try?` here is purely a defensive fallback.
+        // `AppInsightsSink.init` throws only if the connection string is
+        // malformed; the constant in `BuildInfo` is always well-formed, so
+        // the `try?` here is purely a defensive fallback.
         let telSink: any TelemetrySink
         if cfg.telemetry,
            let sink = try? AppInsightsSink(

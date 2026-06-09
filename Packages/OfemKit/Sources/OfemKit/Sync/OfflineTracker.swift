@@ -9,8 +9,6 @@ import Foundation
 /// (DNS failure, connection refused, network loss) sets it. The flag auto-
 /// expires after `cooldown` with no traffic flowing.
 ///
-/// Mirrors `internal/sync/offline.go` — `offlineState`.
-///
 /// `OfflineTracker` is a Swift `actor` for safe concurrent mutation.
 public actor OfflineTracker {
 
@@ -18,8 +16,6 @@ public actor OfflineTracker {
 
     /// Maximum time the engine keeps reporting offline without a successful
     /// round-trip.
-    ///
-    /// Mirrors `internal/sync/offline.go` — `offlineCooldown`.
     public static let defaultCooldown: Duration = .seconds(60)
 
     // MARK: - State
@@ -57,15 +53,13 @@ public actor OfflineTracker {
     }
 
     /// Feeds the outcome of a single outbound call.
-    ///
-    /// Mirrors `internal/sync/offline.go` — `Engine.observeNetworkResult`.
     public func observe(_ error: (any Error)?) {
         if error == nil {
             markOnline()
         } else if OfflineTracker.isOfflineError(error!) {
             markOffline()
         }
-        // Other errors (404, 403, etc.) don't change offline state.
+    // Other errors (404, 403, etc.) don't change offline state.
     }
 
     // MARK: - Offline error classification
@@ -75,8 +69,6 @@ public actor OfflineTracker {
     ///
     /// Deliberately restrictive: a 503 does NOT promote the engine to offline
     /// (paused capacity must not appear as an offline condition).
-    ///
-    /// Mirrors `internal/sync/offline.go` — `IsOfflineError`.
     public static func isOfflineError(_ error: any Error) -> Bool {
         guard let urlError = error as? URLError else { return false }
         switch urlError.code {

@@ -113,7 +113,7 @@ jobs:
 
       # Bootstrap the xcconfig with the real team ID from the secret so
       # xcodebuild can resolve the signing identity. MUST run before
-      # `make apple-gen`: xcodegen validates the configFiles referenced
+      # `make gen`: xcodegen validates the configFiles referenced
       # in project.yml at generation time, and an absent Local.xcconfig
       # fails the run with "Invalid config file" before the project
       # exists at all.
@@ -125,7 +125,7 @@ jobs:
           sed -i '' "s/DEVELOPMENT_TEAM =.*/DEVELOPMENT_TEAM = $APPLE_TEAM_ID/" Local.xcconfig
 
       - name: Generate Xcode project
-        run: make apple-gen
+        run: make gen
 
       # Stage the Developer ID provisioning profiles for the host app
       # and the File Provider Extension so xcodebuild can match them

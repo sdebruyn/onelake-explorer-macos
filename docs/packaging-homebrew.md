@@ -25,7 +25,7 @@ build-app (macos-15 runner)
     temporary keychain (deleted after the job).
 4.  Write App Store Connect API key from APPLE_API_KEY_JSON to a tmp .p8 file.
 5.  Write Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID.
-6.  make apple-gen  -> regenerate OneLake.xcodeproj from project.yml.
+6.  make gen  -> regenerate OneLake.xcodeproj from project.yml.
 7.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
     (host app + File Provider Extension).
 8.  xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
@@ -203,10 +203,10 @@ For pre-release dogfooding, build the app manually:
 
 ```bash
 # Generate the Xcode project from project.yml
-make apple-gen
+make gen
 
 # Build the host app + File Provider Extension with your Developer ID cert
-make apple-build
+make build
 ```
 
 The resulting app lands in `build/Export/OneLake.app`. Drag it into

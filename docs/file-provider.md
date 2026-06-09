@@ -182,13 +182,13 @@ Typical local workflow:
 ```bash
 # Once, per developer: write Local.xcconfig (gitignored) and put
 # your Apple Developer team ID in it.
-make apple-bootstrap
+make bootstrap
 
 # After every change to project.yml, or when cloning fresh:
-make apple-gen
+make gen
 
-# Clean Debug build via xcodebuild (also re-runs apple-gen).
-make apple-build
+# Clean Debug build via xcodebuild (also re-runs gen).
+make build
 
 # Or open the generated project in Xcode for run / debug.
 open OneLake.xcodeproj
@@ -216,7 +216,7 @@ Apple Developer Program membership (a free Personal Team cannot sign the
 extension). With your team set in `Local.xcconfig`, build both with:
 
 ```
-make apple-build
+make build
 ```
 
 Homebrew cask distribution requires:

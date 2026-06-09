@@ -5,8 +5,6 @@ import Foundation
 // MARK: - OfflineTracker tests
 
 /// Tests for ``OfflineTracker`` — online/offline state transitions.
-///
-/// Mirrors `internal/sync/offline_test.go`.
 struct OfflineTrackerTests {
 
     // MARK: - Initial state

@@ -4,8 +4,7 @@ import Foundation
 
 // MARK: - MemoryTelemetrySink
 
-/// An in-memory `TelemetrySink` for testing — mirrors `MemorySink` in
-/// `internal/telemetry/memory.go`.
+/// An in-memory `TelemetrySink` for testing.
 final class MemoryTelemetrySink: TelemetrySink, @unchecked Sendable {
     private let lock = NSLock()
     private var _events: [TelemetryEvent] = []
@@ -90,7 +89,7 @@ struct TelemetryClientTests {
         for _ in 0..<10 { await client.track(TelemetryEvent(name: "app_start")) }
         await client.flush()
         await client.shutdown()
-        // No crash, no assertions needed — just verify it completes.
+    // No crash, no assertions needed — just verify it completes.
     }
 
     @Test("optOut configuration uses NoopTelemetrySink regardless of sink")

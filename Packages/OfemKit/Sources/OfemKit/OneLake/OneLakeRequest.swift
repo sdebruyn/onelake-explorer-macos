@@ -9,8 +9,6 @@ import Foundation
 /// Each path segment is individually percent-encoded so reserved characters
 /// (spaces, `#`, `?`, `%`, `+`, …) in legitimate OneLake names are preserved
 /// as literal bytes.
-///
-/// Mirrors `internal/onelake/client.go` — `pathURL` + `joinItemPath`.
 func oneLakePathURL(
     base: URL,
     workspaceGUID: String,
@@ -41,8 +39,6 @@ func oneLakePathURL(
 /// Builds a DFS filesystem (workspace-level) URL for list operations.
 ///
 /// Format: `/<workspaceGUID>?resource=filesystem&<query>`
-///
-/// Mirrors `internal/onelake/client.go` — list URL construction.
 func oneLakeListURL(
     base: URL,
     workspaceGUID: String,
@@ -57,8 +53,6 @@ func oneLakeListURL(
 // MARK: - Common DFS header injection
 
 /// Adds the OneLake-required `x-ms-version` header to a request.
-///
-/// Mirrors `internal/onelake/client.go` — `doRequest` header injection.
 func oneLakeVersionHeader() -> [String: String] {
     ["x-ms-version": "2021-08-06"]
 }

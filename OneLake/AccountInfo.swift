@@ -1,11 +1,7 @@
 // AccountInfo.swift
 // Lightweight value types for account and paused-workspace data
-// displayed in the menu-bar UI.
-//
-// Previously these lived in Shared/StatusTypes.swift as Go IPC
-// wire types. After the Swift migration (Fase 7.3b-2) there is no
-// IPC layer; the types are kept here as plain Swift structs used
-// exclusively by the host-app UI layer.
+// displayed in the menu-bar UI. Plain Swift structs, not serialised
+// over any transport.
 
 import Foundation
 

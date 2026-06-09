@@ -47,9 +47,9 @@ is gitignored.
 Then:
 
 ```bash
-make apple-bootstrap   # writes Local.xcconfig (gitignored); edit it
-make apple-gen         # regenerates OneLake.xcodeproj
-make apple-build       # Debug build via xcodebuild
+make bootstrap   # writes Local.xcconfig (gitignored); edit it
+make gen         # regenerates OneLake.xcodeproj
+make build       # Debug build via xcodebuild
 ```
 
 #### Swift Package tests

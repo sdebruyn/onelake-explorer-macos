@@ -4,8 +4,6 @@ import Foundation
 /// ingestion endpoint.
 ///
 /// This is the Swift equivalent of `AppInsightsSink` in
-/// `internal/telemetry/appinsights.go`. The wire format is identical so
-/// events from both the Go daemon (during migration) and the Swift FPE are
 /// accepted by the same App Insights resource.
 ///
 /// ### Connection string
@@ -37,12 +35,12 @@ public struct AppInsightsSink: TelemetrySink {
     /// Creates an `AppInsightsSink` from an App Insights connection string.
     ///
     /// - Parameters:
-    ///   - connectionString: Full App Insights connection string.
-    ///   - installID:        The per-install UUID (becomes `ai.cloud.roleInstance`).
-    ///   - appVersion:       OFEM version (becomes `ai.internal.sdkVersion`).
-    ///   - session:          URL session. Defaults to a 30-second timeout session.
+    /// - connectionString: Full App Insights connection string.
+    /// - installID: The per-install UUID (becomes `ai.cloud.roleInstance`).
+    /// - appVersion: OFEM version (becomes `ai.internal.sdkVersion`).
+    /// - session: URL session. Defaults to a 30-second timeout session.
     /// - Throws: `AppInsightsSinkError` when the connection string is
-    ///   malformed or missing required keys.
+    /// malformed or missing required keys.
     public init(
         connectionString: String,
         installID: String = "",
@@ -119,7 +117,7 @@ public struct AppInsightsSink: TelemetrySink {
 
     // MARK: - Connection-string parser
 
-    /// Mirrors `ParseConnectionString` in `internal/telemetry/appinsights.go`.
+    ///
     static func parseConnectionString(_ s: String) throws -> (endpoint: String, iKey: String) {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {

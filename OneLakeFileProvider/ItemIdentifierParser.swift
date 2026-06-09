@@ -4,13 +4,13 @@
 //
 // Flat string format:
 //
-//   ""                          -> root container of the alias
-//   "<wsId>"                    -> a workspace inside the alias
-//   "<wsId>/<itemId>"           -> a Fabric item (lakehouse, etc.)
-//   "<wsId>/<itemId>/<path>"    -> a folder or file inside an item
+// "" -> root container of the alias
+// "<wsId>" -> a workspace inside the alias
+// "<wsId>/<itemId>" -> a Fabric item (lakehouse, etc.)
+// "<wsId>/<itemId>/<path>" -> a folder or file inside an item
 //
 // macOS additionally hands us three well-known constants:
-//   `.rootContainer`, `.workingSet`, `.trashContainer`. We translate
+// `.rootContainer`, `.workingSet`, `.trashContainer`. We translate
 // those to dedicated scopes so the enumerator code can pattern-match
 // on a typed enum instead of brittle string equality.
 
@@ -25,8 +25,7 @@ private let bridgeParserLog = Logger(
 
 /// Logical container scope a File Provider enumeration / item lookup
 /// is targeting. `parse(_:)` produces these from raw item
-/// identifiers; `bridgeIdentifier(for:)` is the inverse for the
-/// scopes the Go core can serve.
+/// identifiers; `bridgeIdentifier(for:)` is the inverse.
 enum EnumScope: Equatable {
     /// The root of the domain (an account's top level). macOS uses the
     /// well-known `.rootContainer` constant for this.
@@ -43,12 +42,10 @@ enum EnumScope: Equatable {
     case trashContainer
 }
 
-/// FPE-side item identifier parser (legacy flat-string format).
-///
-/// Returns ``EnumScope`` from a `NSFileProviderItemIdentifier`.
-/// Renamed from `ItemIdentifierParser` to avoid a name collision with
-/// `OfemKit.ItemIdentifierParser` (which returns ``ItemIdentifier``
-/// from a raw `String`).
+/// FPE-side item identifier parser. Returns ``EnumScope`` from a
+/// `NSFileProviderItemIdentifier`. Named with the `Bridge` prefix to
+/// disambiguate from `OfemKit.ItemIdentifierParser` (which returns
+/// ``ItemIdentifier`` from a raw `String`).
 enum BridgeItemIdentifierParser {
     /// Parse a `NSFileProviderItemIdentifier` into an `EnumScope`.
     /// Throws `NSFileProviderError(.noSuchItem)` for malformed input so callers
@@ -67,9 +64,7 @@ enum BridgeItemIdentifierParser {
         if value.isEmpty {
             return .rootContainer
         }
-        // The Go core may legitimately hand back the literal string
-        // `.rootContainer` as an identifier (it is the canonical wire
-        // form for "root of the alias"). Treat it the same as the
+        // Treat the literal string `.rootContainer` the same as the
         // Apple constant.
         if value == NSFileProviderItemIdentifier.rootContainer.rawValue {
             return .rootContainer
@@ -109,9 +104,9 @@ enum BridgeItemIdentifierParser {
         }
     }
 
-    /// Inverse of `parse(_:)` for the scopes the Go core can serve.
-    /// `.workingSet` and `.trashContainer` are not addressable on the
-    /// bridge — callers must short-circuit those before getting here.
+    /// Inverse of `parse(_:)` for addressable scopes.
+    /// `.workingSet` and `.trashContainer` are not addressable —
+    /// callers must short-circuit those before getting here.
     static func bridgeIdentifier(for scope: EnumScope) -> String {
         switch scope {
         case .rootContainer:
@@ -123,9 +118,9 @@ enum BridgeItemIdentifierParser {
         case .itemPath(let ws, let item, let path):
             return "\(ws)/\(item)/\(path)"
         case .workingSet, .trashContainer:
-            // Not addressable on the bridge — by contract callers
-            // never invoke this for these scopes. Returning the
-            // empty string keeps the API total without crashing.
+            // Not addressable — by contract callers never invoke this
+            // for these scopes. Returning the empty string keeps the
+            // API total without crashing.
             return ""
         }
     }

@@ -9,7 +9,7 @@ import GRDB
 /// needed by the File Provider Extension enumerator. It holds no mutable
 /// state and is safe to share across concurrent tasks.
 ///
-/// In the final FPE wiring (Phase 6 of the migration), the FPE receives a
+/// In the final FPE wiring, the FPE receives a
 /// `CacheReader` handle while the host-app-facing `CacheStore` retains the
 /// write lock. For now `CacheStore` exposes its reader via ``CacheStore/reader``.
 public final class CacheReader: Sendable {
@@ -48,8 +48,6 @@ public final class CacheReader: Sendable {
     /// row itself is excluded via `path <> parent_path` (matching the Go query).
     ///
     /// Results are sorted directories-first, then by name ascending.
-    ///
-    /// Mirrors `internal/cache/cache.go` — `Cache.Children`.
     public func children(of key: CacheKey) async throws -> [MetadataRecord] {
         try validateKey(key)
         return try await db.read { db in
@@ -69,8 +67,6 @@ public final class CacheReader: Sendable {
 
     /// Returns the distinct `(accountAlias, workspaceID, itemID)` triples for
     /// which at least one metadata row was accessed at or after `since`.
-    ///
-    /// Mirrors `internal/cache/cache.go` — `Cache.HotItems`.
     public func hotItems(since: Date) async throws -> [CacheKey] {
         let sinceNs = dateToNs(since)
         return try await db.read { db in
@@ -131,8 +127,6 @@ public final class CacheReader: Sendable {
     ///
     /// Counts each unique blob once, regardless of how many metadata rows
     /// reference it — matching the Go implementation's `BlobBytes` semantics.
-    ///
-    /// Mirrors `internal/cache/blob.go` — `Cache.BlobBytes`.
     public func blobBytes() async throws -> Int64 {
         try await db.read { db in
             let sql = """

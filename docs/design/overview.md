@@ -75,4 +75,3 @@ onelake-explorer-macos/
 | Telemetry schema + redaction | [Telemetry](../telemetry.md) |
 | Build, sign, notarize, ship | [Packaging](../packaging-homebrew.md) |
 | Local-dev vs publishing prerequisites | [Prerequisites](../prerequisites.md) |
-| Swift architecture rationale | [ADR 0001](../adr/0001-swift-migration.md) |

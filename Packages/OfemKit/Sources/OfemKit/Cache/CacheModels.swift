@@ -5,8 +5,6 @@ import GRDB
 
 /// Uniquely identifies a metadata row. The four components together form the
 /// SQLite primary key for `path_metadata`.
-///
-/// Mirrors `internal/cache/types.go` — `Key`.
 public struct CacheKey: Hashable, Sendable {
     /// The user-chosen short name for the signed-in account (e.g. `"work"`).
     public var accountAlias: String
@@ -32,8 +30,6 @@ public struct CacheKey: Hashable, Sendable {
 // MARK: - MetadataRecord
 
 /// Full metadata row for one path in the `path_metadata` table.
-///
-/// Mirrors `internal/cache/types.go` — `Entry`.
 ///
 /// Time fields stored as Unix nanoseconds (`Int64`) in SQLite; zero means
 /// "unset". All `Date` values use UTC.
@@ -214,8 +210,6 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
 // MARK: - WorkspaceStatusRecord
 
 /// Persisted view of one workspace's availability in the `workspace_status` table.
-///
-/// Mirrors `internal/cache/workspace_status.go` — `WorkspaceStatus`.
 public struct WorkspaceStatusRecord: FetchableRecord, PersistableRecord, Sendable {
 
     // MARK: Table name
@@ -225,8 +219,6 @@ public struct WorkspaceStatusRecord: FetchableRecord, PersistableRecord, Sendabl
     // MARK: WorkspaceState
 
     /// Persisted workspace availability state.
-    ///
-    /// Mirrors `internal/cache/workspace_status.go` — `WorkspaceState`.
     public enum State: String, Sendable {
         /// The workspace is reachable. Default state.
         case active = "active"

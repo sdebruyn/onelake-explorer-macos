@@ -2,7 +2,7 @@ import Foundation
 
 /// Per-install pseudonymous identifier for telemetry deduplication.
 ///
-/// Mirrors `EnsureInstallID` in `internal/telemetry/installid.go`.
+///
 /// A UUIDv4 is generated on first use and persisted to a small JSON file
 /// inside the OFEM config directory so it survives across app restarts.
 /// Removing OFEM (`brew uninstall --zap`) removes the config directory and

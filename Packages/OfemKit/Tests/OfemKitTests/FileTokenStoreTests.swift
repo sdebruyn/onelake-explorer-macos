@@ -34,7 +34,7 @@ struct FileTokenStoreTests {
         #expect(throws: FileTokenStoreError.self) {
             _ = try store.read(alias: "nope")
         }
-        // Verify the error is specifically .notFound
+        // Verify the error is specifically.notFound
         do {
             _ = try store.read(alias: "nope")
             Issue.record("Expected notFound error but no error was thrown")

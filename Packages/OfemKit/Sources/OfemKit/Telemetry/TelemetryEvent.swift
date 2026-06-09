@@ -1,8 +1,6 @@
 import Foundation
 
 /// A single telemetry data point.
-///
-/// Mirrors `internal/telemetry/types.go` — `Event`. Optional fields use
 /// their zero / nil value to mean "not applicable", exactly as the Go struct
 /// does. Common fields (`installId`, `appVersion`, `platform`, `arch`,
 /// `osVersion`) are injected by `TelemetryClient.track(_:)` and therefore

@@ -7,24 +7,16 @@ import os.log
 ///
 /// The zero value is valid and uses the same constants as the Go
 /// implementation.
-///
-/// Mirrors `internal/httpretry/retry.go` — `Policy`.
 public struct HTTPRetryPolicy: Sendable {
     // MARK: - Defaults
 
     /// Total number of attempts including the first. Default: 6.
-    ///
-    /// Mirrors `internal/httpretry/retry.go` — `DefaultMaxAttempts`.
     public static let defaultMaxAttempts = 6
 
     /// First wait window before the second attempt (full jitter). Default: 250 ms.
-    ///
-    /// Mirrors `internal/httpretry/retry.go` — `DefaultInitialBackoff`.
     public static let defaultInitialBackoff: Duration = .milliseconds(250)
 
     /// Maximum wait for a single backoff window. Default: 30 s.
-    ///
-    /// Mirrors `internal/httpretry/retry.go` — `DefaultMaxBackoff`.
     public static let defaultMaxBackoff: Duration = .seconds(30)
 
     // MARK: - Fields
@@ -43,8 +35,6 @@ public struct HTTPRetryPolicy: Sendable {
     /// transport error — i.e. the operation is idempotent. GET, HEAD, PUT
     /// and DELETE are always safe regardless. POST and PATCH require the
     /// caller to assert this.
-    ///
-    /// Mirrors `internal/httpretry/retry.go` — `Policy.Idempotent`.
     public var idempotent: Bool
 
     // MARK: - Initialisers
@@ -64,8 +54,6 @@ public struct HTTPRetryPolicy: Sendable {
     // MARK: - Retry decision
 
     /// Returns `true` when a transport error may be retried.
-    ///
-    /// Mirrors `internal/httpretry/retry.go` — `Policy.canRetryTransport`.
     func canRetryTransportError(method: String) -> Bool {
         if idempotent { return true }
         switch method.uppercased() {
@@ -87,9 +75,6 @@ public struct HTTPRetryPolicy: Sendable {
 ///
 /// Returns `nil` for an empty, negative, or unparseable value, or for an
 /// HTTP-date that is already in the past.
-///
-/// Mirrors `internal/httpgate/retryafter.go` — `ParseRetryAfter`, and
-/// `internal/httpretry/errors.go` — `parseRetryAfter`.
 public func parseRetryAfter(_ value: String, now: Date = Date()) -> Duration? {
     let trimmed = value.trimmingCharacters(in: .whitespaces)
     guard !trimmed.isEmpty else { return nil }
@@ -146,8 +131,6 @@ enum HTTPRetryDateFormatters {
 // MARK: - Backoff helpers
 
 /// Returns the next exponential backoff window, clamped to `maxBackoff`.
-///
-/// Mirrors `internal/httpretry/retry.go` — `nextBackoff`.
 func nextBackoff(_ current: Duration, max maxBackoff: Duration) -> Duration {
     let doubled = current * 2
     return doubled > maxBackoff ? maxBackoff : doubled
@@ -156,8 +139,6 @@ func nextBackoff(_ current: Duration, max maxBackoff: Duration) -> Duration {
 /// Returns a uniformly distributed random value in `[0, window)`.
 ///
 /// Falls back to `window / 2` if entropy is unavailable.
-///
-/// Mirrors `internal/httpretry/retry.go` — `jitter`.
 func jitter(_ window: Duration) -> Duration {
     guard window > .zero else { return .zero }
     let ns = window.components.seconds * 1_000_000_000 + window.components.attoseconds / 1_000_000_000
@@ -169,8 +150,6 @@ func jitter(_ window: Duration) -> Duration {
 // MARK: - Retriable transport-error detection
 
 /// Returns `true` when a `URLError` (or underlying error) is worth retrying.
-///
-/// Mirrors `internal/httpretry/retry.go` — `isRetriableTransport`.
 func isRetriableURLError(_ error: any Error) -> Bool {
     // Context cancellation is never retried — it's a caller-driven stop.
     if error is CancellationError { return false }

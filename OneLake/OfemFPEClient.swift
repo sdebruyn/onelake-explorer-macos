@@ -106,7 +106,7 @@ final class OfemFPEClient {
         }
     }
 
-    // MARK: - Engine status (Fase 7.3b-1)
+    // MARK: - Engine status
 
     /// Fetches the engine status (cache stats + config snapshot) via XPC.
     ///
@@ -129,7 +129,7 @@ final class OfemFPEClient {
         }
     }
 
-    // MARK: - Config mutation (Fase 7.3b-1)
+    // MARK: - Config mutation
 
     /// Writes a config key/value pair through the FPE.
     ///
@@ -150,7 +150,7 @@ final class OfemFPEClient {
         }
     }
 
-    // MARK: - Cache (Fase 7.3b-1)
+    // MARK: - Cache
 
     /// Clears all cached blobs via the FPE.
     ///

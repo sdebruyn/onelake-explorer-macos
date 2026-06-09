@@ -3,10 +3,9 @@ import os.log
 
 /// In-memory event buffer with background flush support.
 ///
-/// `TelemetryBatch` mirrors the buffering and overflow logic in
-/// `internal/telemetry/client.go` — it enqueues events, drains them on a
-/// timer or when the buffer hits `maxSize`, and puts failed batches back at
-/// the front of the queue for the next flush attempt.
+/// Enqueues events, drains them on a timer or when the buffer hits
+/// `maxSize`, and puts failed batches back at the front of the queue for
+/// the next flush attempt.
 ///
 /// This type is `internal` — the public surface is `TelemetryClient`.
 actor TelemetryBatch {

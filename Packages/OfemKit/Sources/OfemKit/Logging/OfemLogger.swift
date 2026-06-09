@@ -4,18 +4,8 @@ import os.log
 /// Structured logger façade for OFEM's Swift targets.
 ///
 /// `OfemLogger` wraps Apple's `os.Logger` (Unified Logging System) and adds
-/// an optional `RotatingFileWriter` so that the same log messages appear in
-/// both Console.app / `log stream` and in the rotating JSON-structured file
-/// on disk that matches the Go daemon's log layout.
-///
-/// ### Design
-///
-/// This mirrors `internal/logging/logging.go`. The Go daemon writes JSON to a
-/// rotating file via `lumberjack`; the Swift equivalent writes to `os.Logger`
-/// first (so messages are captured by the macOS Unified Logging System) and
-/// then, when a `RotatingFileWriter` is configured, serialises a JSON object
-/// to the log file too — matching the format consumers of the daemon log
-/// already expect.
+/// an optional `RotatingFileWriter` so the same messages appear in both
+/// Console.app / `log stream` and a rotating JSON-structured file.
 ///
 /// `OfemLogger` is `Sendable` because all mutable state (the file writer's
 /// file handle) is protected by `NSLock` inside `RotatingFileWriter`.
@@ -23,7 +13,7 @@ import os.log
 /// ### Usage
 ///
 /// ```swift
-/// let logger = OfemLogger(configuration: .init(level: .debug))
+/// let logger = OfemLogger(configuration:.init(level:.debug))
 /// logger.info("workspace listed", metadata: ["tenantId": "9064c167-…"])
 /// ```
 public struct OfemLogger: Sendable {
@@ -86,7 +76,7 @@ public struct OfemLogger: Sendable {
             osLogger.fault("\(osMessage, privacy: .public)")
         }
 
-        // Rotating file — JSON-structured, matching the Go daemon format.
+        // Rotating file — JSON-structured.
         if let writer = configuration.fileWriter {
             let line = jsonLine(level: level, message: message, metadata: metadata)
             writer.write(line)
@@ -101,8 +91,8 @@ public struct OfemLogger: Sendable {
             .joined(separator: " ")
     }
 
-    /// Produces a JSON log line compatible with the Go daemon's
-    /// `slog.NewJSONHandler` output.
+    /// Emits a single JSON line with `time`, `level`, `msg`, and any
+    /// caller-supplied metadata keys.
     ///
     /// Example:
     /// ```json
