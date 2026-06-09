@@ -6,8 +6,6 @@ import Foundation
 ///
 /// Used by ``SyncEngine`` to cap per-account concurrent download and upload
 /// operations.
-///
-/// Mirrors `internal/sync/concurrency.go` — `perAccountSemaphore` (the Swift
 /// actor model makes per-alias maps unnecessary; one `AsyncSemaphore` per alias
 /// is allocated lazily from within the `SyncEngine` actor).
 ///

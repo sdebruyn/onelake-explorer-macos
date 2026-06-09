@@ -14,34 +14,24 @@ import os.log
 /// ## Design notes
 ///
 /// - `SyncEngine` is a Swift `actor` so all mutable state (the per-account
-///   download / upload semaphore tables) is automatically serialised.
+/// download / upload semaphore tables) is automatically serialised.
 /// - Network-heavy methods (`open`, `put`) release the actor while the network
-///   call is in flight so other tasks are not blocked (Swift structured
-///   concurrency: `async` automatically suspends the caller).
+/// call is in flight so other tasks are not blocked (Swift structured
+/// concurrency: `async` automatically suspends the caller).
 /// - Concurrency caps are enforced per account alias via `AsyncSemaphore`.
 /// - Last-write-wins semantics: `put` and `delete` never use `If-Match` for
-///   writes. This matches the agreed conflict policy in `docs/auth.md`.
-///
-/// ## Mirrors
-///
-/// `internal/sync/engine.go` — `Engine` and all its methods.
+/// writes. This matches the agreed conflict policy in `docs/auth.md`.
 public actor SyncEngine {
 
     // MARK: - Configuration
 
     /// Default refresh interval for recently-visited folders.
-    ///
-    /// Mirrors `internal/sync/engine.go` — `DefaultRecentFolderTTL`.
     public static let defaultRecentFolderTTL: TimeInterval = 5 * 60  // 5 min
 
     /// Default per-account cap on concurrent downloads.
-    ///
-    /// Mirrors `internal/sync/concurrency.go` — `DefaultMaxConcurrentDownloads`.
     public static let defaultMaxConcurrentDownloads = 8
 
     /// Default per-account cap on concurrent uploads.
-    ///
-    /// Mirrors `internal/sync/concurrency.go` — `DefaultMaxConcurrentUploads`.
     public static let defaultMaxConcurrentUploads = 4
 
     // MARK: - Dependencies (nonisolated for injection without crossing actor boundary)
@@ -73,17 +63,17 @@ public actor SyncEngine {
     /// Creates a `SyncEngine`.
     ///
     /// - Parameters:
-    ///   - cache: Metadata + blob cache (required).
-    ///   - onelake: DFS HTTP client (required).
-    ///   - fabric: Fabric REST client (required).
-    ///   - logger: Structured logger.
-    ///   - telemetry: Optional telemetry sink.
-    ///   - recentFolderTTL: Freshness window for recently-visited folders.
-    ///   - maxConcurrentDownloads: Per-account download cap.
-    ///   - maxConcurrentUploads: Per-account upload cap.
-    ///   - scratchBase: Directory for download spill files. Defaults to
-    ///     `<tmp>/ofem-download-partials/<pid>`.
-    ///   - pauseProbeInterval: Minimum gap between workspace-recovery probes.
+    /// - cache: Metadata + blob cache (required).
+    /// - onelake: DFS HTTP client (required).
+    /// - fabric: Fabric REST client (required).
+    /// - logger: Structured logger.
+    /// - telemetry: Optional telemetry sink.
+    /// - recentFolderTTL: Freshness window for recently-visited folders.
+    /// - maxConcurrentDownloads: Per-account download cap.
+    /// - maxConcurrentUploads: Per-account upload cap.
+    /// - scratchBase: Directory for download spill files. Defaults to
+    /// `<tmp>/ofem-download-partials/<pid>`.
+    /// - pauseProbeInterval: Minimum gap between workspace-recovery probes.
     public init(
         cache: CacheStore,
         onelake: OneLakeClient,
@@ -126,8 +116,6 @@ public actor SyncEngine {
     // MARK: - Workspace / item discovery
 
     /// Returns all workspaces visible to `alias`, reconciling the local cache.
-    ///
-    /// Mirrors `internal/sync/discover.go` — `Engine.ListWorkspaces`.
     public func listWorkspaces(alias: String) async throws -> [Workspace] {
         let start = Date()
         let ws: [Workspace]
@@ -196,8 +184,6 @@ public actor SyncEngine {
     }
 
     /// Returns all items inside `workspaceID`, reconciling the local cache.
-    ///
-    /// Mirrors `internal/sync/discover.go` — `Engine.ListItems`.
     public func listItems(alias: String, workspaceID: String) async throws -> [Item] {
         let start = Date()
         let items: [Item]
@@ -270,8 +256,6 @@ public actor SyncEngine {
     ///
     /// Uses the cache when the listing is within `recentFolderTTL`; otherwise
     /// calls ``refreshFolder(key:)`` first.
-    ///
-    /// Mirrors `internal/sync/enumerate.go` — `Engine.Enumerate`.
     public func enumerate(key: CacheKey) async throws -> [MetadataRecord] {
         let start = Date()
 
@@ -311,8 +295,6 @@ public actor SyncEngine {
 
     /// Unconditionally fetches folder contents from OneLake and reconciles the
     /// local cache.
-    ///
-    /// Mirrors `internal/sync/enumerate.go` — `Engine.RefreshFolder`.
     public func refreshFolder(key: CacheKey) async throws -> Diff {
         try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)
 
@@ -444,8 +426,6 @@ public actor SyncEngine {
     // MARK: - Open (download)
 
     /// Downloads a file, serving from the local blob cache when fresh.
-    ///
-    /// Mirrors `internal/sync/download.go` — `Engine.Open`.
     public func open(key: CacheKey) async throws -> Data {
         let start = Date()
         try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)
@@ -614,8 +594,6 @@ public actor SyncEngine {
     /// Uploads `content` to OneLake and mirrors the result in the blob cache.
     ///
     /// macOS metadata files are silently swallowed (no telemetry, no upload).
-    ///
-    /// Mirrors `internal/sync/upload.go` — `Engine.Put`.
     public func put(key: CacheKey, content: Data) async throws {
         if isMacOSMetadata(key.path) {
             logger.debug("ignoring macOS metadata upload", metadata: ["path": key.path])
@@ -708,8 +686,6 @@ public actor SyncEngine {
     ///
     /// macOS metadata files are dropped from the local cache only (no remote
     /// call, no telemetry).
-    ///
-    /// Mirrors `internal/sync/delete.go` — `Engine.Delete`.
     public func delete(key: CacheKey) async throws {
         let start = Date()
 
@@ -774,8 +750,6 @@ public actor SyncEngine {
     // MARK: - Mkdir
 
     /// Creates a directory on OneLake and upserts the matching cache row.
-    ///
-    /// Mirrors `internal/sync/mkdir.go` — `Engine.Mkdir`.
     public func mkdir(key: CacheKey) async throws {
         let start = Date()
         try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)

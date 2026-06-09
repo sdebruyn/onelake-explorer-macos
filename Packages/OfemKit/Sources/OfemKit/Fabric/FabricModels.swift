@@ -3,8 +3,6 @@ import Foundation
 // MARK: - Workspace
 
 /// A Microsoft Fabric workspace returned by the Fabric REST API.
-///
-/// Mirrors `internal/fabric/client.go` — `Workspace`.
 public struct Workspace: Sendable, Equatable {
     /// Workspace unique identifier (UUID).
     public let id: String
@@ -39,8 +37,6 @@ public struct Workspace: Sendable, Equatable {
 // MARK: - Item
 
 /// A Fabric item (Lakehouse, Warehouse, Notebook, …) inside a workspace.
-///
-/// Mirrors `internal/fabric/client.go` — `Item`.
 public struct Item: Sendable, Equatable {
     /// Item unique identifier (UUID).
     public let id: String
@@ -76,8 +72,6 @@ public struct Item: Sendable, Equatable {
 
 /// A Fabric workspace-folder — the workspace-level organisational container
 /// that groups items. Distinct from item-internal folders served by the DFS API.
-///
-/// Mirrors `internal/fabric/client.go` — `Folder`.
 public struct Folder: Sendable, Equatable {
     /// Folder unique identifier (UUID).
     public let id: String
@@ -149,8 +143,6 @@ public struct FolderPage: Sendable {
 // MARK: - Wire types (private to Fabric module)
 
 /// Common shape of a paged Fabric collection response.
-///
-/// Mirrors `internal/fabric/client.go` — `pageResponse`.
 struct FabricPageResponse<T: Decodable>: Decodable {
     let value: [T]
     let continuationToken: String?

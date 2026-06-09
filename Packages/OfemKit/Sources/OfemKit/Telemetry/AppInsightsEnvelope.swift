@@ -2,11 +2,9 @@ import Foundation
 
 /// Wire-format types for the Application Insights v2/track HTTP endpoint.
 ///
-/// This is the Swift equivalent of the envelope types in
-/// `internal/telemetry/appinsights.go` (`envelope`, `envelopeData`,
-/// `eventBaseData`). The JSON key names are snake_case / camelCase as
-/// required by the App Insights ingestion API — they must not be changed
-/// without bumping the API version.
+/// The JSON key names are snake_case / camelCase as required by the App
+/// Insights ingestion API — they must not be changed without bumping the
+/// API version.
 ///
 /// Every property value that enters these structs has already been routed
 /// through `TelemetryRedaction.scrubProperty` / `safeErrorCode` in
@@ -87,7 +85,7 @@ extension AppInsightsEnvelope {
     }
 
     private static func formatTime(_ date: Date) -> String {
-        // Format: "2006-01-02T15:04:05.000Z" — matching Go's time.RFC3339Milli.
+        // RFC 3339 with milliseconds, e.g. "2026-06-08T15:04:05.000Z".
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return fmt.string(from: date)
@@ -99,7 +97,7 @@ extension AppInsightsEnvelope {
 /// Converts a `TelemetryEvent` into the App Insights `properties` +
 /// `measurements` split, applying redaction at the boundary.
 ///
-/// Mirrors `splitFields` in `internal/telemetry/fields.go`. This is the
+///
 /// **only** producer of the property map the sink sends, so privacy
 /// guarantees are structural — even a PII value smuggled into CommonProps
 /// is collapsed to `"redacted"` here.
@@ -146,7 +144,7 @@ func splitFields(_ event: TelemetryEvent) -> (props: [String: String], meas: [St
 
 /// The exhaustive set of keys permitted in `TelemetryEvent.commonProps`.
 ///
-/// Mirrors `allowedCommonPropKeys` in `internal/telemetry/client.go`.
+///
 /// Any key not in this set is silently dropped at the `splitFields` step.
 let allowedCommonPropKeys: Set<String> = [
     "installId",

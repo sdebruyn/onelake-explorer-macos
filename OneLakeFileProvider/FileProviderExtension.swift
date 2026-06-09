@@ -2,11 +2,11 @@
 // `NSFileProviderReplicatedExtension` subclass for OFEM.
 //
 // Architecture:
-//   - FPE creates one FPEEngineHost per domain (one per account alias).
-//   - Engine-backed enumerators (OfemFPEEnumerator) handle all
-//     list/enumerate operations.
-//   - Fetch and write operations call SyncEngine.open / put / delete /
-//     mkdir directly through OfemKit.
+// - FPE creates one FPEEngineHost per domain (one per account alias).
+// - Engine-backed enumerators (OfemFPEEnumerator) handle all
+// list/enumerate operations.
+// - Fetch and write operations call SyncEngine.open / put / delete /
+// mkdir directly through OfemKit.
 //
 // Error mapping: FPError.classify(error) maps any OfemKit error to a
 // stable FPError.Code which nsFileProviderError(for:) then maps to
@@ -17,10 +17,8 @@ import Foundation
 import OfemKit
 import os.log
 
-// `BridgeItemIdentifierParser` (FPE-internal, returns `EnumScope`) and
-// OfemKit's `ItemIdentifierParser` (returns `ItemIdentifier`) co-exist in this
-// target. This file calls the OfemKit version via `parseOfemItemIdentifier`
-// (defined in OfemFPEEnumerator.swift) to keep call sites readable.
+// This file uses OfemKit's `ItemIdentifierParser` via the
+// `parseOfemItemIdentifier` helper defined in OfemFPEEnumerator.swift.
 
 /// File Provider Extension entry point. Sandboxed; each registered
 /// OneLake account-alias gets its own instance.

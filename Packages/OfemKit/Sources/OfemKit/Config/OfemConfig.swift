@@ -6,11 +6,7 @@ import TOMLKit
 /// The on-disk OFEM configuration schema, loaded from `config.toml`.
 ///
 /// New fields must be backwards-compatible: add with sensible zero-value
-/// defaults rather than removing or renaming existing fields. The TOML
-/// schema is shared with the Go daemon (`internal/config/config.go`) so
-/// both implementations must agree on key names at all times.
-///
-/// Mirrors `internal/config/config.go` — `File`.
+/// defaults rather than removing or renaming existing fields.
 public struct OfemConfig: Codable, Sendable {
     /// A locally generated UUIDv4 that pseudonymously identifies this OFEM
     /// installation in telemetry. Removed when the user runs
@@ -36,7 +32,7 @@ public struct OfemConfig: Codable, Sendable {
     /// Per-account registry. The key is the user-chosen alias.
     public var accounts: [String: Account]
 
-    // MARK: Coding keys — must match the TOML/Go field names exactly.
+    // MARK: Coding keys — must match the TOML field names exactly.
 
     enum CodingKeys: String, CodingKey {
         case installID = "install_id"
@@ -52,8 +48,6 @@ public struct OfemConfig: Codable, Sendable {
 
     /// Returns the zero-but-sensible config used when OFEM starts for the
     /// first time. Callers should persist this after generating `installID`.
-    ///
-    /// Mirrors `internal/config/config.go` — `Default()`.
     public static func makeDefault() -> OfemConfig {
         OfemConfig(
             installID: "",
@@ -94,20 +88,12 @@ public struct OfemConfig: Codable, Sendable {
 ///
 /// The LRU eviction threshold is expressed in whole gigabytes (1 GB =
 /// 1 073 741 824 bytes, binary — matching what Finder and `du -h` show).
-///
-/// **Legacy migration**: pre-2026.06 configs used `max_size_bytes` (raw
-/// `Int64`). ``OfemConfigStore`` migrates those on first read, converting
-/// to whole GBs with ceiling rounding so a customised limit never shrinks
-/// below what the user originally set. After migration the legacy key is
-/// dropped from disk.
-///
-/// Mirrors `internal/config/config.go` — `CacheConfig`.
 public struct CacheConfig: Codable, Sendable {
     /// Lower bound for the cache size limit (1 GB).
     public static let minSizeGB = 1
     /// Upper bound for the cache size limit (100 GB).
     public static let maxSizeGB = 100
-    /// Default size for new installations (10 GB, matching Go default).
+    /// Default size for new installations (10 GB).
     public static let defaultSizeGB = 10
 
     /// The LRU eviction threshold in binary gigabytes.
@@ -116,8 +102,6 @@ public struct CacheConfig: Codable, Sendable {
 
     /// Returns the cache size limit in bytes for callers that need
     /// byte-precision. `0` means "no limit".
-    ///
-    /// Mirrors `internal/config/config.go` — `CacheConfig.MaxBytes()`.
     public var maxBytes: Int64 { Int64(maxSizeGB) * bytesPerGB }
 
     enum CodingKeys: String, CodingKey {
@@ -136,8 +120,6 @@ public struct CacheConfig: Codable, Sendable {
 // MARK: - NetConfig
 
 /// Controls HTTP behaviour to OneLake and Fabric endpoints.
-///
-/// Mirrors `internal/config/config.go` — `NetConfig`.
 public struct NetConfig: Codable, Sendable {
     /// Caps parallel sync-put calls per account. Default 4.
     public var maxConcurrentUploadsPerAccount: Int
@@ -162,8 +144,6 @@ public struct NetConfig: Codable, Sendable {
 // MARK: - LogConfig
 
 /// Controls structured log output.
-///
-/// Mirrors `internal/config/config.go` — `LogConfig`.
 public struct LogConfig: Codable, Sendable {
     /// Log level: one of `"debug"`, `"info"`, `"warn"`, `"error"`.
     /// Default `"info"`.
@@ -178,8 +158,6 @@ public struct LogConfig: Codable, Sendable {
 
 /// One signed-in OneLake account, scoped to a single tenant.
 /// Multiple accounts in the same tenant are supported via distinct aliases.
-///
-/// Mirrors `internal/config/config.go` — `Account`.
 public struct Account: Codable, Sendable {
     /// The user-chosen short name (e.g. `"work"`, `"client-a"`). Matches the
     /// dictionary key and is duplicated here for convenience.
@@ -244,9 +222,7 @@ public struct Account: Codable, Sendable {
 ///
 /// The config is read atomically on `load`, mutated through
 /// ``updateAndSave(_:)``, and written via a temp-file-then-rename sequence
-/// with 0600 permissions — exactly as the Go `Store` does.
-///
-/// Mirrors `internal/config/config.go` — `Store`.
+/// with 0600 permissions.
 public final class OfemConfigStore: Sendable {
     private let paths: OfemPaths
     private let lock = NSLock()
@@ -276,8 +252,6 @@ public final class OfemConfigStore: Sendable {
 
     /// Returns a snapshot copy of the current config. Mutations on the
     /// returned value do not affect the store.
-    ///
-    /// Mirrors `internal/config/config.go` — `Store.Snapshot()`.
     public func snapshot() -> OfemConfig {
         lock.withLock { config }
     }
@@ -286,8 +260,6 @@ public final class OfemConfigStore: Sendable {
     /// atomically. The lock is held across both the mutation and the
     /// encode+rename so concurrent writers cannot interleave.
     /// The mutator must not call back into the store.
-    ///
-    /// Mirrors `internal/config/config.go` — `Store.UpdateAndSave()`.
     @discardableResult
     public func updateAndSave(_ mutator: (inout OfemConfig) -> Void) throws -> OfemConfig {
         try lock.withLock {
@@ -316,10 +288,8 @@ public final class OfemConfigStore: Sendable {
             throw OfemConfigError.invalidUTF8
         }
 
-        // Decode. We need to handle the legacy `max_size_bytes` key, which is
-        // not part of the canonical CacheConfig.CodingKeys. We use a temporary
-        // intermediate type to detect and migrate it. toOfemConfig() handles
-        // both the new and legacy schemas as well as the default-seeding case.
+        // Decode through RawConfig so missing top-level sections fall back to
+        // sensible defaults instead of throwing.
         do {
             let raw = try TOMLDecoder().decode(RawConfig.self, from: tomlString)
             cfg = raw.toOfemConfig()
@@ -402,11 +372,10 @@ public enum OfemConfigError: Error {
     case invalidUTF8
 }
 
-// MARK: - Raw intermediate types for legacy migration
+// MARK: - Raw intermediate type
 
-/// Intermediate decoding type that captures both the canonical `max_size_gb`
-/// key and the legacy `max_size_bytes` key from the `[cache]` TOML table.
-/// After decoding, `toOfemConfig()` performs the GB migration if needed.
+/// Intermediate decoding type so missing top-level sections fall back to
+/// defaults instead of throwing.
 private struct RawConfig: Decodable {
     var installID: String
     var telemetry: Bool
@@ -431,7 +400,6 @@ private struct RawConfig: Decodable {
         installID = try c.decodeIfPresent(String.self, forKey: .installID) ?? ""
         telemetry = try c.decodeIfPresent(Bool.self, forKey: .telemetry) ?? true
         defaultAccount = try c.decodeIfPresent(String.self, forKey: .defaultAccount) ?? ""
-        // Decode cache separately to handle both new and legacy keys.
         cache = try c.decodeIfPresent(RawCacheConfig.self, forKey: .cache) ?? RawCacheConfig()
         net = try c.decodeIfPresent(NetConfig.self, forKey: .net) ?? NetConfig(
             maxConcurrentUploadsPerAccount: 4,
@@ -442,23 +410,9 @@ private struct RawConfig: Decodable {
     }
 
     func toOfemConfig() -> OfemConfig {
-        // Resolve `maxSizeGB` from the raw cache, performing the legacy
-        // `max_size_bytes` migration.
-        let resolvedGB: Int
-        if let gb = cache.maxSizeGB, gb > 0 {
-            // New schema: use as-is.
-            resolvedGB = gb
-        } else if let legacyBytes = cache.maxSizeBytes, legacyBytes > 0 {
-            // Legacy schema: convert bytes → GB with ceiling rounding so a
-            // user's customised limit never silently shrinks.
-            let bytesPerGB: Int64 = 1024 * 1024 * 1024
-            let gbFloat = Double(legacyBytes) / Double(bytesPerGB)
-            let ceiled = Int(ceil(gbFloat))
-            resolvedGB = max(ceiled, CacheConfig.minSizeGB)
-        } else {
-            // Both absent or zero — seed the default.
-            resolvedGB = CacheConfig.defaultSizeGB
-        }
+        let resolvedGB = (cache.maxSizeGB ?? 0) > 0
+            ? cache.maxSizeGB!
+            : CacheConfig.defaultSizeGB
 
         return OfemConfig(
             installID: installID,
@@ -474,15 +428,12 @@ private struct RawConfig: Decodable {
 
 private struct RawCacheConfig: Decodable {
     var maxSizeGB: Int?
-    var maxSizeBytes: Int64?
 
     enum CodingKeys: String, CodingKey {
         case maxSizeGB = "max_size_gb"
-        case maxSizeBytes = "max_size_bytes"
     }
 
     init() {
         maxSizeGB = nil
-        maxSizeBytes = nil
     }
 }

@@ -3,9 +3,8 @@ import os.log
 
 /// Log level for OFEM's structured logging façade.
 ///
-/// Maps 1:1 to Go's `slog.Level` (and `internal/logging/`), represented
-/// as a strongly-typed Swift enum so call sites cannot pass arbitrary
-/// integers.
+/// Represented as a strongly-typed Swift enum so call sites cannot pass
+/// arbitrary integers.
 public enum LogLevel: Sendable, Comparable {
     /// Verbose messages useful for diagnosing issues. Off by default in
     /// production builds.
@@ -46,8 +45,8 @@ public enum LogLevel: Sendable, Comparable {
 
     // MARK: - String initialiser
 
-    /// Parses a log-level string in the same way as `internal/logging/logging.go`
-    /// `parseLevel`. Case-insensitive; defaults to `.info` on empty input.
+    /// Parses a log-level string. Case-insensitive; defaults to `.info`
+    /// on empty input.
     public init?(string: String) {
         switch string.lowercased().trimmingCharacters(in: .whitespaces) {
         case "", "info":   self = .info
@@ -61,10 +60,9 @@ public enum LogLevel: Sendable, Comparable {
 
 /// Configuration for `OfemLogger`.
 ///
-/// Mirrors the `Options` struct in `internal/logging/logging.go`. The Go
-/// daemon logs JSON to a rotating file; the Swift FPE / host app uses
-/// `os.Logger` for the system log and an optional `RotatingFileWriter` for
-/// the same rotating-file path used by the daemon.
+/// `os.Logger` carries every message to the macOS Unified Logging System;
+/// when a `RotatingFileWriter` is also supplied, each message is written
+/// as a JSON line to disk too.
 public struct LogConfiguration: Sendable {
     /// The subsystem identifier passed to `os.Logger`.
     /// Defaults to `"dev.debruyn.ofem"`.
@@ -77,17 +75,17 @@ public struct LogConfiguration: Sendable {
     /// Minimum level to emit. Messages below this level are suppressed.
     public let level: LogLevel
 
-    /// When non-nil, log messages are also written to this rotating file
-    /// writer (mirrors the daemon's JSON log file).
+    /// When non-nil, log messages are also written to this rotating
+    /// JSON-structured file writer.
     public let fileWriter: RotatingFileWriter?
 
     /// Creates a `LogConfiguration`.
     ///
     /// - Parameters:
-    ///   - subsystem: Reverse-DNS subsystem identifier.
-    ///   - category:  Category within the subsystem.
-    ///   - level:     Minimum log level.
-    ///   - fileWriter: Optional disk-backed rotating log writer.
+    /// - subsystem: Reverse-DNS subsystem identifier.
+    /// - category: Category within the subsystem.
+    /// - level: Minimum log level.
+    /// - fileWriter: Optional disk-backed rotating log writer.
     public init(
         subsystem: String = "dev.debruyn.ofem",
         category: String = "ofem",

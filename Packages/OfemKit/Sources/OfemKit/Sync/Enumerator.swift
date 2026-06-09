@@ -4,8 +4,6 @@ import os.log
 // MARK: - Diff
 
 /// Summarises what ``SyncEngine/refreshFolder(key:)`` changed locally.
-///
-/// Mirrors `internal/sync/enumerate.go` — `Diff`.
 public struct Diff: Sendable {
     /// Number of new entries inserted into the cache.
     public var added: Int = 0
@@ -20,8 +18,6 @@ public struct Diff: Sendable {
 // MARK: - EnumerateResult
 
 /// The result of a paged enumeration.
-///
-/// Mirrors `internal/fp/fp.go` — `EnumeratePage`.
 public struct EnumerateResult: Sendable {
     /// The items on this page.
     public let items: [DomainItem]
@@ -32,8 +28,6 @@ public struct EnumerateResult: Sendable {
 // MARK: - VirtualIDs
 
 /// Placeholder IDs used when caching the top-level workspace / item listings.
-///
-/// Mirrors `internal/sync/discover.go` — `VirtualWorkspaceID` / `VirtualItemID`.
 public enum VirtualIDs {
     public static let workspaceID = "__workspaces__"
     public static let itemID      = "__items__"
@@ -42,17 +36,11 @@ public enum VirtualIDs {
 // MARK: - Page size
 
 /// Maximum items returned per ``EnumerateResult`` page.
-///
-/// Mirrors `internal/fp/fp.go` — `enumeratePageSize`.
 let enumeratePageSize = 1_000
 
 // MARK: - Enumerator
 
 /// Stateless enumeration helpers used by ``SyncEngine``.
-///
-/// Methods match the semantics of `internal/sync/enumerate.go` and the
-/// `fp.Service.Enumerate` / `fp.Service.EnumeratePaged` path in
-/// `internal/fp/fp.go`.
 enum Enumerator {
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "Enumerator")
@@ -60,8 +48,6 @@ enum Enumerator {
     // MARK: - Paging
 
     /// Slices `all` into one page starting at the offset encoded in `cursor`.
-    ///
-    /// Mirrors `internal/fp/fp.go` — `Service.EnumeratePaged`.
     static func page(items: [DomainItem], cursor: String?) throws -> EnumerateResult {
         let offset: Int
         if let c = cursor, !c.isEmpty {
@@ -92,8 +78,6 @@ enum Enumerator {
     // MARK: - Freshness
 
     /// Returns `true` when the parent's children were listed within `ttl`.
-    ///
-    /// Mirrors `internal/sync/enumerate.go` — `enumerateFromCache` freshness check.
     static func isFresh(record: MetadataRecord, ttl: TimeInterval) -> Bool {
         guard let childrenSyncedAt = record.childrenSyncedAt else { return false }
         return Date().timeIntervalSince(childrenSyncedAt) <= ttl
@@ -103,8 +87,6 @@ enum Enumerator {
 
     /// Returns `true` when `next` differs from `current` on any field the
     /// remote can change.
-    ///
-    /// Mirrors `internal/sync/enumerate.go` — `entryChanged`.
     static func entryChanged(current: MetadataRecord, next: MetadataRecord) -> Bool {
         current.isDir != next.isDir ||
         current.contentLength != next.contentLength ||
@@ -119,8 +101,6 @@ enum Enumerator {
     /// Removes the leading `"<itemGUID>/"` prefix and trims trailing slashes.
     ///
     /// Returns `nil` when `name` does not belong to `itemGUID`.
-    ///
-    /// Mirrors `internal/sync/enumerate.go` — `stripItemPrefix`.
     static func stripItemPrefix(name: String, itemGUID: String) -> String? {
         var n = name
         if n.hasPrefix("/") { n = String(n.dropFirst()) }
@@ -134,8 +114,6 @@ enum Enumerator {
 
     /// Returns `true` when `child` is exactly one path segment deeper than
     /// `parent` (empty `parent` = item root).
-    ///
-    /// Mirrors `internal/sync/enumerate.go` — `isDirectChild`.
     static func isDirectChild(parent: String, child: String) -> Bool {
         guard !child.isEmpty else { return false }
         if parent.isEmpty {
@@ -147,8 +125,6 @@ enum Enumerator {
     }
 
     /// Returns the parent directory path of `p`, or `""` at the item root.
-    ///
-    /// Mirrors `internal/sync/enumerate.go` — `parentPath`.
     static func parentPath(_ p: String) -> String {
         let trimmed = p.hasSuffix("/") ? String(p.dropLast()) : p
         guard let idx = trimmed.lastIndex(of: "/") else { return "" }
@@ -156,8 +132,6 @@ enum Enumerator {
     }
 
     /// Returns the last path segment of `p`, or `""` for an empty path.
-    ///
-    /// Mirrors `internal/sync/download.go` — `baseName`.
     static func baseName(_ p: String) -> String {
         guard !p.isEmpty else { return "" }
         if let idx = p.lastIndex(of: "/") {

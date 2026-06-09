@@ -158,60 +158,10 @@ struct OfemConfigTests {
         #expect(snap.accounts.isEmpty)
     }
 
-    // MARK: - Legacy max_size_bytes migration
+    // MARK: - max_size_gb
 
-    @Test("legacy max_size_bytes = 5 GiB → max_size_gb = 5")
-    func migrateExact5GiB() throws {
-        let paths = makePaths()
-        let toml = """
-        install_id = "legacy-install"
-        telemetry = false
-        default_account = "work"
-
-        [cache]
-        max_size_bytes = 5368709120
-
-        [accounts.work]
-        alias = "work"
-        tenant_id = "t1"
-        home_account_id = "h1"
-        username = "u@example.com"
-        added_at = "2026-05-01T00:00:00Z"
-        """
-        try writeFile(toml, at: paths.configFile)
-
-        let store = try OfemConfigStore(paths: paths)
-        let snap = store.snapshot()
-
-        #expect(snap.cache.maxSizeGB == 5)
-        #expect(snap.installID == "legacy-install")
-        #expect(snap.telemetry == false)
-        #expect(snap.accounts["work"] != nil)
-    }
-
-    @Test("legacy max_size_bytes just over 10 GiB → rounds up to 11")
-    func migrateCeilsUp() throws {
-        let paths = makePaths()
-        // 10 GiB + 1 byte = 10737418241 bytes
-        let toml = "[cache]\nmax_size_bytes = 10737418241\n"
-        try writeFile(toml, at: paths.configFile)
-
-        let store = try OfemConfigStore(paths: paths)
-        #expect(store.snapshot().cache.maxSizeGB == 11)
-    }
-
-    @Test("legacy max_size_bytes = 0 (unlimited) → seeds default")
-    func migrateLegacyZeroBecomesDefault() throws {
-        let paths = makePaths()
-        let toml = "[cache]\nmax_size_bytes = 0\n"
-        try writeFile(toml, at: paths.configFile)
-
-        let store = try OfemConfigStore(paths: paths)
-        #expect(store.snapshot().cache.maxSizeGB == CacheConfig.defaultSizeGB)
-    }
-
-    @Test("new-schema max_size_gb is honoured verbatim (no migration)")
-    func newSchemaHonoured() throws {
+    @Test("max_size_gb is honoured verbatim")
+    func maxSizeGBHonoured() throws {
         let paths = makePaths()
         let toml = "[cache]\nmax_size_gb = 25\n"
         try writeFile(toml, at: paths.configFile)
@@ -220,19 +170,13 @@ struct OfemConfigTests {
         #expect(store.snapshot().cache.maxSizeGB == 25)
     }
 
-    @Test("after migration save, legacy key is gone and new key is present")
-    func afterMigrationLegacyKeyRemoved() throws {
+    @Test("absent [cache] section seeds default")
+    func absentCacheSeedsDefault() throws {
         let paths = makePaths()
-        let toml = "[cache]\nmax_size_bytes = 5368709120\n"
-        try writeFile(toml, at: paths.configFile)
+        try writeFile("install_id = \"x\"\n", at: paths.configFile)
 
         let store = try OfemConfigStore(paths: paths)
-        // Trigger a save so the migrated config is persisted.
-        try store.updateAndSave { _ in }
-
-        let raw = try String(contentsOf: paths.configFile, encoding: .utf8)
-        #expect(!raw.contains("max_size_bytes"), "legacy key must be removed after save")
-        #expect(raw.contains("max_size_gb"), "canonical key must be present after save")
+        #expect(store.snapshot().cache.maxSizeGB == CacheConfig.defaultSizeGB)
     }
 
     // MARK: - Corrupted / invalid TOML
@@ -252,7 +196,7 @@ struct OfemConfigTests {
             _ = try OfemConfigStore(paths: paths)
             Issue.record("Expected parseFailed error but no error was thrown")
         } catch OfemConfigError.parseFailed {
-            // Expected — pass.
+        // Expected — pass.
         } catch {
             Issue.record("Expected OfemConfigError.parseFailed, got \(error)")
         }

@@ -8,14 +8,12 @@ import os.log
 /// `OneLakeClient` and future Fabric clients receive a `TokenProvider` at
 /// construction time. The concrete implementation (``OfemAuth``) is wired
 /// in the host app or daemon. Test code uses stub closures.
-///
-/// Mirrors `internal/auth/provider.go` — `TokenProvider` interface.
 public protocol TokenProvider: Sendable {
     /// Returns a valid bearer token for the given account alias and scope.
     ///
     /// - Parameters:
-    ///   - alias: The account alias (e.g. `"work"`).
-    ///   - scope: The OAuth audience to target.
+    /// - alias: The account alias (e.g. `"work"`).
+    /// - scope: The OAuth audience to target.
     /// - Returns: A bearer token string.
     /// - Throws: Any error from the underlying auth implementation.
     func token(alias: String, scope: TokenScope) async throws -> String
@@ -45,9 +43,7 @@ extension URLSession: URLSessionProtocol {}
 ///
 /// The client itself is `Sendable`-safe; all mutable state lives in the
 /// actor-isolated ``HTTPGateRegistry``.
-///
-/// Mirrors `internal/onelake/client.go` — `Client.doRequest` + the
-/// transport-wrapping in `internal/httpgate/roundtripper.go`.
+/// transport-wrapping.
 public final class HTTPClient: Sendable {
     // MARK: - Properties
 
@@ -63,13 +59,13 @@ public final class HTTPClient: Sendable {
     /// Creates an `HTTPClient`.
     ///
     /// - Parameters:
-    ///   - session: The underlying `URLSession`. Default: a session with a
-    ///     60-second request timeout and no response-body timeout (so large
-    ///     downloads are not killed mid-stream).
-    ///   - gateRegistry: The per-host rate-limit / concurrency registry.
-    ///     Default: ``HTTPGateRegistry/makeDefault()``.
-    ///   - retryPolicy: Retry parameters. Default: ``HTTPRetryPolicy()``.
-    ///   - userAgent: The `User-Agent` header appended to every request.
+    /// - session: The underlying `URLSession`. Default: a session with a
+    /// 60-second request timeout and no response-body timeout (so large
+    /// downloads are not killed mid-stream).
+    /// - gateRegistry: The per-host rate-limit / concurrency registry.
+    /// Default: ``HTTPGateRegistry/makeDefault()``.
+    /// - retryPolicy: Retry parameters. Default: ``HTTPRetryPolicy()``.
+    /// - userAgent: The `User-Agent` header appended to every request.
     public init(
         session: any URLSessionProtocol = URLSession.ofemDefault,
         gateRegistry: HTTPGateRegistry = HTTPGateRegistry.makeDefault(),
@@ -87,15 +83,15 @@ public final class HTTPClient: Sendable {
     /// Executes `request` with gate throttling, retry and token injection.
     ///
     /// - Parameters:
-    ///   - request: A fully formed `URLRequest`. The `Authorization` header
-    ///     is overwritten by `tokenProvider` / `alias` if supplied.
-    ///   - tokenProvider: Supplies an access token. When non-nil, a
-    ///     `Authorization: Bearer …` header is injected (or refreshed on
-    ///     401 retry).
-    ///   - alias: Account alias forwarded to `tokenProvider`.
-    ///   - scope: OAuth scope forwarded to `tokenProvider`.
-    ///   - idempotent: Passed to ``HTTPRetryPolicy/canRetryTransportError(method:)``
-    ///     to decide whether a mid-flight transport error is retried.
+    /// - request: A fully formed `URLRequest`. The `Authorization` header
+    /// is overwritten by `tokenProvider` / `alias` if supplied.
+    /// - tokenProvider: Supplies an access token. When non-nil, a
+    /// `Authorization: Bearer …` header is injected (or refreshed on
+    /// 401 retry).
+    /// - alias: Account alias forwarded to `tokenProvider`.
+    /// - scope: OAuth scope forwarded to `tokenProvider`.
+    /// - idempotent: Passed to ``HTTPRetryPolicy/canRetryTransportError(method:)``
+    /// to decide whether a mid-flight transport error is retried.
     /// - Returns: `(Data, HTTPURLResponse)` on success.
     /// - Throws: ``HTTPClientError`` on failure.
     public func execute(

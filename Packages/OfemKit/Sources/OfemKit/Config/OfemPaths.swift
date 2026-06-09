@@ -3,13 +3,10 @@ import Foundation
 /// OfemPaths resolves the canonical on-disk locations for all OFEM state.
 ///
 /// All paths sit under the shared App Group container so the sandboxed File
-/// Provider Extension, the host app, and the Go daemon can all read and write
-/// them. The Group Container identifier is hardcoded because OFEM ships from a
-/// single Apple Developer team; forks that re-sign under a different team must
-/// update `appGroupIdentifier` here and the matching constant in the Go package
-/// `internal/config/config.go`.
-///
-/// Mirrors `internal/config/config.go` — `ResolvePaths()`.
+/// Provider Extension and the host app can both read and write them. The
+/// Group Container identifier is hardcoded because OFEM ships from a single
+/// Apple Developer team; forks that re-sign under a different team must
+/// update `appGroupIdentifier` here.
 public struct OfemPaths: Sendable {
     // MARK: - Constants
 
@@ -19,8 +16,8 @@ public struct OfemPaths: Sendable {
     /// The reverse-DNS bundle identifier shared by every OFEM process.
     public static let bundleID = "dev.debruyn.ofem"
 
-    /// The App Group identifier shared by the host app, the File Provider
-    /// Extension, and the Go daemon. It controls the shared container at
+    /// The App Group identifier shared by the host app and the File Provider
+    /// Extension. It controls the shared container at
     /// `~/Library/Group Containers/<appGroupIdentifier>/`.
     public static let appGroupIdentifier = "\(teamID).group.\(bundleID)"
 
@@ -38,7 +35,7 @@ public struct OfemPaths: Sendable {
     /// Corresponds to `<configDir>/cache/`.
     public let cacheDir: URL
 
-    /// Directory for rotated daemon log files.
+    /// Directory for rotated log files.
     /// Corresponds to `<configDir>/log/`.
     public let logDir: URL
 
@@ -52,9 +49,8 @@ public struct OfemPaths: Sendable {
     ///
     /// Sandboxed processes (the File Provider Extension, the host app) should
     /// call this initialiser because it tries `FileManager`'s App Group
-    /// container API first and only falls back to a `$HOME`-relative path when
-    /// the container is unavailable (e.g. in unit tests or the Go daemon, which
-    /// is not in the App Group).
+    /// container API first and only falls back to a `$HOME`-relative path
+    /// when the container is unavailable (e.g. in unit tests).
     public init() {
         self.init(root: Self.resolveContainerRoot())
     }
@@ -76,9 +72,8 @@ public struct OfemPaths: Sendable {
     /// Prefers `FileManager.containerURL(forSecurityApplicationGroupIdentifier:)`
     /// because sandboxed processes must use that API to reach the shared
     /// container. Falls back to `$HOME/Library/Group Containers/<GroupID>/`
-    /// (the same path the Go daemon resolves via `os.UserHomeDir`) when the
-    /// container API is not available — e.g. when running unit tests outside
-    /// the App Group entitlement.
+    /// when the container API is not available — e.g. when running unit
+    /// tests outside the App Group entitlement.
     private static func resolveContainerRoot() -> URL {
         let fm = FileManager.default
 
@@ -89,8 +84,7 @@ public struct OfemPaths: Sendable {
             return containerURL
         }
 
-        // Unsandboxed (daemon, unit tests): fall back to $HOME-relative path,
-        // matching the Go implementation in ResolvePaths().
+        // Unsandboxed (unit tests): fall back to $HOME-relative path.
         let home = fm.homeDirectoryForCurrentUser
         return home
             .appending(path: "Library", directoryHint: .isDirectory)

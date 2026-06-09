@@ -12,16 +12,14 @@ import os.log
 /// Shard layout:
 /// ```
 /// <blobRoot>/
-///   ab/
-///     cdef…  (62 hex chars)
-///   ff/
-///     …
+/// ab/
+/// cdef… (62 hex chars)
+/// ff/
+/// …
 /// ```
 ///
 /// The first two hex characters of the SHA-256 digest form the shard directory
 /// name; the remaining 62 characters form the file name inside that directory.
-/// This is identical to the layout produced by the Go implementation in
-/// `internal/cache/blob.go` — `blobShardPath`.
 ///
 /// `BlobShardCache` is a `Sendable` value type (all operations are stateless
 /// path computations + synchronous filesystem calls). The caller is responsible
@@ -48,7 +46,7 @@ public struct BlobShardCache: Sendable {
     /// Creates a `BlobShardCache` that stores blobs under `blobRoot`.
     ///
     /// - Parameter blobRoot: The directory that holds shard subdirectories.
-    ///   It is created if it does not exist.
+    /// It is created if it does not exist.
     public init(blobRoot: URL) throws {
         self.blobRoot = blobRoot
         try FileManager.default.createDirectory(at: blobRoot, withIntermediateDirectories: true)
@@ -65,8 +63,6 @@ public struct BlobShardCache: Sendable {
     ///
     /// Idempotent: if a blob with this SHA-256 already exists on disk, the
     /// temporary file is discarded and the existing size is returned.
-    ///
-    /// Mirrors `internal/cache/blob.go` — `Cache.StoreBlob`.
     public func store(_ data: Data) throws -> (sha256: String, size: Int64) {
         // Compute SHA-256.
         let digest = CryptoSHA256.hash(data: data)
@@ -92,7 +88,7 @@ public struct BlobShardCache: Sendable {
         do {
             try FileManager.default.moveItem(at: tmpURL, to: destURL)
         } catch CocoaError.fileWriteFileExists {
-            // Race: another writer arrived first — deduplicate.
+        // Race: another writer arrived first — deduplicate.
         }
 
         let size = Int64(data.count)
@@ -105,8 +101,6 @@ public struct BlobShardCache: Sendable {
     /// Reads the blob file for `sha256` and returns its bytes.
     ///
     /// Throws ``CacheError/notFound(_:)`` when the blob is not on disk.
-    ///
-    /// Mirrors `internal/cache/blob.go` — `Cache.OpenBlob`.
     public func load(sha256: String) throws -> Data {
         try validateSHA(sha256)
         let (_, fileURL) = shardPath(for: sha256)
@@ -145,8 +139,6 @@ public struct BlobShardCache: Sendable {
 
     /// Returns the total number of blob files and their combined size in bytes
     /// by walking the blob root. Temporary `*.tmp` files are excluded.
-    ///
-    /// Mirrors `internal/cache/blob.go` — `Cache.DiskUsage`.
     public func diskUsage() throws -> (count: Int, bytes: Int64) {
         guard FileManager.default.fileExists(atPath: blobRoot.path) else {
             return (0, 0)
@@ -173,8 +165,6 @@ public struct BlobShardCache: Sendable {
     // MARK: - Wipe
 
     /// Removes all blob shard directories under `blobRoot`.
-    ///
-    /// Mirrors `internal/cache/blob.go` — `Cache.Wipe` (the disk portion).
     public func wipeAll() throws {
         let entries = try FileManager.default.contentsOfDirectory(
             at: blobRoot,
@@ -194,8 +184,6 @@ public struct BlobShardCache: Sendable {
     // MARK: - Private helpers
 
     /// Returns `(shardDirectory, blobFileURL)` for the given SHA-256 digest.
-    ///
-    /// Mirrors `internal/cache/helpers.go` — `blobShardPath`.
     func shardPath(for sha256: String) -> (dir: URL, file: URL) {
         let prefix = String(sha256.prefix(2))
         let suffix = String(sha256.dropFirst(2))
@@ -205,8 +193,6 @@ public struct BlobShardCache: Sendable {
     }
 
     /// Validates that `sha` is a 64-character lowercase hex string.
-    ///
-    /// Mirrors `internal/cache/blob.go` — `validateSHA`.
     func validateSHA(_ sha: String) throws {
         guard sha.count == Self.shaLength else {
             throw CacheError.invalidSHA(sha)

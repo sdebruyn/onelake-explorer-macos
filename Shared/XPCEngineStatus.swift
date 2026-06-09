@@ -5,17 +5,16 @@
 // these across the XPC boundary. NSXPCInterface requires all types that
 // cross the boundary to conform to NSSecureCoding.
 //
-// Fields mirror the subset of the old Go-daemon "status" IPC response that
-// the menu-bar UI actually displays:
-//   - cacheBytes       — deduplicated on-disk blob bytes (Int64)
-//   - cacheMaxBytes    — configured LRU ceiling in bytes (Int64)
-//   - cacheMaxSizeGB   — ceiling expressed in whole GBs for the Stepper
-//   - telemetryEnabled
-//   - netMaxUploads    — max parallel uploads per account
-//   - netMaxDownloads  — max parallel downloads per account
-//   - logLevel         — "debug" | "info" | "warn" | "error"
-//   - pausedWorkspaces — workspaces whose Fabric capacity is currently paused
-//                        (Fase 7.4). Empty array = no workspaces paused.
+// Fields shown by the menu-bar UI:
+// - cacheBytes — deduplicated on-disk blob bytes (Int64)
+// - cacheMaxBytes — configured LRU ceiling in bytes (Int64)
+// - cacheMaxSizeGB — ceiling expressed in whole GBs for the Stepper
+// - telemetryEnabled
+// - netMaxUploads — max parallel uploads per account
+// - netMaxDownloads — max parallel downloads per account
+// - logLevel — "debug" | "info" | "warn" | "error"
+// - pausedWorkspaces — workspaces whose Fabric capacity is currently paused;
+// empty array = no workspaces paused.
 
 import Foundation
 

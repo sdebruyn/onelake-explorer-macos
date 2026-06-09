@@ -41,12 +41,11 @@ OFEM ships with a multi-tenant Entra App Registration that works for most users.
 
 ## Architecture
 
-OFEM is a 100% Swift application. The engine, auth, cache, and sync logic live in the
-**OfemKit** Swift Package, which runs inside the File Provider Extension process. The host app
-communicates with the extension via standard Apple XPC (`NSFileProviderService`).
+The engine, auth, cache, and sync logic live in the **OfemKit** Swift Package, which runs
+inside the File Provider Extension process. The host app communicates with the extension
+via standard Apple XPC (`NSFileProviderService`).
 
 - [Architecture overview](docs/design/overview.md) — process model, source layout, and design decisions
-- [ADR 0001 — Swift Architecture](docs/adr/0001-swift-migration.md) — records the Swift architecture decision and its rationale
 
 ## Contributing
 

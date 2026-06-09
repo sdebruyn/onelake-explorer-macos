@@ -18,8 +18,6 @@ import os.log
 /// The underlying ``HTTPClient`` and ``HTTPGateRegistry`` handle per-host
 /// throttling and retry; the client itself holds no mutable state.
 ///
-/// Mirrors `internal/fabric/client.go` — `Client`.
-///
 /// ## Usage
 ///
 /// ```swift
@@ -33,8 +31,6 @@ public final class FabricClient: Sendable {
     ///
     /// Cheap insurance against a misbehaving server that keeps returning a
     /// non-empty continuation forever.
-    ///
-    /// Mirrors `internal/fabric/client.go` — `maxPaginationPages`.
     static let maxPaginationPages = 1_000
 
     // MARK: - Properties
@@ -50,9 +46,9 @@ public final class FabricClient: Sendable {
     /// Creates a `FabricClient`.
     ///
     /// - Parameters:
-    ///   - http: Shared ``HTTPClient`` (carries gate registry + retry policy).
-    ///   - tokenProvider: Supplies bearer tokens for account aliases.
-    ///   - baseURL: Fabric REST endpoint. Default: `https://api.fabric.microsoft.com`.
+    /// - http: Shared ``HTTPClient`` (carries gate registry + retry policy).
+    /// - tokenProvider: Supplies bearer tokens for account aliases.
+    /// - baseURL: Fabric REST endpoint. Default: `https://api.fabric.microsoft.com`.
     public init(
         http: HTTPClient,
         tokenProvider: any TokenProvider,
@@ -70,9 +66,9 @@ public final class FabricClient: Sendable {
     /// Use ``listAllWorkspaces(alias:)`` when you need the full list.
     ///
     /// - Parameters:
-    ///   - alias: Account alias to acquire the Fabric bearer token for.
-    ///   - continuation: Opaque continuation token from the previous page;
-    ///     pass `nil` for the first page.
+    /// - alias: Account alias to acquire the Fabric bearer token for.
+    /// - continuation: Opaque continuation token from the previous page;
+    /// pass `nil` for the first page.
     /// - Returns: A ``WorkspacePage`` with items and an optional next token.
     /// - Throws: ``FabricError`` on failure.
     public func listWorkspaces(
@@ -97,13 +93,11 @@ public final class FabricClient: Sendable {
     /// Returns every workspace the principal can see, following pagination to
     /// the end automatically.
     ///
-    /// Mirrors `internal/fabric/client.go` — `Client.ListWorkspaces`.
-    ///
     /// - Parameter alias: Account alias to acquire the Fabric bearer token for.
     /// - Returns: All workspaces, accumulated across all pages.
     /// - Throws: ``FabricError`` on failure, including
-    ///   ``FabricError/paginationExceeded(_:)`` and
-    ///   ``FabricError/loopingPagination(_:)`` as safety guards.
+    /// ``FabricError/paginationExceeded(_:)`` and
+    /// ``FabricError/loopingPagination(_:)`` as safety guards.
     public func listAllWorkspaces(alias: String) async throws -> [Workspace] {
         try await listAllPages(alias: alias, path: "/v1/workspaces") { (wire: WireWorkspace) in
             wire.toWorkspace()
@@ -117,12 +111,12 @@ public final class FabricClient: Sendable {
     /// Use ``listAllItems(alias:workspaceID:)`` for the full list.
     ///
     /// - Parameters:
-    ///   - alias: Account alias.
-    ///   - workspaceID: The workspace to query. Must not be empty.
-    ///   - continuation: Opaque continuation token; `nil` for the first page.
+    /// - alias: Account alias.
+    /// - workspaceID: The workspace to query. Must not be empty.
+    /// - continuation: Opaque continuation token; `nil` for the first page.
     /// - Returns: An ``ItemPage``.
     /// - Throws: ``FabricError/missingArgument(_:)`` when `workspaceID` is
-    ///   empty; ``FabricError`` on network failure.
+    /// empty; ``FabricError`` on network failure.
     public func listItems(
         alias: String,
         workspaceID: String,
@@ -149,11 +143,9 @@ public final class FabricClient: Sendable {
 
     /// Returns all items in a workspace, following pagination automatically.
     ///
-    /// Mirrors `internal/fabric/client.go` — `Client.ListItems`.
-    ///
     /// - Parameters:
-    ///   - alias: Account alias.
-    ///   - workspaceID: The workspace to query. Must not be empty.
+    /// - alias: Account alias.
+    /// - workspaceID: The workspace to query. Must not be empty.
     /// - Throws: ``FabricError/missingArgument(_:)`` when `workspaceID` is empty.
     public func listAllItems(alias: String, workspaceID: String) async throws -> [Item] {
         guard !workspaceID.isEmpty else {
@@ -172,9 +164,9 @@ public final class FabricClient: Sendable {
     /// Use ``listAllFolders(alias:workspaceID:)`` for the full list.
     ///
     /// - Parameters:
-    ///   - alias: Account alias.
-    ///   - workspaceID: The workspace to query. Must not be empty.
-    ///   - continuation: Opaque continuation token; `nil` for the first page.
+    /// - alias: Account alias.
+    /// - workspaceID: The workspace to query. Must not be empty.
+    /// - continuation: Opaque continuation token; `nil` for the first page.
     /// - Returns: A ``FolderPage``.
     /// - Throws: ``FabricError/missingArgument(_:)`` when `workspaceID` is empty.
     public func listFolders(
@@ -207,11 +199,9 @@ public final class FabricClient: Sendable {
     /// These are workspace-level folders that organise items; they are unrelated
     /// to item-internal folders served by the DFS API.
     ///
-    /// Mirrors `internal/fabric/client.go` — `Client.ListFolders`.
-    ///
     /// - Parameters:
-    ///   - alias: Account alias.
-    ///   - workspaceID: The workspace to query. Must not be empty.
+    /// - alias: Account alias.
+    /// - workspaceID: The workspace to query. Must not be empty.
     /// - Throws: ``FabricError/missingArgument(_:)`` when `workspaceID` is empty.
     public func listAllFolders(alias: String, workspaceID: String) async throws -> [Folder] {
         guard !workspaceID.isEmpty else {
@@ -227,15 +217,13 @@ public final class FabricClient: Sendable {
 
     /// Fetches a single item by workspace and item ID.
     ///
-    /// Mirrors `internal/fabric/client.go` — `Client.GetItem`.
-    ///
     /// - Parameters:
-    ///   - alias: Account alias.
-    ///   - workspaceID: The workspace containing the item. Must not be empty.
-    ///   - itemID: The item to fetch. Must not be empty.
+    /// - alias: Account alias.
+    /// - workspaceID: The workspace containing the item. Must not be empty.
+    /// - itemID: The item to fetch. Must not be empty.
     /// - Returns: The fetched ``Item``.
     /// - Throws: ``FabricError/missingArgument(_:)`` when either ID is empty;
-    ///   ``FabricError/notFound`` when the item does not exist.
+    /// ``FabricError/notFound`` when the item does not exist.
     public func getItem(
         alias: String,
         workspaceID: String,
@@ -291,8 +279,6 @@ public final class FabricClient: Sendable {
     /// - Hard cap of ``maxPaginationPages``.
     /// - Identical continuation token twice in a row.
     /// - Identical continuation URI twice in a row.
-    ///
-    /// Mirrors `internal/fabric/client.go` — `listAllPages`.
     private func listAllPages<Wire: Decodable, Model>(
         alias: String,
         path: String,

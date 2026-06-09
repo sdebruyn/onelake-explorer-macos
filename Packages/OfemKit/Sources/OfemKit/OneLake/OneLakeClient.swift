@@ -12,37 +12,29 @@ import os.log
 /// The underlying ``HTTPClient`` and ``HTTPGateRegistry`` handle per-host
 /// throttling and retry; the client itself holds no mutable state.
 ///
-/// Mirrors `internal/onelake/client.go` — `Client`.
-///
 /// ## Usage
 ///
 /// ```swift
 /// let client = OneLakeClient(http: myHTTPClient, tokenProvider: myOfemAuth)
 /// let listing = try await client.listPath(
-///     alias: "work",
-///     workspaceGUID: "...",
-///     itemGUID: "...",
-///     directory: "Files",
-///     recursive: false
+/// alias: "work",
+/// workspaceGUID: "...",
+/// itemGUID: "...",
+/// directory: "Files",
+/// recursive: false
 /// )
 /// ```
 public final class OneLakeClient: Sendable {
     // MARK: - Constants
 
     /// Default DFS endpoint.
-    ///
-    /// Mirrors `internal/onelake/client.go` — `defaultBaseURL`.
     public static let defaultBaseURL = URL(string: "https://onelake.dfs.fabric.microsoft.com")!
 
     /// Body size for a single append call. 4 MiB is well under Azure's
     /// per-append limit (100 MiB) and aligns with typical FS block sizes.
-    ///
-    /// Mirrors `internal/onelake/client.go` — `chunkSize`.
     static let chunkSize = 4 * 1024 * 1024
 
     /// Maximum pagination pages before giving up.
-    ///
-    /// Mirrors `internal/onelake/client.go` — `maxPaginationPages`.
     static let maxPaginationPages = 1_000
 
     // MARK: - Properties
@@ -58,9 +50,9 @@ public final class OneLakeClient: Sendable {
     /// Creates an `OneLakeClient`.
     ///
     /// - Parameters:
-    ///   - http: Shared ``HTTPClient`` (carries gate registry + retry policy).
-    ///   - tokenProvider: Supplies bearer tokens for account aliases.
-    ///   - baseURL: DFS endpoint. Default: ``defaultBaseURL``.
+    /// - http: Shared ``HTTPClient`` (carries gate registry + retry policy).
+    /// - tokenProvider: Supplies bearer tokens for account aliases.
+    /// - baseURL: DFS endpoint. Default: ``defaultBaseURL``.
     public init(
         http: HTTPClient,
         tokenProvider: any TokenProvider,
@@ -77,8 +69,6 @@ public final class OneLakeClient: Sendable {
     ///
     /// If `recursive` is `true`, every descendant is returned in a single
     /// (paginated) stream. Pagination is fully resolved before returning.
-    ///
-    /// Mirrors `internal/onelake/client.go` — `Client.ListPath`.
     public func listPath(
         alias: String,
         workspaceGUID: String,
@@ -141,8 +131,6 @@ public final class OneLakeClient: Sendable {
     // MARK: - GetProperties
 
     /// Returns metadata for a single path (HEAD request).
-    ///
-    /// Mirrors `internal/onelake/client.go` — `Client.GetProperties`.
     public func getProperties(
         alias: String,
         workspaceGUID: String,
@@ -174,8 +162,6 @@ public final class OneLakeClient: Sendable {
     /// Returns the file body as `Data` together with the response headers
     /// parsed as ``PathProperties``. The caller does not need a follow-up
     /// HEAD request if it already issues a full GET.
-    ///
-    /// Mirrors `internal/onelake/client.go` — `Client.ReadWithIfMatch`.
     public func read(
         alias: String,
         workspaceGUID: String,
@@ -215,8 +201,6 @@ public final class OneLakeClient: Sendable {
     ///
     /// `size` must equal the number of bytes in `content`. If `content`
     /// supplies fewer bytes the call throws ``OneLakeError/shortRead(offset:)``.
-    ///
-    /// Mirrors `internal/onelake/client.go` — `Client.Write`.
     public func write(
         alias: String,
         workspaceGUID: String,
@@ -296,8 +280,6 @@ public final class OneLakeClient: Sendable {
     // MARK: - CreateDirectory
 
     /// Creates a directory.
-    ///
-    /// Mirrors `internal/onelake/client.go` — `Client.CreateDirectory`.
     public func createDirectory(
         alias: String,
         workspaceGUID: String,
@@ -326,8 +308,6 @@ public final class OneLakeClient: Sendable {
     ///
     /// If `recursive` is `true`, all descendants are removed. Otherwise a
     /// non-empty directory yields a 409 from the server.
-    ///
-    /// Mirrors `internal/onelake/client.go` — `Client.Delete`.
     public func delete(
         alias: String,
         workspaceGUID: String,
@@ -396,8 +376,6 @@ public final class OneLakeClient: Sendable {
 // MARK: - joinItemPath
 
 /// Joins an item-relative path onto the item GUID for use in list queries.
-///
-/// Mirrors `internal/onelake/client.go` — `joinItemPath`.
 private func joinItemPath(itemGUID: String, relPath: String) -> String {
     let trimmed = relPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     if trimmed.isEmpty {

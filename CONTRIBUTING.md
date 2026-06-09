@@ -26,10 +26,10 @@ cd onelake-explorer-macos
 brew install commitlint xcodegen
 
 # generate the Xcode project
-make apple-gen
+make gen
 
 # build the signed app (requires Developer ID certificate in keychain)
-make apple-build
+make build
 
 # run Swift unit tests (OfemKit)
 cd Packages/OfemKit && swift test

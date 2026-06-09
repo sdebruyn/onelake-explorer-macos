@@ -5,11 +5,8 @@ import Foundation
 /// Typed errors produced by ``FabricClient``.
 ///
 /// Wraps ``HTTPClientError`` for transport/API failures and adds
-/// Fabric-specific semantic errors.
-///
-/// Mirrors `internal/httpretry/errors.go` sentinels as used by the
-/// `internal/fabric` package, and adds `.cancelled` which was an open
-/// point noted in the Phase 4a review (``OneLakeError`` omitted it).
+/// Fabric-specific semantic errors, including `.cancelled` for Swift
+/// Concurrency task cancellation.
 public enum FabricError: Error, Sendable {
     // MARK: - Validation errors (client-side, no network call made)
 
@@ -42,10 +39,8 @@ public enum FabricError: Error, Sendable {
     /// Retries were exhausted. `attempts` is the total attempt count.
     case retriesExhausted(attempts: Int)
 
-    /// The task was cancelled by the caller.
-    ///
-    /// This case was missing from ``OneLakeError`` (open point from Phase 4a
-    /// review). ``FabricClient`` maps ``HTTPClientError/cancelled`` here.
+    /// The task was cancelled by the caller. ``FabricClient`` maps
+    /// ``HTTPClientError/cancelled`` here.
     case cancelled
 
     /// An unexpected HTTP or transport error.
@@ -71,11 +66,8 @@ public enum FabricError: Error, Sendable {
 
 extension FabricError {
     /// Converts an ``HTTPClientError`` (or any error from the Net layer) to
-    /// a ``FabricError``.
-    ///
-    /// Mirrors the pattern in `internal/httpretry/errors.go` as used by the
-    /// Go Fabric client, extended with `.cancelled` to handle Swift
-    /// Concurrency task cancellation.
+    /// a ``FabricError``. `.cancelled` handles Swift Concurrency task
+    /// cancellation explicitly.
     static func from(_ error: any Error) -> FabricError {
         switch error {
         case HTTPClientError.unauthorized:

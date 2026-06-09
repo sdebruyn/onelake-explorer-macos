@@ -112,7 +112,7 @@ struct MenuBarView: View {
         // is in front of whatever the user was looking at. The order is
         // important — activate() before open would target the wrong
         // process. simultaneousGesture fires alongside the underlying tap
-        // without consuming it (which an .onTapGesture would).
+        // without consuming it (which an.onTapGesture would).
         .simultaneousGesture(TapGesture().onEnded {
             NSApp.activate(ignoringOtherApps: true)
         })

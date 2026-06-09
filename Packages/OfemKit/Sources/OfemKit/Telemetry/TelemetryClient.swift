@@ -5,7 +5,7 @@ import os.log
 
 /// Transport that ships a batch of events somewhere.
 ///
-/// Mirrors `Sink` in `internal/telemetry/types.go`. Implemented by
+///
 /// `AppInsightsSink` (production), `NoopTelemetrySink` (disabled state),
 /// and `MemoryTelemetrySink` (tests).
 public protocol TelemetrySink: Sendable {
@@ -18,7 +18,7 @@ public protocol TelemetrySink: Sendable {
 /// A `TelemetrySink` that silently discards every event.
 ///
 /// Used when telemetry is disabled (env var, config flag, or missing
-/// connection string). Mirrors `NoopSink` in `internal/telemetry/noop.go`.
+/// connection string).
 public struct NoopTelemetrySink: TelemetrySink {
     public init() {}
     public func send(_: [TelemetryEvent]) async throws {}
@@ -28,7 +28,7 @@ public struct NoopTelemetrySink: TelemetrySink {
 
 /// Configuration for `TelemetryClient`.
 ///
-/// Mirrors `Options` in `internal/telemetry/client.go`.
+///
 public struct TelemetryConfiguration: Sendable {
     /// When `true` the client uses `NoopTelemetrySink` regardless of the
     /// provided sink. Set this from the user's opt-out preference or the
@@ -75,12 +75,10 @@ public struct TelemetryConfiguration: Sendable {
 ///
 /// `track(_:)` enqueues events; a Swift Concurrency `Task` drives periodic
 /// flushes to the configured `TelemetrySink`.
-///
-/// Design mirrors `Client` in `internal/telemetry/client.go`:
 /// - Non-blocking enqueue with oldest-event-drop on overflow.
 /// - Background flush on a timer or on buffer-full signal.
 /// - `flush()` is synchronous from the caller's perspective but performed
-///   via the actor's executor.
+/// via the actor's executor.
 /// - `shutdown()` cancels the timer and performs a final flush.
 ///
 /// `TelemetryClient` is an `actor` so all mutable state is automatically
@@ -103,10 +101,10 @@ public actor TelemetryClient {
     /// Creates a `TelemetryClient`.
     ///
     /// - Parameters:
-    ///   - sink:          The transport. Required.
-    ///   - appVersion:    OFEM release version (typically `BuildInfo.version`).
-    ///   - installID:     Per-install UUID string.
-    ///   - configuration: Tuning knobs. Defaults to sensible values.
+    /// - sink: The transport. Required.
+    /// - appVersion: OFEM release version (typically `BuildInfo.version`).
+    /// - installID: Per-install UUID string.
+    /// - configuration: Tuning knobs. Defaults to sensible values.
     public init(
         sink: any TelemetrySink,
         appVersion: String,
@@ -140,8 +138,7 @@ public actor TelemetryClient {
 
     /// Starts the background flush timer. Call once after construction.
     ///
-    /// No-op when the sink is `NoopTelemetrySink` (disabled state) — matches
-    /// the Go `Start` behaviour that skips the goroutine for `NoopSink`.
+    /// No-op when the sink is `NoopTelemetrySink` (disabled state).
     public func start() {
         guard !(sink is NoopTelemetrySink) else { return }
         guard flushTask == nil, !isClosed else { return }
@@ -158,8 +155,7 @@ public actor TelemetryClient {
 
     /// Cancels the background flush timer and performs a final flush.
     ///
-    /// After `shutdown()`, `track(_:)` is a no-op (matching Go's
-    /// `Close`-after-closed behaviour).
+    /// After `shutdown()`, `track(_:)` is a no-op.
     public func shutdown() async {
         guard !isClosed else { return }
         isClosed = true
@@ -194,7 +190,7 @@ public actor TelemetryClient {
 
     /// Convenience shorthand for emitting the `"error"` event.
     ///
-    /// Mirrors `TrackError` in `internal/telemetry/client.go`.
+    ///
     public func trackError(_ error: Error, op: String) async {
         await track(TelemetryEvent(
             name: "error",

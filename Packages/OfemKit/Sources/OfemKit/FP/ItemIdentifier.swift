@@ -4,14 +4,14 @@ import Foundation
 
 /// A typed wrapper for a File Provider item identifier string.
 ///
-/// The identifier grammar (mirroring `internal/fp/fp.go` — `parseIdentifier`):
+/// The identifier grammar:
 ///
 /// ```
-/// ""                   → .root
-/// ".rootContainer"     → .root
-/// "<ws>"               → .workspace(workspaceID: ws)
-/// "<ws>/<item>"        → .item(workspaceID: ws, itemID: item)
-/// "<ws>/<item>/<path>" → .path(workspaceID: ws, itemID: item, path: path)
+/// "" →.root
+/// ".rootContainer" →.root
+/// "<ws>" →.workspace(workspaceID: ws)
+/// "<ws>/<item>" →.item(workspaceID: ws, itemID: item)
+/// "<ws>/<item>/<path>" →.path(workspaceID: ws, itemID: item, path: path)
 /// ```
 ///
 /// Identifiers are strictly validated on construction; any identifier with an
@@ -40,15 +40,12 @@ public enum ItemIdentifier: Hashable, Sendable {
     // MARK: - Well-known string
 
     /// The canonical string for the root container, matching
-    /// `NSFileProviderItemIdentifier.rootContainer`'s backing value on the
-    /// Swift side and `RootContainerID` in the Go daemon.
+    /// `NSFileProviderItemIdentifier.rootContainer`'s backing value.
     public static let rootContainerString = ".rootContainer"
 
     // MARK: - Stringified identifier
 
     /// Reconstructs the opaque identifier string the File Provider stack uses.
-    ///
-    /// Mirrors `internal/fp/fp.go` — `buildPathID` and related helpers.
     public var identifierString: String {
         switch self {
         case .root:
@@ -68,8 +65,6 @@ public enum ItemIdentifier: Hashable, Sendable {
     // MARK: - Parent identifier
 
     /// Returns the identifier of the parent container.
-    ///
-    /// Mirrors `internal/fp/fp.go` — `buildPathParentID`.
     public var parentIdentifier: ItemIdentifier {
         switch self {
         case .root:

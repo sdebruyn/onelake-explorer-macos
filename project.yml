@@ -33,9 +33,9 @@ settings:
     # Release builds override these via the xcodebuild command line.
     MARKETING_VERSION: "0.0.0-dev"
     CURRENT_PROJECT_VERSION: "0"
-# OfemKit is a local Swift Package that houses all engine modules after
-# the Swift migration (see docs/adr/0001-swift-migration.md). It is
-# linked into both the host app and the FPE.
+# OfemKit is a local Swift Package that houses all engine modules
+# (auth, cache, sync, OneLake clients, telemetry). Linked into both the
+# host app and the File Provider Extension.
 packages:
   OfemKit:
     path: Packages/OfemKit

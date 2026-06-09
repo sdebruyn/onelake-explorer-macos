@@ -5,8 +5,6 @@ import Foundation
 // MARK: - Enumerator helper tests
 
 /// Tests for the stateless ``Enumerator`` helper functions.
-///
-/// Mirrors `internal/sync/enumerate_test.go`.
 struct EnumeratorTests {
 
     // MARK: - stripItemPrefix

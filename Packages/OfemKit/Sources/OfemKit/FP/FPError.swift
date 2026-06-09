@@ -4,8 +4,7 @@ import Foundation
 
 /// Errors produced by the FP domain model layer.
 ///
-/// Mirrors the error classification in `internal/fp/fp.go` — `Classify`.
-/// The FPE (Fase 7) maps these to `NSFileProviderError` values.
+/// The FPE maps these to `NSFileProviderError` values.
 public enum FPError: Error, Sendable, CustomStringConvertible {
 
     // MARK: - Domain errors
@@ -20,14 +19,12 @@ public enum FPError: Error, Sendable, CustomStringConvertible {
     /// (or vice versa). Maps to `noSuchItem`.
     case wrongItemKind(String)
 
-    /// The item does not exist.  Maps to `noSuchItem`.
+    /// The item does not exist. Maps to `noSuchItem`.
     case noSuchItem(String)
 
     // MARK: - Error code
 
     /// The stable error code the FPE switches on.
-    ///
-    /// Mirrors `internal/fp/fp.go` — `ErrorCode` constants.
     public enum Code: String, Sendable {
         case noSuchItem        = "noSuchItem"
         case notAuthenticated  = "notAuthenticated"
@@ -41,7 +38,7 @@ public enum FPError: Error, Sendable, CustomStringConvertible {
     /// Maps any error to the stable ``Code`` the FPE switches on.
     ///
     /// Classification is based exclusively on typed errors — no substring
-    /// matching on error messages (mirrors `internal/fp/fp.go` — `Classify`).
+    /// matching on error messages.
     public static func classify(_ error: any Error) -> Code {
         // Check domain errors first.
         if let fpError = error as? FPError {

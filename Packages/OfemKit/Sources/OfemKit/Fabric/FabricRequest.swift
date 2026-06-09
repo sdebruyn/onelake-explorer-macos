@@ -3,8 +3,6 @@ import Foundation
 // MARK: - Fabric base URL
 
 /// Default Fabric REST API endpoint.
-///
-/// Mirrors `internal/fabric/client.go` — `defaultBaseURL`.
 public let fabricDefaultBaseURL = URL(string: "https://api.fabric.microsoft.com")!
 
 // MARK: - URL builders
@@ -14,14 +12,12 @@ public let fabricDefaultBaseURL = URL(string: "https://api.fabric.microsoft.com"
 /// The path is appended to `base` directly; query items are added when
 /// `continuationToken` is non-nil (replays the original path with the token
 /// appended as a query parameter).
-///
-/// Mirrors `internal/fabric/client.go` — URL construction inside
 /// `listAllPages`.
 ///
 /// - Parameters:
-///   - base: The Fabric REST base URL (e.g. `https://api.fabric.microsoft.com`).
-///   - path: Absolute path such as `"/v1/workspaces"`.
-///   - continuationToken: When non-nil, added as `?continuationToken=<value>`.
+/// - base: The Fabric REST base URL (e.g. `https://api.fabric.microsoft.com`).
+/// - path: Absolute path such as `"/v1/workspaces"`.
+/// - continuationToken: When non-nil, added as `?continuationToken=<value>`.
 /// - Returns: A fully formed URL.
 func fabricListURL(base: URL, path: String, continuationToken: String? = nil) -> URL {
     var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
@@ -36,11 +32,9 @@ func fabricListURL(base: URL, path: String, continuationToken: String? = nil) ->
 
 /// Builds a URL for a Fabric REST item endpoint (single resource).
 ///
-/// Mirrors `internal/fabric/client.go` — path construction for `GetItem`.
-///
 /// - Parameters:
-///   - base: The Fabric REST base URL.
-///   - path: Absolute path such as `"/v1/workspaces/ws1/items/it1"`.
+/// - base: The Fabric REST base URL.
+/// - path: Absolute path such as `"/v1/workspaces/ws1/items/it1"`.
 /// - Returns: A fully formed URL.
 func fabricItemURL(base: URL, path: String) -> URL {
     var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
@@ -57,14 +51,12 @@ func fabricItemURL(base: URL, path: String) -> URL {
 /// The URI must either be relative (path-only) or have the same host as `base`.
 /// Pointing to a different host is rejected to prevent open-redirect attacks.
 ///
-/// Mirrors `internal/fabric/client.go` — `relativeToBase`.
-///
 /// - Parameters:
-///   - raw: The raw `continuationUri` string from the API response.
-///   - base: The configured Fabric base URL.
+/// - raw: The raw `continuationUri` string from the API response.
+/// - base: The configured Fabric base URL.
 /// - Returns: A URL suitable for the next page request.
 /// - Throws: ``FabricError/continuationURIHostMismatch(_:)`` when `raw` points
-///   to a different host.
+/// to a different host.
 func resolveContinuationURI(_ raw: String, base: URL) throws -> URL {
     guard let parsed = URL(string: raw) else {
         throw FabricError.httpError(URLError(.badURL, userInfo: [NSURLErrorFailingURLStringErrorKey: raw]))
@@ -108,8 +100,8 @@ func resolveContinuationURI(_ raw: String, base: URL) throws -> URL {
 /// a `TokenProvider` is supplied.
 ///
 /// - Parameters:
-///   - method: HTTP method (e.g. `"GET"`).
-///   - url: Fully formed request URL.
+/// - method: HTTP method (e.g. `"GET"`).
+/// - url: Fully formed request URL.
 /// - Returns: A `URLRequest` ready for ``HTTPClient/execute(_:tokenProvider:alias:scope:idempotent:)``.
 func fabricRequest(method: String, url: URL) -> URLRequest {
     var req = URLRequest(url: url)

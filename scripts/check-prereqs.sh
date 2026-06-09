@@ -99,7 +99,6 @@ fi
 
 hdr "Local development (required to build and test)"
 
-check_command go      "1.26"  "brew install go"
 check_command git     "2.40"  "comes with Xcode Command Line Tools"
 check_command gh      "2.40"  "brew install gh"
 check_command brew    "4.0"   "https://brew.sh"
@@ -114,9 +113,9 @@ fi
 
 if /usr/bin/xcodebuild -version >/dev/null 2>&1; then
     xcode_ver=$(xcodebuild -version 2>/dev/null | head -1 | awk '{print $2}')
-    ok "Xcode $xcode_ver (only required when working on the .app / File Provider Extension)"
+    ok "Xcode $xcode_ver"
 else
-    warn "Full Xcode is not installed; not needed for Go-only development but required for the .app / File Provider Extension"
+    miss "Full Xcode is not installed (required for the .app and File Provider Extension)"
     hint "install from the App Store, then run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
 fi
 
@@ -124,7 +123,6 @@ fi
 
 hdr "Lint and CI parity (recommended)"
 
-check_command golangci-lint "1.55" "brew install golangci-lint"
 if command -v commitlint >/dev/null 2>&1; then
     cl_ver=$(commitlint --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
     if [ -n "$cl_ver" ] && version_ge "$cl_ver" "18.0"; then
@@ -140,84 +138,20 @@ else
     hint "brew install commitlint (or: npm i -g @commitlint/cli @commitlint/config-conventional)"
 fi
 
-# goimports comes via go install; not strictly required.
-if command -v goimports >/dev/null 2>&1; then
-    ok "goimports installed"
-else
-    warn "goimports not installed (optional but recommended for 'make fmt')"
-    hint "go install golang.org/x/tools/cmd/goimports@latest"
-fi
-
-# xcodegen owns the Xcode project (project.yml); required for
-# `make apple-gen` / `make apple-build`. Treat absence as a warning
-# (not a hard miss) because Go-only work doesn't need it, but if it *is*
-# installed, compare the version against the 2.40 minimum from
-# docs/prerequisites.md instead of just printing it.
+# xcodegen owns the Xcode project (project.yml); required for `make gen`
+# and `make build`. If it is installed, compare the version against the
+# 2.40 minimum from docs/prerequisites.md instead of just printing it.
 if command -v xcodegen >/dev/null 2>&1; then
     xg_ver=$(xcodegen --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
     if [ -z "$xg_ver" ]; then
         ok "xcodegen installed (version detection failed; assuming OK)"
     elif version_ge "$xg_ver" "2.40"; then
-        ok "xcodegen $xg_ver (need 2.40+, used by apple-gen/apple-build)"
+        ok "xcodegen $xg_ver (need 2.40+, used by gen/build)"
     else
         warn "xcodegen $xg_ver is older than the 2.40+ documented in docs/prerequisites.md"
         hint "brew upgrade xcodegen"
     fi
 else
-    warn "xcodegen not installed (needed for the .app / File Provider Extension)"
+    miss "xcodegen not installed (needed for the .app / File Provider Extension)"
     hint "brew install xcodegen"
 fi
-
-# --- GitHub authentication ---
-
-hdr "GitHub authentication"
-
-if gh auth status >/dev/null 2>&1; then
-    gh_user=$(gh api user --jq .login 2>/dev/null || echo "?")
-    ok "gh is authenticated (user: $gh_user)"
-else
-    warn "gh CLI is installed but not authenticated"
-    hint "gh auth login"
-fi
-
-# --- Publishing / signing (informational only) ---
-
-hdr "Publishing & signing (only required when cutting an official release)"
-
-if command -v create-dmg >/dev/null 2>&1; then
-    ok "create-dmg installed"
-else
-    warn "create-dmg not installed (only needed when packaging the .app)"
-    hint "brew install create-dmg"
-fi
-
-# Look for a Developer ID Application code-signing certificate.
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
-    ok "Developer ID Application certificate present in the login keychain"
-else
-    warn "No Developer ID Application certificate in the login keychain (required only when shipping signed builds)"
-    hint 'Apple Developer Program enrollment ($99/yr), then Xcode → Settings → Accounts → Manage Certificates → +'
-fi
-
-# notarytool ships with Xcode.
-if xcrun --find notarytool >/dev/null 2>&1; then
-    ok "xcrun notarytool available"
-else
-    warn "xcrun notarytool not found (comes with Xcode 13+; only needed for notarized releases)"
-fi
-
-# --- Summary ---
-
-hdr "Summary"
-
-printf 'Missing required: %s%d%s\n' "$RED" "$fail_count" "$RST"
-printf 'Warnings:         %s%d%s\n' "$YLW" "$warn_count" "$RST"
-echo
-if [ "$fail_count" -gt 0 ]; then
-    echo "Resolve the items marked ✗ before running 'make ci'."
-    exit 1
-fi
-if [ "$warn_count" -gt 0 ]; then
-    echo "You can build and test OFEM locally. Warnings cover optional or release-only tools."
-fi
-exit 0

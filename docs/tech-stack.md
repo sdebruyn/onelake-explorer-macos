@@ -1,10 +1,8 @@
 # Tech stack
 
-## Language: 100% Swift
-
-OFEM is written entirely in Swift. The engine, cache, auth, and sync logic
-live in the **OfemKit** Swift Package (`Packages/OfemKit/`). The macOS
-`.app` host and the File Provider Extension are also Swift.
+The engine, cache, auth, and sync logic live in the **OfemKit** Swift
+Package (`Packages/OfemKit/`), linked into both the macOS `.app` host and
+the File Provider Extension.
 
 ## OfemKit modules
 

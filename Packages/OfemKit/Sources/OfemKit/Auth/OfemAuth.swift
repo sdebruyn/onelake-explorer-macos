@@ -7,23 +7,20 @@ import os.log
 /// Top-level authentication façade for OFEM.
 ///
 /// `OfemAuth` is the single entry point for token acquisition. It mirrors
-/// the Go `Registry` type (`internal/auth/registry.go`) in terms of
 /// responsibility:
 ///
-///  - Manages the set of signed-in accounts via ``OfemConfigStore``.
-///  - Persists per-account secrets (token cache) via MSAL's Keychain backend.
-///  - Acquires tokens silently from MSAL, returning ``OfemAuthError/interactionRequired``
-///    when the refresh token has expired or a Conditional Access policy fires.
-///  - One `MSALPublicClientApplication` per `(clientID, tenantID)` pair,
-///    cached in-process for fast silent acquisition.
+/// - Manages the set of signed-in accounts via ``OfemConfigStore``.
+/// - Persists per-account secrets (token cache) via MSAL's Keychain backend.
+/// - Acquires tokens silently from MSAL, returning ``OfemAuthError/interactionRequired``
+/// when the refresh token has expired or a Conditional Access policy fires.
+/// - One `MSALPublicClientApplication` per `(clientID, tenantID)` pair,
+/// cached in-process for fast silent acquisition.
 ///
 /// ## Thread safety
 ///
 /// `OfemAuth` is `@MainActor` isolated to keep it simple. Token acquisition
 /// dispatches to MSAL's own concurrency model via `async/await`. The client
 /// cache dictionary is read and written only on the main actor.
-///
-/// Mirrors `internal/auth/registry.go` — `Registry`.
 @MainActor
 public final class OfemAuth {
     // MARK: - Properties
@@ -43,8 +40,6 @@ public final class OfemAuth {
 
     /// Sentinel thrown when MSAL cannot silently acquire a token and the
     /// user must sign in interactively again.
-    ///
-    /// Mirrors `internal/auth/msal.go` — `ErrInteractionRequired`.
     public static let interactionRequired = OfemAuthError.interactionRequired
 
     // MARK: - Initialisation
@@ -52,12 +47,12 @@ public final class OfemAuth {
     /// Creates an `OfemAuth` instance.
     ///
     /// - Parameters:
-    ///   - configStore: Loaded `OfemConfigStore` (accounts are read from
-    ///     here and written back after `addAccount`/`removeAccount`).
-    ///   - clientID: The Entra App Registration GUID. Default:
-    ///     ``ofemEntraClientID`` (built-in OFEM registration).
-    ///   - cacheStrategy: Token cache backend. Default: `.msalKeychain`.
-    ///   - fileTokenStore: Required when `cacheStrategy == .fileBackedFallback`.
+    /// - configStore: Loaded `OfemConfigStore` (accounts are read from
+    /// here and written back after `addAccount`/`removeAccount`).
+    /// - clientID: The Entra App Registration GUID. Default:
+    /// ``ofemEntraClientID`` (built-in OFEM registration).
+    /// - cacheStrategy: Token cache backend. Default: `.msalKeychain`.
+    /// - fileTokenStore: Required when `cacheStrategy ==.fileBackedFallback`.
     public init(
         configStore: OfemConfigStore,
         clientID: String = ofemEntraClientID,
@@ -73,8 +68,6 @@ public final class OfemAuth {
     // MARK: - Account management
 
     /// Returns all known accounts sorted by alias.
-    ///
-    /// Mirrors `internal/auth/registry.go` — `Registry.List()`.
     public func listAccounts() -> [Account] {
         let snap = configStore.snapshot()
         return snap.accounts.values.sorted { $0.alias < $1.alias }
@@ -85,8 +78,6 @@ public final class OfemAuth {
     /// The MSAL token cache is already in the Keychain at this point
     /// (written by `MsalAuthClient` during the interactive flow). This
     /// method only updates the TOML config with the account metadata.
-    ///
-    /// Mirrors `internal/auth/registry.go` — `Registry.Add()`.
     public func addAccount(_ account: Account) throws {
         guard !account.alias.isEmpty else {
             throw OfemAuthError.emptyAlias
@@ -109,8 +100,6 @@ public final class OfemAuth {
     /// Note: the MSAL Keychain cache entry is NOT removed here because MSAL
     /// manages its own cache lifecycle. If the alias is re-added, MSAL will
     /// try the existing cache first, which is the correct behaviour.
-    ///
-    /// Mirrors `internal/auth/registry.go` — `Registry.Remove()`.
     public func removeAccount(alias: String) throws {
         let snap = configStore.snapshot()
         guard snap.accounts[alias] != nil else {
@@ -127,8 +116,6 @@ public final class OfemAuth {
     }
 
     /// Returns the alias of the configured default account.
-    ///
-    /// Mirrors `internal/auth/registry.go` — `Registry.Default()`.
     public func defaultAccount() -> String? {
         let snap = configStore.snapshot()
         let d = snap.defaultAccount
@@ -136,8 +123,6 @@ public final class OfemAuth {
     }
 
     /// Sets the default account alias.
-    ///
-    /// Mirrors `internal/auth/registry.go` — `Registry.SetDefault()`.
     public func setDefaultAccount(alias: String) throws {
         let snap = configStore.snapshot()
         guard snap.accounts[alias] != nil else {
@@ -151,15 +136,11 @@ public final class OfemAuth {
     // MARK: - Token acquisition
 
     /// Acquires an access token for the OneLake ADLS Gen2 DFS audience.
-    ///
-    /// Mirrors `internal/auth/registry.go` — `Registry.Token()`.
     public func token(alias: String) async throws -> String {
         try await tokenForScope(alias: alias, scope: .oneLake)
     }
 
     /// Acquires an access token for the given audience scope.
-    ///
-    /// Mirrors `internal/auth/registry.go` — `Registry.TokenForScopes()`.
     public func tokenForScope(alias: String, scope: TokenScope) async throws -> String {
         let snap = configStore.snapshot()
         guard let cfg = snap.accounts[alias] else {
@@ -182,8 +163,6 @@ public final class OfemAuth {
 
     /// Returns the cached MSAL client for the `(alias, tenantID, clientID)`
     /// triple, building it lazily on first use.
-    ///
-    /// Mirrors `internal/auth/registry.go` — `Registry.clientFor()`.
     private func clientFor(
         alias: String,
         tenantID: String,
@@ -204,8 +183,6 @@ public final class OfemAuth {
 
     /// Finds the `MSALAccount` in the client's cache whose identifier
     /// matches `homeAccountID`.
-    ///
-    /// Mirrors `internal/auth/registry.go` — `Registry.findMSALAccount()`.
     private func msalAccount(
         for client: MsalAuthClient,
         homeAccountID: String,
@@ -233,8 +210,6 @@ public final class OfemAuth {
     /// cross the `@MainActor` isolation boundary into the MSAL async call.
     /// `MSALAccount` is an Objective-C class that MSAL treats as thread-safe
     /// for read operations; we only pass it in and never mutate it.
-    ///
-    /// Mirrors `internal/auth/msal.go` — `SilentToken`.
     private func silentToken(
         client: MsalAuthClient,
         account: MSALAccount,
@@ -264,8 +239,6 @@ public final class OfemAuth {
     /// Returns `true` when the MSAL error indicates the user must interact
     /// again (Conditional Access challenge, MFA re-prompt, expired refresh
     /// token, consent required, etc.).
-    ///
-    /// Mirrors `internal/auth/msal.go` — `isInteractionRequired`.
     private func isInteractionRequired(_ error: Error) -> Bool {
         let msg = error.localizedDescription.lowercased()
         let signals = [
@@ -304,8 +277,6 @@ public final class OfemAuth {
     }
 
     /// Evicts all cached MSAL clients for the given alias suffix.
-    ///
-    /// Mirrors `internal/auth/registry.go` — eviction in `Registry.Remove()`.
     private func evictClients(for alias: String) {
         let suffix = "|\(alias)"
         clients.keys
@@ -321,7 +292,7 @@ public enum OfemAuthError: Error, CustomStringConvertible {
     /// The user must interact again to complete authentication.
     ///
     /// Callers should surface a "click to re-authenticate" indicator rather
-    /// than blocking. Mirrors `internal/auth/msal.go` — `ErrInteractionRequired`.
+    /// than blocking.
     case interactionRequired
 
     case emptyAlias

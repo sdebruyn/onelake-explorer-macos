@@ -10,20 +10,19 @@
 //
 // Reconciliation is idempotent:
 //
-//   - For every account-alias in config.toml, ensure a domain
-//     with identifier `ofem.<alias>` is registered. If one is missing,
-//     add it.
-//   - For every registered domain that starts with `ofem.` but is
-//     no longer in the account list, remove it (preserving the
-//     user's downloaded content — they may want it back).
+// - For every account-alias in config.toml, ensure a domain
+// with identifier `ofem.<alias>` is registered. If one is missing,
+// add it.
+// - For every registered domain that starts with `ofem.` but is
+// no longer in the account list, remove it (preserving the
+// user's downloaded content — they may want it back).
 //
 // Calling `reconcile()` more than once concurrently is safe: the
 // `@MainActor` annotation serialises every entry point.
 //
-// Fase 7.3a: reconcile() now reads from SharedOfemAuth (config.toml)
-// instead of CoreBridge (Go daemon IPC). addDomain(alias:) and
-// removeDomain(alias:) are surgical alternatives for callers that
-// already know exactly which domain to add or remove.
+// reconcile() reads the account list from SharedOfemAuth (config.toml).
+// addDomain(alias:) and removeDomain(alias:) are surgical alternatives
+// for callers that already know exactly which domain to add or remove.
 
 import FileProvider
 import Foundation
@@ -53,7 +52,7 @@ final class DomainSyncManager {
 
     private init() {}
 
-    // MARK: - Targeted domain operations (Fase 7.3a)
+    // MARK: - Targeted domain operations
 
     /// Registers a single File Provider domain for `alias`.
     ///

@@ -5,8 +5,6 @@ import Testing
 
 /// Tests for ``ItemIdentifier`` — round-trip through `identifierString` and
 /// `parentIdentifier` derivation.
-///
-/// Mirrors `internal/fp/fp_test.go` — `TestParseIdentifier`.
 struct ItemIdentifierTests {
 
     // MARK: - Root

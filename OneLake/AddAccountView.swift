@@ -6,13 +6,13 @@
 // (GUID or domain; blank = Azure AD picks it from the login prompt), then
 // clicks Sign In.
 //
-// Fase 7.3a flow (Swift-native, no daemon dependency):
-//   1. SharedOfemAuth.signIn drives MSAL via ASWebAuthenticationSession in
-//      the host process. Tokens are written to the shared MSAL Keychain group
-//      and the account is persisted to config.toml.
-//   2. OfemFPEClient.addAccount calls DomainSyncManager.addDomain so the new
-//      File Provider domain appears in the Finder sidebar immediately.
-//   3. An optional XPC warm-up call to the FPE happens once the domain exists.
+// Sign-in flow:
+// 1. SharedOfemAuth.signIn drives MSAL via ASWebAuthenticationSession in
+// the host process. Tokens are written to the shared MSAL Keychain group
+// and the account is persisted to config.toml.
+// 2. OfemFPEClient.addAccount calls DomainSyncManager.addDomain so the new
+// File Provider domain appears in the Finder sidebar immediately.
+// 3. An optional XPC warm-up call to the FPE happens once the domain exists.
 //
 // Cancellation: tapping Cancel dismisses the UI and cancels the Swift Task.
 // MSAL's ASWebAuthenticationSession sheet closes automatically when the Task
@@ -218,9 +218,8 @@ struct AddAccountView: View {
                     return
                 }
 
-                // Fase 7.3a: drive sign-in natively via SharedOfemAuth +
-                // InteractiveSignIn (MSAL + ASWebAuthenticationSession in the
-                // host process). CoreBridge.login() is no longer called.
+                // Drive sign-in via SharedOfemAuth + InteractiveSignIn
+                // (MSAL + ASWebAuthenticationSession in the host process).
                 let info = try await SharedOfemAuth.shared.signIn(
                     alias: trimmedAlias,
                     tenant: tenantArg.isEmpty ? nil : tenantArg,

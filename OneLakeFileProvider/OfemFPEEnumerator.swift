@@ -4,20 +4,20 @@
 // Design notes:
 //
 // - The engine's SyncEngine.enumerate(key:) method operates on
-//   CacheKey values. We map NSFileProviderItemIdentifier → ItemIdentifier
-//   (OfemKit) → CacheKey for the enumerate call.
+// CacheKey values. We map NSFileProviderItemIdentifier → ItemIdentifier
+// (OfemKit) → CacheKey for the enumerate call.
 //
 // - Workspace and item discovery (listWorkspaces, listItems) produce
-//   DomainItem values that never go through the cache layer; regular
-//   file/folder enumeration uses SyncEngine.enumerate(key:) which
-//   hits the cache + remote refresh.
+// DomainItem values that never go through the cache layer; regular
+// file/folder enumeration uses SyncEngine.enumerate(key:) which
+// hits the cache + remote refresh.
 //
 // - Cursor / page tokens: the Swift engine's enumerate(key:) returns
-//   the full listing in one call (no server-side pagination at the DFS
-//   level). We use one page, nil cursor.
+// the full listing in one call (no server-side pagination at the DFS
+// level). We use one page, nil cursor.
 //
 // - enumerateChanges: answers syncAnchorExpired so macOS drops its
-//   cache and re-runs enumerateItems on every Finder refresh.
+// cache and re-runs enumerateItems on every Finder refresh.
 
 import FileProvider
 import Foundation
@@ -65,8 +65,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
     }
 
     /// Convenience init that parses the raw identifier via OfemKit's
-    /// ItemIdentifierParser. Unambiguous here since the legacy bridge
-    /// parser is now named `BridgeItemIdentifierParser`.
+    /// ItemIdentifierParser.
     convenience init(
         containerItemIdentifier: NSFileProviderItemIdentifier,
         alias: String,

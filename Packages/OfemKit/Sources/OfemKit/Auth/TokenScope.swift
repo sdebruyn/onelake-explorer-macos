@@ -8,9 +8,6 @@ import Foundation
 /// audience is rejected (401) by the other. `TokenScope` makes the audience
 /// choice explicit and prevents accidentally using the wrong token for the
 /// wrong endpoint.
-///
-/// Mirrors `internal/auth/client.go` — `OneLakeScopes`, `FabricScopes`,
-/// `LoginScopes`.
 public enum TokenScope: Sendable {
     /// Delegated scope for OneLake ADLS Gen2 DFS file I/O.
     ///
@@ -40,13 +37,9 @@ public enum TokenScope: Sendable {
     // MARK: - Constants
 
     /// Delegated scope for OneLake ADLS Gen2 DFS file I/O.
-    ///
-    /// Mirrors `internal/auth/client.go` — `OneLakeScopes`.
     public static let oneLakeScopes = ["https://storage.azure.com/user_impersonation"]
 
     /// Delegated scopes for Fabric REST API discovery.
-    ///
-    /// Mirrors `internal/auth/client.go` — `FabricScopes`.
     public static let fabricScopes = [
         "https://analysis.windows.net/powerbi/api/Workspace.Read.All",
         "https://analysis.windows.net/powerbi/api/Item.Read.All",
@@ -59,8 +52,6 @@ public enum TokenScope: Sendable {
     /// one resource with AADSTS28000. The Fabric (Power BI) token is acquired
     /// silently afterwards from the same refresh token, because the Fabric
     /// delegated permissions are admin-consented on the OFEM App Registration.
-    ///
-    /// Mirrors `internal/auth/client.go` — `LoginScopes`.
     public static let loginScopes = oneLakeScopes
 }
 
@@ -72,19 +63,13 @@ public enum TokenScope: Sendable {
 /// ("OneLake Explorer for macOS") with `http://localhost` as the redirect
 /// URI and "Allow public client flows" enabled. The delegated API permission
 /// is Azure Storage / user_impersonation.
-///
-/// Mirrors `internal/auth/client.go` — `EntraClientID`.
 public let ofemEntraClientID = "939b4a06-cc18-49eb-9674-a1fc041489f6"
 
 /// The public-cloud Microsoft Entra authority host.
 ///
 /// Sovereign clouds (US Gov, China, Germany) are out of scope for MVP.
-///
-/// Mirrors `internal/auth/client.go` — `AuthorityHostPublicCloud`.
 public let entraAuthorityHost = "https://login.microsoftonline.com"
 
 /// Tenant placeholder that lets Microsoft Entra route a sign-in to the
 /// user's home tenant when the tenant is not known up front.
-///
-/// Mirrors `internal/auth/client.go` — `TenantHintCommon`.
 public let entraTenantHintCommon = "organizations"

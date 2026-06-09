@@ -13,8 +13,6 @@ import os.log
 /// so the next ``SyncEngine/open(key:)`` call can resume from the existing
 /// offset via a `Range` request (pinned to the same ETag via `If-Match`).
 ///
-/// Mirrors `internal/sync/resume.go` — partial spill logic.
-///
 /// `PartialManager` is `nonisolated` (a class with no mutable shared state
 /// after construction); concurrency isolation is delegated to the caller
 /// (``SyncEngine``, which is an `actor`).
@@ -23,8 +21,6 @@ final class PartialManager: Sendable {
     // MARK: - Constants
 
     /// Base directory name used when `scratchDir` is not configured.
-    ///
-    /// Mirrors `internal/sync/resume.go` — `partialsDirName`.
     static let partialsDirName = "ofem-download-partials"
 
     // MARK: - State
@@ -37,7 +33,7 @@ final class PartialManager: Sendable {
     /// Creates a `PartialManager`.
     ///
     /// - Parameter scratchDir: Per-process directory under which partial spill
-    ///   files are written. Must be writable by the calling process.
+    /// files are written. Must be writable by the calling process.
     init(scratchDir: URL) {
         self.scratchDir = scratchDir
     }
@@ -45,8 +41,6 @@ final class PartialManager: Sendable {
     // MARK: - Partial path
 
     /// Returns the on-disk path for the partial spill of `key`.
-    ///
-    /// Mirrors `internal/sync/resume.go` — `Engine.partialFor`.
     func partialURL(for key: CacheKey) -> URL {
         let input = "\(key.accountAlias)\0\(key.workspaceID)\0\(key.itemID)\0\(key.path)"
         let digest = SHA256.hash(data: Data(input.utf8))
@@ -55,8 +49,6 @@ final class PartialManager: Sendable {
     }
 
     /// Returns the ETag sidecar URL for `key`.
-    ///
-    /// Mirrors `internal/sync/resume.go` — `Engine.partialEtagFor`.
     func etagURL(for key: CacheKey) -> URL {
         partialURL(for: key).appendingPathExtension("etag")
     }
@@ -89,8 +81,6 @@ final class PartialManager: Sendable {
     /// the partial is pinned to, and whether a partial was found.
     ///
     /// Returns `(0, nil, false)` when resuming is not safe.
-    ///
-    /// Mirrors `internal/sync/resume.go` — `Engine.partialRangeStart`.
     func rangeStart(for key: CacheKey, cachedRecord: MetadataRecord) -> (offset: Int64, etag: String?, hasPartial: Bool) {
         guard cachedRecord.contentLength > 0 else { return (0, nil, false) }
 
@@ -122,8 +112,6 @@ final class PartialManager: Sendable {
     /// The caller is responsible for storing the returned bytes in the blob
     /// cache (via ``CacheStore/storeBlob(key:data:)`` after upserting the
     /// metadata row).
-    ///
-    /// Mirrors `internal/sync/resume.go` — `Engine.finalisePartial`.
     func finalise(
         key: CacheKey,
         body: Data,
@@ -182,8 +170,6 @@ final class PartialManager: Sendable {
 
     /// Removes per-process spill directories under `base` whose owning process
     /// is no longer alive.
-    ///
-    /// Mirrors `internal/sync/resume.go` — `reapStalePartialDirs`.
     static func reapStalePartialDirs(under base: URL) {
         let selfPID = ProcessInfo.processInfo.processIdentifier
         guard let entries = try? FileManager.default.contentsOfDirectory(
@@ -199,8 +185,6 @@ final class PartialManager: Sendable {
     }
 
     /// Returns `true` when the process identified by `pid` is currently alive.
-    ///
-    /// Mirrors `internal/sync/resume.go` — `processAlive`.
     private static func processAlive(_ pid: Int32) -> Bool {
         // POSIX signal 0: checks existence/permission without delivering a signal.
         return kill(pid, 0) == 0 || errno == EPERM

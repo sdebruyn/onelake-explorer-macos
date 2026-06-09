@@ -6,8 +6,6 @@ import Foundation
 
 /// Tests for ``DomainItem`` factory methods — workspace mapping, item mapping,
 /// and MetadataRecord → DomainItem conversion.
-///
-/// Mirrors `internal/fp/fp_test.go` — mapping-related test cases.
 struct DomainItemTests {
 
     // MARK: - root(alias:)

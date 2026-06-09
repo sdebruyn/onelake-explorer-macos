@@ -7,7 +7,7 @@
 //
 // Lifecycle:
 //   - applicationDidFinishLaunching: initial domain reconcile + start
-//     ChangeWatcher (moved here from the old ContentView .task).
+// ChangeWatcher (moved here from the old ContentView.task).
 //   - applicationDidBecomeActive: re-reconcile so accounts added while
 //     the host was inactive appear in Finder without a restart.
 //   - applicationWillTerminate: stop the ChangeWatcher poll loop.
@@ -34,7 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Initial reconcile + start the change-watcher poll loop. Mirrors
-        // what the old ContentView .task did; now lives here so it fires
+        // what the old ContentView.task did; now lives here so it fires
         // regardless of whether any window/scene becomes visible.
         Task { @MainActor in
             do {
@@ -50,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Start periodic status polling so the icon + menu reflect engine
         // state immediately on launch and stay current — MenuBarExtra(.menu)
-        // does not fire SwiftUI .onAppear on menu open, so a timer (not the
+        // does not fire SwiftUI.onAppear on menu open, so a timer (not the
         // menu lifecycle) is what keeps the state fresh and self-healing.
         Task { @MainActor in
             MenuStatusModel.shared.startAutoRefresh()

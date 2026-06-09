@@ -5,26 +5,18 @@ import GRDB
 
 /// SQLite schema definition and migration sequence for the OFEM metadata cache.
 ///
-/// The schema is identical to the Go implementation's v4 schema so that
-/// databases created by the Go daemon (`internal/cache/`) can be opened and
-/// used by the Swift implementation without any destructive migration.
-///
 /// ## Version history
 ///
 /// - **v1** — initial `path_metadata` + `idx_pm_children` + `idx_pm_blob_lru`.
 /// - **v2** — added `idx_pm_last_accessed` (non-partial counterpart for the
-///   adaptive poller's HotItems query which cannot use the partial blob index).
+/// adaptive poller's HotItems query which cannot use the partial blob index).
 /// - **v3** — added `workspace_status` table so the sync engine can persist
-///   paused-capacity / unreachable-workspace signals.
+/// paused-capacity / unreachable-workspace signals.
 /// - **v4** — added `path_metadata.children_synced_at_ns` so the enumerator
-///   can distinguish a genuinely empty directory from one never listed.
-///
-/// Mirrors `internal/cache/schema.go` and `internal/cache/cache.go` —
-/// `schemaVersion`, `schemaSQL`, `migrate`.
+/// can distinguish a genuinely empty directory from one never listed.
 public enum CacheSchema {
 
-    /// The current schema version this binary supports. Matches Go's
-    /// `schemaVersion = 4`.
+    /// The current schema version this binary supports.
     public static let currentVersion = 4
 
     /// Name of the `schema_version` table's single row.
@@ -38,11 +30,6 @@ public enum CacheSchema {
     /// Each migration is idempotent when run on an already-migrated database
     /// because GRDB's migrator tracks applied migrations in the
     /// `grdb_migrations` table and skips already-applied steps.
-    ///
-    /// The migrator also handles the case where the database was created by
-    /// the **Go daemon** (which uses its own `schema_version` table rather
-    /// than GRDB's built-in migration tracking). See ``applyIfGoDatabase(_:)``
-    /// for details.
     public static func migrator() -> DatabaseMigrator {
         var m = DatabaseMigrator()
 
@@ -91,7 +78,7 @@ public enum CacheSchema {
         }
 
         // v2: non-partial last_accessed index for the adaptive poller's
-        //     HotItems query (which does not filter on blob_sha256).
+        // HotItems query (which does not filter on blob_sha256).
         m.registerMigration("v2") { db in
             try db.execute(sql: """
                 CREATE INDEX IF NOT EXISTS idx_pm_last_accessed
@@ -118,9 +105,9 @@ public enum CacheSchema {
             try db.execute(sql: "INSERT OR REPLACE INTO schema_version (version) VALUES (3)")
         }
 
-        // v4: children_synced_at_ns column on path_metadata. The Go migrator
-        //     uses ALTER TABLE ADD COLUMN when the column is missing; we
-        //     mirror that exact approach via addColumnIfMissing.
+        // v4: children_synced_at_ns column on path_metadata. ALTER TABLE
+        // ADD COLUMN via addColumnIfMissing keeps the migration
+        // idempotent against pre-v4 databases.
         m.registerMigration("v4") { db in
             try addColumnIfMissing(
                 db,
@@ -134,68 +121,11 @@ public enum CacheSchema {
         return m
     }
 
-    // MARK: - Go-database bootstrap
-
-    /// Detects a database that was created by the **Go daemon** (which tracks
-    /// schema versions in its own `schema_version` table, not GRDB's
-    /// `grdb_migrations` table) and injects synthetic GRDB migration markers
-    /// so that subsequent runs of the GRDB migrator skip already-applied steps.
-    ///
-    /// Call this **before** `migrator().migrate(db)` on any existing database.
-    ///
-    /// The function is a no-op on:
-    /// - Fresh databases (no `schema_version` table yet).
-    /// - Databases already opened by the Swift implementation (both
-    ///   `schema_version` and `grdb_migrations` are present).
-    ///
-    /// Mirrors the logic in `internal/cache/cache.go` — `migrate`.
-    public static func applyIfGoDatabase(_ db: Database) throws {
-        // If grdb_migrations already exists, the Swift migrator has run before.
-        if try db.tableExists("grdb_migrations") { return }
-
-        // If schema_version does not exist, this is a fresh database.
-        guard try db.tableExists("schema_version") else { return }
-
-        // Read the Go-written version.
-        guard let goVersion = try Int.fetchOne(db, sql: "SELECT MAX(version) FROM schema_version") else {
-            return
-        }
-
-        if goVersion > currentVersion {
-            throw CacheError.schemaTooNew(onDisk: goVersion, supported: currentVersion)
-        }
-
-        // Create the grdb_migrations table the migrator expects.
-        try db.execute(sql: """
-            CREATE TABLE IF NOT EXISTS grdb_migrations (
-                identifier TEXT NOT NULL PRIMARY KEY
-            )
-            """)
-
-        // Mark every migration up to goVersion as already applied.
-        let allMigrations = ["v1", "v2", "v3", "v4"]
-        let targetLabel: String
-        switch goVersion {
-        case 1: targetLabel = "v1"
-        case 2: targetLabel = "v2"
-        case 3: targetLabel = "v3"
-        default: targetLabel = "v4"  // currentVersion
-        }
-        for label in allMigrations {
-            try db.execute(
-                sql: "INSERT OR IGNORE INTO grdb_migrations (identifier) VALUES (?)",
-                arguments: [label]
-            )
-            if label == targetLabel { break }
-        }
-    }
-
     // MARK: - Helpers
 
     /// Adds `column` to `table` when the column is not already present.
     ///
-    /// Idempotent: a no-op when the column exists. Mirrors
-    /// `internal/cache/cache.go` — `addColumnIfMissing`.
+    /// Idempotent: a no-op when the column exists.
     static func addColumnIfMissing(
         _ db: Database,
         table: String,

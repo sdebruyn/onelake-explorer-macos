@@ -5,8 +5,6 @@ import Testing
 
 /// Tests for ``isMacOSMetadata`` — macOS-specific extended-attribute spill
 /// files that must be silently skipped on upload.
-///
-/// Mirrors `internal/sync/upload_test.go` — `TestIsMacOSMetadata`.
 struct MacOSMetadataTests {
 
     // MARK: - Files that should be skipped

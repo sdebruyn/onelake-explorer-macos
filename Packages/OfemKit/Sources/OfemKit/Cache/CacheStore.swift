@@ -15,26 +15,13 @@ import os.log
 ///
 /// ```
 /// <root>/
-///   cache.sqlite        ← GRDB DatabasePool (WAL mode)
-///   cache.sqlite-wal
-///   cache.sqlite-shm
-///   blobs/
-///     <2-hex>/
-///       <62-hex>        ← blob content
+/// cache.sqlite ← GRDB DatabasePool (WAL mode)
+/// cache.sqlite-wal
+/// cache.sqlite-shm
+/// blobs/
+/// <2-hex>/
+/// <62-hex> ← blob content
 /// ```
-///
-/// ## Schema compatibility
-///
-/// Databases created by the Go daemon (`internal/cache/`, `cache.sqlite`) use
-/// the same schema and blob layout. `CacheStore` detects Go-written databases
-/// at open time and injects the GRDB migration markers so that subsequent opens
-/// skip already-applied migrations without re-running DDL.
-///
-/// ## Mirrors
-///
-/// `internal/cache/cache.go` — `Cache`; `internal/cache/metadata.go`;
-/// `internal/cache/blob.go`; `internal/cache/eviction.go`;
-/// `internal/cache/workspace_status.go`.
 public actor CacheStore {
 
     // MARK: - Constants
@@ -64,15 +51,13 @@ public actor CacheStore {
     /// Opens (or creates) the cache at `root`.
     ///
     /// - Parameters:
-    ///   - root: Directory that holds `cache.sqlite` and `blobs/`. Created
-    ///     with mode 0o700 if missing.
-    ///   - maxBlobBytes: LRU eviction threshold for blob bytes. Zero = no
-    ///     eviction (``evictToLimit()`` becomes a no-op).
+    /// - root: Directory that holds `cache.sqlite` and `blobs/`. Created
+    /// with mode 0o700 if missing.
+    /// - maxBlobBytes: LRU eviction threshold for blob bytes. Zero = no
+    /// eviction (``evictToLimit()`` becomes a no-op).
     ///
     /// The database is opened in **WAL mode** with `synchronous = NORMAL` and
-    /// a 5-second busy timeout — identical to the Go daemon's DSN pragmas.
-    ///
-    /// Mirrors `internal/cache/cache.go` — `Open`.
+    /// a 5-second busy timeout.
     public init(root: URL, maxBlobBytes: Int64 = 0) throws {
         self.root = root
         self.maxBlobBytes = maxBlobBytes
@@ -100,12 +85,6 @@ public actor CacheStore {
         }
         dbPool = try DatabasePool(path: dbURL.path, configuration: config)
 
-        // Bootstrap: if this is a Go-written database, inject GRDB migration
-        // markers before the migrator runs so it skips already-applied steps.
-        try dbPool.write { db in
-            try CacheSchema.applyIfGoDatabase(db)
-        }
-
         // Apply any pending migrations.
         let m = CacheSchema.migrator()
         try m.migrate(dbPool)
@@ -127,8 +106,6 @@ public actor CacheStore {
     /// If `lastAccessedNs` or `syncedAtNs` are zero, the current wall-clock
     /// time is substituted so eviction and reconciliation always have a
     /// timestamp to work with.
-    ///
-    /// Mirrors `internal/cache/metadata.go` — `Cache.Put`.
     public func upsert(_ record: MetadataRecord) throws {
         var r = record
         let nowNs = currentNs()
@@ -201,8 +178,6 @@ public actor CacheStore {
     // MARK: - Metadata: children
 
     /// Returns every direct child of the directory identified by `key`.
-    ///
-    /// Mirrors `internal/cache/cache.go` — `Cache.Children`.
     public func children(of key: CacheKey) throws -> [MetadataRecord] {
         try validateKey(key)
         return try dbPool.read { db in
@@ -225,8 +200,6 @@ public actor CacheStore {
     /// Bumps `last_accessed_ns` for `key` to the current time.
     ///
     /// Throws ``CacheError/notFound(_:)`` when the row does not exist.
-    ///
-    /// Mirrors `internal/cache/cache.go` — `Cache.Touch`.
     public func touch(key: CacheKey) throws {
         try validateKey(key)
         let nowNs = currentNs()
@@ -251,8 +224,6 @@ public actor CacheStore {
     ///
     /// Blob files referenced exclusively by deleted rows are unlinked from disk.
     /// A no-op when the key does not exist.
-    ///
-    /// Mirrors `internal/cache/metadata.go` — `Cache.Delete`.
     public func delete(key: CacheKey) throws {
         try validateKey(key)
 
@@ -304,8 +275,6 @@ public actor CacheStore {
     // MARK: - Metadata: hotItems
 
     /// Returns item roots that had at least one cache hit at or after `since`.
-    ///
-    /// Mirrors `internal/cache/cache.go` — `Cache.HotItems`.
     public func hotItems(since: Date) throws -> [CacheKey] {
         let sinceNs = dateToNs(since)
         return try dbPool.read { db in
@@ -332,8 +301,6 @@ public actor CacheStore {
     /// `blob_size` columns on the metadata row identified by `key`.
     ///
     /// The metadata row must already exist (call ``upsert(_:)`` first).
-    ///
-    /// Mirrors the combined `StoreBlob` + `Put` pattern in the Go
     /// implementation.
     public func storeBlob(key: CacheKey, data: Data) throws {
         try validateKey(key)
@@ -379,8 +346,6 @@ public actor CacheStore {
     // MARK: - Blob: blobBytes
 
     /// Returns the deduplicated on-disk byte total for all cached blobs.
-    ///
-    /// Mirrors `internal/cache/blob.go` — `Cache.BlobBytes`.
     public func blobBytes() throws -> Int64 {
         try dbPool.read { db in
             try Int64.fetchOne(db, sql: """
@@ -397,8 +362,6 @@ public actor CacheStore {
     // MARK: - Blob: diskUsage
 
     /// Walks the blob root and returns the file count and total bytes on disk.
-    ///
-    /// Mirrors `internal/cache/blob.go` — `Cache.DiskUsage`.
     public func diskUsage() throws -> (count: Int, bytes: Int64) {
         try blobs.diskUsage()
     }
@@ -409,8 +372,6 @@ public actor CacheStore {
     ///
     /// Metadata rows survive — the next access treats them as "not cached" and
     /// re-downloads the blob.
-    ///
-    /// Mirrors `internal/cache/blob.go` — `Cache.Wipe`.
     public func wipe() throws -> (count: Int, bytes: Int64) {
         let usage = try blobs.diskUsage()
 
@@ -436,8 +397,6 @@ public actor CacheStore {
     /// blob byte count is at or below `maxBlobBytes`.
     ///
     /// A no-op when `maxBlobBytes` is zero.
-    ///
-    /// Mirrors `internal/cache/eviction.go` — `Cache.EvictToLimit`.
     ///
     /// - Returns: `(evicted, reclaimed)` — number of rows cleared and bytes freed.
     public func evictToLimit() throws -> (evicted: Int, reclaimed: Int64) {
@@ -470,8 +429,6 @@ public actor CacheStore {
     /// When the new state matches the persisted state, `detected_at_ns` is
     /// preserved (continuous pause). On a state change the new `detectedAtNs`
     /// is recorded.
-    ///
-    /// Mirrors `internal/cache/workspace_status.go` — `Cache.SetWorkspaceStatus`.
     public func setWorkspaceStatus(_ status: WorkspaceStatusRecord) throws {
         guard !status.accountAlias.isEmpty, !status.workspaceID.isEmpty else {
             throw CacheError.missingArgument("accountAlias and workspaceID")
@@ -514,8 +471,6 @@ public actor CacheStore {
     /// Reads the persisted status for the given workspace.
     ///
     /// Throws ``CacheError/notFound(_:)`` when no row exists.
-    ///
-    /// Mirrors `internal/cache/workspace_status.go` — `Cache.GetWorkspaceStatus`.
     public func workspaceStatus(accountAlias: String, workspaceID: String) throws -> WorkspaceStatusRecord {
         guard !accountAlias.isEmpty, !workspaceID.isEmpty else {
             throw CacheError.missingArgument("accountAlias and workspaceID")
@@ -534,8 +489,6 @@ public actor CacheStore {
 
     /// Returns all persisted workspace status rows ordered by
     /// `(account_alias, workspace_id)`.
-    ///
-    /// Mirrors `internal/cache/workspace_status.go` — `Cache.ListWorkspaceStatuses`.
     public func allWorkspaceStatuses() throws -> [WorkspaceStatusRecord] {
         try dbPool.read { db in
             try WorkspaceStatusRecord
@@ -568,8 +521,6 @@ public actor CacheStore {
     /// Evicts the single LRU blob-bearing row.
     ///
     /// Returns `nil` when no blob-bearing row remains.
-    ///
-    /// Mirrors `internal/cache/eviction.go` — `Cache.evictOldest`.
     private func evictOldest() throws -> (sha: String, size: Int64, freed: Bool)? {
         struct VictimResult {
             var accountAlias: String
@@ -627,7 +578,7 @@ public actor CacheStore {
     /// Deletes the blob file for `sha` when no metadata row references it.
     ///
     /// Logs but does not throw — a leaked blob is recoverable by a later
-    /// eviction pass. Mirrors `internal/cache/blob.go` — `Cache.maybeDeleteBlob`.
+    /// eviction pass.
     private func maybeDeleteBlob(sha: String) {
         do {
             let refs = try dbPool.read { db in
@@ -646,8 +597,6 @@ public actor CacheStore {
 // MARK: - Validation helpers
 
 /// Validates that `key` has all required non-empty components.
-///
-/// Mirrors `internal/cache/helpers.go` — `validateKey`.
 func validateKey(_ key: CacheKey) throws {
     if key.accountAlias.isEmpty { throw CacheError.missingArgument("accountAlias") }
     if key.workspaceID.isEmpty { throw CacheError.missingArgument("workspaceID") }
@@ -660,8 +609,6 @@ private func currentNs() -> Int64 {
 }
 
 /// Escapes SQL LIKE wildcards using `\` as the escape character.
-///
-/// Mirrors `internal/cache/helpers.go` — `escapeLike`.
 private func escapeLike(_ s: String) -> String {
     s.replacingOccurrences(of: "\\", with: "\\\\")
      .replacingOccurrences(of: "%", with: "\\%")

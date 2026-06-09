@@ -19,10 +19,8 @@ import os.log
 ///
 /// 1. Obtain an `NSWindow` or parent view.
 /// 2. Call ``acquireToken(clientID:tenantHint:webviewParams:cacheStrategy:fileTokenStore:)``
-///    from the main actor (required for `MSALWebviewParameters`).
+/// from the main actor (required for `MSALWebviewParameters`).
 /// 3. Persist the returned ``InteractiveSignInResult`` via `OfemAuth`.
-///
-/// Mirrors `internal/auth/login_browser.go` — `LoginInteractive`.
 public enum InteractiveSignIn {
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "InteractiveSignIn")
 
@@ -31,19 +29,19 @@ public enum InteractiveSignIn {
     /// Runs the interactive MSAL sign-in flow.
     ///
     /// - Parameters:
-    ///   - clientID: The OFEM Entra App Registration client GUID. Pass
-    ///     ``ofemEntraClientID`` for the built-in registration.
-    ///   - tenantHint: Optional tenant GUID or verified domain (e.g.
-    ///     `"contoso.onmicrosoft.com"`). Pass `nil` or `""` to use
-    ///     `"organizations"` (home-tenant routing).
-    ///   - webviewParams: MSAL webview configuration including the parent
-    ///     `NSWindow`. Must be constructed on the main thread.
-    ///   - cacheStrategy: Token cache backend. Default: `.msalKeychain`.
-    ///   - fileTokenStore: Required when `cacheStrategy == .fileBackedFallback`.
+    /// - clientID: The OFEM Entra App Registration client GUID. Pass
+    /// ``ofemEntraClientID`` for the built-in registration.
+    /// - tenantHint: Optional tenant GUID or verified domain (e.g.
+    /// `"contoso.onmicrosoft.com"`). Pass `nil` or `""` to use
+    /// `"organizations"` (home-tenant routing).
+    /// - webviewParams: MSAL webview configuration including the parent
+    /// `NSWindow`. Must be constructed on the main thread.
+    /// - cacheStrategy: Token cache backend. Default: `.msalKeychain`.
+    /// - fileTokenStore: Required when `cacheStrategy ==.fileBackedFallback`.
     /// - Returns: ``InteractiveSignInResult`` containing the MSAL result and
-    ///   the extracted `OfemConfig.Account` ready for persistence.
+    /// the extracted `OfemConfig.Account` ready for persistence.
     /// - Throws: `NSError` from MSAL on sign-in failure, or
-    ///   ``InteractiveSignInError`` for configuration problems.
+    /// ``InteractiveSignInError`` for configuration problems.
     @MainActor
     public static func acquireToken(
         clientID: String = ofemEntraClientID,
@@ -120,8 +118,6 @@ public enum InteractiveSignIn {
     // MARK: - Private helpers
 
     /// Builds an `OfemConfig.Account` from an `MSALResult`.
-    ///
-    /// Mirrors `internal/auth/login_browser.go` — `accountFromAuthResult`.
     private static func accountFromMSALResult(_ result: MSALResult) -> Account {
         Account(
             alias: "", // Caller assigns the alias.
@@ -136,8 +132,6 @@ public enum InteractiveSignIn {
 
     /// Returns a unique temporary alias used as the scratch key in the
     /// file-backed cache during interactive login.
-    ///
-    /// Mirrors `internal/auth/login_browser.go` — `temporaryLoginAlias`.
     private static func temporaryAlias() -> String {
         ".ofem-login-tmp-\(Int(Date().timeIntervalSince1970 * 1_000_000))-\(UUID().uuidString.prefix(8).lowercased())"
     }
@@ -157,16 +151,16 @@ public struct InteractiveSignInResult: Sendable {
 
     /// The temporary FileTokenStore alias under which the MSAL cache bytes
     /// were written during the interactive flow. Non-nil only when
-    /// `cacheStrategy == .fileBackedFallback`.
+    /// `cacheStrategy ==.fileBackedFallback`.
     ///
     /// The caller **must** transfer the bytes to the real alias before calling
     /// `OfemAuth.addAccount`:
     ///
     /// ```swift
     /// if let scratch = result.scratchAlias {
-    ///     let data = try fileTokenStore.read(alias: scratch)
-    ///     try fileTokenStore.write(alias: realAlias, data: data)
-    ///     try fileTokenStore.delete(alias: scratch)
+    /// let data = try fileTokenStore.read(alias: scratch)
+    /// try fileTokenStore.write(alias: realAlias, data: data)
+    /// try fileTokenStore.delete(alias: scratch)
     /// }
     /// ```
     ///

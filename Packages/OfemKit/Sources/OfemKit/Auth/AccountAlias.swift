@@ -6,17 +6,15 @@ import Foundation
 ///
 /// An alias is the short name an OFEM user assigns to one signed-in OneLake
 /// account (e.g. `"work"`, `"client-a"`). It appears:
-///  - as the suffix of the File Provider domain folder
-///    (`~/Library/CloudStorage/OneLake-<alias>/`);
-///  - as the first path segment of every `NSFileProviderItemIdentifier`;
-///  - as the key in the TOML config `[accounts]` table;
-///  - as the key in the MSAL token cache accessor.
+/// - as the suffix of the File Provider domain folder
+/// (`~/Library/CloudStorage/OneLake-<alias>/`);
+/// - as the first path segment of every `NSFileProviderItemIdentifier`;
+/// - as the key in the TOML config `[accounts]` table;
+/// - as the key in the MSAL token cache accessor.
 ///
 /// The allowed character set is intentionally strict (ASCII letters, digits,
 /// dash, underscore, dot; 1–32 characters) because the alias is embedded
 /// in file-system paths and may be parsed by shells and URL parsers.
-///
-/// Mirrors `internal/auth/account.go` — `ValidateAlias`.
 public struct AccountAlias: Hashable, Sendable, CustomStringConvertible {
     /// The validated raw alias string.
     public let rawValue: String
@@ -43,13 +41,11 @@ public struct AccountAlias: Hashable, Sendable, CustomStringConvertible {
     /// Returns without throwing when `alias` is safe to use as an account
     /// identifier; throws ``AccountAliasError`` otherwise.
     ///
-    /// Rules (matching the Go `ValidateAlias` implementation exactly):
-    ///  - Length: 1–32 characters.
-    ///  - First character must not be `-` (CLI flag risk) or `.` (hidden file).
-    ///  - Every character must be ASCII: letter, digit, `-`, `_`, or `.`.
-    ///  - The alias must not consist entirely of `.` characters (path traversal risk).
-    ///
-    /// Mirrors `internal/auth/account.go` — `ValidateAlias`.
+    /// Rules:
+    /// - Length: 1–32 characters.
+    /// - First character must not be `-` (CLI flag risk) or `.` (hidden file).
+    /// - Every character must be ASCII: letter, digit, `-`, `_`, or `.`.
+    /// - The alias must not consist entirely of `.` characters (path traversal risk).
     public static func validate(_ alias: String) throws {
         guard !alias.isEmpty else {
             throw AccountAliasError.empty

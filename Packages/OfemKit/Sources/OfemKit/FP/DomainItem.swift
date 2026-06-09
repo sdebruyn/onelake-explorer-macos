@@ -7,19 +7,17 @@ import UniformTypeIdentifiers
 /// The File Provider domain model for a single entry returned by enumeration
 /// or a metadata lookup.
 ///
-/// `DomainItem` is the Swift counterpart of the Go `Item` struct
-/// (`internal/fp/fp.go`). The FPE (Fase 7) will turn each `DomainItem` into a
-/// concrete `NSFileProviderItem`; the domain model itself carries no
-/// `FileProvider` framework dependency so it can be built and tested without
-/// a full Xcode target.
+/// The FPE turns each `DomainItem` into a concrete `NSFileProviderItem`; the
+/// domain model itself carries no `FileProvider` framework dependency so it
+/// can be built and tested without a full Xcode target.
 ///
 /// ## Identifier hierarchy
 ///
 /// ```
 /// root (.rootContainer)
-/// └── workspace   "<wsID>"
-///     └── item    "<wsID>/<itemID>"
-///         └── path "<wsID>/<itemID>/<path>"
+/// └── workspace "<wsID>"
+/// └── item "<wsID>/<itemID>"
+/// └── path "<wsID>/<itemID>/<path>"
 /// ```
 ///
 /// ## Capabilities
@@ -31,8 +29,6 @@ public struct DomainItem: Sendable, Equatable {
     // MARK: - Capability
 
     /// The set of operations the FPE may perform on an item.
-    ///
-    /// Mirrors the `capabilities` string array in the Go wire shape.
     public enum Capability: String, Sendable, Hashable {
         case read
         case write
@@ -65,13 +61,9 @@ public struct DomainItem: Sendable, Equatable {
     public let modificationDate: Date?
 
     /// Opaque content version token (base64-encoded etag or FNV hash fallback).
-    ///
-    /// Mirrors `internal/fp/fp.go` — `ContentVersion`.
     public let contentVersion: Data
 
     /// Opaque metadata version token.
-    ///
-    /// Mirrors `internal/fp/fp.go` — `MetadataVersion`.
     public let metadataVersion: Data
 
     /// The set of operations the caller may perform on this item.
@@ -111,8 +103,6 @@ extension DomainItem {
     // MARK: Root
 
     /// Builds the root-container sentinel item for `alias`.
-    ///
-    /// Mirrors `internal/fp/fp.go` — `Service.Item` for `scopeRoot`.
     public static func root(alias: String) -> DomainItem {
         DomainItem(
             identifier: .root,
@@ -128,8 +118,6 @@ extension DomainItem {
     // MARK: From Workspace
 
     /// Builds a `DomainItem` from a ``Workspace`` returned by the Fabric API.
-    ///
-    /// Mirrors `internal/fp/fp.go` — `workspaceToItem`.
     public static func from(workspace: Workspace) -> DomainItem {
         DomainItem(
             identifier: .workspace(workspaceID: workspace.id),
@@ -145,8 +133,6 @@ extension DomainItem {
     // MARK: From Fabric Item
 
     /// Builds a `DomainItem` from a ``Item`` (Fabric item) returned by the Fabric API.
-    ///
-    /// Mirrors `internal/fp/fp.go` — `itemToItem`.
     public static func from(fabricItem: Item, workspaceID: String) -> DomainItem {
         DomainItem(
             identifier: .item(workspaceID: workspaceID, itemID: fabricItem.id),
@@ -162,8 +148,6 @@ extension DomainItem {
     // MARK: From MetadataRecord
 
     /// Builds a `DomainItem` from a ``MetadataRecord`` (cache row).
-    ///
-    /// Mirrors `internal/fp/fp.go` — `entryToItem`.
     public static func from(record: MetadataRecord) throws -> DomainItem {
         guard !record.workspaceID.isEmpty, !record.itemID.isEmpty else {
             throw FPError.invalidRecord("workspaceID or itemID is empty")
@@ -215,8 +199,6 @@ extension DomainItem {
 
     /// Builds a placeholder directory item used before the first enumerate
     /// populates the cache.
-    ///
-    /// Mirrors `internal/fp/fp.go` — `stubDir`.
     public static func stubDirectory(
         identifier: ItemIdentifier,
         parentIdentifier: ItemIdentifier,
@@ -236,8 +218,6 @@ extension DomainItem {
     // MARK: Synthetic item
 
     /// Builds an item for a just-created path before its cache row exists.
-    ///
-    /// Mirrors `internal/fp/fp.go` — `syntheticItem`.
     public static func synthetic(
         identifier: ItemIdentifier,
         parentIdentifier: ItemIdentifier,
@@ -266,8 +246,6 @@ extension DomainItem {
 ///
 /// When an etag is present it is base64-encoded directly; otherwise the token
 /// is computed from `(path, contentLength, lastModified)` via FNV-1a-64.
-///
-/// Mirrors `internal/fp/fp.go` — `contentVersionFor`.
 func contentVersionFor(record: MetadataRecord) -> Data {
     if !record.etag.isEmpty {
         return Data(record.etag.utf8).base64EncodedData()
@@ -281,8 +259,6 @@ func contentVersionFor(record: MetadataRecord) -> Data {
 
 /// Computes the metadata version token from name + etag + size + mtime via
 /// FNV-1a-64.
-///
-/// Mirrors `internal/fp/fp.go` — `metadataVersionFor`.
 func metadataVersionFor(record: MetadataRecord) -> Data {
     var h = FNV64a()
     h.combine(record.name)
@@ -298,8 +274,6 @@ func metadataVersionFor(record: MetadataRecord) -> Data {
 }
 
 /// Computes an FNV-1a-64 fallback version token from `(seed, size, mtime)`.
-///
-/// Mirrors `internal/fp/fp.go` — `fallbackVersion`.
 func fallbackVersion(seed: String, size: Int64, mtime: Date?) -> Data {
     var h = FNV64a()
     h.combine(seed)

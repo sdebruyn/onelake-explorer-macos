@@ -3,8 +3,6 @@ import Foundation
 // MARK: - HTTPClientError
 
 /// Typed errors produced by ``HTTPClient`` and its components.
-///
-/// Mirrors `internal/httpretry/errors.go` — sentinel variables and `APIError`.
 public indirect enum HTTPClientError: Error, Sendable {
     // MARK: HTTP-status sentinels
 
@@ -53,9 +51,8 @@ public indirect enum HTTPClientError: Error, Sendable {
 
     /// An HTTP response outside the 2xx range, carrying the raw details.
     ///
-    /// Wraps one of the sentinel cases above so `errors.Is`-style pattern
-    /// matching works via `underlying`. Mirrors `internal/httpretry/errors.go`
-    /// — `APIError`.
+    /// Wraps one of the sentinel cases above so callers can pattern-match
+    /// on `underlying`.
     case apiError(APIError)
 
     // MARK: Transport / infrastructure errors
@@ -82,8 +79,6 @@ public indirect enum HTTPClientError: Error, Sendable {
 // MARK: - APIError
 
 /// The parsed failure from a single non-2xx HTTP response.
-///
-/// Mirrors `internal/httpretry/errors.go` — `APIError`.
 public struct APIError: Sendable, CustomStringConvertible {
     /// The HTTP status code (e.g. `404`).
     public let statusCode: Int
@@ -145,8 +140,6 @@ public struct APIError: Sendable, CustomStringConvertible {
 extension HTTPClientError {
     /// Returns the sentinel error for a given HTTP status code, or `nil` if
     /// the status does not have a specific sentinel.
-    ///
-    /// Mirrors `internal/httpretry/errors.go` — `sentinelFor`.
     static func sentinel(for status: Int) -> HTTPClientError? {
         switch status {
         case 401: return .unauthorized
@@ -166,8 +159,6 @@ extension HTTPClientError {
     }
 
     /// Returns `true` when the status warrants a retry attempt.
-    ///
-    /// Mirrors `internal/httpretry/retry.go` — `isRetriableStatus`.
     static func isRetriableStatus(_ status: Int) -> Bool {
         switch status {
         case 408, 425, 429, 500, 502, 503, 504:

@@ -2,10 +2,6 @@ import Testing
 @testable import OfemKit
 
 /// Tests for the structural privacy boundary in `TelemetryRedaction`.
-///
-/// These tests are the Swift equivalent of `TestHashAlias_*`, `TestSafeErrorCode`,
-/// `TestScrubProperty`, and `TestSplitFields_RedactsLeakedValues` in
-/// `internal/telemetry/redact_test.go`.
 @Suite("TelemetryRedaction")
 struct TelemetryRedactionTests {
     // MARK: - hashAlias
@@ -163,7 +159,7 @@ struct TelemetryRedactionTests {
 
     /// This is the structural privacy guarantee test — even if CommonProps
     /// somehow contains PII values, `splitFields` must not emit them verbatim.
-    /// Mirrors `TestSplitFields_RedactsLeakedValues` in `redact_test.go`.
+    ///
     @Test("splitFields redacts leaked PII values in CommonProps")
     func splitFieldsRedactsPII() {
         let event = TelemetryEvent(
@@ -199,7 +195,7 @@ struct TelemetryRedactionTests {
 
     /// Verify that unknown CommonProp keys are dropped entirely, not just
     /// scrubbed. This is the key-level allowlist enforced by `splitFields`.
-    /// Mirrors `TestClient_TrackDropsUnknownCommonPropKeys` in `client_test.go`.
+    ///
     @Test("splitFields drops unknown CommonProp keys (allowlist enforcement)")
     func splitFieldsDropsUnknownKeys() {
         let event = TelemetryEvent(

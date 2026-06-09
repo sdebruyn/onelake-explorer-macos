@@ -3,8 +3,6 @@ import Foundation
 // MARK: - PathEntry
 
 /// One row of a DFS directory listing.
-///
-/// Mirrors `internal/onelake/client.go` — `PathEntry`.
 public struct PathEntry: Sendable, Equatable {
     /// Workspace-rooted name, e.g. `"<itemGUID>/Files/data.csv"`.
     public let name: String
@@ -35,8 +33,6 @@ public struct PathEntry: Sendable, Equatable {
 // MARK: - ListResult
 
 /// Fully resolved directory listing (all pagination pages consumed).
-///
-/// Mirrors `internal/onelake/client.go` — `ListResult`.
 public struct ListResult: Sendable {
     public let entries: [PathEntry]
     public init(entries: [PathEntry]) {
@@ -47,8 +43,6 @@ public struct ListResult: Sendable {
 // MARK: - PathProperties
 
 /// Metadata returned by a HEAD or GET on a single path.
-///
-/// Mirrors `internal/onelake/client.go` — `PathProperties`.
 public struct PathProperties: Sendable {
     public let isDirectory: Bool
     public let contentLength: Int64
@@ -89,8 +83,6 @@ struct RawListBody: Decodable {
 // MARK: - Conversion helpers
 
 /// Converts a ``RawPathEntry`` (DFS string-typed) to a ``PathEntry``.
-///
-/// Mirrors `internal/onelake/client.go` — `convertEntry`.
 func convertRawEntry(_ raw: RawPathEntry) -> PathEntry {
     let isDir = raw.isDirectory == "true"
     let size = raw.contentLength.flatMap { Int64($0) } ?? 0
@@ -109,8 +101,6 @@ func convertRawEntry(_ raw: RawPathEntry) -> PathEntry {
 /// HTTP headers are case-insensitive (RFC 7230 §3.2). Foundation's
 /// `HTTPURLResponse.allHeaderFields` preserves the original casing from the
 /// wire, so we perform a case-insensitive lookup.
-///
-/// Mirrors `internal/onelake/client.go` — `propertiesFromHeader`.
 func propertiesFromHeaders(_ headers: [AnyHashable: Any]) -> PathProperties {
     // Build a normalised lookup dictionary (lowercase keys → value).
     var normalised: [String: String] = [:]

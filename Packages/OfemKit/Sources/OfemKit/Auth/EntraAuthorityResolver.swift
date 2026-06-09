@@ -7,26 +7,24 @@ import Foundation
 /// An authority URL is the base URL that MSAL uses to discover metadata
 /// and submit token requests. It is always:
 ///
-///     https://login.microsoftonline.com/<tenantID>
+/// https://login.microsoftonline.com/<tenantID>
 ///
 /// where `<tenantID>` is either:
-///  - a GUID (e.g. `"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"`) for a known
-///    tenant; or
-///  - `"organizations"` when the tenant is unknown at sign-in time (MSAL
-///    routes to the user's home tenant automatically).
-///
-/// Mirrors `internal/auth/msal.go` — authority building in `DefaultClientFactory`.
+/// - a GUID (e.g. `"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"`) for a known
+/// tenant; or
+/// - `"organizations"` when the tenant is unknown at sign-in time (MSAL
+/// routes to the user's home tenant automatically).
 public enum EntraAuthorityResolver {
     // MARK: - Public API
 
     /// Returns the authority URL for the given tenant hint.
     ///
     /// - Parameter tenantHint: A tenant GUID, a verified domain (e.g.
-    ///   `"contoso.onmicrosoft.com"`), or `""` / `nil` to use
-    ///   ``entraTenantHintCommon` ("organizations").
+    /// `"contoso.onmicrosoft.com"`), or `""` / `nil` to use
+    /// ``entraTenantHintCommon` ("organizations").
     /// - Returns: A valid authority URL for MSAL.
     /// - Throws: ``EntraAuthorityError/invalidURL`` if the resulting string
-    ///   is not a valid URL (should never happen with well-formed input).
+    /// is not a valid URL (should never happen with well-formed input).
     public static func authority(tenantHint: String? = nil) throws -> URL {
         let tenant = resolvedTenant(tenantHint)
         let urlString = "\(entraAuthorityHost)/\(tenant)"

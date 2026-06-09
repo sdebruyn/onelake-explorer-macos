@@ -5,7 +5,6 @@ import Foundation
 /// and gzip-compresses older rotations.
 ///
 /// This is the Swift equivalent of the `lumberjack` rotating log writer used
-/// by `internal/logging/logging.go`. The Go daemon writes JSON-structured
 /// log lines; the Swift runtime writes plain `String` lines, which the
 /// `OfemLogger` façade formats before calling `write(_:)`.
 ///
@@ -17,11 +16,11 @@ import Foundation
 ///
 /// ```
 /// <logDir>/
-///   ofem.log            — active file (appended to)
-///   ofem.log.1.gz       — most recent rotation
-///   ofem.log.2.gz
-///   …
-///   ofem.log.<maxBackups>.gz
+/// ofem.log — active file (appended to)
+/// ofem.log.1.gz — most recent rotation
+/// ofem.log.2.gz
+/// …
+/// ofem.log.<maxBackups>.gz
 /// ```
 ///
 /// Rotations older than `maxBackups` are deleted on each rotate.
@@ -54,9 +53,9 @@ public final class RotatingFileWriter: @unchecked Sendable {
     /// Creates a `RotatingFileWriter`.
     ///
     /// - Parameters:
-    ///   - logDirectory:    Directory for log files. Created if absent.
-    ///   - maxFileSizeBytes: Rotate when the active file exceeds this size.
-    ///   - maxBackups:       Number of compressed backup files to retain.
+    /// - logDirectory: Directory for log files. Created if absent.
+    /// - maxFileSizeBytes: Rotate when the active file exceeds this size.
+    /// - maxBackups: Number of compressed backup files to retain.
     public init(
         logDirectory: URL,
         maxFileSizeBytes: Int = 10 * 1024 * 1024,
@@ -86,7 +85,7 @@ public final class RotatingFileWriter: @unchecked Sendable {
             handle.write(bytes)
             currentSize += bytes.count
         } catch {
-            // Best-effort: if we cannot write, skip silently.
+        // Best-effort: if we cannot write, skip silently.
         }
     }
 
@@ -189,7 +188,7 @@ public final class RotatingFileWriter: @unchecked Sendable {
             gzip.append(gzipTrailer(crc32: crc32(data), originalSize: data.count))
             try gzip.write(to: destination, options: .atomic)
         } catch {
-            // Compression failed: save raw bytes with a .gz extension anyway.
+            // Compression failed: save raw bytes with a.gz extension anyway.
             try? data.write(to: destination, options: .atomic)
         }
     }
