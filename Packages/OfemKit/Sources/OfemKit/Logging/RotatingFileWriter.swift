@@ -72,19 +72,27 @@ public final class RotatingFileWriter: @unchecked Sendable {
     ///
     /// This method is safe to call from any thread or Swift Concurrency task.
     public func write(_ line: String) {
+        let bytes = (line + "\n").data(using: .utf8) ?? Data()
+
+        lock.lock()
+        let needsRotation = currentSize + bytes.count > maxFileSizeBytes
+        lock.unlock()
+
+        if needsRotation {
+            // Rotation involves rename/move on disk — done outside the lock.
+            rotateFile()
+        }
+
         lock.lock()
         defer { lock.unlock() }
-
-        let bytes = (line + "\n").data(using: .utf8) ?? Data()
-        if currentSize + bytes.count > maxFileSizeBytes {
-            rotateUnlocked()
-        }
         do {
             let handle = try fileHandleUnlocked()
-            handle.write(bytes)
+            // store-12: use throwing modern APIs so a disk-full condition does not
+            // raise an ObjC exception that Swift cannot catch.
+            try handle.write(contentsOf: bytes)
             currentSize += bytes.count
         } catch {
-        // Best-effort: if we cannot write, skip silently.
+            // Best-effort: if we cannot write, skip silently.
         }
     }
 
@@ -97,12 +105,13 @@ public final class RotatingFileWriter: @unchecked Sendable {
         fileHandle = nil
     }
 
-    // MARK: - Internal helpers (called under lock)
+    // MARK: - Internal helpers
 
     private var activeFileURL: URL {
         logDirectory.appending(path: Self.fileName, directoryHint: .notDirectory)
     }
 
+    /// Must be called under `lock`. Opens (or returns the cached) file handle.
     private func fileHandleUnlocked() throws -> FileHandle {
         if let handle = fileHandle {
             return handle
@@ -117,18 +126,22 @@ public final class RotatingFileWriter: @unchecked Sendable {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
         let handle = try FileHandle(forWritingTo: url)
-        handle.seekToEndOfFile()
-        currentSize = Int(handle.offsetInFile)
+        // store-12: use throwing seekToEnd() instead of legacy seekToEndOfFile().
+        let offset = try handle.seekToEnd()
+        currentSize = Int(offset)
         fileHandle = handle
         return handle
     }
 
-    /// Rotates the active log file. Must be called under `lock`.
-    private func rotateUnlocked() {
-        // Close the current handle.
+    /// Rotates the active log file. Called outside the lock so the
+    /// rename/move work (store-13: nontrivial I/O) does not block writers.
+    private func rotateFile() {
+        // Close the handle under the lock, then do the filesystem work outside.
+        lock.lock()
         try? fileHandle?.close()
         fileHandle = nil
         currentSize = 0
+        lock.unlock()
 
         let fm = FileManager.default
         let active = activeFileURL
