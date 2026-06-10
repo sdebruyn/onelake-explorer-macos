@@ -10,10 +10,6 @@
 // from the same config.toml in the App Group container, so tokens written
 // during an interactive login in the host process are immediately visible
 // to the FPE's silent-refresh path.
-//
-// Fase 7.3a: the host app calls SharedOfemAuth.signIn for interactive
-// sign-in, then hands the persisted account to the FPE via XPC (addAccount).
-// CoreBridge.login() is no longer called for interactive auth.
 
 import AppKit
 import Foundation

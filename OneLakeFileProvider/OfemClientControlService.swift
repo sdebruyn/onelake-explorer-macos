@@ -5,24 +5,17 @@
 // "dev.debruyn.ofem.control". The host app connects to this service
 // via NSFileProviderManager.service(name:for:) and obtains an
 // NSXPCConnection that it uses to call OfemClientControlProtocol
-// methods (addAccount, removeAccount, getEngineStatus, setConfig, clearCache).
+// methods (getEngineStatus, setConfig, clearCache).
 //
-// Fase 7.3a: addAccount is now fully implemented. The host app drives
-// interactive sign-in via SharedOfemAuth.signIn (MSAL in the host
-// process), persists the account to config.toml, and registers the
-// NSFileProviderDomain. macOS then starts a new FPE instance for the
-// domain. The addAccount XPC method on the FPE side warms up the engine
-// for the new alias so the first Finder open is fast, and confirms the
-// account is visible in the shared config — it does NOT drive the MSAL
-// flow itself.
+// Account management (add / remove) is handled in the host process via
+// SharedOfemAuth and DomainSyncManager and does not cross the XPC boundary.
 //
-// XPC methods exposed (Fase 7.3b-1 additions; CoreBridge/IPC removed in 7.3b-2):
-//   - getEngineStatus(reply:)    — cache stats + config snapshot
+// XPC methods exposed:
+//   - getEngineStatus(reply:)     — cache stats + config snapshot
 //   - setConfig(key:value:reply:) — write one config field and reload
 //   - clearCache(reply:)          — wipe all cached blobs
 //
 // NSXPCInterface setup notes:
-//   - XPCAccountInfo must be listed for the addAccount reply.
 //   - XPCEngineStatus must be listed for the getEngineStatus reply.
 //   - The "reply" closures in the protocol are ObjC blocks; they
 //     must be listed as reply blocks in the XPC interface via
@@ -98,17 +91,6 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
     private func makeInterface() -> NSXPCInterface {
         let iface = NSXPCInterface(with: OfemClientControlProtocol.self)
 
-        // addAccount reply: (XPCAccountInfo?, Error?)
-        // Argument index 0 is XPCAccountInfo or nil.
-        iface.setClasses(
-            NSSet(array: [XPCAccountInfo.self]) as! Set<AnyHashable>,
-            for: #selector(
-                OfemClientControlProtocol.addAccount(alias:tenant:clientID:reply:)
-            ),
-            argumentIndex: 0,
-            ofReply: true
-        )
-
         // getEngineStatus reply: (XPCEngineStatus?, Error?)
         // Argument index 0 is XPCEngineStatus (which contains an NSArray of
         // XPCPausedWorkspace). All three types must be listed so XPC's
@@ -140,76 +122,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
         super.init()
     }
 
-    // MARK: - addAccount
-
-    func addAccount(
-        alias: String,
-        tenant: String,
-        clientID: String,
-        reply: @escaping (XPCAccountInfo?, Error?) -> Void
-    ) {
-        // Fase 7.3a: The host app has already driven the MSAL interactive flow
-        // via SharedOfemAuth.signIn, persisted the account to config.toml, and
-        // registered the NSFileProviderDomain. macOS starts a new FPE instance
-        // for the domain; this addAccount XPC call arrives on THAT new domain's
-        // FPE instance once it is up.
-        //
-        // Our job here: warm up the OfemEngine for this alias so the first
-        // Finder open is fast, and return the account info from config.toml
-        // to confirm successful initialisation.
-        Task { [self] in
-            do {
-                let engine = try await engineHost.engine()
-                // Read the account from the config the host wrote.
-                let account = await MainActor.run {
-                    engine.auth.listAccounts().first { $0.alias == alias }
-                }
-                guard let account else {
-                    Self.log.error(
-                        "addAccount(alias:\(alias, privacy: .public)): account not found in config after sign-in"
-                    )
-                    let err = NSError(
-                        domain: "dev.debruyn.ofem.control",
-                        code: 404,
-                        userInfo: [NSLocalizedDescriptionKey: "account '\(alias)' not found in config"]
-                    )
-                    reply(nil, err)
-                    return
-                }
-                Self.log.info(
-                    "addAccount(alias:\(alias, privacy: .public)): engine warm, account confirmed user=\(account.username, privacy: .private)"
-                )
-                reply(XPCAccountInfo(from: account), nil)
-            } catch {
-                Self.log.error(
-                    "addAccount(alias:\(alias, privacy: .public)): engine build failed: \(error.localizedDescription, privacy: .public)"
-                )
-                reply(nil, error)
-            }
-        }
-    }
-
-    // MARK: - removeAccount
-
-    func removeAccount(alias: String, reply: @escaping (Error?) -> Void) {
-        Task { [self] in
-            do {
-                let engine = try await engineHost.engine()
-                try await MainActor.run {
-                    try engine.auth.removeAccount(alias: alias)
-                }
-                Self.log.info("removeAccount: alias=\(alias, privacy: .public) removed via XPC")
-                reply(nil)
-            } catch {
-                Self.log.error(
-                    "removeAccount failed: alias=\(alias, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-                )
-                reply(error)
-            }
-        }
-    }
-
-    // MARK: - getEngineStatus (Fase 7.3b-1, extended in Fase 7.4)
+    // MARK: - getEngineStatus
 
     func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
         Task { [self] in
@@ -227,7 +140,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                 if let engine = engineHost.existingEngine() {
                     cacheBytes = (try? await engine.cache.blobBytes()) ?? -1
 
-                    // Fase 7.4: query the workspace_status table for paused entries.
+                    // Query the workspace_status table for paused entries.
                     // Best-effort — a failure leaves the list empty rather than
                     // causing the whole status call to fail.
                     if let rows = try? await engine.cache.listPausedWorkspaces() {
@@ -269,7 +182,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
         }
     }
 
-    // MARK: - setConfig (Fase 7.3b-1)
+    // MARK: - setConfig
 
     func setConfig(key: String, value: String, reply: @escaping (Error?) -> Void) {
         Task { [self] in
@@ -315,7 +228,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
         }
     }
 
-    // MARK: - clearCache (Fase 7.3b-1)
+    // MARK: - clearCache
 
     func clearCache(reply: @escaping (Int64, Error?) -> Void) {
         Task { [self] in

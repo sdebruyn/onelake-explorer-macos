@@ -1,24 +1,18 @@
 // OfemClientControlProtocol.swift
-// XPC protocol the host app uses to manage accounts inside the
-// File Provider Extension.
+// XPC protocol the host app uses to control the File Provider Extension.
 //
-// The FPE owns all account state (OfemAuth, OfemConfigStore) after the
-// architecture flip in Fase 7.2. The host app communicates with it
-// through NSFileProviderManager.service(name:for:) + NSXPCConnection.
+// The FPE owns all account state (OfemAuth, OfemConfigStore). The host app
+// communicates with it through NSFileProviderManager.service(name:for:) +
+// NSXPCConnection.
 //
 // NSXPCInterface requires @objc types, so every parameter and return
 // type must be NSObject-compatible. Complex values are passed as
-// XPCAccountInfo (see XPCAccountInfo.swift) or XPCEngineStatus
-// (see XPCEngineStatus.swift), both conforming to NSSecureCoding.
+// XPCEngineStatus (see XPCEngineStatus.swift), conforming to NSSecureCoding.
 //
-// Fase 7.3b-1 additions:
-//   - getEngineStatus(reply:)   — cache stats + config snapshot
-//   - setConfig(key:value:reply:) — write a single config field + notify FPE
-//   - clearCache(reply:)        — wipe all cached blobs
-// These replace the old Unix-socket CoreBridge calls
-// (bridge.status(), bridge.configSnapshot(), bridge.configSet(),
-// bridge.cacheClear()) so CoreBridge is no longer called by any consumer
-// after this phase.
+// Protocol surface:
+//   - getEngineStatus(reply:)     — cache stats + config snapshot
+//   - setConfig(key:value:reply:) — write a single config field and notify FPE
+//   - clearCache(reply:)          — wipe all cached blobs
 
 import Foundation
 
@@ -28,49 +22,16 @@ import Foundation
 /// Must match exactly on both sides.
 @objc public protocol OfemClientControlProtocol {
 
-    // MARK: - Account management
-
-    /// Warms up the FPE engine for a newly signed-in account.
-    ///
-    /// The host app drives the MSAL interactive sign-in via
-    /// `SharedOfemAuth.signIn`, persists the account to config.toml, and
-    /// registers the NSFileProviderDomain. Once macOS starts the FPE
-    /// instance for that domain, the host calls this method so the FPE
-    /// can warm its engine and confirm the account is visible in config.
-    ///
-    /// - Parameters:
-    ///   - alias: Short user-chosen account name (e.g. "work").
-    ///   - tenant: Entra tenant GUID or domain passed through for logging;
-    ///     the FPE reads the persisted value from config.toml.
-    ///   - clientID: Entra App Registration GUID passed through for logging;
-    ///     the FPE reads the persisted value from config.toml.
-    ///   - reply: Called on completion with the confirmed account or an error.
-    func addAccount(
-        alias: String,
-        tenant: String,
-        clientID: String,
-        reply: @escaping (XPCAccountInfo?, Error?) -> Void
-    )
-
-    /// Removes the account identified by `alias` from the FPE's config.
-    ///
-    /// - Parameters:
-    ///   - alias: The account alias to remove.
-    ///   - reply: Called on completion with nil on success, or an error.
-    func removeAccount(alias: String, reply: @escaping (Error?) -> Void)
-
-    // MARK: - Engine status (Fase 7.3b-1)
+    // MARK: - Engine status
 
     /// Returns a rich engine status snapshot: cache usage, config fields,
     /// and other metrics the menu-bar UI needs.
-    ///
-    /// Replaces `CoreBridge.status()` + `CoreBridge.configSnapshot()`.
     ///
     /// - Parameter reply: Called with an `XPCEngineStatus` on success, or
     ///   nil + an error on failure.
     func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void)
 
-    // MARK: - Config mutation (Fase 7.3b-1)
+    // MARK: - Config mutation
 
     /// Persists a single config field and signals the FPE to reload its
     /// in-memory snapshot.
@@ -82,19 +43,15 @@ import Foundation
     ///   - "net.max_concurrent_downloads_per_account"  (integer string, 1–32)
     ///   - "log.level"                                 ("debug" | "info" | "warn" | "error")
     ///
-    /// Replaces `CoreBridge.configSet(key:value:)`.
-    ///
     /// - Parameters:
     ///   - key:   Config key in dot notation (see above).
     ///   - value: New value as a string.
     ///   - reply: Called with nil on success, or an error.
     func setConfig(key: String, value: String, reply: @escaping (Error?) -> Void)
 
-    // MARK: - Cache (Fase 7.3b-1)
+    // MARK: - Cache
 
     /// Clears all cached blobs.
-    ///
-    /// Replaces `CoreBridge.cacheClear()`.
     ///
     /// - Parameter reply: Called with the byte count remaining after the
     ///   wipe (always 0 on success) or an error.
