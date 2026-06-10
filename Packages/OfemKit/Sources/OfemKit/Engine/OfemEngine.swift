@@ -64,10 +64,14 @@ public actor OfemEngine {
         let cfg = configStore.snapshot()
 
         // 1. Logger.
+        // store-14: wire RotatingFileWriter so on-disk logs are produced.
+        let logLevel: LogLevel = cfg.log.level == "debug" ? .debug : .info
+        let fileWriter = RotatingFileWriter(logDirectory: paths.logDir)
         let logConfig = LogConfiguration(
             subsystem: "dev.debruyn.ofem",
             category: "engine",
-            level: cfg.log.level == "debug" ? .debug : .info
+            level: logLevel,
+            fileWriter: fileWriter
         )
         let logger = OfemLogger(configuration: logConfig)
         self.logger = logger
