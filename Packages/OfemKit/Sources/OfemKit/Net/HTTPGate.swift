@@ -1,6 +1,31 @@
 import Foundation
 import os.log
 
+// MARK: - GateClock
+
+/// A minimal clock seam for HTTPGate timing.
+///
+/// The default implementation (`ContinuousGateClock`) delegates to
+/// `ContinuousClock`; tests inject `FakeGateClock` to drive time
+/// deterministically without wall-clock sleeps.
+public protocol GateClock: Sendable {
+    /// Returns the current instant.
+    func now() -> ContinuousClock.Instant
+    /// Suspends the current task for `duration`. Throws `CancellationError` when
+    /// the calling task is cancelled.
+    func sleep(for duration: Duration) async throws
+}
+
+/// Production clock — thin wrapper around `ContinuousClock`.
+public struct ContinuousGateClock: GateClock {
+    public init() {}
+
+    public func now() -> ContinuousClock.Instant { ContinuousClock.now }
+    public func sleep(for duration: Duration) async throws {
+        try await Task.sleep(for: duration, clock: ContinuousClock())
+    }
+}
+
 // MARK: - HTTPGate
 
 /// Per-host concurrency and rate-limit coordinator.
@@ -29,6 +54,7 @@ public actor HTTPGate {
     private let maxConcurrent: Int
     private let tokensPerSecond: Double
     private let burst: Int
+    private let clock: GateClock
 
     // MARK: - Token-bucket state
 
@@ -45,13 +71,25 @@ public actor HTTPGate {
 
     // MARK: - Waiter queues
 
+    /// A waiter entry: a unique ID plus a throwing continuation.
+    /// The continuation throws `CancellationError` when the waiter is cancelled.
+    private struct Waiter {
+        let id: UInt64
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
     /// Continuations waiting because `inFlight >= maxConcurrent`.
-    private var concurrencyWaiters: [CheckedContinuation<Void, Never>] = []
+    private var concurrencyWaiters: [Waiter] = []
 
     /// Continuations waiting because the token bucket is empty.
-    /// Each entry carries the minimum number of tokens required; they are
-    /// serviced in FIFO order once a refill makes enough tokens available.
-    private var tokenWaiters: [CheckedContinuation<Void, Never>] = []
+    private var tokenWaiters: [Waiter] = []
+
+    /// Monotonically increasing ID source for waiter entries.
+    private var nextWaiterID: UInt64 = 0
+
+    /// Whether a timer task has already been scheduled to wake token waiters
+    /// at the next refill instant.
+    private var refillTaskScheduled: Bool = false
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "HTTPGate")
 
@@ -60,14 +98,21 @@ public actor HTTPGate {
     /// Constructs an `HTTPGate` for `host`.
     ///
     /// Invalid values are clamped to sensible minimums so callers can pass
-    /// zero defaults.
-    public init(host: String, maxConcurrent: Int, tokensPerSecond: Double, burst: Int) {
+    /// zero defaults. Pass a custom `clock` in tests for deterministic timing.
+    public init(
+        host: String,
+        maxConcurrent: Int,
+        tokensPerSecond: Double,
+        burst: Int,
+        clock: GateClock = ContinuousGateClock()
+    ) {
         self.host = host
         self.maxConcurrent = max(1, maxConcurrent)
         self.tokensPerSecond = max(0.01, tokensPerSecond)
         self.burst = max(1, burst)
         self.availableTokens = Double(max(1, burst))
-        self.lastRefill = .now
+        self.lastRefill = clock.now()
+        self.clock = clock
     }
 
     // MARK: - Acquire / Release
@@ -79,6 +124,11 @@ public actor HTTPGate {
     /// - the concurrency cap admits one more in-flight caller, and
     /// - the token bucket grants a token.
     ///
+    /// The three resources are acquired together at the moment `inFlight` is
+    /// incremented, preventing cap overshoot: if a token waiter is parked and
+    /// other callers exhaust the concurrency cap while waiting, the cap check
+    /// is re-verified before committing.
+    ///
     /// Throws `CancellationError` if the calling `Task` is cancelled while
     /// waiting in any of the three phases. Call ``release()`` only after a
     /// successful (non-throwing) return.
@@ -89,40 +139,96 @@ public actor HTTPGate {
         // 1. Wait out any pending pause window.
         try await waitForPause()
 
-        // 2. Wait for a concurrency slot.
-        while inFlight >= maxConcurrent {
-            try Task.checkCancellation()
-            await withCheckedContinuation { continuation in
-                concurrencyWaiters.append(continuation)
+        // 2 + 3. Acquire one concurrency slot AND one token atomically.
+        //
+        // The outer loop repeats only when, after being woken from a token
+        // wait, the concurrency cap has been consumed by other tasks — we then
+        // refund the token and rejoin both queues.
+        //
+        // Waiting uses withTaskCancellationHandler so a cancelled task is
+        // evicted from its queue immediately instead of occupying a dead slot
+        // until some future release() happens to wake it.
+        outerLoop: while true {
+            // 2a. Wait for a concurrency slot.
+            while inFlight >= maxConcurrent {
+                let id = nextWaiterID
+                nextWaiterID &+= 1
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                        concurrencyWaiters.append(Waiter(id: id, continuation: cont))
+                    }
+                } onCancel: {
+                    Task { [weak self] in
+                        await self?.cancelConcurrencyWaiter(id: id)
+                    }
+                }
+                // Re-check: another caller may have slipped in.
             }
-        }
 
-        // 3. Refill and wait for a token.
-        refill()
-        while availableTokens < 1.0 {
-            try Task.checkCancellation()
-            await withCheckedContinuation { continuation in
-                tokenWaiters.append(continuation)
-            }
+            // 2b. Wait for a token.
+            //     FIFO: queue even if tokens are available while waiters exist.
+            //     When a waiter is woken by drainWaiters(), the token is already
+            //     reserved (decremented) by the drain loop — do NOT decrement
+            //     again.  On the fast path (no queuing) the caller decrements
+            //     the token itself below.
             refill()
-        }
-        availableTokens -= 1.0
+            if availableTokens < 1.0 || !tokenWaiters.isEmpty {
+                let id = nextWaiterID
+                nextWaiterID &+= 1
+                scheduleRefillTaskIfNeeded()
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                        tokenWaiters.append(Waiter(id: id, continuation: cont))
+                    }
+                } onCancel: {
+                    Task { [weak self] in
+                        await self?.cancelTokenWaiter(id: id)
+                    }
+                }
+                // drainWaiters() already decremented availableTokens when it
+                // woke us — token is reserved; skip the fast-path decrement.
 
-        // 4. Claim the concurrency slot before the second pause check so that
-        // inFlight is always in sync with how many callers have passed the
-        // gate. Without this, a concurrent release() + drainWaiters() during
-        // the second waitForPause could allow a second caller past the
-        // concurrency-cap while-loop, causing inFlight to exceed maxConcurrent.
+                // 2c. Re-check concurrency cap (net-03).
+                if inFlight < maxConcurrent {
+                    break outerLoop
+                }
+                // Cap is full: refund the reserved token and retry.
+                availableTokens += 1.0
+                scheduleRefillTaskIfNeeded()
+                continue outerLoop
+            }
+
+            // Fast path: token available and no other waiters ahead.
+            availableTokens -= 1.0
+
+            // 2c. Re-check concurrency cap (net-03).
+            //
+            // A caller parked in tokenWaiters holds no slot. Other callers may
+            // have passed step 2a and claimed slots while we waited for the
+            // token. If the cap is now full, refund the token and loop back
+            // to wait again — this time we will queue as a concurrency waiter
+            // and the token queue, in that order, with correct FIFO position.
+            if inFlight < maxConcurrent {
+                // Both resources secured — exit the loop.
+                break outerLoop
+            }
+            // Cap is full: refund token and retry.
+            availableTokens += 1.0
+            scheduleRefillTaskIfNeeded()
+        }
+
+        // 3. Claim the slot atomically (both checks passed above).
         inFlight += 1
 
-        // 5. Re-check pause after token acquisition — a Penalty posted
-        // between step 1 and step 3 must still be honoured.
+        // 4. Re-check pause after token acquisition — a penalty posted
+        // between step 1 and step 2 must still be honoured.
         do {
             try await waitForPause()
         } catch {
-            // Undo the inFlight claim before propagating the cancellation so
-            // the gate state remains consistent.
+            // Undo the inFlight claim and refund the token before propagating
+            // so gate state remains consistent.
             inFlight -= 1
+            availableTokens = min(availableTokens + 1.0, Double(burst))
             drainWaiters()
             throw error
         }
@@ -148,7 +254,7 @@ public actor HTTPGate {
     /// Does not suspend. Callers waiting in ``acquire()`` will observe the
     /// new pause on their next `waitForPause` iteration.
     public func penalty(until deadline: ContinuousClock.Instant) {
-        guard deadline > .now else {
+        guard deadline > clock.now() else {
             Self.log.debug("HTTPGate[\(self.host, privacy: .public)]: penalty in past, ignored")
             return
         }
@@ -179,12 +285,12 @@ public actor HTTPGate {
 
     // MARK: - Private helpers
 
-    /// Refills the token bucket based on elapsed wall-clock time.
+    /// Refills the token bucket based on elapsed time (via the injected clock).
     ///
-    /// Called before every token-consumption or drain so the bucket is
-    /// always current.
+    /// Called before every token-consumption or drain so the bucket is always
+    /// current.
     private func refill() {
-        let now = ContinuousClock.now
+        let now = clock.now()
         let elapsed = lastRefill.duration(to: now)
         let elapsedSeconds = Double(elapsed.components.seconds) +
             Double(elapsed.components.attoseconds) * 1e-18
@@ -196,39 +302,95 @@ public actor HTTPGate {
     }
 
     /// Wakes suspended concurrency and token waiters that can now proceed.
+    ///
+    /// Drains as many waiters as the current state permits — not just one per
+    /// call — so that when several tokens become available all eligible waiters
+    /// are released in FIFO order.
     private func drainWaiters() {
-        // Wake one concurrency waiter if room has opened.
-        if inFlight < maxConcurrent, !concurrencyWaiters.isEmpty {
+        // Wake concurrency waiters while room exists.
+        while inFlight < maxConcurrent, !concurrencyWaiters.isEmpty {
             let w = concurrencyWaiters.removeFirst()
-            w.resume()
+            w.continuation.resume()
         }
-        // Wake one token waiter if the bucket has a token.
-        if availableTokens >= 1.0, !tokenWaiters.isEmpty {
+        // Wake token waiters while the bucket has tokens.
+        // Decrement availableTokens here so the loop condition stays accurate;
+        // the waiter's own `availableTokens -= 1.0` then becomes a no-op delta
+        // (we compensate by NOT decrementing in acquire after being woken).
+        // Simpler: wake at most one waiter per available token, reserving the
+        // token now so the woken waiter can proceed without re-checking.
+        while availableTokens >= 1.0, !tokenWaiters.isEmpty {
+            availableTokens -= 1.0
             let w = tokenWaiters.removeFirst()
-            w.resume()
+            w.continuation.resume()
+        }
+    }
+
+    /// Ensures a single background task exists that sleeps until the next
+    /// token refill instant and then drains token waiters.
+    ///
+    /// Called whenever a caller parks in `tokenWaiters`. Only one timer task
+    /// runs at a time; when it fires it clears the flag so the next waiter
+    /// arrival schedules a fresh one if needed.
+    private func scheduleRefillTaskIfNeeded() {
+        guard !refillTaskScheduled else { return }
+        refillTaskScheduled = true
+        let tps = tokensPerSecond
+        let needed = 1.0 - availableTokens
+        // Duration to produce `needed` additional tokens at `tps` rate.
+        let waitSeconds = max(needed / tps, 0)
+        let waitDuration = Duration.nanoseconds(Int64(waitSeconds * 1_000_000_000))
+        let clk = clock
+        Task { [weak self] in
+            try? await clk.sleep(for: waitDuration)
+            await self?.refillTimerFired()
+        }
+    }
+
+    /// Called by the scheduled refill task when the sleep completes.
+    private func refillTimerFired() {
+        refillTaskScheduled = false
+        refill()
+        drainWaiters()
+        // If there are still token waiters (e.g. more arrived after the timer
+        // was scheduled), reschedule immediately so they are not stranded.
+        if !tokenWaiters.isEmpty {
+            scheduleRefillTaskIfNeeded()
+        }
+    }
+
+    /// Evicts a concurrency waiter from the queue and resumes it with
+    /// `CancellationError`.
+    private func cancelConcurrencyWaiter(id: UInt64) {
+        if let idx = concurrencyWaiters.firstIndex(where: { $0.id == id }) {
+            let w = concurrencyWaiters.remove(at: idx)
+            w.continuation.resume(throwing: CancellationError())
+        }
+        // If not found, the waiter was already resumed normally — nothing to do.
+    }
+
+    /// Evicts a token waiter from the queue and resumes it with
+    /// `CancellationError`.
+    private func cancelTokenWaiter(id: UInt64) {
+        if let idx = tokenWaiters.firstIndex(where: { $0.id == id }) {
+            let w = tokenWaiters.remove(at: idx)
+            w.continuation.resume(throwing: CancellationError())
         }
     }
 
     /// Suspends until the pause window has elapsed.
     ///
     /// Loops because a concurrent ``penalty(until:)`` call may extend the
-    /// deadline.
-    ///
-    /// Throws `CancellationError` immediately when the calling `Task` is
-    /// cancelled, mirroring how Go's `waitPause` returns on `ctx.Done()`.
+    /// deadline. Throws `CancellationError` immediately when the calling task
+    /// is cancelled, mirroring how Go's `waitPause` returns on `ctx.Done()`.
     private func waitForPause() async throws {
         while let until = pauseUntil {
-            let now = ContinuousClock.now
+            let now = clock.now()
             guard until > now else {
-                // Pause has elapsed; clear it.
                 pauseUntil = nil
                 return
             }
             let waitDuration = now.duration(to: until)
-            // Propagate CancellationError so callers are not stuck for the
-            // full penalty window after their Task is cancelled. This mirrors
-            // Go's select { case <-ctx.Done(): return ctx.Err() } in waitPause.
-            try await Task.sleep(for: waitDuration, clock: ContinuousClock())
+            try await clock.sleep(for: waitDuration)
         // Loop: re-read pauseUntil in case it was extended while we slept.
         }
     }
@@ -276,6 +438,24 @@ public actor HTTPGateRegistry {
         d.tokensPerSecond = max(0.01, d.tokensPerSecond)
         d.burst = max(1, d.burst)
         self.defaults = d
+    }
+
+    /// Constructs a registry pre-seeded with the provided gates.
+    ///
+    /// Use this initialiser (or the `seeded:` overload of `makeDefault`)
+    /// to avoid the registration race where an early `gate(for:)` call
+    /// returns an auto-created gate before explicit registration runs.
+    init(defaults: HTTPGateDefaults, seeded: [HTTPGate]) {
+        var d = defaults
+        d.maxConcurrent = max(1, d.maxConcurrent)
+        d.tokensPerSecond = max(0.01, d.tokensPerSecond)
+        d.burst = max(1, d.burst)
+        self.defaults = d
+        var map: [String: HTTPGate] = [:]
+        for gate in seeded {
+            map[gate.host] = gate
+        }
+        self.gates = map
     }
 
     // MARK: - Registration
@@ -361,23 +541,31 @@ public let httpGateHostFabric = "api.fabric.microsoft.com"
 extension HTTPGateRegistry {
     /// Builds a registry pre-registered with OneLake and Fabric gates using
     /// curated budgets.
+    ///
+    /// Registration is synchronous: the curated gates are inserted before
+    /// this method returns, eliminating the race where early `gate(for:)`
+    /// calls return auto-created gates with default budgets.
     public static func makeDefault() -> HTTPGateRegistry {
-        let reg = HTTPGateRegistry(defaults: HTTPGateDefaults(
+        let fabricGate = HTTPGate(
+            host: httpGateHostFabric,
             maxConcurrent: 8,
             tokensPerSecond: 2,
-            burst: 4,
-            missingRetryAfter: .seconds(30)
-        ))
-        // Pre-registration is done via a detached Task because the actor
-        // initialiser cannot be `async`. The registry is usable immediately
-        // from the caller's perspective; gate creation races are safe because
-        // `gate(for:)` is isolated to the actor.
-        Task { [reg] in
-            // Fabric REST — lower budget (conservative: no published RPS limit).
-            await reg.register(host: httpGateHostFabric, maxConcurrent: 8, tokensPerSecond: 2, burst: 4)
-            // OneLake DFS — ADLS Gen2 tolerates higher concurrency.
-            await reg.register(host: httpGateHostOneLake, maxConcurrent: 16, tokensPerSecond: 8, burst: 16)
-        }
-        return reg
+            burst: 4
+        )
+        let oneLakeGate = HTTPGate(
+            host: httpGateHostOneLake,
+            maxConcurrent: 16,
+            tokensPerSecond: 8,
+            burst: 16
+        )
+        return HTTPGateRegistry(
+            defaults: HTTPGateDefaults(
+                maxConcurrent: 8,
+                tokensPerSecond: 2,
+                burst: 4,
+                missingRetryAfter: .seconds(30)
+            ),
+            seeded: [fabricGate, oneLakeGate]
+        )
     }
 }
