@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - AsyncSemaphore
 
-/// A simple async counting semaphore.
+/// A cancellation-aware async counting semaphore.
 ///
 /// Used by ``SyncEngine`` to cap per-account concurrent download and upload
 /// operations.
@@ -16,6 +16,13 @@ import Foundation
 /// point. The `nonisolated(unsafe)` attribute on the stored state suppresses
 /// the compiler's conservative diagnostic so the correct lock-then-check-then-
 /// release pattern can be expressed.
+///
+/// ## Cancellation (sync-05)
+///
+/// `wait()` is cancellation-aware: when the calling task is cancelled while
+/// waiting, the continuation is removed from the queue (releasing the slot),
+/// and `CancellationError` is thrown. This ensures cancelled tasks never hold
+/// one of the concurrency slots.
 final class AsyncSemaphore: @unchecked Sendable {
 
     // MARK: - State
@@ -24,8 +31,21 @@ final class AsyncSemaphore: @unchecked Sendable {
     // NSLock from an async context. The lock is NEVER held across a suspension,
     // so the usage is safe.
     nonisolated(unsafe) private var count: Int
-    nonisolated(unsafe) private var waiters: [CheckedContinuation<Void, Never>] = []
+    nonisolated(unsafe) private var waiters: [WaiterEntry] = []
     private let lock = NSLock()
+
+    // MARK: - Waiter entry
+
+    /// Each waiter is identified by a stable ID so it can be removed on
+    /// cancellation without scanning the whole queue.
+    private struct WaiterEntry {
+        let id: UInt64
+        let continuation: CheckedContinuation<Void, any Error>
+    }
+
+    // MARK: - Monotonic ID counter
+
+    nonisolated(unsafe) private var nextID: UInt64 = 0
 
     // MARK: - Init
 
@@ -38,20 +58,49 @@ final class AsyncSemaphore: @unchecked Sendable {
 
     /// Decrements the semaphore count, suspending the caller when the count
     /// reaches zero until a paired ``signal()`` call increments it again.
-    func wait() async {
-        // `withCheckedContinuation`'s closure runs synchronously before any
-        // suspension, so the check-and-enqueue is atomic under the lock.
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            lock.lock()
-            if count > 0 {
-                count -= 1
-                lock.unlock()
-                continuation.resume()   // Resume immediately — no suspension.
-            } else {
-                waiters.append(continuation)
-                lock.unlock()           // Suspend after releasing the lock.
-            }
+    ///
+    /// Throws `CancellationError` when the calling task is cancelled while
+    /// waiting; the slot is released back to the pool so it is never leaked.
+    func wait() async throws {
+        // Early-out: if the task is already cancelled, don't even try to acquire
+        // a slot — just throw immediately.
+        try Task.checkCancellation()
+
+        let id: UInt64 = lock.withLock {
+            nextID += 1
+            return nextID
         }
+
+        try await withTaskCancellationHandler(
+            operation: {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                    lock.lock()
+                    if count > 0 {
+                        count -= 1
+                        lock.unlock()
+                        continuation.resume()   // Resume immediately — no suspension.
+                    } else {
+                        waiters.append(WaiterEntry(id: id, continuation: continuation))
+                        lock.unlock()           // Suspend after releasing the lock.
+                    }
+                }
+            },
+            onCancel: {
+                // Called when the task is cancelled. Remove the waiter from the
+                // queue and throw CancellationError so the slot is not consumed.
+                lock.lock()
+                if let idx = waiters.firstIndex(where: { $0.id == id }) {
+                    let entry = waiters.remove(at: idx)
+                    lock.unlock()
+                    entry.continuation.resume(throwing: CancellationError())
+                } else {
+                    // Already dequeued (signal already delivered) — release the
+                    // slot we just acquired so it is not leaked.
+                    count += 1
+                    lock.unlock()
+                }
+            }
+        )
     }
 
     /// Increments the semaphore count, resuming the next waiting caller (if any).
@@ -60,10 +109,17 @@ final class AsyncSemaphore: @unchecked Sendable {
         if !waiters.isEmpty {
             let waiter = waiters.removeFirst()
             lock.unlock()
-            waiter.resume()
+            waiter.continuation.resume()
         } else {
             count += 1
             lock.unlock()
         }
+    }
+
+    // MARK: - Inspection (for deterministic tests)
+
+    /// Returns the number of tasks currently waiting on this semaphore.
+    var waiterCount: Int {
+        lock.withLock { waiters.count }
     }
 }
