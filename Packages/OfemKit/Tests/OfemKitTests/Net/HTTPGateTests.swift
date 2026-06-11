@@ -15,7 +15,19 @@ final class FakeGateClock: GateClock, @unchecked Sendable {
     private let lock = NSLock()
 
     private var _now: ContinuousClock.Instant
-    private var sleepers: [(wakeAt: ContinuousClock.Instant, resume: (Error?) -> Void)] = []
+    /// Each sleeper carries a unique integer ID so cancellation by ID is always
+    /// unambiguous — two concurrent sleeps with the same duration would share an
+    /// identical `wakeAt`, making wakeAt-equality matching wrong.
+    private struct Sleeper {
+        let id: UInt64
+        let wakeAt: ContinuousClock.Instant
+        let resume: (Error?) -> Void
+    }
+    private var sleepers: [Sleeper] = []
+    private var nextSleeperID: UInt64 = 0
+
+    /// Number of sleepers currently parked (actor-isolated counter for tests).
+    var sleeperCount: Int { lock.withLock { sleepers.count } }
 
     init(now: ContinuousClock.Instant = ContinuousClock.now) {
         _now = now
@@ -26,7 +38,8 @@ final class FakeGateClock: GateClock, @unchecked Sendable {
     }
 
     func sleep(for duration: Duration) async throws {
-        let wakeAt = lock.withLock { _now + duration }
+        let (wakeAt, sleeperID) = lock.withLock { (_now + duration, nextSleeperID) }
+        lock.withLock { nextSleeperID += 1 }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
                 lock.withLock {
@@ -34,7 +47,7 @@ final class FakeGateClock: GateClock, @unchecked Sendable {
                     if wakeAt <= _now {
                         cont.resume()
                     } else {
-                        sleepers.append((wakeAt: wakeAt, resume: { err in
+                        sleepers.append(Sleeper(id: sleeperID, wakeAt: wakeAt, resume: { err in
                             if let e = err { cont.resume(throwing: e) }
                             else { cont.resume() }
                         }))
@@ -43,10 +56,10 @@ final class FakeGateClock: GateClock, @unchecked Sendable {
                 }
             }
         } onCancel: {
-            // Wake with CancellationError on task cancellation.
+            // Wake with CancellationError on task cancellation, matched by ID
+            // so that two sleepers with the same deadline are distinguished.
             self.lock.withLock {
-                let idx = self.sleepers.firstIndex(where: { $0.wakeAt == wakeAt })
-                if let idx {
+                if let idx = self.sleepers.firstIndex(where: { $0.id == sleeperID }) {
                     let r = self.sleepers.remove(at: idx).resume
                     r(CancellationError())
                 }
@@ -60,7 +73,7 @@ final class FakeGateClock: GateClock, @unchecked Sendable {
         var toResume: [(Error?) -> Void] = []
         lock.withLock {
             _now = _now + delta
-            var remaining: [(wakeAt: ContinuousClock.Instant, resume: (Error?) -> Void)] = []
+            var remaining: [Sleeper] = []
             for s in sleepers {
                 if s.wakeAt <= _now {
                     toResume.append(s.resume)
@@ -115,17 +128,21 @@ struct HTTPGateTests {
             await gate.release()
         }
 
-        // Yield briefly so the waiter parks.
-        await Task.yield()
-        await Task.yield()
+        // Spin until the refill-timer sleeper is actually parked in the fake clock
+        // before advancing time. This avoids a TOCTOU: if we advance before the
+        // sleeper registers, the advance is a no-op and the waiter hangs.
+        var spins = 0
+        while clock.sleeperCount == 0 && spins < 1000 {
+            await Task.yield()
+            spins += 1
+        }
         #expect(resumeFlag.load() == 0, "Waiter should not have resumed before clock advance")
 
         // Advance clock by 1 second — enough to refill 1 token.
         clock.advance(by: .seconds(1))
 
-        // Give the refill-timer task time to fire and wake the waiter.
-        try await Task.sleep(for: .milliseconds(50), clock: ContinuousClock())
-
+        // Directly await the waiter task — it will unblock as soon as the refill
+        // timer fires and drains the token queue. No fixed-budget sleep needed.
         try await waiterTask.value
         #expect(resumeFlag.load() == 1, "Waiter must resume after clock advances past refill instant")
     }
@@ -165,19 +182,29 @@ struct HTTPGateTests {
             await gate.release()
         }
 
-        await Task.yield()
-        await Task.yield()
+        // Spin until both tasks are parked as sleepers in the fake clock.
+        // t1 parks first, then t2; the refill timer adds one more sleeper.
+        var spins = 0
+        while clock.sleeperCount < 1 && spins < 1000 {
+            await Task.yield()
+            spins += 1
+        }
 
         // First advance: refills 1 token → wakes t1.
         clock.advance(by: .seconds(1))
-        try await Task.sleep(for: .milliseconds(50), clock: ContinuousClock())
 
-        // After t1 acquires and releases, the refill timer for t2 is scheduled
-        // for 1 second of fake time. Advance again to wake t2.
-        clock.advance(by: .seconds(1))
-        try await Task.sleep(for: .milliseconds(100), clock: ContinuousClock())
-
+        // Await t1 directly — it will unblock as soon as the token is drained.
         try await t1.value
+
+        // After t1 releases, t2's refill timer is scheduled. Spin until it parks.
+        spins = 0
+        while clock.sleeperCount < 1 && spins < 1000 {
+            await Task.yield()
+            spins += 1
+        }
+
+        // Advance again to wake t2.
+        clock.advance(by: .seconds(1))
         try await t2.value
 
         let order = await orderTracker.values
@@ -261,8 +288,13 @@ struct HTTPGateTests {
 
         // Gate must be in a clean state: a subsequent acquire (after advancing
         // time to refill) must succeed without hanging.
+        // Spin until the refill-timer sleeper is parked before advancing.
+        var spins = 0
+        while clock.sleeperCount == 0 && spins < 1000 {
+            await Task.yield()
+            spins += 1
+        }
         clock.advance(by: .seconds(200))
-        try await Task.sleep(for: .milliseconds(50), clock: ContinuousClock())
         try await gate.acquire()
         await gate.release()
     }
@@ -302,6 +334,94 @@ struct HTTPGateTests {
         await gate.release()
     }
 
+    // MARK: - Pre-cancelled task regression (issue: orphaned continuation)
+
+    /// Regression test for the pre-cancelled race on the token-waiter path.
+    ///
+    /// If a `Task` is already cancelled when `withTaskCancellationHandler`
+    /// evaluates its body, the `onCancel` closure fires *synchronously* before
+    /// `withCheckedThrowingContinuation` runs. Without the in-continuation
+    /// `Task.isCancelled` guard the stored continuation is orphaned forever.
+    @Test("pre-cancelled task on token-waiter path throws promptly and leaves queue clean")
+    func preCancelledTaskTokenWaiter() async throws {
+        let clock = FakeGateClock()
+        let gate = HTTPGate(
+            host: "precancel-token.example.com",
+            maxConcurrent: 10,
+            tokensPerSecond: 0.01,  // Very slow — bucket stays empty for a long time.
+            burst: 1,
+            clock: clock
+        )
+
+        // Drain the single burst token so the next acquire must queue.
+        try await gate.acquire()
+        await gate.release()
+
+        // Create a task and cancel it *before* it gets to call acquire.
+        let waiterTask = Task {
+            // Yield once to let the cancellation propagate before acquire runs.
+            await Task.yield()
+            try await gate.acquire()
+        }
+        waiterTask.cancel()
+
+        do {
+            try await waiterTask.value
+            #expect(Bool(false), "Expected CancellationError from pre-cancelled task")
+        } catch is CancellationError {
+            // Expected — and it must arrive promptly without hanging.
+        }
+
+        // The token-waiters queue must be empty: no orphaned continuation.
+        let s = await gate.state()
+        // A clean gate: no in-flight, no orphaned waiter. Verify by acquiring
+        // after advancing the clock — must succeed immediately.
+        clock.advance(by: .seconds(200))
+        // Spin until refill timer parks (if any scheduled), then acquire.
+        var spins = 0
+        while clock.sleeperCount == 0 && spins < 1000 {
+            await Task.yield()
+            spins += 1
+        }
+        clock.advance(by: .seconds(1))
+        try await gate.acquire()
+        await gate.release()
+        _ = s  // Silence unused-variable warning; state was captured for debugging.
+    }
+
+    /// Regression test for the pre-cancelled race on the concurrency-waiter path.
+    @Test("pre-cancelled task on concurrency-waiter path throws promptly and leaves queue clean")
+    func preCancelledTaskConcurrencyWaiter() async throws {
+        let gate = HTTPGate(
+            host: "precancel-conc.example.com",
+            maxConcurrent: 1,
+            tokensPerSecond: 100,
+            burst: 100
+        )
+
+        // Fill the single concurrency slot so the next acquire must queue.
+        try await gate.acquire()
+
+        // Create a task and cancel it *before* it gets to call acquire.
+        let waiterTask = Task {
+            await Task.yield()
+            try await gate.acquire()
+        }
+        waiterTask.cancel()
+
+        do {
+            try await waiterTask.value
+            #expect(Bool(false), "Expected CancellationError from pre-cancelled task")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        // Release the held slot — gate must be clean (no orphaned concurrency waiter).
+        await gate.release()
+        try await gate.acquire()
+        await gate.release()
+    }
+
     // MARK: - Penalty / pause window (fake clock)
 
     @Test("penalty blocks acquire until fake clock advances past deadline")
@@ -324,13 +444,17 @@ struct HTTPGateTests {
             await gate.release()
         }
 
-        await Task.yield()
-        await Task.yield()
+        // Spin until the acquire task is parked as a sleeper in the fake clock.
+        var spins = 0
+        while clock.sleeperCount == 0 && spins < 1000 {
+            await Task.yield()
+            spins += 1
+        }
         #expect(resumeFlag.load() == 0, "acquire must not complete before penalty deadline")
 
         clock.advance(by: .milliseconds(200))
-        try await Task.sleep(for: .milliseconds(50), clock: ContinuousClock())
 
+        // Await the task directly — deterministic, no wall-clock budget needed.
         try await acquireTask.value
         #expect(resumeFlag.load() == 1, "acquire must complete after penalty deadline")
     }
@@ -378,17 +502,29 @@ struct HTTPGateTests {
             await gate.release()
         }
 
-        await Task.yield()
-        await Task.yield()
+        // Spin until the acquire task is parked as a sleeper in the fake clock.
+        var spins = 0
+        while clock.sleeperCount == 0 && spins < 1000 {
+            await Task.yield()
+            spins += 1
+        }
 
         // Advance past the short deadline but not the long one.
         clock.advance(by: .milliseconds(100))
-        try await Task.sleep(for: .milliseconds(30), clock: ContinuousClock())
+
+        // Spin until the acquire task re-parks after the first sleep expires
+        // (it loops in waitForPause and sleeps again for the remaining duration).
+        spins = 0
+        while clock.sleeperCount == 0 && spins < 1000 {
+            await Task.yield()
+            spins += 1
+        }
         #expect(resumeFlag.load() == 0, "acquire must still be blocked (long deadline not passed)")
 
         // Now advance past the long deadline.
         clock.advance(by: .milliseconds(500))
-        try await Task.sleep(for: .milliseconds(50), clock: ContinuousClock())
+
+        // Await directly — deterministic, no wall-clock budget needed.
         try await acquireTask.value
         #expect(resumeFlag.load() == 1, "acquire must complete after long deadline passes")
     }
@@ -429,10 +565,15 @@ struct HTTPGateTests {
 
         // Gate tokens must have been refunded. Advance past penalty so we can
         // verify acquire works normally.
+        // Spin until the gate's pause sleeper (if any) is parked before advancing.
+        var spins = 0
+        while clock.sleeperCount == 0 && spins < 1000 {
+            await Task.yield()
+            spins += 1
+        }
         clock.advance(by: .seconds(1))
-        try await Task.sleep(for: .milliseconds(50), clock: ContinuousClock())
 
-        // Both tokens in the burst should be acquirable.
+        // Both tokens in the burst should be acquirable. Await directly.
         try await gate.acquire()
         try await gate.acquire()
         await gate.release()

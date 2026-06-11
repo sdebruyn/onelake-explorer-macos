@@ -156,10 +156,24 @@ public actor HTTPGate {
                 try await withTaskCancellationHandler {
                     try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
                         concurrencyWaiters.append(Waiter(id: id, continuation: cont))
+                        // Guard against the pre-cancelled race: if the task was
+                        // already cancelled when the onCancel handler ran
+                        // (before this continuation was stored), the handler was
+                        // a no-op and no one will ever resume this continuation.
+                        // Detect that here and resume with CancellationError now.
+                        if Task.isCancelled {
+                            if let idx = concurrencyWaiters.firstIndex(where: { $0.id == id }) {
+                                concurrencyWaiters.remove(at: idx)
+                                cont.resume(throwing: CancellationError())
+                            }
+                        }
                     }
                 } onCancel: {
-                    Task { [weak self] in
-                        await self?.cancelConcurrencyWaiter(id: id)
+                    // Strong capture: the cancellation Task is short-lived and
+                    // the actor outlives it; weak capture risks a nil self and
+                    // an orphaned continuation.
+                    Task { [self] in
+                        await cancelConcurrencyWaiter(id: id)
                     }
                 }
                 // Re-check: another caller may have slipped in.
@@ -179,10 +193,24 @@ public actor HTTPGate {
                 try await withTaskCancellationHandler {
                     try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
                         tokenWaiters.append(Waiter(id: id, continuation: cont))
+                        // Guard against the pre-cancelled race: if the task was
+                        // already cancelled when the onCancel handler ran
+                        // (before this continuation was stored), the handler was
+                        // a no-op and no one will ever resume this continuation.
+                        // Detect that here and resume with CancellationError now.
+                        if Task.isCancelled {
+                            if let idx = tokenWaiters.firstIndex(where: { $0.id == id }) {
+                                tokenWaiters.remove(at: idx)
+                                cont.resume(throwing: CancellationError())
+                            }
+                        }
                     }
                 } onCancel: {
-                    Task { [weak self] in
-                        await self?.cancelTokenWaiter(id: id)
+                    // Strong capture: the cancellation Task is short-lived and
+                    // the actor outlives it; weak capture risks a nil self and
+                    // an orphaned continuation.
+                    Task { [self] in
+                        await cancelTokenWaiter(id: id)
                     }
                 }
                 // drainWaiters() already decremented availableTokens when it
