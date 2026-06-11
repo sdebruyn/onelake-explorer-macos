@@ -126,17 +126,25 @@ final class PartialManager: Sendable {
         )
 
         // Open (or create) the spill file and seek to rangeStart.
+        // Always open for update (read+write) so we can later seek to 0 and
+        // readToEnd() for SHA verification (sync-08).
         let handle: FileHandle
-        if FileManager.default.fileExists(atPath: url.path) {
-            handle = try FileHandle(forUpdating: url)
-        } else {
+        if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: nil)
-            handle = try FileHandle(forWritingTo: url)
         }
+        handle = try FileHandle(forUpdating: url)
         defer { try? handle.close() }
 
         try handle.seek(toOffset: UInt64(rangeStart))
-        handle.write(body)
+        // Use the throwing write variant (sync-08): the legacy `write(_:)` raises
+        // an ObjC NSException on disk-full, which crashes the process; `write(contentsOf:)`
+        // throws a typed Swift error instead.
+        do {
+            try handle.write(contentsOf: body)
+        } catch {
+            discard(for: key)
+            throw SyncError.spillFileError(error)
+        }
         let totalWritten = rangeStart + Int64(body.count)
 
         if expectedTotal > 0 && totalWritten != expectedTotal {
@@ -144,20 +152,18 @@ final class PartialManager: Sendable {
             throw SyncError.shortDownload(expected: expectedTotal, got: totalWritten)
         }
 
-        // SHA verification when an expected hash is known.
+        // Read all assembled bytes (single read — reused for SHA if needed).
+        try handle.seek(toOffset: 0)
+        let allBytes = try handle.readToEnd() ?? Data()
+
+        // SHA verification when an expected hash is known (sync-08: reuse buffer).
         if let expected = expectedSHA, !expected.isEmpty {
-            try handle.seek(toOffset: 0)
-            let assembled = try handle.readToEnd() ?? Data()
-            let got = SHA256.hash(data: assembled).map { String(format: "%02x", $0) }.joined()
+            let got = SHA256.hash(data: allBytes).map { String(format: "%02x", $0) }.joined()
             if got != expected {
                 discard(for: key)
                 throw SyncError.blobSHAMismatch(got: got, expected: expected)
             }
         }
-
-        // Read all assembled bytes.
-        try handle.seek(toOffset: 0)
-        let allBytes = try handle.readToEnd() ?? Data()
 
         // Remove partial and sidecar on success.
         try? FileManager.default.removeItem(at: url)
