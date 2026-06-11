@@ -130,8 +130,9 @@ public struct OfemLogger: Sendable {
     // MARK: - Shared ISO 8601 formatter (store-15)
 
     /// Thread-safe shared formatter. `ISO8601DateFormatter` is documented as
-    /// thread-safe after its format options are set.
-    private static let iso8601Formatter: ISO8601DateFormatter = {
+    /// thread-safe after its format options are set; `nonisolated(unsafe)` tells
+    /// the Swift concurrency checker we have verified this invariant.
+    nonisolated(unsafe) private static let iso8601Formatter: ISO8601DateFormatter = {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return fmt
