@@ -98,6 +98,9 @@ jobs:
             -T /usr/bin/security
           rm "$RUNNER_TEMP/cert.p12"
 
+          # shellcheck disable=SC2046
+          # Word splitting is intentional: each existing keychain path is a
+          # separate argument to list-keychain -s.
           security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | tr -d '"')
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
@@ -318,14 +321,6 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: xcrun stapler staple "dist-app/OneLake-$VERSION.dmg"
-
-      - name: Verify Gatekeeper acceptance
-        if: github.event_name != 'workflow_dispatch'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          spctl --assess --type open --context context:primary-signature --verbose "build/Export/OneLake.app"
-          spctl --assess --type open --context context:primary-signature --verbose "dist-app/OneLake-$VERSION.dmg"
 
       - name: Verify Gatekeeper acceptance
         if: github.event_name != 'workflow_dispatch'
