@@ -36,6 +36,7 @@ Every event is sent as an App Insights `customEvent` with a fixed property set:
 | `durationMs` | int64 | When relevant | `423` | For events that complete an operation. |
 | `success` | bool | When relevant | `true` | For events that complete an operation. |
 | `errorCode` | string | When `success=false` | `AADSTS50079` | Backend or library-defined error code. Free text up to 32 chars; **must not contain PII** (we redact any string longer than 32 chars or containing `@`). |
+| `failedOp` | string | On `error` events | `file_download` | The name of the operation that produced the error. Present only on `error` events (emitted by `trackError`). |
 
 ## Event catalog (initial)
 
@@ -56,7 +57,7 @@ Every event is sent as an App Insights `customEvent` with a fixed property set:
 | `mount_start` | File Provider domain registered | `accountAliasHash` |
 | `mount_stop` | File Provider domain removed | `accountAliasHash` |
 | `sync_pulled` | Adaptive-poll refresh detected and pulled changes | `tenantId`, `accountAliasHash`, `itemsChanged` |
-| `error` | Recoverable error logged | `errorCode`, `event` (the operation that errored as a string) |
+| `error` | Recoverable error logged | `errorCode`, `failedOp` (the operation that errored, e.g. `file_download`) |
 | `crash` | Unhandled error or unexpected termination | `errorCode` (hashed stack trace prefix), `appVersion` |
 
 ## Sync-engine error-code vocabulary
@@ -98,6 +99,8 @@ Shown on first launch of `OneLake.app` as a small banner in the host app.
 The telemetry module in OfemKit buffers events in memory and flushes every 10 seconds or when the buffer exceeds a size threshold. If the host app or FPE exits cleanly, buffered events are flushed first. If it crashes, pending events are lost (acceptable).
 
 If the user has no network, events accumulate in memory up to a hard cap of 1000 events (~250 KB), after which oldest events are dropped. Once connectivity returns, the flush succeeds.
+
+Events that are re-queued after a failed or partially-rejected flush carry an internal retry counter. After 3 re-queue attempts the event is silently dropped. This prevents a permanently-rejected item (e.g. a 503 per-item error inside a 206) from circulating indefinitely and consuming network or CPU.
 
 No persistent on-disk telemetry queue — keeps complexity down.
 

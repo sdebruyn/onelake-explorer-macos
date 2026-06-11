@@ -23,11 +23,11 @@ import Foundation
 public struct AppInsightsSink: TelemetrySink {
     // MARK: - State
 
-    let endpoint: String     // IngestionEndpoint, trailing-slash normalised
-    let iKey: String         // InstrumentationKey
-    let role: String         // ai.cloud.role
-    let installID: String    // ai.cloud.roleInstance
-    let sdkTag: String       // ai.internal.sdkVersion ("ofem:2026.05.1")
+    let trackURL: URL         // Validated at init; never force-unwrapped (store-21)
+    let iKey: String          // InstrumentationKey
+    let role: String          // ai.cloud.role
+    let installID: String     // ai.cloud.roleInstance
+    let sdkTag: String        // ai.internal.sdkVersion ("ofem:2026.05.1")
     let session: URLSession
 
     // MARK: - Init
@@ -47,8 +47,10 @@ public struct AppInsightsSink: TelemetrySink {
         appVersion: String = "",
         session: URLSession? = nil
     ) throws {
-        let (ep, key) = try Self.parseConnectionString(connectionString)
-        self.endpoint = ep
+        // store-21: validate and construct the track URL at init time so a
+        // bad endpoint string fails fast here, not at send time with a crash.
+        let (trackURL, key) = try Self.parseConnectionString(connectionString)
+        self.trackURL = trackURL
         self.iKey = key
         self.role = "ofem"
         self.installID = installID
@@ -59,6 +61,10 @@ public struct AppInsightsSink: TelemetrySink {
     // MARK: - TelemetrySink
 
     /// POSTs `events` to `<endpoint>v2/track`.
+    ///
+    /// On a 206 partial rejection, only the events identified in the
+    /// `errors[]` array as retriable are thrown back; already-accepted events
+    /// are not re-sent. (store-20)
     ///
     /// Throws `AppInsightsSinkError` when the HTTP layer fails or the
     /// ingestion endpoint rejects events.
@@ -76,10 +82,7 @@ public struct AppInsightsSink: TelemetrySink {
         }
 
         let body = try JSONEncoder().encode(envelopes)
-        var request = URLRequest(
-            url: URL(string: endpoint + "v2/track")!,
-            timeoutInterval: 30
-        )
+        var request = URLRequest(url: trackURL, timeoutInterval: 30)
         request.httpMethod = "POST"
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -97,28 +100,53 @@ public struct AppInsightsSink: TelemetrySink {
         }
 
         let statusCode = httpResponse.statusCode
+
+        // 4xx client errors: non-retriable — drop the batch entirely.
+        if statusCode >= 400, statusCode < 500 {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw AppInsightsSinkError.ingestion(statusCode: statusCode, body: body)
+        }
+
+        // Other non-2xx (e.g. 5xx): retriable as a unit.
         guard statusCode >= 200, statusCode < 300 else {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw AppInsightsSinkError.ingestion(statusCode: statusCode, body: body)
         }
 
-        // Parse the itemsAccepted field; a partial rejection is treated as
-        // a failure so the caller re-queues. Mirrors the Go behaviour.
-        if !data.isEmpty,
-           let tr = try? JSONDecoder().decode(TrackResponse.self, from: data),
+        // 200 full success: nothing to do.
+        guard statusCode == 206 else { return }
+
+        // store-20: 206 partial rejection — re-send only the retriable rejected
+        // items, not the whole batch. Accepted events must not be re-sent to
+        // avoid duplicating counts in App Insights dashboards.
+        if let tr = try? JSONDecoder().decode(TrackResponse.self, from: data),
            tr.itemsReceived > 0, tr.itemsAccepted < events.count
         {
+            // Collect indices of retriable rejected items.
+            let retriableIndices: [Int] = (tr.errors ?? [])
+                .filter { Self.isRetriableStatusCode($0.statusCode) }
+                .map { $0.index }
+                .filter { $0 >= 0 && $0 < events.count }
+
+            if retriableIndices.isEmpty { return }
+
+            let retriable = retriableIndices.map { events[$0] }
             throw AppInsightsSinkError.partialReject(
                 accepted: tr.itemsAccepted,
-                received: events.count
+                received: events.count,
+                retriable: retriable
             )
         }
     }
 
     // MARK: - Connection-string parser
 
+    /// Parses a connection string and returns `(trackURL, instrumentationKey)`.
     ///
-    static func parseConnectionString(_ s: String) throws -> (endpoint: String, iKey: String) {
+    /// - Throws: `AppInsightsSinkError` when the string is empty, a key=value
+    ///   pair is malformed, `InstrumentationKey` is absent, or the resulting
+    ///   URL is not a valid URL.
+    static func parseConnectionString(_ s: String) throws -> (trackURL: URL, iKey: String) {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw AppInsightsSinkError.emptyConnectionString
@@ -152,7 +180,22 @@ public struct AppInsightsSink: TelemetrySink {
         if !endpoint.hasSuffix("/") {
             endpoint += "/"
         }
-        return (endpoint, iKey)
+
+        // store-21: validate the URL at parse time so init fails fast on a
+        // bad endpoint value, rather than crashing on the first send().
+        guard let url = URL(string: endpoint + "v2/track") else {
+            throw AppInsightsSinkError.invalidEndpointURL(endpoint)
+        }
+        return (url, iKey)
+    }
+
+    // MARK: - Retriable status codes
+
+    /// App Insights per-item status codes that are worth retrying.
+    /// 408 (timeout) and 503 (service unavailable) are retriable;
+    /// 400 (bad request) is a permanent rejection.
+    private static func isRetriableStatusCode(_ code: Int) -> Bool {
+        code == 408 || code == 429 || code == 500 || code == 503
     }
 
     // MARK: - Default session
@@ -169,6 +212,13 @@ public struct AppInsightsSink: TelemetrySink {
 private struct TrackResponse: Decodable {
     let itemsReceived: Int
     let itemsAccepted: Int
+    let errors: [ItemError]?
+}
+
+private struct ItemError: Decodable {
+    let index: Int
+    let statusCode: Int
+    let message: String?
 }
 
 // MARK: - Errors
@@ -178,9 +228,10 @@ public enum AppInsightsSinkError: Error, LocalizedError {
     case emptyConnectionString
     case malformedConnectionString(String)
     case missingInstrumentationKey
+    case invalidEndpointURL(String)
     case transport(any Error)
     case ingestion(statusCode: Int, body: String)
-    case partialReject(accepted: Int, received: Int)
+    case partialReject(accepted: Int, received: Int, retriable: [TelemetryEvent])
 
     public var errorDescription: String? {
         switch self {
@@ -190,11 +241,13 @@ public enum AppInsightsSinkError: Error, LocalizedError {
             return "Malformed App Insights connection-string entry: \(entry)"
         case .missingInstrumentationKey:
             return "App Insights connection string missing InstrumentationKey"
+        case .invalidEndpointURL(let ep):
+            return "App Insights IngestionEndpoint is not a valid URL: \(ep)"
         case .transport(let err):
             return "App Insights transport error: \(err.localizedDescription)"
         case .ingestion(let code, let body):
             return "App Insights ingestion HTTP \(code): \(body)"
-        case .partialReject(let accepted, let received):
+        case .partialReject(let accepted, let received, _):
             return "App Insights ingestion accepted \(accepted)/\(received) events"
         }
     }

@@ -16,18 +16,6 @@ public enum LogLevel: Sendable, Comparable {
     /// A failure that affects correctness.
     case error
 
-    // MARK: - Conversion
-
-    /// The `OSLogType` that corresponds to this level.
-    var osLogType: OSLogType {
-        switch self {
-        case .debug: return .debug
-        case .info: return .info
-        case .warn: return .error   // os.log has no dedicated "warning" type
-        case .error: return .fault
-        }
-    }
-
     // MARK: - Comparable
 
     public static func < (lhs: LogLevel, rhs: LogLevel) -> Bool {

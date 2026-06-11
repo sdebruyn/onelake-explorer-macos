@@ -37,8 +37,8 @@ bootstrap: ## Write Local.xcconfig from the sample (first-time setup)
 # --project-root . lets the spec reference source paths from the repo root
 # (e.g. "OneLake") while --project . drops the generated .xcodeproj at the
 # repo root, next to the spec.
-gen: ## Regenerate OneLake.xcodeproj from project.yml
-	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: brew install xcodegen"; exit 1; }
+gen: bootstrap ## Regenerate OneLake.xcodeproj from project.yml
+	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: make bootstrap && brew install xcodegen"; exit 1; }
 	xcodegen generate --spec project.yml --project-root . --project .
 
 # Build the OneLake.app target (Debug, arm64) for local dogfooding.
@@ -78,7 +78,7 @@ test: ## Run Swift unit tests (OfemKit)
 # (-2001) and the Finder mount never appears. Always run `make clean`
 # before removing a worktree you built the app in.
 clean: ## Remove build artefacts and unregister app from LaunchServices
-	@app="$(PWD)/DerivedData/Build/Products/Debug/OneLake.app"; \
+	@app="$(CURDIR)/DerivedData/Build/Products/Debug/OneLake.app"; \
 	lsreg="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"; \
 	if [ -d "$$app" ] && [ -x "$$lsreg" ]; then "$$lsreg" -u "$$app" 2>/dev/null || true; fi
 	rm -rf OneLake.xcodeproj OneLake.xcworkspace build DerivedData

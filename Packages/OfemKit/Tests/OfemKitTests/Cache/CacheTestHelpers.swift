@@ -5,13 +5,19 @@ import GRDB
 
 // MARK: - Test helpers
 
-/// Creates a `CacheStore` backed by a temporary directory on disk.
+/// Creates a `CacheStore` backed by a unique temporary directory.
 ///
-/// Using a real directory (rather than `:memory:`) ensures blob I/O tests
-/// exercise the full sharded file system path. Each call creates a unique
-/// subdirectory under `NSTemporaryDirectory()` and the caller is responsible
-/// for cleanup (or relies on the OS to reclaim temp space).
-func makeInMemoryStore() throws -> CacheStore {
+/// The returned store uses a real on-disk directory so that blob I/O tests
+/// exercise the full sharded file system path. Call `store.root` to obtain
+/// the directory path, and remove it in `defer` / teardown to avoid leaving
+/// orphaned directories behind.
+///
+/// Usage:
+/// ```swift
+/// let store = try makeTempStore()
+/// defer { try? FileManager.default.removeItem(at: store.root) }
+/// ```
+func makeTempStore() throws -> CacheStore {
     let tmp = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
     return try CacheStore(root: tmp)

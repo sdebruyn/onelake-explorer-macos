@@ -57,7 +57,8 @@ public actor CacheStore {
     /// eviction (``evictToLimit()`` becomes a no-op).
     ///
     /// The database is opened in **WAL mode** with `synchronous = NORMAL` and
-    /// a 5-second busy timeout.
+    /// a 5-second busy timeout. An orphan-sweep runs at initialisation time to
+    /// remove any blob files that have no matching metadata row.
     public init(root: URL, maxBlobBytes: Int64 = 0) throws {
         self.root = root
         self.maxBlobBytes = maxBlobBytes
@@ -88,6 +89,17 @@ public actor CacheStore {
         // Apply any pending migrations.
         let m = CacheSchema.migrator()
         try m.migrate(dbPool)
+
+        // Kick off the orphan sweep asynchronously so that init never blocks
+        // the calling thread on a directory walk + db.read (sync-21 pattern).
+        // The existing orphan sweep also covers any blobs that are present on
+        // disk but were not yet deleted after a prior crash — it runs before
+        // the first real operation completes.
+        let blobsCapture = blobs
+        let dbCapture = dbPool
+        Task { [blobsCapture, dbCapture] in
+            try? Self.sweepOrphanBlobs(blobs: blobsCapture, dbPool: dbCapture)
+        }
     }
 
     // MARK: - Reader
@@ -99,6 +111,17 @@ public actor CacheStore {
         CacheReader(db: dbPool)
     }
 
+    // MARK: - Orphan sweep
+
+    /// Runs the orphan-blob sweep synchronously (blocking the actor).
+    ///
+    /// The background `Task` started at `init` time runs the same sweep but
+    /// may not have completed yet. Call this from tests or maintenance paths
+    /// that need the sweep to have completed before proceeding.
+    public func sweepOrphans() throws {
+        try Self.sweepOrphanBlobs(blobs: blobs, dbPool: dbPool)
+    }
+
     // MARK: - Metadata: upsert
 
     /// Inserts or updates the metadata row for `record`.
@@ -106,49 +129,21 @@ public actor CacheStore {
     /// If `lastAccessedNs` or `syncedAtNs` are zero, the current wall-clock
     /// time is substituted so eviction and reconciliation always have a
     /// timestamp to work with.
-    public func upsert(_ record: MetadataRecord) throws {
+    public func upsert(_ record: MetadataRecord) async throws {
+        try validateKey(CacheKey(
+            accountAlias: record.accountAlias,
+            workspaceID: record.workspaceID,
+            itemID: record.itemID,
+            path: record.path
+        ))
         var r = record
         let nowNs = currentNs()
         if r.lastAccessedNs == 0 { r.lastAccessedNs = nowNs }
         if r.syncedAtNs == 0 { r.syncedAtNs = nowNs }
 
-        try dbPool.write { db in
-            try db.execute(sql: """
-                INSERT INTO path_metadata (
-                    account_alias, workspace_id, item_id, path,
-                    parent_path, name, is_dir,
-                    content_length, etag, last_modified_ns, content_type,
-                    blob_sha256, blob_size,
-                    last_accessed_ns, synced_at_ns, children_synced_at_ns
-                ) VALUES (
-                    ?, ?, ?, ?,
-                    ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?,
-                    ?, ?, ?
-                )
-                ON CONFLICT (account_alias, workspace_id, item_id, path) DO UPDATE SET
-                    parent_path            = excluded.parent_path,
-                    name                   = excluded.name,
-                    is_dir                 = excluded.is_dir,
-                    content_length         = excluded.content_length,
-                    etag                   = excluded.etag,
-                    last_modified_ns       = excluded.last_modified_ns,
-                    content_type           = excluded.content_type,
-                    blob_sha256            = excluded.blob_sha256,
-                    blob_size              = excluded.blob_size,
-                    last_accessed_ns       = excluded.last_accessed_ns,
-                    synced_at_ns           = excluded.synced_at_ns,
-                    children_synced_at_ns  = excluded.children_synced_at_ns
-                """,
-                arguments: [
-                    r.accountAlias, r.workspaceID, r.itemID, r.path,
-                    r.parentPath, r.name, r.isDir ? 1 : 0,
-                    r.contentLength, r.etag, r.lastModifiedNs, r.contentType,
-                    r.blobSHA256, r.blobSize,
-                    r.lastAccessedNs, r.syncedAtNs, r.childrenSyncedAtNs,
-                ]
-            )
+        let frozen = r
+        try await dbPool.write { db in
+            try frozen.upsert(db)
         }
     }
 
@@ -157,42 +152,15 @@ public actor CacheStore {
     /// Fetches the metadata row for `key`.
     ///
     /// Throws ``CacheError/notFound(_:)`` when the row does not exist.
-    public func fetch(key: CacheKey) throws -> MetadataRecord {
-        try validateKey(key)
-        return try dbPool.read { db in
-            guard let row = try MetadataRecord
-                .filter(MetadataRecord.Columns.accountAlias == key.accountAlias)
-                .filter(MetadataRecord.Columns.workspaceID == key.workspaceID)
-                .filter(MetadataRecord.Columns.itemID == key.itemID)
-                .filter(MetadataRecord.Columns.path == key.path)
-                .fetchOne(db)
-            else {
-                throw CacheError.notFound(
-                    "\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)"
-                )
-            }
-            return row
-        }
+    public func fetch(key: CacheKey) async throws -> MetadataRecord {
+        try await reader().fetch(key: key)
     }
 
     // MARK: - Metadata: children
 
     /// Returns every direct child of the directory identified by `key`.
-    public func children(of key: CacheKey) throws -> [MetadataRecord] {
-        try validateKey(key)
-        return try dbPool.read { db in
-            try MetadataRecord
-                .filter(MetadataRecord.Columns.accountAlias == key.accountAlias)
-                .filter(MetadataRecord.Columns.workspaceID == key.workspaceID)
-                .filter(MetadataRecord.Columns.itemID == key.itemID)
-                .filter(MetadataRecord.Columns.parentPath == key.path)
-                .filter(sql: "path <> parent_path")
-                .order(
-                    MetadataRecord.Columns.isDir.desc,
-                    MetadataRecord.Columns.name.asc
-                )
-                .fetchAll(db)
-        }
+    public func children(of key: CacheKey) async throws -> [MetadataRecord] {
+        try await reader().children(of: key)
     }
 
     // MARK: - Metadata: touch
@@ -200,10 +168,10 @@ public actor CacheStore {
     /// Bumps `last_accessed_ns` for `key` to the current time.
     ///
     /// Throws ``CacheError/notFound(_:)`` when the row does not exist.
-    public func touch(key: CacheKey) throws {
+    public func touch(key: CacheKey) async throws {
         try validateKey(key)
         let nowNs = currentNs()
-        let affected = try dbPool.write { db -> Int in
+        let affected = try await dbPool.write { db -> Int in
             try db.execute(sql: """
                 UPDATE path_metadata
                 SET last_accessed_ns = ?
@@ -224,11 +192,11 @@ public actor CacheStore {
     ///
     /// Blob files referenced exclusively by deleted rows are unlinked from disk.
     /// A no-op when the key does not exist.
-    public func delete(key: CacheKey) throws {
+    public func delete(key: CacheKey) async throws {
         try validateKey(key)
 
         // 1. Collect SHA-256 digests of blobs that will be deleted.
-        let shas: [String] = try dbPool.write { db in
+        let shas: [String] = try await dbPool.write { db in
             let shaRows: [String]
             if key.path.isEmpty {
                 shaRows = try String.fetchAll(db, sql: """
@@ -268,31 +236,15 @@ public actor CacheStore {
         // 2. Unlink blob files that no surviving row references.
         let unique = Array(Set(shas))
         for sha in unique {
-            maybeDeleteBlob(sha: sha)
+            await maybeDeleteBlob(sha: sha)
         }
     }
 
     // MARK: - Metadata: hotItems
 
     /// Returns item roots that had at least one cache hit at or after `since`.
-    public func hotItems(since: Date) throws -> [CacheKey] {
-        let sinceNs = dateToNs(since)
-        return try dbPool.read { db in
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT DISTINCT account_alias, workspace_id, item_id
-                FROM path_metadata
-                WHERE last_accessed_ns >= ? AND last_accessed_ns > 0
-                ORDER BY account_alias, workspace_id, item_id
-                """, arguments: [sinceNs])
-            return rows.map { row in
-                CacheKey(
-                    accountAlias: row["account_alias"],
-                    workspaceID: row["workspace_id"],
-                    itemID: row["item_id"],
-                    path: ""
-                )
-            }
-        }
+    public func hotItems(since: Date) async throws -> [CacheKey] {
+        try await reader().hotItems(since: since)
     }
 
     // MARK: - Blob: store
@@ -301,13 +253,14 @@ public actor CacheStore {
     /// `blob_size` columns on the metadata row identified by `key`.
     ///
     /// The metadata row must already exist (call ``upsert(_:)`` first).
-    /// implementation.
-    public func storeBlob(key: CacheKey, data: Data) throws {
+    /// After each write the byte budget is enforced: if the total exceeds
+    /// `maxBlobBytes`, ``evictToLimit()`` runs automatically.
+    public func storeBlob(key: CacheKey, data: Data) async throws {
         try validateKey(key)
         let (sha, size) = try blobs.store(data)
 
         // Update metadata row's blob columns.
-        let affected = try dbPool.write { db -> Int in
+        let affected = try await dbPool.write { db -> Int in
             try db.execute(sql: """
                 UPDATE path_metadata
                 SET blob_sha256 = ?, blob_size = ?, last_accessed_ns = ?
@@ -319,10 +272,21 @@ public actor CacheStore {
         if affected == 0 {
             // The blob was written to disk but no metadata row exists — surface
             // the error so the caller can upsert the row first. The orphaned
-            // blob will be reclaimed by a subsequent eviction pass.
+            // blob will be reclaimed by the next eviction pass or init sweep.
             throw CacheError.notFound(
                 "\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)"
             )
+        }
+
+        // Enforce the byte budget after every successful write.
+        // Measurement and eviction happen in one atomic DB transaction — no
+        // suspension between the total read and the eviction decision, so the
+        // budget cannot be transiently overshot by a concurrent storeBlob on
+        // this actor.  Blob files are deleted *after* the transaction commits;
+        // a crash between commit and file-delete leaves orphaned files that the
+        // next init-time orphan sweep will recover.
+        if maxBlobBytes > 0 {
+            _ = try await evictToLimit()
         }
     }
 
@@ -331,38 +295,53 @@ public actor CacheStore {
     /// Loads the cached blob for `key`, if one is stored.
     ///
     /// Throws ``CacheError/notFound(_:)`` when the metadata row has no blob or
-    /// the blob file is missing from disk.
-    public func loadBlob(key: CacheKey) throws -> Data {
+    /// the blob file is missing from disk. When the file is missing but the
+    /// metadata row still carries a `blob_sha256` reference, the dangling link
+    /// is cleared so `blobBytes()` stays accurate.
+    ///
+    /// Ordering: the blob file is read *before* the `touch` write so that a
+    /// concurrent `delete(key:)` racing between `fetch` and `blobs.load` is
+    /// detected as a missing file rather than silently returning stale data.
+    /// If `touch` finds the row gone (concurrent delete), it throws `notFound`;
+    /// `clearBlobLink` is also called in that path to handle any dangling link.
+    public func loadBlob(key: CacheKey) async throws -> Data {
         try validateKey(key)
-        let record = try fetch(key: key)
+        let record = try await fetch(key: key)
         guard !record.blobSHA256.isEmpty else {
             throw CacheError.notFound("blob for \(key.path)")
         }
-        // Touch last_accessed on blob read.
-        try touch(key: key)
-        return try blobs.load(sha256: record.blobSHA256)
+        // Load the blob file before touching so that a concurrent delete between
+        // fetch and load surfaces as a notFound from blobs.load — the cleaner path.
+        let data: Data
+        do {
+            data = try blobs.load(sha256: record.blobSHA256)
+        } catch CacheError.notFound {
+            // File gone from disk — clear the dangling link so blobBytes() is truthful.
+            try await clearBlobLink(key: key)
+            throw CacheError.notFound("blob for \(key.path)")
+        }
+        // Touch last_accessed only after a successful load.
+        // If the row was concurrently deleted, touch throws notFound — that is
+        // the correct outcome; clearBlobLink is a no-op (row is already gone).
+        do {
+            try await touch(key: key)
+        } catch CacheError.notFound {
+            // Row was deleted between load and touch — benign; blob was already read.
+        }
+        return data
     }
 
     // MARK: - Blob: blobBytes
 
     /// Returns the deduplicated on-disk byte total for all cached blobs.
-    public func blobBytes() throws -> Int64 {
-        try dbPool.read { db in
-            try Int64.fetchOne(db, sql: """
-                SELECT COALESCE(SUM(blob_size), 0)
-                FROM (
-                    SELECT blob_size FROM path_metadata
-                    WHERE blob_sha256 != ''
-                    GROUP BY blob_sha256
-                )
-                """) ?? 0
-        }
+    public func blobBytes() async throws -> Int64 {
+        try await reader().blobBytes()
     }
 
     // MARK: - Blob: diskUsage
 
     /// Walks the blob root and returns the file count and total bytes on disk.
-    public func diskUsage() throws -> (count: Int, bytes: Int64) {
+    public func diskUsage() async throws -> (count: Int, bytes: Int64) {
         try blobs.diskUsage()
     }
 
@@ -372,11 +351,11 @@ public actor CacheStore {
     ///
     /// Metadata rows survive — the next access treats them as "not cached" and
     /// re-downloads the blob.
-    public func wipe() throws -> (count: Int, bytes: Int64) {
+    public func wipe() async throws -> (count: Int, bytes: Int64) {
         let usage = try blobs.diskUsage()
 
         // Clear blob columns in one transaction.
-        try dbPool.write { db in
+        try await dbPool.write { db in
             try db.execute(sql: """
                 UPDATE path_metadata
                 SET blob_sha256 = '', blob_size = 0
@@ -398,28 +377,99 @@ public actor CacheStore {
     ///
     /// A no-op when `maxBlobBytes` is zero.
     ///
+    /// The total-bytes measurement and the eviction candidates are selected in
+    /// a single `dbPool.write` transaction — there is no `await` suspension
+    /// between the measurement and the UPDATE/DELETE decisions, so no concurrent
+    /// actor task can push the total higher between the two steps.
+    ///
+    /// Blob files are deleted **after** the transaction commits.  A crash between
+    /// commit and file-delete leaves orphaned files on disk; the init-time orphan
+    /// sweep reclaims them on the next launch.
+    ///
+    /// Note: per arch-04, multiple `CacheStore` instances may share the same
+    /// `cacheDir`.  This method enforces the budget for *this* instance only;
+    /// cross-engine enforcement is out of scope.
+    ///
     /// - Returns: `(evicted, reclaimed)` — number of rows cleared and bytes freed.
-    public func evictToLimit() throws -> (evicted: Int, reclaimed: Int64) {
+    public func evictToLimit() async throws -> (evicted: Int, reclaimed: Int64) {
         guard maxBlobBytes > 0 else { return (0, 0) }
 
-        var total = try blobBytes()
-        if total <= maxBlobBytes { return (0, 0) }
+        struct EvictionCandidate {
+            var accountAlias: String
+            var workspaceID: String
+            var itemID: String
+            var path: String
+            var sha: String
+            var size: Int64
+        }
 
-        var evicted = 0
+        // Single transaction: compute total, select LRU candidates, clear their rows.
+        let candidates: [EvictionCandidate] = try await dbPool.write { db in
+            let total = try Int64.fetchOne(db, sql: """
+                SELECT COALESCE(SUM(blob_size), 0) FROM path_metadata WHERE blob_sha256 != ''
+                """) ?? 0
+            guard total > maxBlobBytes else { return [] }
+
+            // How many bytes we need to shed.
+            var overage = total - maxBlobBytes
+
+            // Select victims in LRU order until overage is covered.
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT account_alias, workspace_id, item_id, path, blob_sha256, blob_size
+                FROM path_metadata
+                WHERE blob_sha256 != ''
+                ORDER BY last_accessed_ns ASC, rowid ASC
+                """)
+
+            var toEvict: [EvictionCandidate] = []
+            for row in rows {
+                guard overage > 0 else { break }
+                let size: Int64 = row["blob_size"]
+                toEvict.append(EvictionCandidate(
+                    accountAlias: row["account_alias"],
+                    workspaceID: row["workspace_id"],
+                    itemID: row["item_id"],
+                    path: row["path"],
+                    sha: row["blob_sha256"],
+                    size: size
+                ))
+                overage -= size
+            }
+
+            // Clear blob columns for all victims in one pass.
+            for v in toEvict {
+                try db.execute(sql: """
+                    UPDATE path_metadata
+                    SET blob_sha256 = '', blob_size = 0
+                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+                    """, arguments: [v.accountAlias, v.workspaceID, v.itemID, v.path])
+            }
+
+            return toEvict
+        }
+
+        if candidates.isEmpty { return (0, 0) }
+
+        // Delete blob files after the transaction has committed.
+        // Orphaned files from a crash here are recovered by the init-time sweep.
         var reclaimed: Int64 = 0
-
-        while total > maxBlobBytes {
-            guard let result = try evictOldest() else { break }
-            evicted += 1
-            if result.freed {
-                reclaimed += result.size
-                total -= result.size
+        for v in candidates {
+            // Only delete the file if no other row still references this SHA.
+            let refs = try await dbPool.read { db in
+                try Int64.fetchOne(db, sql: """
+                    SELECT COUNT(*) FROM path_metadata WHERE blob_sha256 = ?
+                    """, arguments: [v.sha]) ?? 0
+            }
+            if refs == 0 {
+                try? blobs.delete(sha256: v.sha)
+                reclaimed += v.size
             }
             Self.log.debug(
-                "CacheStore: evicted sha=\(result.sha, privacy: .public) bytes=\(result.size, privacy: .public) freed=\(result.freed, privacy: .public)"
+                "CacheStore: evicted sha=\(v.sha, privacy: .public) bytes=\(v.size, privacy: .public)"
             )
         }
-        return (evicted, reclaimed)
+
+        return (candidates.count, reclaimed)
     }
 
     // MARK: - Workspace status
@@ -429,12 +479,12 @@ public actor CacheStore {
     /// When the new state matches the persisted state, `detected_at_ns` is
     /// preserved (continuous pause). On a state change the new `detectedAtNs`
     /// is recorded.
-    public func setWorkspaceStatus(_ status: WorkspaceStatusRecord) throws {
+    public func setWorkspaceStatus(_ status: WorkspaceStatusRecord) async throws {
         guard !status.accountAlias.isEmpty, !status.workspaceID.isEmpty else {
             throw CacheError.missingArgument("accountAlias and workspaceID")
         }
 
-        try dbPool.write { db in
+        try await dbPool.write { db in
             // Read existing row to preserve detectedAtNs on same-state updates.
             let existing = try WorkspaceStatusRecord
                 .filter(WorkspaceStatusRecord.Columns.accountAlias == status.accountAlias)
@@ -451,61 +501,32 @@ public actor CacheStore {
                 probedNs = ex.probedAtNs
             }
 
-            try db.execute(sql: """
-                INSERT INTO workspace_status
-                    (account_alias, workspace_id, state, reason, detected_at_ns, probed_at_ns)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (account_alias, workspace_id) DO UPDATE SET
-                    state          = excluded.state,
-                    reason         = excluded.reason,
-                    detected_at_ns = excluded.detected_at_ns,
-                    probed_at_ns   = excluded.probed_at_ns
-                """, arguments: [
-                    status.accountAlias, status.workspaceID,
-                    status.state.rawValue, status.reason,
-                    detectedNs, probedNs,
-                ])
+            var row = status
+            row.detectedAtNs = detectedNs
+            row.probedAtNs = probedNs
+            try row.upsert(db)
         }
     }
 
     /// Reads the persisted status for the given workspace.
     ///
     /// Throws ``CacheError/notFound(_:)`` when no row exists.
-    public func workspaceStatus(accountAlias: String, workspaceID: String) throws -> WorkspaceStatusRecord {
-        guard !accountAlias.isEmpty, !workspaceID.isEmpty else {
-            throw CacheError.missingArgument("accountAlias and workspaceID")
-        }
-        return try dbPool.read { db in
-            guard let row = try WorkspaceStatusRecord
-                .filter(WorkspaceStatusRecord.Columns.accountAlias == accountAlias)
-                .filter(WorkspaceStatusRecord.Columns.workspaceID == workspaceID)
-                .fetchOne(db)
-            else {
-                throw CacheError.notFound("workspace_status \(accountAlias)/\(workspaceID)")
-            }
-            return row
-        }
+    public func workspaceStatus(accountAlias: String, workspaceID: String) async throws -> WorkspaceStatusRecord {
+        try await reader().workspaceStatus(accountAlias: accountAlias, workspaceID: workspaceID)
     }
 
     /// Returns all persisted workspace status rows ordered by
     /// `(account_alias, workspace_id)`.
-    public func allWorkspaceStatuses() throws -> [WorkspaceStatusRecord] {
-        try dbPool.read { db in
-            try WorkspaceStatusRecord
-                .order(
-                    WorkspaceStatusRecord.Columns.accountAlias,
-                    WorkspaceStatusRecord.Columns.workspaceID
-                )
-                .fetchAll(db)
-        }
+    public func allWorkspaceStatuses() async throws -> [WorkspaceStatusRecord] {
+        try await reader().allWorkspaceStatuses()
     }
 
     /// Returns only the workspace status rows whose state is `.paused`,
     /// ordered by `(account_alias, workspace_id)`.
     ///
     /// Used by the menu-bar host to build the paused-workspaces badge.
-    public func listPausedWorkspaces() throws -> [WorkspaceStatusRecord] {
-        try dbPool.read { db in
+    public func listPausedWorkspaces() async throws -> [WorkspaceStatusRecord] {
+        try await dbPool.read { db in
             try WorkspaceStatusRecord
                 .filter(WorkspaceStatusRecord.Columns.state == WorkspaceStatusRecord.State.paused.rawValue)
                 .order(
@@ -518,70 +539,13 @@ public actor CacheStore {
 
     // MARK: - Private helpers
 
-    /// Evicts the single LRU blob-bearing row.
-    ///
-    /// Returns `nil` when no blob-bearing row remains.
-    private func evictOldest() throws -> (sha: String, size: Int64, freed: Bool)? {
-        struct VictimResult {
-            var accountAlias: String
-            var workspaceID: String
-            var itemID: String
-            var path: String
-            var sha: String
-            var size: Int64
-            var refs: Int64
-        }
-
-        let result: VictimResult? = try dbPool.write { db in
-            // Select and clear atomically within a single write transaction.
-            guard let row = try Row.fetchOne(db, sql: """
-                SELECT account_alias, workspace_id, item_id, path, blob_sha256, blob_size
-                FROM path_metadata
-                WHERE blob_sha256 != ''
-                ORDER BY last_accessed_ns ASC, rowid ASC
-                LIMIT 1
-                """) else { return nil }
-
-            let alias: String = row["account_alias"]
-            let wsID: String = row["workspace_id"]
-            let iID: String = row["item_id"]
-            let p: String = row["path"]
-            let sha: String = row["blob_sha256"]
-            let size: Int64 = row["blob_size"]
-
-            try db.execute(sql: """
-                UPDATE path_metadata
-                SET blob_sha256 = '', blob_size = 0
-                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                """, arguments: [alias, wsID, iID, p])
-
-            let refs = try Int64.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM path_metadata WHERE blob_sha256 = ?
-                """, arguments: [sha]) ?? 0
-
-            return VictimResult(
-                accountAlias: alias, workspaceID: wsID, itemID: iID, path: p,
-                sha: sha, size: size, refs: refs
-            )
-        }
-
-        guard let v = result else { return nil }
-
-        var freed = false
-        if v.refs == 0 {
-            freed = true
-            try? blobs.delete(sha256: v.sha)
-        }
-        return (v.sha, v.size, freed)
-    }
-
     /// Deletes the blob file for `sha` when no metadata row references it.
     ///
     /// Logs but does not throw — a leaked blob is recoverable by a later
     /// eviction pass.
-    private func maybeDeleteBlob(sha: String) {
+    private func maybeDeleteBlob(sha: String) async {
         do {
-            let refs = try dbPool.read { db in
+            let refs = try await dbPool.read { db in
                 try Int64.fetchOne(db, sql: """
                     SELECT COUNT(*) FROM path_metadata WHERE blob_sha256 = ?
                     """, arguments: [sha]) ?? 0
@@ -590,6 +554,70 @@ public actor CacheStore {
             try blobs.delete(sha256: sha)
         } catch {
             Self.log.warning("CacheStore: maybeDeleteBlob failed sha=\(sha, privacy: .public) error=\(error, privacy: .public)")
+        }
+    }
+
+    /// Clears the `blob_sha256` and `blob_size` columns for `key`, healing a
+    /// dangling metadata link when the blob file has been removed from disk.
+    private func clearBlobLink(key: CacheKey) async throws {
+        try await dbPool.write { db in
+            try db.execute(sql: """
+                UPDATE path_metadata
+                SET blob_sha256 = '', blob_size = 0
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+                """, arguments: [key.accountAlias, key.workspaceID, key.itemID, key.path])
+        }
+    }
+
+    /// Removes blob files on disk that have no corresponding metadata row.
+    ///
+    /// Also removes orphaned `*.tmp` scratch files left behind by a crash
+    /// during ``BlobShardCache/store(_:)`` — these are never referenced by the
+    /// DB and would otherwise accumulate unbounded.
+    ///
+    /// Called once at initialisation time to reconcile shard-dir contents
+    /// against DB references and eliminate files orphaned by prior crashes
+    /// or bugs.
+    private static func sweepOrphanBlobs(blobs: BlobShardCache, dbPool: DatabasePool) throws {
+        // Walk the blob root and collect all SHA-256 values present on disk.
+        guard FileManager.default.fileExists(atPath: blobs.blobRoot.path) else { return }
+
+        let enumerator = FileManager.default.enumerator(
+            at: blobs.blobRoot,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        var onDisk: [String] = []
+        while let url = enumerator?.nextObject() as? URL {
+            // Remove orphaned *.tmp scratch files — written by BlobShardCache.store
+            // but never renamed into place (crash mid-write).  They are never DB-
+            // referenced and must not accumulate.
+            if url.pathExtension == "tmp" {
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
+            guard let vals = try? url.resourceValues(forKeys: [.isRegularFileKey]),
+                  vals.isRegularFile == true else { continue }
+            // Reconstruct SHA from shard-prefix + filename.
+            let shard = url.deletingLastPathComponent().lastPathComponent
+            let file = url.lastPathComponent
+            let sha = shard + file
+            guard sha.count == BlobShardCache.shaLength else { continue }
+            onDisk.append(sha)
+        }
+
+        guard !onDisk.isEmpty else { return }
+
+        // Ask the DB which of those are actually referenced.
+        let referenced: Set<String> = try dbPool.read { db in
+            let rows = try String.fetchAll(db, sql: """
+                SELECT DISTINCT blob_sha256 FROM path_metadata WHERE blob_sha256 != ''
+                """)
+            return Set(rows)
+        }
+
+        for sha in onDisk where !referenced.contains(sha) {
+            try? blobs.delete(sha256: sha)
         }
     }
 }

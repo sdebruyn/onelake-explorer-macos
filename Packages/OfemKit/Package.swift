@@ -15,12 +15,14 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/LebJe/TOMLKit.git", from: "0.6.0"),
+        // Pinned to exact versions matching Package.resolved for reproducible builds.
+        // Update together with Package.resolved (dependabot will open PRs for these).
+        .package(url: "https://github.com/LebJe/TOMLKit.git", exact: "0.6.0"),
         .package(
             url: "https://github.com/AzureAD/microsoft-authentication-library-for-objc",
-            from: "2.12.1"
+            exact: "2.12.1"
         ),
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.0"),
+        .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.0"),
     ],
     targets: [
         .target(

@@ -12,6 +12,9 @@ import GRDB
 /// In the final FPE wiring, the FPE receives a
 /// `CacheReader` handle while the host-app-facing `CacheStore` retains the
 /// write lock. For now `CacheStore` exposes its reader via ``CacheStore/reader``.
+///
+/// `CacheStore` read methods delegate here — there is exactly one copy of each
+/// query.
 public final class CacheReader: Sendable {
 
     private let db: any DatabaseReader

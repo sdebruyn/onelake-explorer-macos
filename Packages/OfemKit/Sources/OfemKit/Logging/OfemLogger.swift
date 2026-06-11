@@ -61,6 +61,8 @@ public struct OfemLogger: Sendable {
         guard level >= configuration.level else { return }
 
         // os.Logger — visible in Console.app, `log stream`, and Instruments.
+        // store-16: map warn→.error and error→.error (not .fault); .fault is
+        // reserved for programmer faults and is always persisted to disk.
         let osMessage = metadata.isEmpty
             ? message
             : "\(message) \(formatMeta(metadata))"
@@ -73,7 +75,7 @@ public struct OfemLogger: Sendable {
         case .warn:
             osLogger.error("\(osMessage, privacy: .public)")
         case .error:
-            osLogger.fault("\(osMessage, privacy: .public)")
+            osLogger.error("\(osMessage, privacy: .public)")
         }
 
         // Rotating file — JSON-structured.
@@ -94,19 +96,25 @@ public struct OfemLogger: Sendable {
     /// Emits a single JSON line with `time`, `level`, `msg`, and any
     /// caller-supplied metadata keys.
     ///
+    /// Reserved keys (`time`, `level`, `msg`) always win — a caller metadata
+    /// key with the same name is silently dropped. (store-17)
+    ///
     /// Example:
     /// ```json
     /// {"time":"2026-06-07T14:03:12.000Z","level":"INFO","msg":"workspace listed","tenantId":"9064c167"}
     /// ```
     private func jsonLine(level: LogLevel, message: String, metadata: [String: String]) -> String {
-        var dict: [String: Any] = [
-            "time": isoTimestamp(),
-            "level": levelLabel(level),
-            "msg": message,
-        ]
+        // store-17: build caller metadata first, then overwrite with reserved
+        // keys so reserved keys always win.
+        var dict: [String: Any] = [:]
         for (k, v) in metadata {
             dict[k] = v
         }
+        // Reserved keys overwrite any same-named metadata key.
+        dict["time"] = Self.isoTimestamp()
+        dict["level"] = levelLabel(level)
+        dict["msg"] = message
+
         guard
             let data = try? JSONSerialization.data(
                 withJSONObject: dict,
@@ -114,15 +122,24 @@ public struct OfemLogger: Sendable {
             ),
             let str = String(data: data, encoding: .utf8)
         else {
-            return "{\"time\":\"\(isoTimestamp())\",\"level\":\"\(levelLabel(level))\",\"msg\":\"\(message)\"}"
+            return "{\"time\":\"\(Self.isoTimestamp())\",\"level\":\"\(levelLabel(level))\",\"msg\":\"\(message)\"}"
         }
         return str
     }
 
-    private func isoTimestamp() -> String {
+    // MARK: - Shared ISO 8601 formatter (store-15)
+
+    /// Thread-safe shared formatter. `ISO8601DateFormatter` is documented as
+    /// thread-safe after its format options are set; `nonisolated(unsafe)` tells
+    /// the Swift concurrency checker we have verified this invariant.
+    nonisolated(unsafe) private static let iso8601Formatter: ISO8601DateFormatter = {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fmt.string(from: Date())
+        return fmt
+    }()
+
+    static func isoTimestamp() -> String {
+        iso8601Formatter.string(from: Date())
     }
 
     private func levelLabel(_ level: LogLevel) -> String {

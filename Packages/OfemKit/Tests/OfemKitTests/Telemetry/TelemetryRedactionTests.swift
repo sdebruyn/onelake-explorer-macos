@@ -69,6 +69,20 @@ struct TelemetryRedactionTests {
         #expect(TelemetryRedaction.safeErrorCode("Sales/budget_2026.csv") == "redacted")
     }
 
+    @Test("safeErrorCode rejects NSError domain containing a path segment (PII-domain pin)")
+    func safeErrorCodePIIDomainPin() {
+        // A custom NSError whose domain embeds a path segment or UPN —
+        // e.g. "dev.debruyn.ofem/auth failed for sam@x.y" — must not pass
+        // through safeErrorCode verbatim.  The slash makes it unsafe; the
+        // result must be "redacted", not the raw domain:code string.
+        let domain = "dev.debruyn.ofem/auth failed for sam@x.y"
+        let composed = "\(domain):-1"
+        #expect(
+            TelemetryRedaction.safeErrorCode(composed) == "redacted",
+            "domain containing '/' must be redacted, got: \(TelemetryRedaction.safeErrorCode(composed))"
+        )
+    }
+
     @Test("safeErrorCode rejects backslash")
     func safeErrorCodeBackslash() {
         #expect(TelemetryRedaction.safeErrorCode("a\\b") == "redacted")

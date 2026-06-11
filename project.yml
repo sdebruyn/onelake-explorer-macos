@@ -17,8 +17,15 @@ settings:
   base:
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: YES
+    # SWIFT_VERSION stays at 5.10 for the app and FPE targets (build-14).
+    # Blocker: TOMLKit 0.6.0 (Packages/OfemKit) is not Sendable-conformant;
+    # compiling with SWIFT_VERSION=6.0 produces ~14 errors in TOMLKit's
+    # FormatOptions.swift. Upgrade to Swift 6 language mode once TOMLKit
+    # ships a Swift 6-compatible release.
     SWIFT_VERSION: "5.10"
-    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    # MACOSX_DEPLOYMENT_TARGET is intentionally omitted here — XcodeGen
+    # derives it from options.deploymentTarget.macOS above ("14.0") and
+    # emits the setting automatically. Declaring it twice creates drift risk.
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
     GENERATE_INFOPLIST_FILE: NO

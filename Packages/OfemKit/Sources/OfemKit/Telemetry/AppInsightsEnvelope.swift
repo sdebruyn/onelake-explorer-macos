@@ -8,7 +8,9 @@ import Foundation
 ///
 /// Every property value that enters these structs has already been routed
 /// through `TelemetryRedaction.scrubProperty` / `safeErrorCode` in
-/// `splitFields(_:)`, making the privacy guarantee structural.
+/// `splitFields(_:)`, making the privacy guarantee structural. The `tags`
+/// dictionary is constructed inside `from(event:…)` after that boundary
+/// (store-22), so the invariant is total.
 
 // MARK: - Envelope (top-level)
 
@@ -48,7 +50,8 @@ extension AppInsightsEnvelope {
     ///
     /// All string property values are passed through `scrubProperty` /
     /// `safeErrorCode` at this boundary — the single place where an event
-    /// becomes outbound data.
+    /// becomes outbound data. The `tags` dictionary is constructed here
+    /// (inside the boundary) so the privacy invariant is total. (store-22)
     static func from(
         event: TelemetryEvent,
         iKey: String,
@@ -59,17 +62,20 @@ extension AppInsightsEnvelope {
         let ts = event.time ?? Date()
         let (props, meas) = splitFields(event)
 
+        // store-22: construct tags inside the redaction boundary so any
+        // corrupted or user-supplied installID value is scrubbed before it
+        // leaves the device.
         var tags: [String: String] = [
-            "ai.cloud.role": role,
-            "ai.internal.sdkVersion": sdkTag,
+            "ai.cloud.role": TelemetryRedaction.scrubProperty(role),
+            "ai.internal.sdkVersion": TelemetryRedaction.scrubProperty(sdkTag),
         ]
         if !installID.isEmpty {
-            tags["ai.cloud.roleInstance"] = installID
+            tags["ai.cloud.roleInstance"] = TelemetryRedaction.scrubProperty(installID)
         }
 
         return AppInsightsEnvelope(
             name: "Microsoft.ApplicationInsights.Event",
-            time: Self.formatTime(ts),
+            time: SharedFormatter.isoTimestamp(ts),
             iKey: iKey,
             tags: tags,
             data: EnvelopeData(
@@ -83,12 +89,28 @@ extension AppInsightsEnvelope {
             )
         )
     }
+}
 
-    private static func formatTime(_ date: Date) -> String {
-        // RFC 3339 with milliseconds, e.g. "2026-06-08T15:04:05.000Z".
+// MARK: - Shared ISO 8601 formatter (store-15)
+
+/// A single static `ISO8601DateFormatter` shared across all telemetry
+/// envelope timestamps. `ISO8601DateFormatter` is thread-safe once its
+/// format options are configured.
+/// Note: logging uses a separate formatter in `OfemLogger`; this enum is
+/// scoped to the telemetry package only.
+enum SharedFormatter {
+    // ISO8601DateFormatter is documented as thread-safe after configuration;
+    // nonisolated(unsafe) suppresses the Swift concurrency check.
+    nonisolated(unsafe) private static let formatter: ISO8601DateFormatter = {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fmt.string(from: date)
+        return fmt
+    }()
+
+    /// Returns an RFC 3339 / ISO 8601 string with milliseconds, e.g.
+    /// `"2026-06-08T15:04:05.000Z"`.
+    static func isoTimestamp(_ date: Date = Date()) -> String {
+        formatter.string(from: date)
     }
 }
 

@@ -31,6 +31,8 @@ struct ItemIdentifierParserTests {
     }
 
     // MARK: - Valid paths
+    //
+    // Raw identifiers are slash-less: "ws", "ws/item", "ws/item/path...".
 
     @Test func parsesWorkspaceSegment() throws {
         let id = try ItemIdentifierParser.parse("ws-abc")
@@ -86,6 +88,12 @@ struct ItemIdentifierParserTests {
     @Test func rejectsLeadingSlash() {
         #expect(throws: (any Error).self) {
             try ItemIdentifierParser.parse("/ws-abc")
+        }
+    }
+
+    @Test func rejectsTrailingSlash() {
+        #expect(throws: (any Error).self) {
+            try ItemIdentifierParser.parse("ws-abc/")
         }
     }
 

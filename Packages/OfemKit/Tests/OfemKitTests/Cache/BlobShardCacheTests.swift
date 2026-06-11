@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 
@@ -13,7 +14,8 @@ struct BlobShardCacheTests {
 
     @Test("Store and load a blob")
     func storeAndLoad() throws {
-        let (cache, _) = try makeBlobCache()
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
         let data = Data("hello world".utf8)
         let (sha, size) = try cache.store(data)
         #expect(sha.count == 64)
@@ -25,7 +27,8 @@ struct BlobShardCacheTests {
 
     @Test("Store is idempotent")
     func storeIsIdempotent() throws {
-        let (cache, _) = try makeBlobCache()
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
         let data = Data("test".utf8)
         let (sha1, size1) = try cache.store(data)
         let (sha2, size2) = try cache.store(data)
@@ -35,42 +38,53 @@ struct BlobShardCacheTests {
 
     @Test("Load missing blob throws notFound")
     func loadMissingThrowsNotFound() throws {
-        let (cache, _) = try makeBlobCache()
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
         let fakeSHA = String(repeating: "a", count: 64)
-        #expect(throws: CacheError.self) {
+        #expect(throws: CacheError.notFound("blob \(fakeSHA)")) {
             try cache.load(sha256: fakeSHA)
         }
     }
 
     @Test("Delete removes blob file")
     func deleteRemovesFile() throws {
-        let (cache, _) = try makeBlobCache()
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
         let data = Data("bye".utf8)
         let (sha, _) = try cache.store(data)
         try cache.delete(sha256: sha)
-        #expect(throws: CacheError.self) { try cache.load(sha256: sha) }
+        #expect(throws: CacheError.notFound("blob \(sha)")) {
+            try cache.load(sha256: sha)
+        }
     }
 
     @Test("Delete missing blob is a no-op")
     func deleteMissingIsNoOp() throws {
-        let (cache, _) = try makeBlobCache()
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
         let fakeSHA = String(repeating: "b", count: 64)
         try cache.delete(sha256: fakeSHA)
     }
 
-    // MARK: - SHA validation
+    // MARK: - SHA validation (tests-16: specific error cases)
 
     @Test("Invalid SHA length throws invalidSHA")
     func invalidSHALength() throws {
-        let (cache, _) = try makeBlobCache()
-        #expect(throws: CacheError.self) { try cache.load(sha256: "abc") }
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        #expect(throws: CacheError.invalidSHA("abc")) {
+            try cache.load(sha256: "abc")
+        }
     }
 
     @Test("Uppercase SHA throws invalidSHA")
     func uppercaseSHAThrows() throws {
-        let (cache, _) = try makeBlobCache()
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
         let upperSHA = String(repeating: "A", count: 64)
-        #expect(throws: CacheError.self) { try cache.load(sha256: upperSHA) }
+        #expect(throws: CacheError.invalidSHA(upperSHA)) {
+            try cache.load(sha256: upperSHA)
+        }
     }
 
     // MARK: - Shard layout
@@ -78,6 +92,7 @@ struct BlobShardCacheTests {
     @Test("Blob is stored in correct shard directory")
     func blobStoredInCorrectShard() throws {
         let (cache, rootURL) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
         let data = Data("shard test".utf8)
         let (sha, _) = try cache.store(data)
 
@@ -87,11 +102,90 @@ struct BlobShardCacheTests {
         #expect(FileManager.default.fileExists(atPath: expected.path))
     }
 
+    // MARK: - Shard sibling safety (store-01 regression)
+
+    @Test("Delete removes only the keyed file and leaves shard siblings intact")
+    func deletePreservesSiblingBlobs() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        // Find two blobs that share a shard prefix (same first two hex chars).
+        var shaA = "", shaB = ""
+        var dataA = Data(), dataB = Data()
+        var i = 0
+        var j = 1
+        while true {
+            let da = Data("sibling-\(i)".utf8)
+            let db2 = Data("sibling-\(j)".utf8)
+            let sa = sha256Hex(da)
+            let sb = sha256Hex(db2)
+            if String(sa.prefix(2)) == String(sb.prefix(2)) && sa != sb {
+                shaA = sa; dataA = da; shaB = sb; dataB = db2; break
+            }
+            j += 1
+            if j > 1000 { i += 1; j = i + 1 }
+        }
+
+        _ = try cache.store(dataA)
+        _ = try cache.store(dataB)
+
+        // Delete A — B must survive and remain loadable.
+        try cache.delete(sha256: shaA)
+
+        // A is gone.
+        #expect(throws: CacheError.notFound("blob \(shaA)")) {
+            try cache.load(sha256: shaA)
+        }
+
+        // B is intact.
+        let loaded = try cache.load(sha256: shaB)
+        #expect(loaded == dataB)
+    }
+
+    @Test("Delete prunes empty shard directory when last blob is removed")
+    func deleteEmptyShardDirectoryPruned() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let data = Data("only blob in its shard hopefully".utf8)
+        let (sha, _) = try cache.store(data)
+        let shardDir = tmp.appendingPathComponent(String(sha.prefix(2)), isDirectory: true)
+        try cache.delete(sha256: sha)
+        #expect(!FileManager.default.fileExists(atPath: shardDir.path))
+    }
+
+    @Test("Delete does not prune shard directory when siblings remain")
+    func deleteDoesNotPruneNonEmptyShard() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        var shaA = ""
+        var dataA = Data(), dataB = Data()
+        var i = 0; var j = 1
+        while true {
+            let da = Data("keepA-\(i)".utf8); let db2 = Data("keepB-\(j)".utf8)
+            let sa = sha256Hex(da); let sb = sha256Hex(db2)
+            if String(sa.prefix(2)) == String(sb.prefix(2)) && sa != sb {
+                shaA = sa; dataA = da; dataB = db2; break
+            }
+            j += 1; if j > 1000 { i += 1; j = i + 1 }
+        }
+
+        _ = try cache.store(dataA)
+        _ = try cache.store(dataB)
+        let shardDir = tmp.appendingPathComponent(String(shaA.prefix(2)), isDirectory: true)
+
+        try cache.delete(sha256: shaA)
+
+        // Shard dir must still exist because B is still there.
+        #expect(FileManager.default.fileExists(atPath: shardDir.path))
+    }
+
     // MARK: - Disk usage
 
     @Test("DiskUsage returns correct count and bytes")
     func diskUsageReturnsCorrect() throws {
-        let (cache, _) = try makeBlobCache()
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
         let d1 = Data("alpha".utf8)
         let d2 = Data("beta".utf8)
         try cache.store(d1)
@@ -104,47 +198,71 @@ struct BlobShardCacheTests {
 
     @Test("DiskUsage is 0 for empty blob root")
     func diskUsageEmpty() throws {
-        let (cache, _) = try makeBlobCache()
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
         let (count, bytes) = try cache.diskUsage()
         #expect(count == 0)
         #expect(bytes == 0)
     }
 
-    // MARK: - LRU eviction via CacheStore
+    // MARK: - LRU eviction via CacheStore (tests-15: assert strict LRU order)
 
-    @Test("EvictToLimit removes LRU blobs until under limit")
-    func evictToLimit() async throws {
+    @Test("EvictToLimit removes LRU blobs first, MRU blob survives")
+    func evictToLimitEnforcesLRUOrder() async throws {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: tmp) }
 
-        // Max 5 bytes; we store 3 blobs of 4 bytes each = 12 total.
-        let store = try CacheStore(root: tmp, maxBlobBytes: 5)
+        // Seed blobs via a no-budget store so auto-eviction doesn't fire during
+        // setup.  Use a `do` block to ensure seedStore releases its DatabasePool
+        // WAL handles before limitedStore opens the same file — opening two pools
+        // on the same path simultaneously is fragile and would also hold WAL locks
+        // that prevent the defer cleanup from removing the tmp directory.
+        let keyA = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "a.txt")
+        let keyB = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "b.txt")
+        let keyC = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "c.txt")
 
-        func addBlob(path: String, content: String, accessedNs: Int64) async throws {
-            var rec = MetadataRecord(
+        do {
+            // Max 0 bytes = no auto-eviction; lets us build a known state.
+            let seedStore = try CacheStore(root: tmp, maxBlobBytes: 0)
+            // LRU order: a.txt (100) < b.txt (200) < c.txt (300).
+            try await seedStore.upsert(MetadataRecord(
                 accountAlias: "a", workspaceID: "w", itemID: "i",
-                path: path, parentPath: "", name: path, isDir: false
-            )
-            rec.lastAccessedNs = accessedNs
-            try await store.upsert(rec)
-            try await store.storeBlob(
-                key: CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: path),
-                data: Data(content.utf8)
-            )
+                path: "a.txt", parentPath: "", name: "a.txt", isDir: false, lastAccessedNs: 100
+            ))
+            try await seedStore.upsert(MetadataRecord(
+                accountAlias: "a", workspaceID: "w", itemID: "i",
+                path: "b.txt", parentPath: "", name: "b.txt", isDir: false, lastAccessedNs: 200
+            ))
+            try await seedStore.upsert(MetadataRecord(
+                accountAlias: "a", workspaceID: "w", itemID: "i",
+                path: "c.txt", parentPath: "", name: "c.txt", isDir: false, lastAccessedNs: 300
+            ))
+            // Max 5 bytes; 3 blobs of 4 bytes each = 12 total.
+            try await seedStore.storeBlob(key: keyA, data: Data("old1".utf8))
+            try await seedStore.storeBlob(key: keyB, data: Data("old2".utf8))
+            try await seedStore.storeBlob(key: keyC, data: Data("new1".utf8))
         }
+        // seedStore is now out of scope — its DatabasePool is deallocated and
+        // WAL handles are released before limitedStore opens the same file.
 
-        try await addBlob(path: "a.txt", content: "old1", accessedNs: 100)
-        try await addBlob(path: "b.txt", content: "old2", accessedNs: 200)
-        try await addBlob(path: "c.txt", content: "new1", accessedNs: 300)
-
-        let totalBefore = try await store.blobBytes()
+        // Now open with the actual budget (5 bytes) and evict.
+        let limitedStore = try CacheStore(root: tmp, maxBlobBytes: 5)
+        let totalBefore = try await limitedStore.blobBytes()
         #expect(totalBefore == 12)
 
-        let (evicted, reclaimed) = try await store.evictToLimit()
+        let (evicted, reclaimed) = try await limitedStore.evictToLimit()
         #expect(evicted > 0)
         #expect(reclaimed > 0)
-        let totalAfter = try await store.blobBytes()
+        let totalAfter = try await limitedStore.blobBytes()
         #expect(totalAfter <= 5)
+
+        // c.txt (MRU, lastAccessed=300) must survive.
+        let cRec = try await limitedStore.fetch(key: keyC)
+        #expect(!cRec.blobSHA256.isEmpty, "c.txt (MRU) must not be evicted")
+
+        // a.txt (LRU, lastAccessed=100) must be gone.
+        let aRec = try await limitedStore.fetch(key: keyA)
+        #expect(aRec.blobSHA256.isEmpty, "a.txt (LRU) must be evicted first")
     }
 
     @Test("EvictToLimit is no-op when maxBlobBytes is 0")
@@ -197,9 +315,14 @@ struct BlobShardCacheTests {
 
 // MARK: - Helpers
 
-/// Creates a `BlobShardCache` in a temporary directory.
+/// Creates a `BlobShardCache` in a unique temporary directory.
 private func makeBlobCache() throws -> (BlobShardCache, URL) {
     let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let cache = try BlobShardCache(blobRoot: tmp)
     return (cache, tmp)
+}
+
+/// Returns the lowercase hex SHA-256 of `data` using CryptoKit directly.
+private func sha256Hex(_ data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }

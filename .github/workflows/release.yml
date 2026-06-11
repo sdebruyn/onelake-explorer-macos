@@ -1,21 +1,25 @@
-# Release workflow — triggered on every CalVer tag (vYYYY.MM.PATCH).
+# Release workflow — triggered on stable CalVer tags (vYYYY.MM.PATCH, no pre-release suffix).
 #
 # Required GitHub Secrets (add under Settings > Secrets and variables > Actions):
 #
-#   APPLE_CERT_P12          Base64-encoded Developer ID Application .p12 certificate bundle.
-#                           Export from Keychain Access: right-click certificate > Export > .p12.
-#                           Encode: base64 -i cert.p12 | pbcopy
-#   APPLE_CERT_PASSWORD     Password chosen when exporting the .p12.
-#   APPLE_TEAM_ID           Apple Developer Team ID.
-#                           Find it at developer.apple.com/account > Membership.
-#   APPLE_API_KEY_JSON      App Store Connect API key as a JSON file with fields:
-#                             { "key_id": "...", "issuer_id": "...", "key": "-----BEGIN EC PRIVATE KEY-----\n..." }
-#                           Used by notarytool. Generate at appstoreconnect.apple.com/access/integrations/api.
-#                           Encode the full file content as the secret value (plain JSON, NOT base64).
-#   APPLE_API_KEY_ID        The 10-character key identifier, also present inside APPLE_API_KEY_JSON.
-#   APPLE_API_ISSUER_ID     The issuer UUID, also present inside APPLE_API_KEY_JSON.
-#   HOMEBREW_TAP_GH_TOKEN        Fine-grained GitHub PAT with Contents: write on sdebruyn/homebrew-ofem.
-#                           Used by the `Update Homebrew cask` step to commit the full-app cask (ofem).
+#   APPLE_CERT_P12                Base64-encoded Developer ID Application .p12 certificate bundle.
+#                                 Export from Keychain Access: right-click certificate > Export > .p12.
+#                                 Encode: base64 -i cert.p12 | pbcopy
+#   APPLE_CERT_PASSWORD           Password chosen when exporting the .p12.
+#   APPLE_TEAM_ID                 Apple Developer Team ID.
+#                                 Find it at developer.apple.com/account > Membership.
+#   APPLE_API_KEY_JSON            App Store Connect API key as a JSON file with fields:
+#                                   { "key_id": "...", "issuer_id": "...", "key": "-----BEGIN EC PRIVATE KEY-----\n..." }
+#                                 Used by notarytool. Generate at appstoreconnect.apple.com/access/integrations/api.
+#                                 Encode the full file content as the secret value (plain JSON, NOT base64).
+#   APPLE_API_KEY_ID              The 10-character key identifier, also present inside APPLE_API_KEY_JSON.
+#   APPLE_API_ISSUER_ID           The issuer UUID, also present inside APPLE_API_KEY_JSON.
+#   APPLE_PROVISION_PROFILE_APP   Base64-encoded Developer ID provisioning profile for the host app
+#                                 (bundle ID dev.debruyn.ofem). Required by xcodebuild manual signing.
+#   APPLE_PROVISION_PROFILE_FP    Base64-encoded Developer ID provisioning profile for the File Provider
+#                                 Extension (bundle ID dev.debruyn.ofem.fileprovider). Required by xcodebuild.
+#   HOMEBREW_TAP_GH_TOKEN         Fine-grained GitHub PAT with Contents: write on sdebruyn/homebrew-ofem.
+#                                 Used by the `Update Homebrew cask` step to commit the full-app cask (ofem).
 
 name: Release
 
@@ -28,7 +32,14 @@ name: Release
 on:
   push:
     tags:
-      - "v[0-9]*.[0-9]*.[0-9]*"
+      # NOTE: this glob does NOT exclude pre-release tags. GitHub Actions
+      # filter patterns use shell-style globs where * matches any character
+      # including dots and hyphens, so [0-9]* can absorb an rc suffix and
+      # the pattern fires on v2026.05.0-rc.1 just as it does on v2026.05.1.
+      # The four explicit year digits reject obviously-wrong formats early,
+      # but the guard step below is the actual enforcement point that blocks
+      # pre-release tags from publishing to the stable Homebrew tap.
+      - "v[0-9][0-9][0-9][0-9].[0-9]*.[0-9]+"
   workflow_dispatch:
 
 permissions:
@@ -46,6 +57,9 @@ jobs:
   build-app:
     name: Build, sign, notarize and publish app
     runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -58,7 +72,9 @@ jobs:
           path: |
             ~/Library/Caches/Homebrew/downloads
             ~/Library/Caches/Homebrew/api
-          key: brew-${{ runner.os }}-release-tools-v1
+          key: brew-${{ runner.os }}-release-tools-${{ hashFiles('.github/workflows/release.yml') }}
+          restore-keys: |
+            brew-${{ runner.os }}-release-tools-
 
       - name: Install tools (xcodegen, create-dmg)
         run: brew install xcodegen create-dmg
@@ -85,6 +101,9 @@ jobs:
             -T /usr/bin/security
           rm "$RUNNER_TEMP/cert.p12"
 
+          # shellcheck disable=SC2046
+          # Word splitting is intentional: each existing keychain path is a
+          # separate argument to list-keychain -s.
           security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | tr -d '"')
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
@@ -98,6 +117,19 @@ jobs:
           mkdir -p "$RUNNER_TEMP/notary"
           echo "$APPLE_API_KEY_JSON" | jq -r '.key' > "$RUNNER_TEMP/notary/key.p8"
           chmod 600 "$RUNNER_TEMP/notary/key.p8"
+
+      - name: Guard against pre-release tags
+        # Belt-and-suspenders check: the tag glob above only matches stable
+        # CalVer tags, but an explicit guard here ensures a pre-release tag
+        # (e.g. v2026.05.0-rc.1) can never accidentally publish to the stable
+        # Homebrew tap even if the glob were widened in the future.
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if echo "$tag" | grep -qE -- '-'; then
+            echo "ERROR: tag '$tag' looks like a pre-release. Aborting to protect the stable tap."
+            exit 1
+          fi
 
       - name: Extract version from tag
         id: version
@@ -126,6 +158,16 @@ jobs:
 
       - name: Generate Xcode project
         run: make gen
+
+      # Run tests before archiving so we never sign + notarize a broken build.
+      # swift test covers the full OfemKit engine suite; make test covers the
+      # host-app logic bundle. Both are fast (seconds) relative to the archive.
+      - name: Run OfemKit tests
+        working-directory: Packages/OfemKit
+        run: swift test
+
+      - name: Run host app tests
+        run: make test
 
       # Stage the Developer ID provisioning profiles for the host app
       # and the File Provider Extension so xcodebuild can match them
@@ -165,6 +207,10 @@ jobs:
           # target's Release config. xcodebuild's command-line
           # `KEY[bundle.identifier=...]=VALUE` syntax does not parse,
           # so per-target overrides have to be in the project file.
+          # -disableAutomaticPackageResolution forces xcodebuild to use the
+          # resolved versions from Package.resolved rather than re-resolving
+          # to the latest in-range versions. Combined with exact: pins in
+          # Package.swift this makes release builds fully reproducible.
           xcodebuild \
             -project OneLake.xcodeproj \
             -scheme OneLake \
@@ -172,6 +218,7 @@ jobs:
             -destination "generic/platform=macOS" \
             -derivedDataPath build/Release \
             -archivePath build/OneLake.xcarchive \
+            -disableAutomaticPackageResolution \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             MARKETING_VERSION="$VERSION" \
             CURRENT_PROJECT_VERSION="$VERSION" \
@@ -202,7 +249,46 @@ jobs:
             -exportPath build/Export \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
 
+      - name: Verify code signature
+        # Catch malformed signatures before submitting to Apple — a bad
+        # signature only surfaces as a notarization rejection otherwise.
+        run: |
+          codesign --verify --deep --strict --verbose=2 "build/Export/OneLake.app"
+
+      - name: Notarize app bundle
+        # Notarize and staple the .app BEFORE building the DMG so the bundle
+        # inside the DMG already carries the embedded ticket. Users who copy the
+        # app out of the DMG and launch offline (or behind a firewall) need the
+        # embedded ticket — relying solely on Apple's CDN ticket lookup causes a
+        # Gatekeeper failure in offline scenarios.
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Zip the .app for submission (notarytool requires a zip or dmg).
+          ditto -c -k --sequesterRsrc --keepParent \
+            "build/Export/OneLake.app" \
+            "$RUNNER_TEMP/OneLake-$VERSION.zip"
+
+          # 45m bound: notarytool service quality is variable; 45m covers
+          # the tail of Apple's queue depth on bad days.
+          xcrun notarytool submit \
+            "$RUNNER_TEMP/OneLake-$VERSION.zip" \
+            --key "$RUNNER_TEMP/notary/key.p8" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait \
+            --timeout 45m
+
+      - name: Staple app bundle
+        if: github.event_name != 'workflow_dispatch'
+        run: xcrun stapler staple "build/Export/OneLake.app"
+
       - name: Create DMG
+        # DMG is built after the .app is stapled so the bundle inside
+        # the DMG already carries its notarization ticket.
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -225,11 +311,6 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # 45m bound: notarytool service quality is variable; the
-          # earlier 15m limit consistently expired with a submission
-          # still "In Progress" on Apple's side. 45m is well within
-          # GitHub Actions job-timeout headroom (6h) and covers the
-          # tail of Apple's queue depth on bad days.
           xcrun notarytool submit \
             "dist-app/OneLake-$VERSION.dmg" \
             --key "$RUNNER_TEMP/notary/key.p8" \
@@ -238,11 +319,19 @@ jobs:
             --wait \
             --timeout 45m
 
-      - name: Staple notarization ticket
+      - name: Staple DMG
         if: github.event_name != 'workflow_dispatch'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: xcrun stapler staple "dist-app/OneLake-$VERSION.dmg"
+
+      - name: Verify Gatekeeper acceptance
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          spctl --assess --type open --context context:primary-signature --verbose "build/Export/OneLake.app"
+          spctl --assess --type install --verbose "dist-app/OneLake-$VERSION.dmg"
 
       - name: Compute DMG SHA-256
         id: dmg_sha
