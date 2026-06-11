@@ -124,7 +124,7 @@ final class DomainSyncManager {
     /// Safe to call repeatedly. Logs at info level for every add / remove
     /// so the operator can audit the activity from Console.app.
     func reconcile() async throws {
-        let accounts = SharedOfemAuth.shared.auth.listAccounts()
+        let accounts = await SharedOfemAuth.shared.auth.listAccounts()
         let existing = try await Self.existingDomains()
         let existingById: [String: NSFileProviderDomain] = Dictionary(
             uniqueKeysWithValues: existing.map { ($0.identifier.rawValue, $0) }

@@ -269,10 +269,8 @@ struct AddAccountView: View {
         if let authErr = error as? OfemAuthError {
             switch authErr {
             case .interactionRequired: return "Authentication required — please sign in again."
-            case .emptyAlias: return "Alias must not be empty."
             case .duplicateAlias(let a): return "Account '\(a)' already exists."
             case .unknownAlias(let a): return "Account '\(a)' not found."
-            case .emptyScopes: return "Internal error: no scopes configured."
             case .silentTokenFailed(_, let e): return "Token error: \(e.localizedDescription)"
             }
         }

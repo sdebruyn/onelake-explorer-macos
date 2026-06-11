@@ -63,11 +63,10 @@ public actor OfemEngine {
     /// config snapshot.
     ///
     /// - Parameters:
-    /// - configStore: The loaded TOML config.
-    /// - paths: Resolved on-disk paths (cache dir, log dir, etc.).
-    /// - httpBaseURLs: Override the default DFS / Fabric base URLs. Pass
-    /// `nil` to use the production endpoints.
-    @MainActor
+    ///   - configStore: The loaded TOML config.
+    ///   - paths: Resolved on-disk paths (cache dir, log dir, etc.).
+    ///   - httpBaseURLs: Override the default DFS / Fabric base URLs. Pass
+    ///     `nil` to use the production endpoints.
     public init(
         configStore: OfemConfigStore,
         paths: OfemPaths,
@@ -113,7 +112,8 @@ public actor OfemEngine {
         )
         self.telemetry = telClient
 
-        // 3. Auth (needs to be on @MainActor because OfemAuth is @MainActor).
+        // 3. Auth — OfemAuth is now a Swift actor (not @MainActor), so init
+        //    no longer forces the engine init onto the main thread.
         let auth = OfemAuth(configStore: configStore)
         self.auth = auth
 
@@ -167,11 +167,12 @@ public actor OfemEngine {
 
 // MARK: - TokenProviderAdapter
 
-/// Bridges ``OfemAuth`` (a `@MainActor` class) to the ``TokenProvider``
+/// Bridges ``OfemAuth`` (a Swift `actor`) to the ``TokenProvider``
 /// protocol expected by ``OneLakeClient`` and ``FabricClient``.
 ///
-/// Token acquisition is always dispatched to the main actor; the adapter
-/// re-enters `@MainActor` via `await MainActor.run { … }`.
+/// Token acquisition runs on `OfemAuth`'s own executor — not the main actor —
+/// so concurrent Finder I/O calls in the FPE do not serialise through the
+/// main thread.
 private final class TokenProviderAdapter: TokenProvider, Sendable {
     private let auth: OfemAuth
 
@@ -180,10 +181,8 @@ private final class TokenProviderAdapter: TokenProvider, Sendable {
     }
 
     func token(alias: String, scope: TokenScope) async throws -> String {
-        // Calling a @MainActor method from a non-isolated async context causes
-        // Swift to automatically hop to the main actor for the duration of the
-        // call, which is safe here — OfemAuth never blocks the main thread.
+        // OfemAuth is a Swift actor; calling its methods suspends here and
+        // resumes on the actor's executor. No main-actor hop needed.
         try await auth.tokenForScope(alias: alias, scope: scope)
     }
 }
-

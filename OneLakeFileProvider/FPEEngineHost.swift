@@ -9,9 +9,9 @@
 // never opened.
 //
 // Thread safety: `FPEEngineHost` uses an NSLock to serialise mutations
-// to `_engine` and `_buildError`. `buildEngine()` is @MainActor because
-// OfemEngine.init is @MainActor. The Task in `engine()` hops to the
-// main actor for the build step, then returns the result.
+// to `_engine` and `_buildError`. `buildEngine()` is a nonisolated throwing
+// function; `OfemEngine.init` no longer requires @MainActor now that `OfemAuth`
+// is a Swift actor rather than a @MainActor class.
 //
 // Process-wide config store: all FPEEngineHost instances in the same
 // FPE process share ONE OfemConfigStore via `FPEEngineHost.sharedConfigStore`.
@@ -126,7 +126,6 @@ final class FPEEngineHost: Sendable {
         if let err = lock.withLock({ _buildError }) {
             throw err
         }
-        // Build on the main actor (OfemEngine.init is @MainActor).
         return try await buildEngine()
     }
 
@@ -163,7 +162,6 @@ final class FPEEngineHost: Sendable {
 
     // MARK: - Private
 
-    @MainActor
     private func buildEngine() throws -> OfemEngine {
         // Re-check after the actor hop (another Task may have built it).
         if let e = lock.withLock({ _engine }) { return e }

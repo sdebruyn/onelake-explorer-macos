@@ -186,8 +186,8 @@ final class MenuStatusModel: ObservableObject {
     private func doRefresh() async {
         // Primary path: read accounts from SharedOfemAuth (config.toml).
         // Works whether or not any FPE domain is loaded.
-        let nativeAccounts = SharedOfemAuth.shared.auth.listAccounts()
-        let nativeDefault = SharedOfemAuth.shared.auth.defaultAccount() ?? ""
+        let nativeAccounts = await SharedOfemAuth.shared.auth.listAccounts()
+        let nativeDefault = await SharedOfemAuth.shared.auth.defaultAccount() ?? ""
         isRunning = true
         accounts = nativeAccounts.map { acc in
             AccountInfo(
@@ -401,7 +401,7 @@ final class MenuStatusModel: ObservableObject {
         // Read directly from SharedOfemAuth so this works even before the first
         // doRefresh() has populated the published `accounts` property — e.g. when
         // the user changes a setting immediately after app launch.
-        let currentAccounts = SharedOfemAuth.shared.auth.listAccounts()
+        let currentAccounts = await SharedOfemAuth.shared.auth.listAccounts()
         guard let first = currentAccounts.first else { return }
         do {
             try await OfemFPEClient.shared.setConfig(
