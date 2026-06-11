@@ -1,8 +1,10 @@
 // OfemFPEClient.swift
 // Host-app client for the FPE's OfemClientControlProtocol XPC service.
 //
-// The host app uses this class to call account-management and engine-status
-// operations on the FPE over NSXPCConnection.
+// The host app uses this class to call engine-status and config operations
+// on the FPE over NSXPCConnection. Account management (add / remove) is
+// handled in-process via SharedOfemAuth and DomainSyncManager; it does not
+// go through this XPC surface.
 //
 // Connection model:
 //   - One connection per domain. Connections are created on demand and
@@ -39,71 +41,10 @@ final class OfemFPEClient {
     /// The FPE process is started by macOS when the domain is added; it reads
     /// the account from the shared config.toml on first enumeration.
     ///
-    /// This replaces the previous `CoreBridge.login()` flow for domain registration.
-    ///
     /// - Parameter info: The account info returned by `SharedOfemAuth.signIn`.
     func addAccount(_ info: XPCAccountInfo) async {
         await DomainSyncManager.shared.addDomain(alias: info.alias)
         Self.log.info("addAccount: domain registered for alias=\(info.alias, privacy: .public)")
-    }
-
-    /// Returns the list of accounts from the FPE for the given domain alias.
-    ///
-    /// - Parameter alias: The account alias identifying the domain.
-    /// - Returns: Array of XPCAccountInfo, or empty on error.
-    func listAccounts(alias: String) async throws -> [XPCAccountInfo] {
-        let proxy = try await proxy(for: alias)
-        return try await withCheckedThrowingContinuation { continuation in
-            proxy.listAccounts { accounts, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: accounts)
-                }
-            }
-        }
-    }
-
-    /// Removes an account via the FPE XPC service.
-    func removeAccount(alias: String) async throws {
-        let proxy = try await proxy(for: alias)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            proxy.removeAccount(alias: alias) { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            }
-        }
-    }
-
-    /// Sets the default account via the FPE XPC service.
-    func setDefaultAccount(alias: String) async throws {
-        let proxy = try await proxy(for: alias)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            proxy.setDefaultAccount(alias: alias) { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            }
-        }
-    }
-
-    /// Fetches a status snapshot from the FPE for the given domain alias.
-    func status(alias: String) async throws -> [String: Any] {
-        let proxy = try await proxy(for: alias)
-        return try await withCheckedThrowingContinuation { continuation in
-            proxy.status { dict, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: dict ?? [:])
-                }
-            }
-        }
     }
 
     // MARK: - Engine status
@@ -291,28 +232,6 @@ final class OfemFPEClient {
 
     private func makeInterface() -> NSXPCInterface {
         let iface = NSXPCInterface(with: OfemClientControlProtocol.self)
-        iface.setClasses(
-            NSSet(array: [NSArray.self, XPCAccountInfo.self]) as! Set<AnyHashable>,
-            for: #selector(OfemClientControlProtocol.listAccounts(reply:)),
-            argumentIndex: 0,
-            ofReply: true
-        )
-        iface.setClasses(
-            NSSet(array: [XPCAccountInfo.self]) as! Set<AnyHashable>,
-            for: #selector(
-                OfemClientControlProtocol.addAccount(alias:tenant:clientID:reply:)
-            ),
-            argumentIndex: 0,
-            ofReply: true
-        )
-        // status reply: ([String: Any]?, Error?)
-        // NSDictionary contains NSArray of NSDictionary of NSString.
-        iface.setClasses(
-            NSSet(array: [NSDictionary.self, NSArray.self, NSString.self]) as! Set<AnyHashable>,
-            for: #selector(OfemClientControlProtocol.status(reply:)),
-            argumentIndex: 0,
-            ofReply: true
-        )
         // getEngineStatus reply: (XPCEngineStatus?, Error?)
         // XPCEngineStatus carries an NSArray of XPCPausedWorkspace; all three
         // types must be listed so XPC's secure-coding policy allows them.
