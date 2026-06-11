@@ -13,30 +13,36 @@
 # cask` step computes and substitutes it — see docs/packaging-homebrew.md in
 # the main repo).
 cask "ofem" do
-  arch arm: "arm64"
-
   version "0.0.0"
   sha256 :no_check
 
   url "https://github.com/sdebruyn/onelake-explorer-macos/releases/download/v#{version}/OneLake-#{version}.dmg"
-  name "OneLake"
-  desc "Finder integration for Microsoft Fabric OneLake"
-  homepage "https://github.com/sdebruyn/onelake-explorer-macos"
+  name "OneLake Explorer for macOS"
+  desc "Browse Microsoft Fabric OneLake from Finder"
+  homepage "https://ofem.debruyn.dev"
 
   # No releases exist yet for the dummy 0.0.0 cask. Once the first real
   # tag ships on sdebruyn/onelake-explorer-macos, swap this for:
   #   livecheck do
   #     url :url
-  #     strategy :github_latest
+  #     strategy :github_releases
+  #     regex(/^v(\d+\.\d+\.\d+)$/i)
   #   end
   livecheck do
-    skip "No published releases yet — first real CalVer tag is pending"
+    skip "pre-release — no stable tag yet"
   end
 
   depends_on macos: :sonoma
   depends_on arch: :arm64
 
   app "OneLake.app"
+
+  # Open the app post-install so the first launch happens immediately,
+  # registering the login item and starting the File Provider Extension
+  # without requiring the user to manually launch the app first.
+  postflight do
+    system_command "/usr/bin/open", args: ["-a", "OneLake"]
+  end
 
   # Keep these stanzas in lockstep with homebrew/Casks/ofem.rb.tmpl (the
   # template the release workflow renders into the tap). This dummy only
