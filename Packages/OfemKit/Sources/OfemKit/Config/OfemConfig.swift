@@ -48,6 +48,10 @@ public struct OfemConfig: Codable, Sendable {
 
     /// Returns the zero-but-sensible config used when OFEM starts for the
     /// first time. Callers should persist this after generating `installID`.
+    ///
+    /// This is the single source of truth for all default field values.
+    /// `RawConfig` derives its own defaults from this function so there is
+    /// exactly one place to update when a default changes.
     public static func makeDefault() -> OfemConfig {
         OfemConfig(
             installID: "",
@@ -90,8 +94,10 @@ public struct OfemConfig: Codable, Sendable {
 /// 1 073 741 824 bytes, binary — matching what Finder and `du -h` show).
 public struct CacheConfig: Codable, Sendable {
     /// Lower bound for the cache size limit (1 GB).
+    /// Enforced at config load time and in the XPC setConfig handler.
     public static let minSizeGB = 1
     /// Upper bound for the cache size limit (100 GB).
+    /// Enforced at config load time and in the XPC setConfig handler.
     public static let maxSizeGB = 100
     /// Default size for new installations (10 GB).
     public static let defaultSizeGB = 10
@@ -102,7 +108,16 @@ public struct CacheConfig: Codable, Sendable {
 
     /// Returns the cache size limit in bytes for callers that need
     /// byte-precision. `0` means "no limit".
-    public var maxBytes: Int64 { Int64(maxSizeGB) * bytesPerGB }
+    ///
+    /// Capped to `Int64.max` to guard against overflow on absurdly large
+    /// hand-edited values (e.g. `max_size_gb = 9999999999`).
+    public var maxBytes: Int64 {
+        guard maxSizeGB > 0 else { return 0 }
+        // Detect overflow: if gb > Int64.max / bytesPerGB, clamp to Int64.max.
+        let limit = Int64.max / bytesPerGB
+        guard maxSizeGB <= limit else { return Int64.max }
+        return Int64(maxSizeGB) * bytesPerGB
+    }
 
     enum CodingKeys: String, CodingKey {
         case maxSizeGB = "max_size_gb"
@@ -220,9 +235,25 @@ public struct Account: Codable, Sendable {
 /// Thread-safe store that loads and saves ``OfemConfig`` from/to
 /// `<configDir>/config.toml`.
 ///
-/// The config is read atomically on `load`, mutated through
-/// ``updateAndSave(_:)``, and written via a temp-file-then-rename sequence
-/// with 0600 permissions.
+/// ## Cross-process safety
+///
+/// The host app and the File Provider Extension both write to the same
+/// `config.toml` in the shared App Group container. `updateAndSave` uses a
+/// POSIX advisory lock (`flock(2)`) on a sidecar `.config.lock` file to
+/// serialise writers across processes:
+///
+/// 1. Acquire an exclusive lock on `.config.lock`.
+/// 2. Re-read `config.toml` from disk (discard the stale in-memory snapshot).
+/// 3. Apply the caller's mutation closure to the freshly loaded state.
+/// 4. Write the result atomically (temp file + rename).
+/// 5. Update the in-memory snapshot and release the lock.
+///
+/// This prevents a write from one process from silently reverting fields that
+/// the other process wrote after the first process last loaded the file.
+///
+/// The in-process `NSLock` (`lock`) serialises concurrent Swift tasks/threads
+/// within the same process; the `flock` on `.config.lock` serialises across
+/// process boundaries.
 public final class OfemConfigStore: Sendable {
     private let paths: OfemPaths
     private let lock = NSLock()
@@ -256,17 +287,110 @@ public final class OfemConfigStore: Sendable {
         lock.withLock { config }
     }
 
-    /// Applies `mutator` to the current config and persists the result
-    /// atomically. The lock is held across both the mutation and the
-    /// encode+rename so concurrent writers cannot interleave.
+    /// Applies `mutator` to the **freshly re-read on-disk state** and persists
+    /// the result atomically.
+    ///
+    /// The sequence is:
+    /// 1. Acquire the cross-process file lock (`.config.lock` sidecar).
+    /// 2. Re-read `config.toml` from disk so any writes made by another
+    ///    process since the last load are incorporated.
+    /// 3. Call `mutator` on the fresh state.
+    /// 4. Write the result atomically (temp file + rename).
+    /// 5. Update the in-memory snapshot and release the lock.
+    ///
+    /// Concurrent callers within the same process are serialised by an
+    /// `NSLock`; callers in different processes are serialised by `flock(2)`
+    /// on the sidecar lock file.
+    ///
     /// The mutator must not call back into the store.
     @discardableResult
-    public func updateAndSave(_ mutator: (inout OfemConfig) -> Void) throws -> OfemConfig {
+    public func updateAndSave(_ mutator: (inout OfemConfig) throws -> Void) throws -> OfemConfig {
         try lock.withLock {
-            mutator(&config)
-            try Self.save(config, to: paths)
+            // Acquire the cross-process exclusive file lock.
+            let lockFD = try Self.acquireFileLock(paths: paths)
+            defer { Self.releaseFileLock(lockFD) }
+
+            // Re-read from disk to pick up changes made by the other process.
+            var fresh = try Self.load(from: paths)
+
+            // Apply the caller's mutation to the fresh state.
+            try mutator(&fresh)
+
+            // Persist atomically.
+            try Self.save(fresh, to: paths)
+
+            // Update the in-memory snapshot.
+            config = fresh
             return config
         }
+    }
+
+    // MARK: - Cross-process file lock
+
+    /// Acquires an exclusive POSIX advisory lock on `.config.lock` in the
+    /// same directory as `config.toml`.
+    ///
+    /// Uses `fcntl(2)` with `F_SETLKW` (write-lock, blocking) rather than
+    /// `flock(2)` to avoid a name collision with GRDB's `flock` struct.
+    ///
+    /// - Returns: An open file descriptor for the lock file. The caller is
+    ///   responsible for releasing it via ``releaseFileLock(_:)``.
+    private static func acquireFileLock(paths: OfemPaths) throws -> Int32 {
+        let lockURL = paths.configDir.appending(
+            path: ".config.lock",
+            directoryHint: .notDirectory
+        )
+
+        // Ensure the config directory exists (mirrors save()'s own mkdir).
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: paths.configDir.path(percentEncoded: false)) {
+            do {
+                try fm.createDirectory(
+                    at: paths.configDir,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+            } catch {
+                throw OfemConfigError.createDirectoryFailed(error)
+            }
+        }
+
+        // O_CREAT | O_RDWR — create the lock file if it doesn't exist.
+        let fd = Darwin.open(lockURL.path(percentEncoded: false), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else {
+            throw OfemConfigError.lockFailed(
+                NSError(domain: NSPOSIXErrorDomain, code: Int(Darwin.errno))
+            )
+        }
+
+        // F_SETLKW — set an exclusive write lock; blocks until available.
+        // (Using fcntl rather than flock() to avoid a name collision with
+        // GRDB's `flock` struct type that is in scope via the package graph.)
+        var lk = Darwin.flock()
+        lk.l_type   = Int16(F_WRLCK)
+        lk.l_whence = Int16(SEEK_SET)
+        lk.l_start  = 0
+        lk.l_len    = 0 // Lock the whole file.
+
+        guard Darwin.fcntl(fd, F_SETLKW, &lk) == 0 else {
+            Darwin.close(fd)
+            throw OfemConfigError.lockFailed(
+                NSError(domain: NSPOSIXErrorDomain, code: Int(Darwin.errno))
+            )
+        }
+
+        return fd
+    }
+
+    /// Releases the POSIX advisory lock and closes the file descriptor.
+    private static func releaseFileLock(_ fd: Int32) {
+        var lk = Darwin.flock()
+        lk.l_type   = Int16(F_UNLCK)
+        lk.l_whence = Int16(SEEK_SET)
+        lk.l_start  = 0
+        lk.l_len    = 0
+        Darwin.fcntl(fd, F_SETLK, &lk)
+        Darwin.close(fd)
     }
 
     // MARK: - Private helpers
@@ -369,6 +493,7 @@ public enum OfemConfigError: Error {
     case chmodFailed(Error)
     case renameFailed(Error)
     case createDirectoryFailed(Error)
+    case lockFailed(Error)
     case invalidUTF8
 }
 
@@ -376,6 +501,9 @@ public enum OfemConfigError: Error {
 
 /// Intermediate decoding type so missing top-level sections fall back to
 /// defaults instead of throwing.
+///
+/// Missing fields fall back to the values from ``OfemConfig/makeDefault()``
+/// so there is exactly one source of truth for defaults.
 private struct RawConfig: Decodable {
     var installID: String
     var telemetry: Bool
@@ -396,23 +524,35 @@ private struct RawConfig: Decodable {
     }
 
     init(from decoder: Decoder) throws {
+        // Pull defaults from the canonical source so only one definition exists.
+        let defaults = OfemConfig.makeDefault()
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        installID = try c.decodeIfPresent(String.self, forKey: .installID) ?? ""
-        telemetry = try c.decodeIfPresent(Bool.self, forKey: .telemetry) ?? true
-        defaultAccount = try c.decodeIfPresent(String.self, forKey: .defaultAccount) ?? ""
-        cache = try c.decodeIfPresent(RawCacheConfig.self, forKey: .cache) ?? RawCacheConfig()
-        net = try c.decodeIfPresent(NetConfig.self, forKey: .net) ?? NetConfig(
-            maxConcurrentUploadsPerAccount: 4,
-            maxConcurrentDownloadsPerAccount: 8
-        )
-        log = try c.decodeIfPresent(LogConfig.self, forKey: .log) ?? LogConfig(level: "info")
-        accounts = try c.decodeIfPresent([String: Account].self, forKey: .accounts) ?? [:]
+        installID     = try c.decodeIfPresent(String.self,            forKey: .installID)     ?? defaults.installID
+        telemetry     = try c.decodeIfPresent(Bool.self,              forKey: .telemetry)     ?? defaults.telemetry
+        defaultAccount = try c.decodeIfPresent(String.self,           forKey: .defaultAccount) ?? defaults.defaultAccount
+        cache         = try c.decodeIfPresent(RawCacheConfig.self,    forKey: .cache)         ?? RawCacheConfig()
+        net           = try c.decodeIfPresent(NetConfig.self,         forKey: .net)           ?? defaults.net
+        log           = try c.decodeIfPresent(LogConfig.self,         forKey: .log)           ?? defaults.log
+        accounts      = try c.decodeIfPresent([String: Account].self, forKey: .accounts)      ?? defaults.accounts
     }
 
     func toOfemConfig() -> OfemConfig {
-        let resolvedGB = (cache.maxSizeGB ?? 0) > 0
-            ? cache.maxSizeGB!
-            : CacheConfig.defaultSizeGB
+        // Honor max_size_gb = 0 as "no limit" (eviction is a no-op in CacheStore
+        // when maxBlobBytes == 0). Only absent cache sections fall back to the
+        // default; an explicit 0 is preserved as the user's intent.
+        let resolvedGB: Int
+        if let gb = cache.maxSizeGB {
+            // Explicit value in the file: clamp to [minSizeGB, maxSizeGB] or 0.
+            // 0 is the special "no limit" sentinel and must not be clamped away.
+            if gb == 0 {
+                resolvedGB = 0
+            } else {
+                resolvedGB = min(max(gb, CacheConfig.minSizeGB), CacheConfig.maxSizeGB)
+            }
+        } else {
+            // Section absent or max_size_gb key absent: use the default.
+            resolvedGB = CacheConfig.defaultSizeGB
+        }
 
         return OfemConfig(
             installID: installID,

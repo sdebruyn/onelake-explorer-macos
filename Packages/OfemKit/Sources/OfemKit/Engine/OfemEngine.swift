@@ -48,10 +48,22 @@ public actor OfemEngine {
     /// Builds all subsystems from a loaded ``OfemConfigStore`` and
     /// ``OfemPaths``.
     ///
+    /// ## Config reload
+    ///
+    /// The config snapshot is read once at initialisation time and baked
+    /// into the subsystems (log level → `OfemLogger`, telemetry opt-out →
+    /// sink choice, `cache.maxBytes` → `CacheStore`, concurrency limits →
+    /// `HTTPGateRegistry`). Subsequent config changes therefore require
+    /// building a **new** `OfemEngine` from the updated snapshot.
+    ///
+    /// The reload mechanism in `FPEEngineHost` is: after a successful
+    /// `setConfig` write, call `FPEEngineHost.reloadEngine()`, which shuts
+    /// down the current engine, clears `_engine` and `_buildError`, and lets
+    /// the next `FPEEngineHost.engine()` call lazily rebuild from the fresh
+    /// config snapshot.
+    ///
     /// - Parameters:
-    /// - configStore: The loaded TOML config. The config snapshot is read
-    /// once at initialisation time; subsequent config changes require
-    /// building a new `OfemEngine`.
+    /// - configStore: The loaded TOML config.
     /// - paths: Resolved on-disk paths (cache dir, log dir, etc.).
     /// - httpBaseURLs: Override the default DFS / Fabric base URLs. Pass
     /// `nil` to use the production endpoints.
