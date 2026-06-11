@@ -12,7 +12,7 @@
 //
 // XPC methods exposed:
 //   - getEngineStatus(reply:)     — cache stats + config snapshot
-//   - setConfig(key:value:reply:) — write one config field and reload
+//   - setConfig(key:value:reply:) — write one config field, persist and trigger engine reload
 //   - clearCache(reply:)          — wipe all cached blobs
 //
 // NSXPCInterface setup notes:
@@ -29,8 +29,9 @@ import os.log
 /// NSFileProviderServiceSource that vends the OfemClientControlProtocol XPC service.
 ///
 /// Registered in the FPE via `NSFileProviderReplicatedExtension`'s
-/// `supportedServiceSources(for:)`. One service source per domain instance,
-/// but all domains share the same underlying OfemConfigStore.
+/// `supportedServiceSources(for:)`. One service source per domain instance;
+/// all domains in the same FPE process share the same underlying
+/// `OfemConfigStore` via `FPEEngineHost.sharedConfigStore()`.
 final class OfemClientControlService: NSObject, NSFileProviderServiceSource {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
@@ -194,7 +195,11 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                         cfg.telemetry = (value == "on")
                     case "cache.max_size_gb":
                         if let gb = Int(value) {
-                            cfg.cache.maxSizeGB = min(max(gb, 1), 100)
+                            // 0 is the "no limit" sentinel; positive values are
+                            // clamped to [minSizeGB, maxSizeGB].
+                            cfg.cache.maxSizeGB = gb == 0
+                                ? 0
+                                : min(max(gb, CacheConfig.minSizeGB), CacheConfig.maxSizeGB)
                         }
                     case "net.max_concurrent_uploads_per_account":
                         if let n = Int(value) {
@@ -218,6 +223,14 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                 Self.log.info(
                     "setConfig: key='\(key, privacy: .public)' value='\(value, privacy: .public)' applied"
                 )
+
+                // Reload the engine so the new config values take effect
+                // without waiting for the FPE process to terminate.
+                // OfemEngine reads the config snapshot once at init, so the
+                // reload mechanism is: shut down the current engine, clear
+                // _engine and _buildError, and let the next use rebuild lazily.
+                await engineHost.reloadEngine()
+
                 reply(nil)
             } catch {
                 Self.log.error(
