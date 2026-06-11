@@ -107,22 +107,26 @@ struct TelemetryClientTests {
         #expect(sink.count == 0, "opt-out client must not send to real sink")
     }
 
-    @Test("buffer overflow drops oldest event")
-    func bufferOverflowDropsOldest() async {
+    @Test("buffer overflow triggers immediate flush so no events are dropped (store-18)")
+    func bufferOverflowTriggersFlush() async {
         let sink = MemoryTelemetrySink()
+        // maxBatchSize=3: filling the buffer triggers an immediate flush (store-18),
+        // so events accumulate across flushes instead of being dropped.
         let client = makeClient(sink: sink, maxBatchSize: 3)
 
         for i in 0..<5 {
             await client.track(TelemetryEvent(name: "ev\(i)"))
         }
+        // Final flush for any remaining events.
         await client.flush()
 
         let events = sink.drain()
-        #expect(events.count == 3)
-        // Oldest two (ev0, ev1) should have been dropped.
-        #expect(events[0].name == "ev2")
-        #expect(events[1].name == "ev3")
-        #expect(events[2].name == "ev4")
+        // All 5 events must arrive (buffer-full → immediate flush, no drop).
+        #expect(events.count == 5)
+        let names = events.map { $0.name }
+        for i in 0..<5 {
+            #expect(names.contains("ev\(i)"), "ev\(i) should have been flushed")
+        }
     }
 
     @Test("shutdown performs final flush")
@@ -145,17 +149,21 @@ struct TelemetryClientTests {
         #expect(sink.count == 0, "post-shutdown Track must not enqueue events")
     }
 
-    @Test("trackError emits error event with scrubbed code")
+    @Test("trackError emits error event with domain:code error code (store-19)")
     func trackError() async {
         let sink = MemoryTelemetrySink()
         let client = makeClient(sink: sink)
-        await client.trackError(NSError(domain: "BoomError", code: 1), op: "file_download")
+        // store-19: domain+code must survive redaction (not become "redacted").
+        await client.trackError(NSError(domain: "BoomError", code: 42), op: "file_download")
         await client.flush()
 
         let events = sink.drain()
         #expect(events.count == 1)
         #expect(events[0].name == "error")
         #expect(events[0].commonProps["failedOp"] == "file_download")
+        // Domain:code format — no localizedDescription, no "redacted".
+        #expect(events[0].errorCode == "BoomError:42",
+                "errorCode must be domain:numeric code, not a redacted description")
     }
 
     @Test("flush re-queues events on send failure")
@@ -217,5 +225,32 @@ struct TelemetryClientTests {
         // The original dict must be unchanged.
         #expect(callerProps.count == 1)
         #expect(callerProps["installId"] == nil)
+    }
+
+    @Test("permanently-retriable event is dropped after maxRetries flushes (store-20 bounded retries)")
+    func permanentRetriableEventDroppedAfterMaxRetries() async {
+        // A sink that always fails forces events back into the buffer on
+        // every flush. After TelemetryEvent.maxRetries re-queues the event
+        // must be silently dropped and never reach the sink.
+        let sink = MemoryTelemetrySink()
+        sink.shouldFail = true
+        let client = makeClient(sink: sink, flushInterval: .seconds(3600))
+
+        await client.track(TelemetryEvent(name: "stuck_event"))
+
+        // Flush (maxRetries + 1) times: the last flush should find an empty
+        // buffer because the event was dropped after maxRetries re-queues.
+        for _ in 0..<(TelemetryEvent.maxRetries + 1) {
+            await client.flush()
+        }
+
+        // Now let the sink succeed — any remaining event would arrive here.
+        sink.shouldFail = false
+        await client.flush()
+
+        #expect(
+            sink.count == 0,
+            "event must be dropped after \(TelemetryEvent.maxRetries) retries, not re-queued indefinitely"
+        )
     }
 }

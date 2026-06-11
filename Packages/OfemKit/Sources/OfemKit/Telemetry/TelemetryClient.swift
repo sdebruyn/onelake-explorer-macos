@@ -76,7 +76,7 @@ public struct TelemetryConfiguration: Sendable {
 /// `track(_:)` enqueues events; a Swift Concurrency `Task` drives periodic
 /// flushes to the configured `TelemetrySink`.
 /// - Non-blocking enqueue with oldest-event-drop on overflow.
-/// - Background flush on a timer or on buffer-full signal.
+/// - Background flush on a timer or on buffer-full signal. (store-18)
 /// - `flush()` is synchronous from the caller's perspective but performed
 /// via the actor's executor.
 /// - `shutdown()` cancels the timer and performs a final flush.
@@ -185,16 +185,26 @@ public actor TelemetryClient {
         }
         ev.commonProps = merged
 
-        await batch.enqueue(ev)
+        // store-18: honor the buffer-full signal — trigger an immediate flush
+        // so callers do not silently lose events when the buffer fills.
+        let bufferFull = await batch.enqueue(ev)
+        if bufferFull {
+            await flush()
+        }
     }
 
     /// Convenience shorthand for emitting the `"error"` event.
     ///
-    ///
+    /// store-19: emit `<domain>:<code>` (taxonomy safe) instead of passing
+    /// `localizedDescription` through `safeErrorCode`, which redacts every
+    /// human sentence to `"redacted"`. Domain + numeric code satisfies the
+    /// PII constraint (no UPN, workspace, or file name).
     public func trackError(_ error: Error, op: String) async {
+        let ns = error as NSError
+        let errorCode = TelemetryRedaction.safeErrorCode("\(ns.domain):\(ns.code)")
         await track(TelemetryEvent(
             name: "error",
-            errorCode: TelemetryRedaction.safeErrorCode(error.localizedDescription),
+            errorCode: errorCode,
             commonProps: ["failedOp": op]
         ))
     }
@@ -203,15 +213,25 @@ public actor TelemetryClient {
 
     /// Ships all buffered events to the sink synchronously (within actor isolation).
     ///
-    /// On failure the batch is put back at the front of the buffer (re-queue
-    /// on error), matching `Client.Flush` in `client.go`.
+    /// On a partial rejection (`AppInsightsSinkError.partialReject`) only the
+    /// retriable rejected events are re-queued; already-accepted events are
+    /// discarded. (store-20)
     public func flush() async {
         let events = await batch.drain()
         guard !events.isEmpty else { return }
         do {
             try await sink.send(events)
+        } catch AppInsightsSinkError.partialReject(_, _, let retriable) {
+            // store-20: re-queue only the retriable rejected events, not the
+            // whole batch.
+            if !retriable.isEmpty {
+                await batch.requeue(retriable)
+            }
+            log.warning(
+                "telemetry partial flush: \(retriable.count, privacy: .public) events re-queued"
+            )
         } catch {
-            // Re-queue failed batch.
+            // Other errors: re-queue the entire batch.
             await batch.requeue(events)
             log.warning("telemetry flush failed: \(error.localizedDescription, privacy: .public)")
         }

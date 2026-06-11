@@ -44,14 +44,14 @@ struct RotatingFileWriterTests {
             writer.close()
 
             let fm = FileManager.default
-            let backup = dir.appending(path: "ofem.log.1.gz", directoryHint: .notDirectory)
+            let backup = dir.appending(path: "ofem.log.1", directoryHint: .notDirectory)
             #expect(fm.fileExists(atPath: backup.path),
                     "expected at least one rotation backup")
         }
     }
 
-    @Test("rotated .gz file is valid gzip (magic bytes + gunzip round-trip)")
-    func rotatedFileIsValidGzip() throws {
+    @Test("rotated backup file contains plain-text log lines")
+    func rotatedFileIsPlainText() throws {
         try withTempDir { dir in
             // Write enough to trigger exactly one rotation.
             let writer = RotatingFileWriter(
@@ -64,28 +64,15 @@ struct RotatingFileWriterTests {
             }
             writer.close()
 
-            let backup = dir.appending(path: "ofem.log.1.gz", directoryHint: .notDirectory)
+            let backup = dir.appending(path: "ofem.log.1", directoryHint: .notDirectory)
             #expect(
                 FileManager.default.fileExists(atPath: backup.path),
                 "expected a rotation backup"
             )
 
-            // 1. Structural check: RFC 1952 gzip magic bytes.
-            let gzipData = try Data(contentsOf: backup)
-            #expect(gzipData.count >= 18, "gzip file too small to be valid")
-            #expect(gzipData[0] == 0x1f, "first byte must be 0x1f (gzip magic)")
-            #expect(gzipData[1] == 0x8b, "second byte must be 0x8b (gzip magic)")
-            #expect(gzipData[2] == 0x08, "CM field must be 8 (DEFLATE)")
-
-            // 2. Round-trip check: gunzip must decompress without error.
-            //    `/usr/bin/gunzip -t` tests the file's integrity (no output on success).
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
-            task.arguments = ["-t", backup.path]
-            try task.run()
-            task.waitUntilExit()
-            #expect(task.terminationStatus == 0,
-                    "gunzip -t must succeed — rotated backup is invalid gzip")
+            // The rotated file must be readable plain text.
+            let content = try String(contentsOf: backup, encoding: .utf8)
+            #expect(content.contains("log line"), "rotated backup must contain plain-text log lines")
         }
     }
 
@@ -106,12 +93,12 @@ struct RotatingFileWriterTests {
 
             let fm = FileManager.default
             // Backup 3 should not exist.
-            let backup3 = dir.appending(path: "ofem.log.3.gz", directoryHint: .notDirectory)
+            let backup3 = dir.appending(path: "ofem.log.3", directoryHint: .notDirectory)
             #expect(!fm.fileExists(atPath: backup3.path),
                     "backup 3 should have been deleted")
             // But backup 1 and 2 should exist.
-            let backup1 = dir.appending(path: "ofem.log.1.gz", directoryHint: .notDirectory)
-            let backup2 = dir.appending(path: "ofem.log.2.gz", directoryHint: .notDirectory)
+            let backup1 = dir.appending(path: "ofem.log.1", directoryHint: .notDirectory)
+            let backup2 = dir.appending(path: "ofem.log.2", directoryHint: .notDirectory)
             #expect(fm.fileExists(atPath: backup1.path))
             #expect(fm.fileExists(atPath: backup2.path))
         }

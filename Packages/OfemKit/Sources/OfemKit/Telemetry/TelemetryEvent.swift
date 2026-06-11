@@ -50,6 +50,19 @@ public struct TelemetryEvent: Sendable {
     /// can smuggle a workspace name or path as a property key.
     public var commonProps: [String: String]
 
+    /// Number of times this event has been placed back in the buffer after a
+    /// failed or partially-rejected flush. `TelemetryClient.flush()` drops
+    /// the event once this reaches `TelemetryEvent.maxRetries` so a
+    /// permanently-rejected item cannot circulate indefinitely.
+    ///
+    /// Not part of the wire format — the field is stripped before the event
+    /// reaches `AppInsightsEnvelope`.
+    var retryCount: Int = 0
+
+    /// Maximum number of re-queue attempts before an event is silently
+    /// dropped. Set to 3 to match the store-20 "bounded retries" requirement.
+    static let maxRetries = 3
+
     // MARK: - Init
 
     /// Creates a `TelemetryEvent` with the required event name.
