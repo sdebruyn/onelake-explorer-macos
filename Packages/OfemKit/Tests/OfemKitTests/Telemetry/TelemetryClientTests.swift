@@ -226,4 +226,31 @@ struct TelemetryClientTests {
         #expect(callerProps.count == 1)
         #expect(callerProps["installId"] == nil)
     }
+
+    @Test("permanently-retriable event is dropped after maxRetries flushes (store-20 bounded retries)")
+    func permanentRetriableEventDroppedAfterMaxRetries() async {
+        // A sink that always fails forces events back into the buffer on
+        // every flush. After TelemetryEvent.maxRetries re-queues the event
+        // must be silently dropped and never reach the sink.
+        let sink = MemoryTelemetrySink()
+        sink.shouldFail = true
+        let client = makeClient(sink: sink, flushInterval: .seconds(3600))
+
+        await client.track(TelemetryEvent(name: "stuck_event"))
+
+        // Flush (maxRetries + 1) times: the last flush should find an empty
+        // buffer because the event was dropped after maxRetries re-queues.
+        for _ in 0..<(TelemetryEvent.maxRetries + 1) {
+            await client.flush()
+        }
+
+        // Now let the sink succeed — any remaining event would arrive here.
+        sink.shouldFail = false
+        await client.flush()
+
+        #expect(
+            sink.count == 0,
+            "event must be dropped after \(TelemetryEvent.maxRetries) retries, not re-queued indefinitely"
+        )
+    }
 }

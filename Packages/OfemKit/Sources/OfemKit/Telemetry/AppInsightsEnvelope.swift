@@ -93,9 +93,11 @@ extension AppInsightsEnvelope {
 
 // MARK: - Shared ISO 8601 formatter (store-15)
 
-/// A single static `ISO8601DateFormatter` shared across log lines and
-/// telemetry timestamps. `ISO8601DateFormatter` is thread-safe once its
+/// A single static `ISO8601DateFormatter` shared across all telemetry
+/// envelope timestamps. `ISO8601DateFormatter` is thread-safe once its
 /// format options are configured.
+/// Note: logging uses a separate formatter in `OfemLogger`; this enum is
+/// scoped to the telemetry package only.
 enum SharedFormatter {
     // ISO8601DateFormatter is documented as thread-safe after configuration;
     // nonisolated(unsafe) suppresses the Swift concurrency check.

@@ -49,9 +49,24 @@ actor TelemetryBatch {
     /// Re-queues `events` at the front of the buffer after a failed flush,
     /// trimming from the oldest end if the combined size exceeds `maxSize`.
     ///
+    /// Each event's `retryCount` is incremented; events that have already
+    /// reached `TelemetryEvent.maxRetries` are dropped so a permanently-
+    /// rejected item cannot circulate indefinitely (store-20 bounded retries).
+    ///
     /// Mirrors the re-queue path in `Client.Flush` in `client.go`.
     func requeue(_ events: [TelemetryEvent]) {
-        buffer = events + buffer
+        var incremented: [TelemetryEvent] = []
+        for var ev in events {
+            ev.retryCount += 1
+            if ev.retryCount <= TelemetryEvent.maxRetries {
+                incremented.append(ev)
+            } else {
+                log.debug(
+                    "telemetry event dropped after \(TelemetryEvent.maxRetries, privacy: .public) retries: \(ev.name, privacy: .public)"
+                )
+            }
+        }
+        buffer = incremented + buffer
         let over = buffer.count - maxSize
         if over > 0 {
             buffer.removeFirst(over)

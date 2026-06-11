@@ -135,6 +135,35 @@ public final class RotatingFileWriter: @unchecked Sendable {
 
     /// Rotates the active log file. Called outside the lock so the
     /// rename/move work (store-13: nontrivial I/O) does not block writers.
+    ///
+    /// ### TOCTOU safety invariant
+    ///
+    /// Two threads can both observe `needsRotation = true` before either has
+    /// rotated, leading to concurrent calls to `rotateFile()`. The race is
+    /// benign by design:
+    ///
+    /// 1. The first caller acquires the lock, closes the handle, zeroes
+    ///    `currentSize`, and releases the lock.  From this point on the active
+    ///    file is closed and `currentSize` is 0, so any writer that re-enters
+    ///    `write(_:)` will compute `needsRotation = false` and proceed to
+    ///    reopen the (new, empty) active file.
+    ///
+    /// 2. The second caller acquires the same lock section, sees `fileHandle`
+    ///    is already `nil` (set by the first caller), and still zeroes
+    ///    `currentSize` — idempotent and safe.
+    ///
+    /// 3. Both callers then reach the `fileExists` guard on the active path.
+    ///    The first caller moves the active file to `ofem.log.1`; the second
+    ///    caller's `fileExists` returns `false` (the file is gone) and returns
+    ///    early without touching the backup chain. At worst the second caller
+    ///    loses a race between its `fileExists` check and the first caller's
+    ///    `moveItem`, producing a spurious no-op — no backup is overwritten.
+    ///
+    /// The backup-shift loop (`ofem.log.N → ofem.log.(N+1)`) therefore runs
+    /// under the implicit serialisation provided by the `fileExists` guard:
+    /// only the caller that observes the active file still present proceeds
+    /// with the shift. This is sufficient for a best-effort logger where a
+    /// rare duplicate no-op rotation is acceptable.
     private func rotateFile() {
         // Close the handle under the lock, then do the filesystem work outside.
         lock.lock()
