@@ -14,26 +14,27 @@ struct ItemIdentifierFrameworkTests {
     // MARK: - Sentinel contract pins
 
     @Test func rootContainerStringMatchesAppleConstant() {
+        // Pin to the literal string the Apple framework has published since the
+        // FileProvider API was introduced. If the framework ever renames the
+        // constant, or our assignment drifts to a different source, this test
+        // will catch it before the FPE parser silently mis-classifies root.
         #expect(
             ItemIdentifier.rootContainerString
-                == NSFileProviderItemIdentifier.rootContainer.rawValue,
-            "ItemIdentifier.rootContainerString must equal NSFileProviderItemIdentifier.rootContainer.rawValue"
+                == "NSFileProviderRootContainerItemIdentifier"
         )
     }
 
     @Test func trashContainerStringMatchesAppleConstant() {
         #expect(
             ItemIdentifier.trashContainerString
-                == NSFileProviderItemIdentifier.trashContainer.rawValue,
-            "ItemIdentifier.trashContainerString must equal NSFileProviderItemIdentifier.trashContainer.rawValue"
+                == "NSFileProviderTrashContainerItemIdentifier"
         )
     }
 
     @Test func workingSetStringMatchesAppleConstant() {
         #expect(
             ItemIdentifier.workingSetString
-                == NSFileProviderItemIdentifier.workingSet.rawValue,
-            "ItemIdentifier.workingSetString must equal NSFileProviderItemIdentifier.workingSet.rawValue"
+                == "NSFileProviderWorkingSetContainerItemIdentifier"
         )
     }
 

@@ -420,10 +420,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         // Parse first so we can branch on the typed identifier.
         let ofemID = try parseOfemItemIdentifier(containerItemIdentifier.rawValue)
 
-        // Working set → lightweight enumerator (no engine needed).
-        if ofemID == .workingSet {
+        // Working set / trash → lightweight empty enumerator (no engine needed).
+        // Trash is not supported; returning an empty enumerator prevents macOS
+        // from retrying indefinitely (which would happen if OfemFPEEnumerator
+        // threw noSuchItem → cannotSynchronize for the trash container).
+        if ofemID == .workingSet || ofemID == .trash {
             FileProviderExtension.log.debug(
-                "enumerator(for: .workingSet) for \(self.alias, privacy: .public)"
+                "enumerator(for: .workingSet/.trash) for \(self.alias, privacy: .public)"
             )
             return OfemWorkingSetEnumerator(alias: alias)
         }

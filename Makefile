@@ -63,16 +63,10 @@ build-ci: gen ## Compile app + .appex unsigned (CI gate)
 		$(APPLE_UNSIGNED) \
 		build
 
-# Run the host-less XCTest bundle unsigned. Includes pure logic tests
-# for the identifier grammar.
-test: gen ## Run Swift unit tests (unsigned, host-less)
-	xcodebuild -project $(XCODE_PROJECT) \
-		-scheme OneLakeTests \
-		-configuration Debug \
-		-destination 'platform=macOS,arch=arm64' \
-		-derivedDataPath DerivedData \
-		$(APPLE_UNSIGNED) \
-		test
+# Run OfemKit unit tests via swift test. All logic tests (including the
+# identifier-grammar contract) live in Packages/OfemKit/Tests/.
+test: ## Run Swift unit tests (OfemKit)
+	cd Packages/OfemKit && swift test
 
 # Removes generated/build artefacts AND unregisters the built app from
 # LaunchServices. Local.xcconfig is preserved (per-developer
