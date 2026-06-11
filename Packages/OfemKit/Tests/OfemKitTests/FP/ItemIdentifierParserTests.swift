@@ -14,45 +14,47 @@ struct ItemIdentifierParserTests {
         #expect(id == .root)
     }
 
+    @Test func parsesEmptyStringAsRoot() throws {
+        // The File Provider bridge maps "" → .root; the parser must match.
+        let id = try ItemIdentifierParser.parse("")
+        #expect(id == .root)
+    }
+
     // MARK: - Valid paths
+    //
+    // Raw identifiers are slash-less: "ws", "ws/item", "ws/item/path...".
 
     @Test func parsesWorkspaceSegment() throws {
-        let id = try ItemIdentifierParser.parse("/ws-abc")
+        let id = try ItemIdentifierParser.parse("ws-abc")
         #expect(id == .workspace(workspaceID: "ws-abc"))
     }
 
     @Test func parsesItemSegment() throws {
-        let id = try ItemIdentifierParser.parse("/ws-abc/item-xyz")
+        let id = try ItemIdentifierParser.parse("ws-abc/item-xyz")
         #expect(id == .item(workspaceID: "ws-abc", itemID: "item-xyz"))
     }
 
     @Test func parsesPathSegmentSingleComponent() throws {
-        let id = try ItemIdentifierParser.parse("/ws-abc/item-xyz/Files")
+        let id = try ItemIdentifierParser.parse("ws-abc/item-xyz/Files")
         #expect(id == .path(workspaceID: "ws-abc", itemID: "item-xyz", path: "Files"))
     }
 
     @Test func parsesPathSegmentMultiComponent() throws {
-        let id = try ItemIdentifierParser.parse("/ws-abc/item-xyz/Files/a/b/c.txt")
+        let id = try ItemIdentifierParser.parse("ws-abc/item-xyz/Files/a/b/c.txt")
         #expect(id == .path(workspaceID: "ws-abc", itemID: "item-xyz", path: "Files/a/b/c.txt"))
     }
 
     // MARK: - Invalid inputs
 
-    @Test func rejectsEmptyString() {
+    @Test func rejectsLeadingSlash() {
         #expect(throws: (any Error).self) {
-            try ItemIdentifierParser.parse("")
-        }
-    }
-
-    @Test func rejectsMissingLeadingSlash() {
-        #expect(throws: (any Error).self) {
-            try ItemIdentifierParser.parse("ws-abc/item-xyz")
+            try ItemIdentifierParser.parse("/ws-abc/item-xyz")
         }
     }
 
     @Test func rejectsTrailingSlash() {
         #expect(throws: (any Error).self) {
-            try ItemIdentifierParser.parse("/ws-abc/")
+            try ItemIdentifierParser.parse("ws-abc/")
         }
     }
 
@@ -64,7 +66,7 @@ struct ItemIdentifierParserTests {
 
     @Test func rejectsEmptyItemSegment() {
         #expect(throws: (any Error).self) {
-            try ItemIdentifierParser.parse("/ws-abc//Files")
+            try ItemIdentifierParser.parse("ws-abc//Files")
         }
     }
 }
