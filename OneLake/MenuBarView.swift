@@ -13,11 +13,41 @@
 //   • Open Logs Folder, Open Config File items
 //
 // Account list and status are sourced from SharedOfemAuth (config.toml).
-// model.isRunning is always true once the first refresh completes.
+// The menu shows account-scoped actions; hasAccounts drives controls.
 
 import AppKit
 import SwiftUI
 import os.log
+
+// MARK: - MountPathResolver
+
+/// Resolves the on-disk mount path for a File Provider domain by alias.
+///
+/// The host app is sandboxed, so `NSHomeDirectory()` and `expandingTildeInPath`
+/// return the App Sandbox container path, not the real user home. We read the
+/// passwd record directly via `getpwuid(getuid())` to get the real `$HOME`.
+/// This logic is extracted here (away from the View) so it can be unit-tested.
+enum MountPathResolver {
+    /// Returns the real user home directory, bypassing the App Sandbox.
+    static func realHomeDirectory() -> String {
+        if let pw = getpwuid(getuid()), let cstr = pw.pointee.pw_dir {
+            return String(cString: cstr)
+        }
+        return NSHomeDirectory()
+    }
+
+    /// Returns the Finder-visible mount path for the given alias.
+    ///
+    /// Convention: `~/Library/CloudStorage/OneLake-<alias>/`
+    /// (see CLAUDE.md mount-path section).
+    static func mountURL(alias: String) -> URL {
+        let home = realHomeDirectory()
+        return URL(
+            fileURLWithPath: "\(home)/Library/CloudStorage/OneLake-\(alias)",
+            isDirectory: true
+        )
+    }
+}
 
 struct MenuBarView: View {
     // The model is owned at the App level (OneLakeApp @StateObject) so
@@ -30,7 +60,10 @@ struct MenuBarView: View {
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "menubar-view")
 
     var body: some View {
-        // Trigger a fetch every time the menu opens.
+        // The `.menu` style MenuBarExtra does not fire SwiftUI.onAppear on
+        // menu open — onAppear fires once at scene construction only. Periodic
+        // refresh is owned by the auto-refresh timer in OneLakeApp. This
+        // onAppear is intentionally absent; do not re-add it.
         Group {
             statusHeader
             Divider()
@@ -41,9 +74,6 @@ struct MenuBarView: View {
             aboutItem
             Divider()
             quitItem
-        }
-        .onAppear {
-            model.refresh()
         }
     }
 
@@ -101,21 +131,17 @@ struct MenuBarView: View {
     /// `Settings { … }` scene from anywhere in a SwiftUI tree, including
     /// a MenuBarExtra dropdown on an LSUIElement app. The Cmd+, shortcut
     /// matches the system-wide convention.
+    ///
+    /// Note: `simultaneousGesture` is intentionally absent. With
+    /// `menuBarExtraStyle(.menu)` the content is rendered as NSMenuItems and
+    /// SwiftUI gesture recognisers are not delivered — the gesture was dead
+    /// in practice. Settings activation is handled by the scene machinery.
     @ViewBuilder
     private var preferencesItem: some View {
         SettingsLink {
             Text("Preferences…")
         }
         .keyboardShortcut(",", modifiers: .command)
-        // Brought to the front via a simultaneous tap on the SettingsLink:
-        // SwiftUI does the open, then we activate the app so the window
-        // is in front of whatever the user was looking at. The order is
-        // important — activate() before open would target the wrong
-        // process. simultaneousGesture fires alongside the underlying tap
-        // without consuming it (which an.onTapGesture would).
-        .simultaneousGesture(TapGesture().onEnded {
-            NSApp.activate(ignoringOtherApps: true)
-        })
     }
 
     // MARK: - About
@@ -169,27 +195,9 @@ private struct AccountSubmenu: View {
     }
 
     private func openInFinder() {
-        // Mount path convention: ~/Library/CloudStorage/OneLake-<alias>/
-        // See CLAUDE.md and docs/file-provider-domain-nesting.md.
-        //
-        // We cannot use `expandingTildeInPath` or `NSHomeDirectory()`
-        // here: this app is sandboxed, so both resolve to the App
-        // Sandbox container (~/Library/Containers/dev.debruyn.ofem/…),
-        // not the real user home. Finder then opens an empty container
-        // path that has nothing to do with the File Provider mount.
-        // `getpwuid(getuid())->pw_dir` reads the passwd record directly
-        // and returns the real $HOME, regardless of the sandbox.
-        let realHome: String
-        if let pw = getpwuid(getuid()), let cstr = pw.pointee.pw_dir {
-            realHome = String(cString: cstr)
-        } else {
-            realHome = NSHomeDirectory()
-        }
-        let url = URL(
-            fileURLWithPath: "\(realHome)/Library/CloudStorage/OneLake-\(account.alias)",
-            isDirectory: true
-        )
-
+        // Delegate path resolution to MountPathResolver so the logic is
+        // testable and the sandbox-safe getpwuid trick lives in one place.
+        let url = MountPathResolver.mountURL(alias: account.alias)
         Self.log.info("Opening Finder at \(url.path, privacy: .public)")
         // Skip createDirectory: the File Provider Extension owns the
         // mount path and the sandbox blocks us from writing there
