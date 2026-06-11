@@ -78,7 +78,7 @@ public final class OfemAuth {
     /// The MSAL token cache is already in the Keychain at this point
     /// (written by `MsalAuthClient` during the interactive flow). This
     /// method only updates the TOML config with the account metadata.
-    public func addAccount(_ account: Account) throws {
+    public func addAccount(_ account: Account) async throws {
         guard !account.alias.isEmpty else {
             throw OfemAuthError.emptyAlias
         }
@@ -87,7 +87,7 @@ public final class OfemAuth {
         if snap.accounts[account.alias] != nil {
             throw OfemAuthError.duplicateAlias(account.alias)
         }
-        try configStore.updateAndSave { config in
+        try await configStore.updateAndSave { config in
             config.accounts[account.alias] = account
         }
     }
@@ -100,12 +100,12 @@ public final class OfemAuth {
     /// Note: the MSAL Keychain cache entry is NOT removed here because MSAL
     /// manages its own cache lifecycle. If the alias is re-added, MSAL will
     /// try the existing cache first, which is the correct behaviour.
-    public func removeAccount(alias: String) throws {
+    public func removeAccount(alias: String) async throws {
         let snap = configStore.snapshot()
         guard snap.accounts[alias] != nil else {
             throw OfemAuthError.unknownAlias(alias)
         }
-        try configStore.updateAndSave { config in
+        try await configStore.updateAndSave { config in
             config.accounts.removeValue(forKey: alias)
             if config.defaultAccount == alias {
                 config.defaultAccount = ""
@@ -123,12 +123,12 @@ public final class OfemAuth {
     }
 
     /// Sets the default account alias.
-    public func setDefaultAccount(alias: String) throws {
+    public func setDefaultAccount(alias: String) async throws {
         let snap = configStore.snapshot()
         guard snap.accounts[alias] != nil else {
             throw OfemAuthError.unknownAlias(alias)
         }
-        try configStore.updateAndSave { config in
+        try await configStore.updateAndSave { config in
             config.defaultAccount = alias
         }
     }

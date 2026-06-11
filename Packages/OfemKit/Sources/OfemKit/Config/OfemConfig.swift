@@ -239,10 +239,12 @@ public struct Account: Codable, Sendable {
 ///
 /// The host app and the File Provider Extension both write to the same
 /// `config.toml` in the shared App Group container. `updateAndSave` uses a
-/// POSIX advisory lock (`flock(2)`) on a sidecar `.config.lock` file to
-/// serialise writers across processes:
+/// POSIX advisory `fcntl(2)` record lock (`F_SETLK`, non-blocking with retry)
+/// on a sidecar `.config.lock` file to serialise writers across processes:
 ///
-/// 1. Acquire an exclusive lock on `.config.lock`.
+/// 1. Acquire an exclusive lock on `.config.lock` (non-blocking `F_SETLK`
+///    retried with small sleeps, total cap ~5 s; throws ``OfemConfigError/lockTimeout``
+///    if the peer process never releases).
 /// 2. Re-read `config.toml` from disk (discard the stale in-memory snapshot).
 /// 3. Apply the caller's mutation closure to the freshly loaded state.
 /// 4. Write the result atomically (temp file + rename).
@@ -251,14 +253,40 @@ public struct Account: Codable, Sendable {
 /// This prevents a write from one process from silently reverting fields that
 /// the other process wrote after the first process last loaded the file.
 ///
-/// The in-process `NSLock` (`lock`) serialises concurrent Swift tasks/threads
-/// within the same process; the `flock` on `.config.lock` serialises across
-/// process boundaries.
+/// **Per-process caveat**: `fcntl` record locks are owned by the *process*, not
+/// the file descriptor. Two `OfemConfigStore` instances in the *same* process
+/// would not exclude each other via `fcntl` alone — the kernel grants the
+/// lock to the same process immediately. To prevent intra-process split-brain,
+/// a process-wide serial ``DispatchQueue`` registry (keyed by canonical
+/// config-file path) serialises all `updateAndSave` calls for the same file
+/// within one process, while `fcntl` handles cross-process exclusion.
 public final class OfemConfigStore: Sendable {
     private let paths: OfemPaths
-    private let lock = NSLock()
-    // Non-isolated mutable state guarded by `lock`.
+    /// Per-path process-wide serial queue (see ``sharedQueue(for:)``).
+    private let serialQueue: DispatchQueue
+    // In-memory snapshot, mutated only while holding `serialQueue`.
     private nonisolated(unsafe) var config: OfemConfig
+
+    // MARK: - Process-wide intra-process serialisation registry
+
+    /// Registry lock (guards `_queueRegistry`).
+    private static let registryLock = NSLock()
+    /// Map from canonical config-file path → serial DispatchQueue.
+    /// All `OfemConfigStore` instances for the *same* file share one queue,
+    /// so concurrent `updateAndSave` calls within the same process are
+    /// serialised without relying on `fcntl` (which is per-process, not
+    /// per-fd). Cross-process exclusion is handled by `fcntl` record locks.
+    private static nonisolated(unsafe) var _queueRegistry: [String: DispatchQueue] = [:]
+
+    private static func sharedQueue(for configFile: URL) -> DispatchQueue {
+        let key = configFile.resolvingSymlinksInPath().path(percentEncoded: false)
+        return registryLock.withLock {
+            if let q = _queueRegistry[key] { return q }
+            let q = DispatchQueue(label: "dev.debruyn.ofem.config.\(key.hash)", qos: .utility)
+            _queueRegistry[key] = q
+            return q
+        }
+    }
 
     // MARK: - Initialisers
 
@@ -276,6 +304,7 @@ public final class OfemConfigStore: Sendable {
     /// - Throws: ``OfemConfigError`` on TOML parse failures or I/O errors.
     public init(paths: OfemPaths) throws {
         self.paths = paths
+        self.serialQueue = Self.sharedQueue(for: paths.configFile)
         self.config = try Self.load(from: paths)
     }
 
@@ -284,54 +313,82 @@ public final class OfemConfigStore: Sendable {
     /// Returns a snapshot copy of the current config. Mutations on the
     /// returned value do not affect the store.
     public func snapshot() -> OfemConfig {
-        lock.withLock { config }
+        serialQueue.sync { config }
     }
 
     /// Applies `mutator` to the **freshly re-read on-disk state** and persists
-    /// the result atomically.
+    /// the result atomically. The entire sequence runs on a background
+    /// `DispatchQueue` via a `CheckedContinuation`, so the calling
+    /// Swift task suspends rather than blocking the main actor or any other
+    /// thread. This is safe to call from `@MainActor` context.
     ///
     /// The sequence is:
-    /// 1. Acquire the cross-process file lock (`.config.lock` sidecar).
-    /// 2. Re-read `config.toml` from disk so any writes made by another
+    /// 1. Suspend the caller and hop to the per-path background serial queue
+    ///    (intra-process serialisation).
+    /// 2. Acquire the cross-process `fcntl` file lock on `.config.lock`
+    ///    using non-blocking `F_SETLK` with exponential retry (max ~5 s).
+    ///    Throws ``OfemConfigError/lockTimeout`` if the peer never releases.
+    /// 3. Re-read `config.toml` from disk so any writes made by another
     ///    process since the last load are incorporated.
-    /// 3. Call `mutator` on the fresh state.
-    /// 4. Write the result atomically (temp file + rename).
-    /// 5. Update the in-memory snapshot and release the lock.
+    /// 4. Call `mutator` on the fresh state.
+    /// 5. Write the result atomically (temp file + rename).
+    /// 6. Update the in-memory snapshot and release the lock.
+    /// 7. Resume the caller with the saved config.
     ///
-    /// Concurrent callers within the same process are serialised by an
-    /// `NSLock`; callers in different processes are serialised by `flock(2)`
-    /// on the sidecar lock file.
+    /// Concurrent callers within the same process are serialised by the
+    /// per-path ``DispatchQueue`` from the process-wide registry. Callers in
+    /// different processes are serialised by `fcntl(2)` record locking on
+    /// the sidecar `.config.lock` file.
     ///
     /// The mutator must not call back into the store.
     @discardableResult
-    public func updateAndSave(_ mutator: (inout OfemConfig) throws -> Void) throws -> OfemConfig {
-        try lock.withLock {
-            // Acquire the cross-process exclusive file lock.
-            let lockFD = try Self.acquireFileLock(paths: paths)
-            defer { Self.releaseFileLock(lockFD) }
+    public func updateAndSave(_ mutator: @escaping @Sendable (inout OfemConfig) throws -> Void) async throws -> OfemConfig {
+        // Capture what we need so we don't capture `self` in the closure
+        // passed across the concurrency boundary (DispatchQueue → continuation).
+        let paths = self.paths
+        let queue = self.serialQueue
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do {
+                    // Acquire the cross-process exclusive file lock (non-blocking retry).
+                    let lockFD = try Self.acquireFileLock(paths: paths)
+                    defer { Self.releaseFileLock(lockFD) }
 
-            // Re-read from disk to pick up changes made by the other process.
-            var fresh = try Self.load(from: paths)
+                    // Re-read from disk to pick up changes made by the other process.
+                    var fresh = try Self.load(from: paths)
 
-            // Apply the caller's mutation to the fresh state.
-            try mutator(&fresh)
+                    // Apply the caller's mutation to the fresh state.
+                    try mutator(&fresh)
 
-            // Persist atomically.
-            try Self.save(fresh, to: paths)
+                    // Persist atomically.
+                    try Self.save(fresh, to: paths)
 
-            // Update the in-memory snapshot.
-            config = fresh
-            return config
+                    // Update the in-memory snapshot (queue is serial — no race).
+                    self.config = fresh
+                    continuation.resume(returning: fresh)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
     }
 
     // MARK: - Cross-process file lock
 
-    /// Acquires an exclusive POSIX advisory lock on `.config.lock` in the
-    /// same directory as `config.toml`.
+    /// Maximum total wait time for acquiring the cross-process file lock.
+    private static let lockTimeoutNs: UInt64 = 5_000_000_000 // 5 seconds
+
+    /// Acquires an exclusive POSIX advisory `fcntl` record lock on
+    /// `.config.lock` in the same directory as `config.toml`.
     ///
-    /// Uses `fcntl(2)` with `F_SETLKW` (write-lock, blocking) rather than
-    /// `flock(2)` to avoid a name collision with GRDB's `flock` struct.
+    /// Uses `F_SETLK` (non-blocking) in a retry loop with small sleeps
+    /// rather than `F_SETLKW` (blocking) so the calling thread is never
+    /// indefinitely frozen by a wedged peer process. Total cap is ~5 s;
+    /// throws ``OfemConfigError/lockTimeout`` if the lock cannot be
+    /// acquired within that window.
+    ///
+    /// `fcntl` is used rather than `flock(2)` to avoid a name collision
+    /// with GRDB's `flock` struct type that is in scope via the package graph.
     ///
     /// - Returns: An open file descriptor for the lock file. The caller is
     ///   responsible for releasing it via ``releaseFileLock(_:)``.
@@ -363,23 +420,39 @@ public final class OfemConfigStore: Sendable {
             )
         }
 
-        // F_SETLKW — set an exclusive write lock; blocks until available.
-        // (Using fcntl rather than flock() to avoid a name collision with
-        // GRDB's `flock` struct type that is in scope via the package graph.)
         var lk = Darwin.flock()
         lk.l_type   = Int16(F_WRLCK)
         lk.l_whence = Int16(SEEK_SET)
         lk.l_start  = 0
         lk.l_len    = 0 // Lock the whole file.
 
-        guard Darwin.fcntl(fd, F_SETLKW, &lk) == 0 else {
-            Darwin.close(fd)
-            throw OfemConfigError.lockFailed(
-                NSError(domain: NSPOSIXErrorDomain, code: Int(Darwin.errno))
-            )
+        // Non-blocking F_SETLK with exponential back-off retry.
+        // Total budget: ~5 s. Sleep sequence (ms): 10, 20, 40, 80, 160, 320,
+        // 640, then 640 repeating until deadline.
+        let deadline = DispatchTime.now() + .nanoseconds(Int(lockTimeoutNs))
+        var sleepNs: UInt64 = 10_000_000 // 10 ms initial
+        while true {
+            if Darwin.fcntl(fd, F_SETLK, &lk) == 0 {
+                // Lock acquired.
+                return fd
+            }
+            let err = Darwin.errno
+            guard err == EAGAIN || err == EACCES else {
+                // Unexpected error (not "try again").
+                Darwin.close(fd)
+                throw OfemConfigError.lockFailed(
+                    NSError(domain: NSPOSIXErrorDomain, code: Int(err))
+                )
+            }
+            // Lock held by another process — check deadline before sleeping.
+            if DispatchTime.now() >= deadline {
+                Darwin.close(fd)
+                throw OfemConfigError.lockTimeout
+            }
+            // Sleep, capped at 640 ms.
+            Thread.sleep(forTimeInterval: Double(sleepNs) / 1_000_000_000)
+            sleepNs = min(sleepNs * 2, 640_000_000)
         }
-
-        return fd
     }
 
     /// Releases the POSIX advisory lock and closes the file descriptor.
@@ -459,8 +532,11 @@ public final class OfemConfigStore: Sendable {
             directoryHint: .notDirectory
         )
 
+        // Write without .atomic — tmpURL is a private scratch file never
+        // observed by other processes mid-write (the fcntl lock prevents that).
+        // The atomicity guarantee comes from the subsequent replaceItemAt rename.
         do {
-            try data.write(to: tmpURL, options: .atomic)
+            try data.write(to: tmpURL)
         } catch {
             throw OfemConfigError.writeFailed(error)
         }
@@ -494,6 +570,10 @@ public enum OfemConfigError: Error {
     case renameFailed(Error)
     case createDirectoryFailed(Error)
     case lockFailed(Error)
+    /// The cross-process `fcntl` file lock could not be acquired within
+    /// the allowed timeout (~5 s). This indicates a wedged peer process
+    /// holding the lock without releasing it.
+    case lockTimeout
     case invalidUTF8
 }
 

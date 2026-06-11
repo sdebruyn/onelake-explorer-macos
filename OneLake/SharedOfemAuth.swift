@@ -104,7 +104,7 @@ final class SharedOfemAuth {
         }
 
         // Persist to config.toml (shared with FPE via App Group container).
-        try auth.addAccount(account)
+        try await auth.addAccount(account)
 
         Self.log.info(
             "SharedOfemAuth.signIn: signed in alias=\(trimmedAlias, privacy: .public) user=\(account.username, privacy: .private)"

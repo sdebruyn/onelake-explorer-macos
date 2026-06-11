@@ -55,8 +55,8 @@ final class FPEEngineHost: Sendable {
     /// All FPEEngineHost instances (one per domain) in the same FPE process
     /// share this single store so their XPC handlers all read and write the
     /// same in-memory snapshot. Cross-process safety (host vs FPE) is handled
-    /// by `OfemConfigStore.updateAndSave`, which uses `flock(2)` to serialise
-    /// writes at the file level.
+    /// by `OfemConfigStore.updateAndSave`, which uses `fcntl(2)` record locks
+    /// to serialise writes at the file level.
     ///
     /// - Throws: `OfemConfigError` on TOML parse failure (first call only).
     static func sharedConfigStore() throws -> OfemConfigStore {
@@ -88,7 +88,7 @@ final class FPEEngineHost: Sendable {
     /// Delegates to ``FPEEngineHost/sharedConfigStore()`` so all
     /// FPEEngineHost instances in this process read and write the same
     /// in-memory snapshot. Cross-process safety against the host app is
-    /// handled by the flock-based read-merge-write in
+    /// handled by the `fcntl(2)`-based read-merge-write in
     /// `OfemConfigStore.updateAndSave`.
     ///
     /// - Throws: `OfemConfigError` on TOML parse failure (first call only).

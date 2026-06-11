@@ -189,7 +189,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
         Task { [self] in
             do {
                 let configStore = try engineHost.configStore()
-                try configStore.updateAndSave { cfg in
+                try await configStore.updateAndSave { cfg in
                     switch key {
                     case "telemetry":
                         cfg.telemetry = (value == "on")

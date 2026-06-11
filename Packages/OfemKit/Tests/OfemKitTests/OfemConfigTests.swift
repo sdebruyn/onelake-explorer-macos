@@ -73,11 +73,11 @@ struct OfemConfigTests {
     // MARK: - Round-trip: TOML → struct → TOML
 
     @Test("round-trip: canonical config survives encode/decode")
-    func roundTripCanonical() throws {
+    func roundTripCanonical() async throws {
         let paths = makePaths()
         let store = try OfemConfigStore(paths: paths)
 
-        try store.updateAndSave { cfg in
+        try await store.updateAndSave { cfg in
             cfg.installID = "abc-123"
             cfg.telemetry = false
             cfg.defaultAccount = "work"
@@ -110,10 +110,10 @@ struct OfemConfigTests {
     }
 
     @Test("round-trip: file permissions are 0600")
-    func roundTripFilePermissions() throws {
+    func roundTripFilePermissions() async throws {
         let paths = makePaths()
         let store = try OfemConfigStore(paths: paths)
-        try store.updateAndSave { cfg in cfg.installID = "perm-test" }
+        try await store.updateAndSave { cfg in cfg.installID = "perm-test" }
 
         let attrs = try FileManager.default.attributesOfItem(
             atPath: paths.configFile.path(percentEncoded: false)
@@ -123,11 +123,11 @@ struct OfemConfigTests {
     }
 
     @Test("round-trip: optional Account fields survive")
-    func roundTripOptionalAccountFields() throws {
+    func roundTripOptionalAccountFields() async throws {
         let paths = makePaths()
         let store = try OfemConfigStore(paths: paths)
 
-        try store.updateAndSave { cfg in
+        try await store.updateAndSave { cfg in
             cfg.accounts["byo"] = Account(
                 alias: "byo",
                 tenantID: "t2",
@@ -229,7 +229,7 @@ struct OfemConfigTests {
         await withTaskGroup(of: Void.self) { group in
             for i in 0..<20 {
                 group.addTask {
-                    try? store.updateAndSave { cfg in
+                    try? await store.updateAndSave { cfg in
                         cfg.installID = "run-\(i)"
                     }
                 }
@@ -241,11 +241,19 @@ struct OfemConfigTests {
         #expect(!store2.snapshot().installID.isEmpty)
     }
 
-    // MARK: - Cross-process write safety (arch-01 / auth-01)
+    // MARK: - Intra-process write safety (arch-01 / auth-01)
     //
-    // Simulate two independent processes by opening two OfemConfigStore
-    // instances over the same directory. Each writes a different field
-    // concurrently; both fields must survive in the final on-disk state.
+    // Two OfemConfigStore instances opened over the same path in the *same*
+    // process share a process-wide serial DispatchQueue (keyed by the
+    // canonical config-file path). This ensures their updateAndSave calls are
+    // properly serialised within the process without relying on fcntl record
+    // locks, which are per-process and would therefore not exclude two stores
+    // in the same process from each other.
+    //
+    // Cross-process exclusion (host app vs FPE) is handled by the fcntl
+    // record locks in acquireFileLock — that path cannot be exercised in an
+    // in-process unit test because a single process always gets the lock
+    // immediately regardless of other file descriptors it holds.
 
     @Test("two stores over one file: interleaved writes to different fields both survive")
     func twoStoresInterleavedWrites() async throws {
@@ -253,13 +261,15 @@ struct OfemConfigTests {
 
         // Seed the file with known values.
         let seed = try OfemConfigStore(paths: paths)
-        try seed.updateAndSave { cfg in
+        try await seed.updateAndSave { cfg in
             cfg.installID = "seed"
             cfg.telemetry = true
             cfg.log.level = "info"
         }
 
-        // storeA simulates the host app; storeB simulates the FPE.
+        // storeA and storeB share the same process-wide serial queue for
+        // this path, so their concurrent updateAndSave calls are serialised
+        // via the intra-process registry — not via fcntl.
         let storeA = try OfemConfigStore(paths: paths)
         let storeB = try OfemConfigStore(paths: paths)
 
@@ -269,10 +279,10 @@ struct OfemConfigTests {
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<10 {
                 group.addTask {
-                    try? storeA.updateAndSave { cfg in cfg.telemetry = false }
+                    try? await storeA.updateAndSave { cfg in cfg.telemetry = false }
                 }
                 group.addTask {
-                    try? storeB.updateAndSave { cfg in cfg.log.level = "debug" }
+                    try? await storeB.updateAndSave { cfg in cfg.log.level = "debug" }
                 }
             }
         }
@@ -285,12 +295,12 @@ struct OfemConfigTests {
     }
 
     @Test("two stores over one file: account written by storeA is not erased by storeB")
-    func twoStoresAccountNotErased() throws {
+    func twoStoresAccountNotErased() async throws {
         let paths = makePaths()
 
         // storeA writes an account.
         let storeA = try OfemConfigStore(paths: paths)
-        try storeA.updateAndSave { cfg in
+        try await storeA.updateAndSave { cfg in
             cfg.accounts["work"] = Account(
                 alias: "work",
                 tenantID: "t1",
@@ -301,9 +311,12 @@ struct OfemConfigTests {
         }
 
         // storeB was opened BEFORE storeA wrote the account (stale snapshot).
-        // It writes a different field. The account must still be present.
+        // It writes a different field. The account must still be present
+        // because updateAndSave re-reads the on-disk state before applying
+        // the mutation (read-merge-write), and both stores share the
+        // intra-process serial queue, so the writes are properly ordered.
         let storeB = try OfemConfigStore(paths: paths)
-        try storeB.updateAndSave { cfg in
+        try await storeB.updateAndSave { cfg in
             cfg.cache.maxSizeGB = 20
         }
 
