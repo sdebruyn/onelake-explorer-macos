@@ -147,6 +147,51 @@ public actor CacheStore {
         }
     }
 
+    // MARK: - Metadata: batchUpsert / batchDelete (sync-15)
+
+    /// Inserts or updates all `records` inside a single GRDB write transaction.
+    ///
+    /// Using one transaction instead of N individual ``upsert(_:)`` calls
+    /// eliminates per-row WAL-commit overhead and makes the reconciliation
+    /// atomic with respect to crashes.
+    public func batchUpsert(_ records: [MetadataRecord]) async throws {
+        guard !records.isEmpty else { return }
+        let now = currentNs()
+        let prepared: [MetadataRecord] = records.map { r in
+            var copy = r
+            if copy.lastAccessedNs == 0 { copy.lastAccessedNs = now }
+            if copy.syncedAtNs == 0     { copy.syncedAtNs = now }
+            return copy
+        }
+        try await dbPool.write { db in
+            for record in prepared {
+                try record.upsert(db)
+            }
+        }
+    }
+
+    /// Deletes rows for all `keys` inside a single GRDB write transaction.
+    ///
+    /// Blob link cleanup (orphan blobs) is deferred to the background orphan
+    /// sweep; this method focuses on the transactional delete. It is safe
+    /// for rows that do not exist (a no-op per key).
+    public func batchDelete(_ keys: [CacheKey]) async throws {
+        guard !keys.isEmpty else { return }
+        try await dbPool.write { db in
+            for key in keys {
+                let escaped = escapeLike(key.path)
+                try db.execute(sql: """
+                    DELETE FROM path_metadata
+                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                      AND (path = ? OR path LIKE ? ESCAPE '\\')
+                    """, arguments: [
+                        key.accountAlias, key.workspaceID, key.itemID,
+                        key.path, escaped + "/%",
+                    ])
+            }
+        }
+    }
+
     // MARK: - Metadata: fetch
 
     /// Fetches the metadata row for `key`.
