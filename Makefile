@@ -63,11 +63,21 @@ build-ci: gen ## Compile app + .appex unsigned (CI gate)
 		$(APPLE_UNSIGNED) \
 		build
 
-# Run the host-less XCTest bundle unsigned. Includes pure logic tests
-# for the identifier grammar.
+# Run all unsigned unit-test bundles. Includes:
+#   OneLakeTests      — FPE identifier parser + Shared types
+#   OneLakeHostTests  — host-app pure logic (write fence, icon state,
+#                       mount-path helper, sign-in coordinator,
+#                       domain identifier composition)
 test: gen ## Run Swift unit tests (unsigned, host-less)
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLakeTests \
+		-configuration Debug \
+		-destination 'platform=macOS,arch=arm64' \
+		-derivedDataPath DerivedData \
+		$(APPLE_UNSIGNED) \
+		test
+	xcodebuild -project $(XCODE_PROJECT) \
+		-scheme OneLakeHostTests \
 		-configuration Debug \
 		-destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath DerivedData \

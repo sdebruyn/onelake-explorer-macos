@@ -122,6 +122,28 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem.tests
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGNING_ALLOWED: NO
+  # Host-app unit-test bundle: compiles host-app non-UI source files for
+  # testing pure logic (write fence, icon state, mount-path helper, sign-in
+  # coordinator, domain identifier composition). Runs unsigned in CI.
+  OneLakeHostTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: OneLakeHostTests
+      - path: OneLake
+        excludes:
+          - "**/*.xcconfig"
+          - "**/Info.plist"
+          - "**/Assets.xcassets"
+          - "**/*.entitlements"
+      - path: Shared
+    dependencies:
+      - package: OfemKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem.host-tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
 schemes:
   OneLake:
     build:
@@ -130,6 +152,7 @@ schemes:
     test:
       targets:
         - OneLakeTests
+        - OneLakeHostTests
   OneLakeTests:
     build:
       targets:
@@ -137,3 +160,10 @@ schemes:
     test:
       targets:
         - OneLakeTests
+  OneLakeHostTests:
+    build:
+      targets:
+        OneLakeHostTests: all
+    test:
+      targets:
+        - OneLakeHostTests
