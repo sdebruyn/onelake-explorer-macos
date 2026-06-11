@@ -59,7 +59,8 @@ struct ItemIdentifierTests {
     }
 
     @Test func pathParentIsItem() {
-        let id = ItemIdentifier.path(workspaceID: "ws-1", itemID: "item-2", path: "Files/report.csv")
+        // A single-component path sits directly under the item.
+        let id = ItemIdentifier.path(workspaceID: "ws-1", itemID: "item-2", path: "Files")
         #expect(id.parentIdentifier == ItemIdentifier.item(workspaceID: "ws-1", itemID: "item-2"))
     }
 
