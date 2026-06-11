@@ -13,9 +13,13 @@
 // OfemEngine.init is @MainActor. The Task in `engine()` hops to the
 // main actor for the build step, then returns the result.
 //
-// `configStore` is a shared property so the XPC handler
-// (OfemClientControlService.swift) can read and mutate config directly
-// for getEngineStatus / setConfig without having to open a second store.
+// Process-wide config store: all FPEEngineHost instances in the same
+// FPE process share ONE OfemConfigStore via `FPEEngineHost.sharedConfigStore`.
+// This guarantees that concurrent XPC handlers for different domains
+// (different aliases) read and write the same in-memory snapshot, so
+// an updateAndSave from one domain does not clobber fields that another
+// domain's handler just wrote. OfemClientControlService accesses the
+// store via `engineHost.configStore()` which returns this shared instance.
 
 import FileProvider
 import Foundation
@@ -38,14 +42,37 @@ final class FPEEngineHost: Sendable {
     /// The File Provider domain. Retained for diagnostics.
     let domain: NSFileProviderDomain
 
+    // MARK: - Process-wide shared config store
+
+    // All FPEEngineHost instances in this process share one OfemConfigStore.
+    // This eliminates the "split-brain" hazard where two hosts each hold their
+    // own load-once snapshot and silently revert each other's writes.
+    private static let sharedStoreLock = NSLock()
+    private static nonisolated(unsafe) var _sharedConfigStore: OfemConfigStore?
+
+    /// Returns the process-wide OfemConfigStore, creating it on first call.
+    ///
+    /// All FPEEngineHost instances (one per domain) in the same FPE process
+    /// share this single store so their XPC handlers all read and write the
+    /// same in-memory snapshot. Cross-process safety (host vs FPE) is handled
+    /// by `OfemConfigStore.updateAndSave`, which uses `flock(2)` to serialise
+    /// writes at the file level.
+    ///
+    /// - Throws: `OfemConfigError` on TOML parse failure (first call only).
+    static func sharedConfigStore() throws -> OfemConfigStore {
+        try sharedStoreLock.withLock {
+            if let cs = _sharedConfigStore { return cs }
+            let cs = try OfemConfigStore()
+            _sharedConfigStore = cs
+            return cs
+        }
+    }
+
     // MARK: - Mutable state (guarded by lock)
 
     private let lock = NSLock()
     private nonisolated(unsafe) var _engine: OfemEngine?
     private nonisolated(unsafe) var _buildError: Error?
-    /// The config store, loaded lazily on first use (by the engine build or
-    /// by the XPC handler's getEngineStatus / setConfig calls).
-    private nonisolated(unsafe) var _configStore: OfemConfigStore?
 
     // MARK: - Init
 
@@ -56,24 +83,17 @@ final class FPEEngineHost: Sendable {
 
     // MARK: - Config store access
 
-    /// Returns the shared config store, creating it on first call.
+    /// Returns the process-wide config store.
     ///
-    /// OfemConfigStore is Sendable and uses an NSLock internally, so the
-    /// returned reference may be used from any context. The store is shared
-    /// between the engine build path and the XPC handler so both read and
-    /// write the same in-memory snapshot.
+    /// Delegates to ``FPEEngineHost/sharedConfigStore()`` so all
+    /// FPEEngineHost instances in this process read and write the same
+    /// in-memory snapshot. Cross-process safety against the host app is
+    /// handled by the flock-based read-merge-write in
+    /// `OfemConfigStore.updateAndSave`.
     ///
     /// - Throws: `OfemConfigError` on TOML parse failure (first call only).
     func configStore() throws -> OfemConfigStore {
-        // Double-checked locking: check inside the lock on the slow path so two
-        // concurrent callers cannot each construct a separate OfemConfigStore and
-        // end up with diverged in-memory snapshots.
-        try lock.withLock {
-            if let cs = _configStore { return cs }
-            let cs = try OfemConfigStore()
-            _configStore = cs
-            return cs
-        }
+        try FPEEngineHost.sharedConfigStore()
     }
 
     // MARK: - Engine access
@@ -108,6 +128,28 @@ final class FPEEngineHost: Sendable {
         }
         // Build on the main actor (OfemEngine.init is @MainActor).
         return try await buildEngine()
+    }
+
+    /// Shuts down the current engine and clears the cached instance so the
+    /// next ``engine()`` call rebuilds from the freshly loaded config snapshot.
+    ///
+    /// This is the engine reload mechanism: ``OfemEngine`` reads the config
+    /// once at init, so applying a new config requires shutting down the
+    /// current engine and letting it be lazily rebuilt on the next use.
+    /// `OfemClientControlService` calls this after a successful `setConfig`
+    /// write so the new settings (log level, telemetry, cache limit, etc.)
+    /// take effect without waiting for the FPE process to terminate.
+    func reloadEngine() async {
+        let existing: OfemEngine? = lock.withLock {
+            let e = _engine
+            _engine = nil
+            _buildError = nil
+            return e
+        }
+        if let e = existing {
+            await e.shutdown()
+            Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine reloaded after config change")
+        }
     }
 
     /// Shuts down the engine if it was started.
