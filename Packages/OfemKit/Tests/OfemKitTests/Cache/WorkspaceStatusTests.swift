@@ -13,7 +13,8 @@ struct WorkspaceStatusTests {
 
     @Test("SetWorkspaceStatus inserts a new row")
     func setInsertsRow() async throws {
-        let store = try makeInMemoryStore()
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
         let status = WorkspaceStatusRecord(
             accountAlias: "work",
             workspaceID: "ws1",
@@ -32,8 +33,9 @@ struct WorkspaceStatusTests {
 
     @Test("GetWorkspaceStatus throws notFound for unknown workspace")
     func getMissingThrowsNotFound() async throws {
-        let store = try makeInMemoryStore()
-        await #expect(throws: CacheError.self) {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        await #expect(throws: CacheError.notFound("workspace_status work/unknown")) {
             try await store.workspaceStatus(accountAlias: "work", workspaceID: "unknown")
         }
     }
@@ -42,7 +44,8 @@ struct WorkspaceStatusTests {
 
     @Test("Same-state update preserves detected_at_ns")
     func sameStatePreservesDetectedAt() async throws {
-        let store = try makeInMemoryStore()
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
         let initial = WorkspaceStatusRecord(
             accountAlias: "a", workspaceID: "w",
             state: .paused, reason: "cap_pause",
@@ -64,7 +67,8 @@ struct WorkspaceStatusTests {
 
     @Test("State change resets detected_at_ns")
     func stateChangeResetsDetectedAt() async throws {
-        let store = try makeInMemoryStore()
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
         try await store.setWorkspaceStatus(WorkspaceStatusRecord(
             accountAlias: "a", workspaceID: "w",
             state: .paused, reason: "cap_pause",
@@ -84,7 +88,8 @@ struct WorkspaceStatusTests {
 
     @Test("ProbedAt preserved when new value is zero")
     func probedAtPreservedWhenZero() async throws {
-        let store = try makeInMemoryStore()
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
         try await store.setWorkspaceStatus(WorkspaceStatusRecord(
             accountAlias: "a", workspaceID: "w",
             state: .paused, reason: "r",
@@ -105,7 +110,8 @@ struct WorkspaceStatusTests {
 
     @Test("AllWorkspaceStatuses returns ordered rows")
     func allStatusesOrdered() async throws {
-        let store = try makeInMemoryStore()
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
         try await store.setWorkspaceStatus(WorkspaceStatusRecord(
             accountAlias: "z", workspaceID: "z-ws", state: .active
         ))
@@ -121,7 +127,8 @@ struct WorkspaceStatusTests {
 
     @Test("AllWorkspaceStatuses returns empty list when no rows")
     func allStatusesEmpty() async throws {
-        let store = try makeInMemoryStore()
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
         let statuses = try await store.allWorkspaceStatuses()
         #expect(statuses.isEmpty)
     }
@@ -130,7 +137,8 @@ struct WorkspaceStatusTests {
 
     @Test("ListPausedWorkspaces returns only paused rows ordered by (alias, workspaceID)")
     func listPausedFiltersCorrectly() async throws {
-        let store = try makeInMemoryStore()
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
         try await store.setWorkspaceStatus(WorkspaceStatusRecord(
             accountAlias: "z", workspaceID: "z-ws", state: .active
         ))
@@ -152,7 +160,8 @@ struct WorkspaceStatusTests {
 
     @Test("ListPausedWorkspaces returns empty list when no paused rows")
     func listPausedEmpty() async throws {
-        let store = try makeInMemoryStore()
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
         try await store.setWorkspaceStatus(WorkspaceStatusRecord(
             accountAlias: "a", workspaceID: "w", state: .active
         ))
@@ -160,12 +169,13 @@ struct WorkspaceStatusTests {
         #expect(paused.isEmpty)
     }
 
-    // MARK: - Validation
+    // MARK: - Validation (tests-16: specific error cases)
 
     @Test("Empty accountAlias throws missingArgument")
     func emptyAliasThrows() async throws {
-        let store = try makeInMemoryStore()
-        await #expect(throws: CacheError.self) {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        await #expect(throws: CacheError.missingArgument("accountAlias and workspaceID")) {
             try await store.setWorkspaceStatus(WorkspaceStatusRecord(
                 accountAlias: "", workspaceID: "ws", state: .active
             ))
@@ -174,8 +184,9 @@ struct WorkspaceStatusTests {
 
     @Test("Empty workspaceID throws missingArgument")
     func emptyWorkspaceIDThrows() async throws {
-        let store = try makeInMemoryStore()
-        await #expect(throws: CacheError.self) {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        await #expect(throws: CacheError.missingArgument("accountAlias and workspaceID")) {
             try await store.setWorkspaceStatus(WorkspaceStatusRecord(
                 accountAlias: "a", workspaceID: "", state: .active
             ))
@@ -192,7 +203,8 @@ struct WorkspaceStatusTests {
 
     @Test("Unknown state string falls back to active")
     func unknownStateFallsBack() async throws {
-        let store = try makeInMemoryStore()
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
         try await store.dbPool.write { db in
             try db.execute(sql: """
                 INSERT INTO workspace_status
