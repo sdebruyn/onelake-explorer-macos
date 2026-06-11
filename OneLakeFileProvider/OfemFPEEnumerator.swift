@@ -30,9 +30,8 @@ private let staticSyncAnchorFPE = NSFileProviderSyncAnchor(Data())
 
 /// Parses a raw NSFileProviderItemIdentifier string into an OfemKit ItemIdentifier.
 ///
-/// OfemKit's `ItemIdentifierParser` (returns `ItemIdentifier`) is the primary
-/// parser for engine operations. `BridgeItemIdentifierParser` (returns `EnumScope`)
-/// is used only by `ItemIdentifierParserTests`.
+/// OfemKit's `ItemIdentifierParser` is the single owner of the identifier
+/// grammar. All FPE call sites use this helper exclusively.
 func parseOfemItemIdentifier(_ rawIdentifier: String) throws -> ItemIdentifier {
     try ItemIdentifierParser.parse(rawIdentifier)
 }
@@ -152,6 +151,10 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
             return workspaces.map { ws in
                 OfemFPEItem(from: DomainItem.from(workspace: ws))
             }
+
+        case .trash, .workingSet:
+            // Synthetic containers we never populate.
+            throw FPError.noSuchItem("synthetic container: \(identifier.identifierString)")
 
         case let .workspace(workspaceID):
             // List all Fabric items inside the workspace.

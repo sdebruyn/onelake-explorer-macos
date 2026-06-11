@@ -97,16 +97,16 @@ targets:
           PROVISIONING_PROFILE_SPECIFIER: "OFEM FP distribution developer ID"
     dependencies:
       - package: OfemKit
-  # Host-less logic-test bundle: it compiles the unit under test
-  # (ItemIdentifierParser) and Shared directly rather than loading a
-  # host app, so it runs unsigned in CI with no signing identity. Smoke-level only.
+  # Host-less logic-test bundle: it compiles Shared directly rather than
+  # loading a host app, so it runs unsigned in CI with no signing identity.
+  # The identifier-grammar contract is now tested exclusively in OfemKit's
+  # own test target (Packages/OfemKit/Tests/OfemKitTests/FP/).
   # OfemKit is required because Shared (XPCAccountInfo.swift) imports it.
   OneLakeTests:
     type: bundle.unit-test
     platform: macOS
     sources:
       - path: OneLakeTests
-      - path: OneLakeFileProvider/ItemIdentifierParser.swift
       - path: Shared
     dependencies:
       - package: OfemKit

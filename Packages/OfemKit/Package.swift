@@ -29,11 +29,17 @@ let package = Package(
                 .product(name: "TOMLKit", package: "TOMLKit"),
                 .product(name: "MSAL", package: "microsoft-authentication-library-for-objc"),
                 .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            linkerSettings: [
+                .linkedFramework("FileProvider"),
             ]
         ),
         .testTarget(
             name: "OfemKitTests",
-            dependencies: ["OfemKit"]
+            dependencies: ["OfemKit"],
+            linkerSettings: [
+                .linkedFramework("FileProvider"),
+            ]
         ),
     ]
 )

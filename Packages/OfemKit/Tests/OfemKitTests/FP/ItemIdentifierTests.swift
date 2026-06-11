@@ -58,8 +58,15 @@ struct ItemIdentifierTests {
         #expect(reparsed == id)
     }
 
-    @Test func pathParentIsItem() {
+    @Test func pathParentIsFolderWhenPathHasSlash() {
+        // "Files/report.csv" → parent is "Files" folder, not the item root.
         let id = ItemIdentifier.path(workspaceID: "ws-1", itemID: "item-2", path: "Files/report.csv")
+        #expect(id.parentIdentifier == ItemIdentifier.path(workspaceID: "ws-1", itemID: "item-2", path: "Files"))
+    }
+
+    @Test func pathParentIsItemWhenPathHasNoSlash() {
+        // "report.csv" at item root → parent is the item.
+        let id = ItemIdentifier.path(workspaceID: "ws-1", itemID: "item-2", path: "report.csv")
         #expect(id.parentIdentifier == ItemIdentifier.item(workspaceID: "ws-1", itemID: "item-2"))
     }
 

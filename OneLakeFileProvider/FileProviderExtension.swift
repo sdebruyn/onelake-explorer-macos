@@ -17,8 +17,8 @@ import Foundation
 import OfemKit
 import os.log
 
-// This file uses OfemKit's `ItemIdentifierParser` via the
-// `parseOfemItemIdentifier` helper defined in OfemFPEEnumerator.swift.
+// Identifier parsing uses OfemKit's `ItemIdentifierParser` exclusively, via
+// the `parseOfemItemIdentifier` helper defined in OfemFPEEnumerator.swift.
 
 /// File Provider Extension entry point. Sandboxed; each registered
 /// OneLake account-alias gets its own instance.
@@ -92,7 +92,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         }
 
         // Working set / trash are synthetic; return noSuchItem.
-        if identifier == .workingSet || identifier == .trashContainer {
+        if ofemID == .workingSet || ofemID == .trash {
             completionHandler(nil, NSFileProviderError(.noSuchItem))
             return progress
         }
@@ -417,15 +417,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         for containerItemIdentifier: NSFileProviderItemIdentifier,
         request _: NSFileProviderRequest
     ) throws -> NSFileProviderEnumerator {
+        // Parse first so we can branch on the typed identifier.
+        let ofemID = try parseOfemItemIdentifier(containerItemIdentifier.rawValue)
+
         // Working set → lightweight enumerator (no engine needed).
-        if containerItemIdentifier == .workingSet {
+        if ofemID == .workingSet {
             FileProviderExtension.log.debug(
                 "enumerator(for: .workingSet) for \(self.alias, privacy: .public)"
             )
             return OfemWorkingSetEnumerator(alias: alias)
         }
-
-        let ofemID = try parseOfemItemIdentifier(containerItemIdentifier.rawValue)
         FileProviderExtension.log.debug(
             "enumerator(for:) for \(containerItemIdentifier.rawValue, privacy: .public) [engine-path]"
         )
@@ -450,6 +451,9 @@ private func engineFetchItem(
     switch identifier {
     case .root:
         return OfemFPEItem(from: DomainItem.root(alias: alias))
+
+    case .trash, .workingSet:
+        throw FPError.noSuchItem("synthetic container: \(identifier.identifierString)")
 
     case let .workspace(workspaceID):
         // Look up workspace display name from the cache / discovery.
