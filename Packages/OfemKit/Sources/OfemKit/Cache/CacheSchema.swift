@@ -7,13 +7,8 @@ import GRDB
 ///
 /// ## Version history
 ///
-/// - **v1** — initial `path_metadata` + `idx_pm_children` + `idx_pm_blob_lru`.
-/// - **v2** — added `idx_pm_last_accessed` (non-partial counterpart for the
-/// adaptive poller's HotItems query which cannot use the partial blob index).
-/// - **v3** — added `workspace_status` table so the sync engine can persist
-/// paused-capacity / unreachable-workspace signals.
-/// - **v4** — added `path_metadata.children_synced_at_ns` so the enumerator
-/// can distinguish a genuinely empty directory from one never listed.
+/// - **v1** — initial schema: `path_metadata` + `workspace_status` + all indexes.
+///   (Pre-stable product — schema started clean; no upgrade history to maintain.)
 public enum CacheSchema {
 
     // MARK: - Migrator
@@ -27,7 +22,7 @@ public enum CacheSchema {
     public static func migrator() -> DatabaseMigrator {
         var m = DatabaseMigrator()
 
-        // v1: base schema — path_metadata + two indexes.
+        // v1: complete initial schema — path_metadata, workspace_status, and all indexes.
         m.registerMigration("v1") { db in
             try db.execute(sql: """
                 CREATE TABLE path_metadata (
@@ -46,6 +41,7 @@ public enum CacheSchema {
                     blob_size             INTEGER NOT NULL DEFAULT 0,
                     last_accessed_ns      INTEGER NOT NULL,
                     synced_at_ns          INTEGER NOT NULL,
+                    children_synced_at_ns INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (account_alias, workspace_id, item_id, path)
                 );
                 """)
@@ -61,19 +57,15 @@ public enum CacheSchema {
                     ON path_metadata (last_accessed_ns)
                     WHERE blob_sha256 != '';
                 """)
-        }
 
-        // v2: non-partial last_accessed index for the adaptive poller's
-        // HotItems query (which does not filter on blob_sha256).
-        m.registerMigration("v2") { db in
+            // Non-partial last_accessed index for the adaptive poller's HotItems
+            // query (which does not filter on blob_sha256).
             try db.execute(sql: """
                 CREATE INDEX idx_pm_last_accessed
                     ON path_metadata (last_accessed_ns);
                 """)
-        }
 
-        // v3: workspace_status table.
-        m.registerMigration("v3") { db in
+            // workspace_status: persists paused-capacity / unreachable-workspace signals.
             try db.execute(sql: """
                 CREATE TABLE workspace_status (
                     account_alias  TEXT    NOT NULL,
@@ -85,13 +77,6 @@ public enum CacheSchema {
                     PRIMARY KEY (account_alias, workspace_id)
                 );
                 """)
-        }
-
-        // v4: children_synced_at_ns column on path_metadata.
-        m.registerMigration("v4") { db in
-            try db.alter(table: "path_metadata") { t in
-                t.add(column: "children_synced_at_ns", .integer).notNull().defaults(to: 0)
-            }
         }
 
         return m

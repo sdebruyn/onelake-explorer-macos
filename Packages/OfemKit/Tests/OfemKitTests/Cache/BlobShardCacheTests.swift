@@ -212,50 +212,40 @@ struct BlobShardCacheTests {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: tmp) }
 
-        // Max 5 bytes; we store 3 blobs of 4 bytes each = 12 total.
-        // LRU order: a.txt (100) < b.txt (200) < c.txt (300).
-        // After eviction: only c.txt (MRU) should survive.
-        let store = try CacheStore(root: tmp, maxBlobBytes: 5)
-
-        func addBlob(path: String, content: String, accessedNs: Int64) async throws {
-            var rec = MetadataRecord(
-                accountAlias: "a", workspaceID: "w", itemID: "i",
-                path: path, parentPath: "", name: path, isDir: false
-            )
-            rec.lastAccessedNs = accessedNs
-            try await store.upsert(rec)
-            try await store.storeBlob(
-                key: CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: path),
-                data: Data(content.utf8)
-            )
-        }
-
-        // Disable auto-eviction during seeding by using a zero-budget store,
-        // then manually call evictToLimit on a store with the budget set.
-        // Since storeBlob now auto-evicts, we seed via a no-budget store first
-        // so we can observe a clean eviction of a known set.
-        let seedStore = try CacheStore(root: tmp, maxBlobBytes: 0)
-        try await seedStore.upsert(MetadataRecord(
-            accountAlias: "a", workspaceID: "w", itemID: "i",
-            path: "a.txt", parentPath: "", name: "a.txt", isDir: false, lastAccessedNs: 100
-        ))
-        try await seedStore.upsert(MetadataRecord(
-            accountAlias: "a", workspaceID: "w", itemID: "i",
-            path: "b.txt", parentPath: "", name: "b.txt", isDir: false, lastAccessedNs: 200
-        ))
-        try await seedStore.upsert(MetadataRecord(
-            accountAlias: "a", workspaceID: "w", itemID: "i",
-            path: "c.txt", parentPath: "", name: "c.txt", isDir: false, lastAccessedNs: 300
-        ))
+        // Seed blobs via a no-budget store so auto-eviction doesn't fire during
+        // setup.  Use a `do` block to ensure seedStore releases its DatabasePool
+        // WAL handles before limitedStore opens the same file — opening two pools
+        // on the same path simultaneously is fragile and would also hold WAL locks
+        // that prevent the defer cleanup from removing the tmp directory.
         let keyA = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "a.txt")
         let keyB = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "b.txt")
         let keyC = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "c.txt")
-        // Store blobs via the no-budget store so auto-eviction doesn't fire.
-        try await seedStore.storeBlob(key: keyA, data: Data("old1".utf8))
-        try await seedStore.storeBlob(key: keyB, data: Data("old2".utf8))
-        try await seedStore.storeBlob(key: keyC, data: Data("new1".utf8))
 
-        // Now open with the actual budget and call evictToLimit.
+        do {
+            // Max 0 bytes = no auto-eviction; lets us build a known state.
+            let seedStore = try CacheStore(root: tmp, maxBlobBytes: 0)
+            // LRU order: a.txt (100) < b.txt (200) < c.txt (300).
+            try await seedStore.upsert(MetadataRecord(
+                accountAlias: "a", workspaceID: "w", itemID: "i",
+                path: "a.txt", parentPath: "", name: "a.txt", isDir: false, lastAccessedNs: 100
+            ))
+            try await seedStore.upsert(MetadataRecord(
+                accountAlias: "a", workspaceID: "w", itemID: "i",
+                path: "b.txt", parentPath: "", name: "b.txt", isDir: false, lastAccessedNs: 200
+            ))
+            try await seedStore.upsert(MetadataRecord(
+                accountAlias: "a", workspaceID: "w", itemID: "i",
+                path: "c.txt", parentPath: "", name: "c.txt", isDir: false, lastAccessedNs: 300
+            ))
+            // Max 5 bytes; 3 blobs of 4 bytes each = 12 total.
+            try await seedStore.storeBlob(key: keyA, data: Data("old1".utf8))
+            try await seedStore.storeBlob(key: keyB, data: Data("old2".utf8))
+            try await seedStore.storeBlob(key: keyC, data: Data("new1".utf8))
+        }
+        // seedStore is now out of scope — its DatabasePool is deallocated and
+        // WAL handles are released before limitedStore opens the same file.
+
+        // Now open with the actual budget (5 bytes) and evict.
         let limitedStore = try CacheStore(root: tmp, maxBlobBytes: 5)
         let totalBefore = try await limitedStore.blobBytes()
         #expect(totalBefore == 12)

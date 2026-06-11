@@ -37,6 +37,35 @@ struct CacheStoreTests {
         #expect(!fetched.isDir)
     }
 
+    @Test("Upsert with empty blobSHA256 clears an existing blob link (documented behaviour)")
+    func upsertWithEmptySHAClearsBlobLink() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let key = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "linked.bin")
+
+        // Set up a row with a blob link.
+        try await store.upsert(MetadataRecord(
+            accountAlias: "a", workspaceID: "w", itemID: "i",
+            path: "linked.bin", parentPath: "", name: "linked.bin", isDir: false
+        ))
+        try await store.storeBlob(key: key, data: Data("content".utf8))
+        let before = try await store.fetch(key: key)
+        #expect(!before.blobSHA256.isEmpty, "precondition: blob link must be set")
+
+        // Re-upsert the same row but with blobSHA256 == "" (default).
+        // This is the documented ON CONFLICT DO UPDATE SET behaviour: every
+        // column in encode(to:) is overwritten, so callers must carry forward
+        // the current blob columns if they want to preserve them.
+        var cleared = before
+        cleared.blobSHA256 = ""
+        cleared.blobSize = 0
+        try await store.upsert(cleared)
+
+        let after = try await store.fetch(key: key)
+        #expect(after.blobSHA256.isEmpty, "upsert with empty SHA must clear the blob link")
+        #expect(after.blobSize == 0)
+    }
+
     @Test("Upsert updates an existing row")
     func upsertUpdatesExistingRow() async throws {
         let store = try makeTempStore()
@@ -164,7 +193,9 @@ struct CacheStoreTests {
 
         for path in ["dir", "dir/a.txt", "dir/b.txt", "dir/sub/c.txt"] {
             let k = CacheKey(accountAlias: alias, workspaceID: ws, itemID: item, path: path)
-            await #expect(throws: (any Error).self) { try await store.fetch(key: k) }
+            await #expect(throws: CacheError.notFound("\(alias)/\(ws)/\(item)/\(path)")) {
+                try await store.fetch(key: k)
+            }
         }
     }
 
@@ -316,7 +347,7 @@ struct CacheStoreTests {
         ))
         // Must not throw and must delete only this row.
         try await store.delete(key: key)
-        await #expect(throws: (any Error).self) { try await store.fetch(key: key) }
+        await #expect(throws: CacheError.notFound("a/w/i/\(path)")) { try await store.fetch(key: key) }
     }
 
     // MARK: - Touch
@@ -525,9 +556,11 @@ struct CacheStoreTests {
             }
         }
 
-        // Reopen the store — the init-time sweep should remove the orphan file.
+        // Reopen the store and run the orphan sweep explicitly — the background
+        // Task started at init time may not have completed yet.
         let store2 = try CacheStore(root: tmp)
         defer { try? FileManager.default.removeItem(at: store2.root) }
+        try await store2.sweepOrphans()
         let (diskCount, _) = try await store2.diskUsage()
         #expect(diskCount == 0)
     }

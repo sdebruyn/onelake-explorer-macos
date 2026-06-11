@@ -131,13 +131,11 @@ public struct BlobShardCache: Sendable {
         } catch {
             throw CacheError.blobIOError(error)
         }
-        // Best-effort: prune the shard directory only when it is now empty.
-        // Using Darwin's rmdir(2) via FileManager.removeItem fails on non-empty
-        // directories, so siblings are never touched.
-        let isEmpty = (try? FileManager.default.contentsOfDirectory(atPath: shardDir.path).isEmpty) ?? false
-        if isEmpty {
-            try? FileManager.default.removeItem(at: shardDir)
-        }
+        // Best-effort: prune the shard directory when it is now empty.
+        // Darwin.rmdir(2) is atomic and returns ENOTEMPTY when the directory
+        // still has siblings — so this can never delete a non-empty directory
+        // and is not subject to a TOCTOU race with a concurrent store(_:) call.
+        _ = Darwin.rmdir(shardDir.path)
     }
 
     // MARK: - Disk usage

@@ -17,7 +17,7 @@ struct CacheSchemaTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let applied = try await store.appliedMigrations()
-        #expect(applied == ["v1", "v2", "v3", "v4"])
+        #expect(applied == ["v1"])
     }
 
     @Test("Fresh database creates path_metadata table")

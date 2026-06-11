@@ -23,7 +23,7 @@ extension CacheError: Equatable {
         case (.notFound(let a), .notFound(let b)): return a == b
         case (.invalidSHA(let a), .invalidSHA(let b)): return a == b
         case (.missingArgument(let a), .missingArgument(let b)): return a == b
-        case (.blobIOError, .blobIOError): return false  // two distinct errors are never equal
+        case (.blobIOError, .blobIOError): return true  // compare case only; wrapped errors are not Equatable
         default: return false
         }
     }
