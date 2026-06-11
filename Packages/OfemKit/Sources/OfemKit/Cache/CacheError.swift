@@ -13,11 +13,20 @@ public enum CacheError: Error, Sendable {
     /// A required argument was empty.
     case missingArgument(String)
 
-    /// An underlying GRDB / SQLite error.
-    case databaseError(any Error)
-
     /// A filesystem error during blob I/O.
     case blobIOError(any Error)
+}
+
+extension CacheError: Equatable {
+    public static func == (lhs: CacheError, rhs: CacheError) -> Bool {
+        switch (lhs, rhs) {
+        case (.notFound(let a), .notFound(let b)): return a == b
+        case (.invalidSHA(let a), .invalidSHA(let b)): return a == b
+        case (.missingArgument(let a), .missingArgument(let b)): return a == b
+        case (.blobIOError, .blobIOError): return false  // two distinct errors are never equal
+        default: return false
+        }
+    }
 }
 
 extension CacheError: LocalizedError {
@@ -29,8 +38,6 @@ extension CacheError: LocalizedError {
             return "Invalid SHA-256 digest: '\(sha)'"
         case .missingArgument(let name):
             return "Missing required argument: \(name)"
-        case .databaseError(let err):
-            return "Database error: \(err.localizedDescription)"
         case .blobIOError(let err):
             return "Blob I/O error: \(err.localizedDescription)"
         }

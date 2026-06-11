@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os.log
 
@@ -65,8 +66,7 @@ public struct BlobShardCache: Sendable {
     /// temporary file is discarded and the existing size is returned.
     public func store(_ data: Data) throws -> (sha256: String, size: Int64) {
         // Compute SHA-256.
-        let digest = CryptoSHA256.hash(data: data)
-        let sha = digest.hexString
+        let sha = SHA256.hash(data: data).hexString
 
         let (shardDir, destURL) = shardPath(for: sha)
 
@@ -119,8 +119,8 @@ public struct BlobShardCache: Sendable {
 
     /// Removes the blob file for `sha256`. A no-op if the file does not exist.
     ///
-    /// Also removes the shard directory when it is now empty (mirrors Go's
-    /// behaviour of cleaning up empty `<ab>/` directories after eviction).
+    /// Attempts to remove the shard directory only when it is empty after the
+    /// file deletion, using `rmdir`-semantics (fails silently when siblings remain).
     public func delete(sha256: String) throws {
         try validateSHA(sha256)
         let (shardDir, fileURL) = shardPath(for: sha256)
@@ -131,8 +131,13 @@ public struct BlobShardCache: Sendable {
         } catch {
             throw CacheError.blobIOError(error)
         }
-        // Best-effort: remove empty shard directory.
-        try? FileManager.default.removeItem(at: shardDir)
+        // Best-effort: prune the shard directory only when it is now empty.
+        // Using Darwin's rmdir(2) via FileManager.removeItem fails on non-empty
+        // directories, so siblings are never touched.
+        let isEmpty = (try? FileManager.default.contentsOfDirectory(atPath: shardDir.path).isEmpty) ?? false
+        if isEmpty {
+            try? FileManager.default.removeItem(at: shardDir)
+        }
     }
 
     // MARK: - Disk usage
@@ -205,13 +210,7 @@ public struct BlobShardCache: Sendable {
     }
 }
 
-// MARK: - Minimal SHA-256 wrapper (no CryptoKit import in older targets)
-
-import CryptoKit
-
-private enum CryptoSHA256 {
-    static func hash(data: Data) -> SHA256Digest { SHA256.hash(data: data) }
-}
+// MARK: - SHA256Digest helpers
 
 private extension SHA256Digest {
     var hexString: String {
