@@ -28,6 +28,19 @@ public protocol MsalAuthClientProtocol: Sendable {
         scopes: [String],
         homeAccountID: String
     ) async throws -> String
+
+    /// Removes the account identified by `homeAccountID` from the MSAL
+    /// Keychain cache, purging the stored refresh token.
+    ///
+    /// This is the documented MSAL API for sign-out: it deletes the Keychain
+    /// item so the refresh token cannot be reused after account removal —
+    /// including if the same alias is re-added for a different user later.
+    ///
+    /// - Parameter homeAccountID: MSAL's unique identifier (`objectId.tenantId`).
+    /// - Throws: ``MsalAuthClientError/accountNotFound(_:)`` when no matching
+    ///   account is in the cache (treated as a no-op by ``OfemAuth``).
+    ///   Any other error is rethrown.
+    func removeAccount(homeAccountID: String) throws
 }
 
 // MARK: - MsalAuthClient
@@ -88,28 +101,45 @@ public final class MsalAuthClient: MsalAuthClientProtocol {
         scopes: [String],
         homeAccountID: String
     ) async throws -> String {
-        // Look up the MSALAccount internally so callers never need to handle
-        // the non-Sendable MSAL type across async boundaries.
-        let msalAccount = try findAccount(homeAccountID: homeAccountID)
+        // The account lookup and MSAL call are performed entirely inside the
+        // withCheckedThrowingContinuation closure so that no non-Sendable
+        // MSALAccount value is ever captured across an async suspension point.
+        // Both `inner.allAccounts()` and `inner.acquireTokenSilent(with:completionBlock:)`
+        // are called synchronously within the same closure execution, before any
+        // suspension, so no data-race suppression is needed.
+        let accessToken = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+            // Perform account lookup synchronously inside the closure.
+            let msalAccount: MSALAccount
+            do {
+                msalAccount = try self.findAccount(homeAccountID: homeAccountID)
+            } catch {
+                continuation.resume(throwing: error)
+                return
+            }
 
-        // Capture account in a nonisolated(unsafe) wrapper to cross the
-        // async boundary. MSALAccount is an Objective-C class; MSAL documents
-        // it as safe to read from any thread after full initialisation.
-        nonisolated(unsafe) let capturedAccount = msalAccount
-
-        let params = MSALSilentTokenParameters(scopes: scopes, account: capturedAccount)
-        let result = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MSALResult, Error>) in
-            inner.acquireTokenSilent(with: params) { result, error in
+            let params = MSALSilentTokenParameters(scopes: scopes, account: msalAccount)
+            self.inner.acquireTokenSilent(with: params) { result, error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else if let result {
-                    continuation.resume(returning: result)
+                    // Extract only the plain String token inside the callback
+                    // so the non-Sendable MSALResult does not cross any boundary.
+                    continuation.resume(returning: result.accessToken)
                 } else {
                     continuation.resume(throwing: MsalAuthClientError.nilResult)
                 }
             }
         }
-        return result.accessToken
+        return accessToken
+    }
+
+    public func removeAccount(homeAccountID: String) throws {
+        let account = try findAccount(homeAccountID: homeAccountID)
+        do {
+            try inner.remove(account)
+        } catch {
+            throw error
+        }
     }
 
     // MARK: - Private helpers
@@ -201,13 +231,15 @@ enum MsalApplicationConfig {
 /// `willWriteCache` / `didWriteCache` around every token write, and
 /// `willAccessCache` / `didAccessCache` around every token read. The
 /// delegate serialises the in-memory MSAL cache to disk via
-/// `FileTokenStore.write(alias:data:)` after each write.
+/// `FileTokenStore.atomicUpdate(alias:transform:)` to guarantee that the
+/// read-merge-write sequence is atomic with respect to other processes.
 ///
-/// Cross-process safety: `willWriteCache`/`didWriteCache` run while
-/// `FileTokenStore.lock` is held (via `write`), which uses an in-process
-/// `NSLock` for same-process protection and relies on `FileTokenStore`'s
-/// cross-process locking mechanism (see ``FileTokenStore`` docs) for
-/// host-app vs FPE exclusion.
+/// Cross-process safety: `willWriteCache` is a no-op; the entire
+/// read-deserialize-serialize-write cycle is performed atomically inside
+/// `didWriteCache` via `FileTokenStore.atomicUpdate`, which holds the
+/// per-alias `fcntl` cross-process lock and the intra-process serial queue
+/// for the full duration. This prevents a concurrent host-app or FPE write
+/// from slipping between the read and the write.
 final class FileTokenStoreCacheDelegate: NSObject, MSALSerializedADALCacheProviderDelegate, @unchecked Sendable {
     private let store: FileTokenStore
     private let alias: String
@@ -237,25 +269,36 @@ final class FileTokenStoreCacheDelegate: NSObject, MSALSerializedADALCacheProvid
     }
 
     func willWriteCache(_ cache: MSALSerializedADALCacheProvider) {
-        // Load the latest bytes so that the upcoming write merges any changes
-        // written since the last read.
-        do {
-            let data = try store.read(alias: alias)
-            try cache.deserialize(data)
-        } catch FileTokenStoreError.notFound {
-            // First login: no existing cache to merge.
-        } catch {
-            Self.log.error("FileTokenStoreCacheDelegate: willWriteCache load failed for alias=\(self.alias, privacy: .public): \(error)")
-        }
+        // No-op: the entire read-merge-write cycle is performed atomically
+        // inside didWriteCache via FileTokenStore.atomicUpdate, which holds
+        // the cross-process lock for the full read→deserialize→serialize→write
+        // sequence. Doing a separate read here (without the lock) would reopen
+        // the TOCTOU gap that atomicUpdate is designed to close.
     }
 
     func didWriteCache(_ cache: MSALSerializedADALCacheProvider) {
-        // Persist the updated in-memory cache to disk. Log failures explicitly
-        // rather than swallowing them — a silent failure here loses the freshly
-        // minted refresh token.
+        // Atomically: read the current on-disk bytes, deserialize them into
+        // the MSAL in-memory cache (merge), serialize the merged result, and
+        // write it back — all while holding the per-alias cross-process lock.
+        // Failures are logged explicitly rather than swallowed — a silent
+        // failure here would lose the freshly minted refresh token.
         do {
-            let data = try cache.serializeData()
-            try store.write(alias: alias, data: data)
+            try store.atomicUpdate(alias: alias) { existingData in
+                // Merge any on-disk changes into the MSAL in-memory cache
+                // before serialising, so we never overwrite a fresher token
+                // written by another process between our last read and now.
+                if !existingData.isEmpty {
+                    do {
+                        try cache.deserialize(existingData)
+                    } catch {
+                        Self.log.error(
+                            "FileTokenStoreCacheDelegate: didWriteCache deserialize failed for alias=\(self.alias, privacy: .public): \(error)"
+                        )
+                        // Proceed without merging rather than losing the new token.
+                    }
+                }
+                return try cache.serializeData()
+            }
         } catch {
             Self.log.error("FileTokenStoreCacheDelegate: didWriteCache persist failed for alias=\(self.alias, privacy: .public): \(error)")
         }

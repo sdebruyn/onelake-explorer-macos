@@ -93,6 +93,83 @@ public final class FileTokenStore: Sendable {
 
     // MARK: - Public API
 
+    /// Atomically reads the current blob, applies `transform` (which may
+    /// deserialize, mutate, and re-serialize the in-memory cache), then writes
+    /// the result back — all while holding the per-alias `fcntl` cross-process
+    /// lock and the intra-process serial queue.
+    ///
+    /// This is the correct primitive for MSAL's "read → merge → write" token
+    /// cache update: it guarantees that no other process can slip a write
+    /// between the read and the write, closing the TOCTOU gap that existed
+    /// when `willWriteCache` (read) and `didWriteCache` (write) each acquired
+    /// the lock independently.
+    ///
+    /// - Parameters:
+    ///   - alias: The user-chosen account alias.
+    ///   - transform: A closure that receives the existing bytes (empty `Data`
+    ///     if no entry exists yet) and returns the new bytes to persist, or
+    ///     `nil` to leave the store unchanged. The closure is called on the
+    ///     intra-process serial queue while the cross-process lock is held.
+    /// - Throws: ``FileTokenStoreError`` variants on I/O failures.
+    public func atomicUpdate(alias: String, transform: (Data) throws -> Data?) throws {
+        let dest = tokenURL(for: alias)
+        var outerError: Error?
+
+        serialQueue.sync {
+            do {
+                let lockFD = try acquireAliasLock(alias: alias)
+                defer { releaseAliasLock(lockFD) }
+
+                // Read existing bytes (empty Data if none).
+                let existing: Data
+                do {
+                    existing = try Data(contentsOf: dest)
+                } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                    existing = Data()
+                } catch {
+                    throw FileTokenStoreError.readFailed(alias, error)
+                }
+
+                // Apply the transform.
+                let newData: Data?
+                do {
+                    newData = try transform(existing)
+                } catch {
+                    throw error
+                }
+
+                guard let data = newData, !data.isEmpty else { return }
+
+                // Write atomically (tmp + rename).
+                let tmpURL = root.appending(
+                    path: ".tmp-\(ProcessInfo.processInfo.globallyUniqueString).bin",
+                    directoryHint: .notDirectory
+                )
+                let fm = FileManager.default
+
+                do { try data.write(to: tmpURL) } catch {
+                    throw FileTokenStoreError.writeFailed(alias, error)
+                }
+                do {
+                    try fm.setAttributes([.posixPermissions: 0o600],
+                                         ofItemAtPath: tmpURL.path(percentEncoded: false))
+                } catch {
+                    try? fm.removeItem(at: tmpURL)
+                    throw FileTokenStoreError.chmodFailed(alias, error)
+                }
+                do {
+                    _ = try fm.replaceItemAt(dest, withItemAt: tmpURL)
+                } catch {
+                    try? fm.removeItem(at: tmpURL)
+                    throw FileTokenStoreError.renameFailed(alias, error)
+                }
+            } catch {
+                outerError = error
+            }
+        }
+        if let e = outerError { throw e }
+    }
+
     /// Reads the opaque byte blob previously stored for `alias`.
     ///
     /// - Parameter alias: The user-chosen account alias.
@@ -177,6 +254,16 @@ public final class FileTokenStore: Sendable {
     /// Removes the stored entry for `alias`. Deleting a missing entry is a
     /// no-op (not an error).
     ///
+    /// Protected by the same per-alias `fcntl` cross-process lock and the
+    /// intra-process serial queue used by ``write(alias:data:)`` and
+    /// ``atomicUpdate(alias:transform:)``, so a concurrent write from another
+    /// process cannot race with the removal.
+    ///
+    /// Note: the per-alias `.lock` sidecar file is intentionally NOT deleted.
+    /// Deleting it while another process holds a lock on the same inode would
+    /// allow a third process to open a fresh inode for the same path and acquire
+    /// a lock without contending with the original holder.
+    ///
     /// - Parameter alias: The user-chosen account alias.
     /// - Throws: ``FileTokenStoreError/deleteFailed(_:_:)`` on unexpected
     ///   I/O errors.
@@ -185,14 +272,17 @@ public final class FileTokenStore: Sendable {
         var deleteError: Error?
         serialQueue.sync {
             do {
-                try FileManager.default.removeItem(at: url)
-                // Also clean up the lock file if it exists.
-                let lockURL = aliasLockURL(alias: alias)
-                try? FileManager.default.removeItem(at: lockURL)
-            } catch let error as CocoaError where error.code == .fileNoSuchFile {
-                // Missing entry — no-op.
+                let lockFD = try acquireAliasLock(alias: alias)
+                defer { releaseAliasLock(lockFD) }
+                do {
+                    try FileManager.default.removeItem(at: url)
+                } catch let error as CocoaError where error.code == .fileNoSuchFile {
+                    // Missing entry — no-op.
+                } catch {
+                    throw FileTokenStoreError.deleteFailed(alias, error)
+                }
             } catch {
-                deleteError = FileTokenStoreError.deleteFailed(alias, error)
+                deleteError = error
             }
         }
         if let e = deleteError { throw e }

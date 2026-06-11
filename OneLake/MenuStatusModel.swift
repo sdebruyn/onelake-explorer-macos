@@ -218,8 +218,8 @@ final class MenuStatusModel: ObservableObject {
 
         // Primary path: read accounts from SharedOfemAuth (config.toml).
         // Works whether or not any FPE domain is loaded.
-        let nativeAccounts = SharedOfemAuth.shared.auth.listAccounts()
-        let nativeDefault = SharedOfemAuth.shared.auth.defaultAccount() ?? ""
+        let nativeAccounts = await SharedOfemAuth.shared.auth.listAccounts()
+        let nativeDefault = await SharedOfemAuth.shared.auth.defaultAccount() ?? ""
 
         // Check cancellation before publishing (no suspension between read and publish).
         guard !Task.isCancelled else { return }
@@ -326,7 +326,7 @@ final class MenuStatusModel: ObservableObject {
             // Read directly from SharedOfemAuth so this works even before the first
             // doRefresh() has populated the published `accounts` property — same
             // rationale as writeConfigToAllAliases.
-            let currentAccounts = SharedOfemAuth.shared.auth.listAccounts()
+            let currentAccounts = await SharedOfemAuth.shared.auth.listAccounts()
             for acc in currentAccounts {
                 do {
                     let remaining = try await OfemFPEClient.shared.clearCache(alias: acc.alias)

@@ -215,6 +215,35 @@ struct OfemAuthTests {
         #expect(remaining.count == 1)
         #expect(remaining.first?.alias == "home")
     }
+
+    @Test("removeAccount calls MSAL remove to purge the Keychain refresh token")
+    func removeAccountPurgesMsalKeychain() async throws {
+        let (store, _) = try makeStore()
+        let factory = MockMsalAuthClientFactory()
+        let mockClient = MockMsalAuthClient()
+        factory.stubbedClient = mockClient
+
+        let homeID = "home-purge-test"
+        let auth = OfemAuth(
+            configStore: store,
+            cacheStrategy: .msalKeychain,
+            msalClientFactory: factory
+        )
+        let account = Account(
+            alias: "work",
+            tenantID: "t1",
+            tenantName: nil,
+            homeAccountID: homeID,
+            username: "work@contoso.com",
+            addedAt: ISO8601DateFormatter().string(from: Date()),
+            clientID: nil
+        )
+        try await auth.addAccount(account)
+        try await auth.removeAccount(alias: "work")
+
+        // The mock's removeAccount should have been called with the account's homeAccountID.
+        #expect(mockClient.removedHomeAccountIDs == [homeID])
+    }
 }
 
 // MARK: - OfemAuthTokenTests
@@ -303,7 +332,6 @@ struct OfemAuthTokenTests {
         let (store, _) = try makeStore()
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
-        mockClient.stubbedHomeAccountID = "home-xyz"
         let nonMsalError = NSError(domain: "SomeOtherDomain", code: 42, userInfo: nil)
         mockClient.stubbedError = nonMsalError
         factory.stubbedClient = mockClient
@@ -366,6 +394,46 @@ struct OfemAuthTokenTests {
 
         // Factory should have been called twice — one per tenant.
         #expect(factory.makeClientCallCount == 2)
+    }
+
+    // MARK: - accountNotFound → interactionRequired mapping
+
+    @Test("tokenForScope maps MsalAuthClientError.accountNotFound to interactionRequired")
+    func tokenAccountNotFoundMapsToInteractionRequired() async throws {
+        let (store, _) = try makeStore()
+        let factory = MockMsalAuthClientFactory()
+        let mockClient = MockMsalAuthClient()
+        // accountNotFound fires when the Keychain cache is empty (e.g. clean
+        // install or keychain reset). OfemAuth.silentToken must map it to
+        // interactionRequired so the menu bar can surface the re-auth prompt.
+        mockClient.stubbedError = MsalAuthClientError.accountNotFound("home-xyz")
+        factory.stubbedClient = mockClient
+
+        let auth = OfemAuth(configStore: store, msalClientFactory: factory)
+        try await auth.addAccount(makeAccount(alias: "work", tenantID: "t1", homeAccountID: "home-xyz"))
+
+        await #expect(throws: OfemAuthError.interactionRequired) {
+            _ = try await auth.tokenForScope(alias: "work", scope: .oneLake)
+        }
+    }
+
+    // MARK: - homeAccountID passthrough
+
+    @Test("tokenForScope passes the account's homeAccountID to acquireTokenSilent")
+    func tokenPassesHomeAccountID() async throws {
+        let (store, _) = try makeStore()
+        let factory = MockMsalAuthClientFactory()
+        let mockClient = MockMsalAuthClient()
+        mockClient.stubbedAccessToken = "tok"
+        factory.stubbedClient = mockClient
+
+        let auth = OfemAuth(configStore: store, msalClientFactory: factory)
+        let homeID = "home-\(UUID().uuidString)"
+        try await auth.addAccount(makeAccount(alias: "work", tenantID: "t1", homeAccountID: homeID))
+
+        _ = try await auth.tokenForScope(alias: "work", scope: .oneLake)
+
+        #expect(mockClient.capturedHomeAccountIDs == [homeID])
     }
 
     // MARK: - isInteractionRequired unit test
@@ -437,18 +505,29 @@ final class MockMsalAuthClientFactory: MsalAuthClientFactory, @unchecked Sendabl
 /// Test double for ``MsalAuthClientProtocol``.
 ///
 /// Returns `stubbedAccessToken` or throws `stubbedError` from
-/// `acquireTokenSilent`. No `MSALAccount` or `MSALResult` is involved.
+/// `acquireTokenSilent`. Records the `homeAccountID` passed to each call
+/// in `capturedHomeAccountIDs` for assertion. Tracks `removeAccount` calls
+/// in `removedHomeAccountIDs`.
 final class MockMsalAuthClient: MsalAuthClientProtocol, @unchecked Sendable {
     var stubbedAccessToken: String = "mock-token"
-    var stubbedHomeAccountID: String = "mock-home-id"
     var stubbedError: Error?
+    /// IDs passed to `acquireTokenSilent` — verifies the right account is used.
+    private(set) var capturedHomeAccountIDs: [String] = []
+    /// IDs passed to `removeAccount` — verifies Keychain purge on sign-out.
+    private(set) var removedHomeAccountIDs: [String] = []
+    private let _lock = NSLock()
 
     func acquireTokenSilent(
         scopes: [String],
         homeAccountID: String
     ) async throws -> String {
+        _lock.withLock { capturedHomeAccountIDs.append(homeAccountID) }
         if let error = stubbedError { throw error }
         return stubbedAccessToken
+    }
+
+    func removeAccount(homeAccountID: String) throws {
+        _lock.withLock { removedHomeAccountIDs.append(homeAccountID) }
     }
 }
 

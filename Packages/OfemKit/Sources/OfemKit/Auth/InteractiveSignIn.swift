@@ -193,7 +193,17 @@ public struct InteractiveSignInResult: Sendable {
             try? store.delete(alias: scratch)
         }
 
-        try await auth.addAccount(finalAccount)
+        // Persist the account. If addAccount throws (e.g. duplicateAlias or
+        // alias validation failure), roll back the committed blob at the real
+        // alias so no orphaned refresh-token data remains on disk.
+        do {
+            try await auth.addAccount(finalAccount)
+        } catch {
+            if let store = fileTokenStore {
+                try? store.delete(alias: alias)
+            }
+            throw error
+        }
     }
 
     /// Discards this sign-in result and cleans up any scratch blob.

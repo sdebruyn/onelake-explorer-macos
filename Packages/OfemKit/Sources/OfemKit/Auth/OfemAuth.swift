@@ -88,6 +88,9 @@ public actor OfemAuth {
     /// (written by `MsalAuthClient` during the interactive flow). This
     /// method only updates the TOML config with the account metadata.
     public func addAccount(_ account: Account) async throws {
+        guard !account.alias.isEmpty else {
+            throw OfemAuthError.emptyAlias
+        }
         try AccountAlias.validate(account.alias)
         let snap = configStore.snapshot()
         if snap.accounts[account.alias] != nil {
@@ -98,18 +101,39 @@ public actor OfemAuth {
         }
     }
 
-    /// Removes the account with the given alias from the config and deletes
-    /// the on-disk token blob (`.fileBackedFallback` only) so refresh tokens
-    /// do not survive account removal or resurrect under a re-added alias.
+    /// Removes the account with the given alias from the config, purges its
+    /// MSAL Keychain refresh token, and deletes the on-disk token blob
+    /// (`.fileBackedFallback` only) so refresh tokens do not survive account
+    /// removal or resurrect under a re-added alias.
     ///
-    /// Note: the MSAL Keychain cache entry is NOT removed here because MSAL
-    /// manages its own cache lifecycle. If the alias is re-added, MSAL will
-    /// try the existing cache first, which is the correct behaviour.
+    /// Per `docs/auth.md` logout step 1, the MSAL Keychain item must be
+    /// explicitly removed via `MSALPublicClientApplication.remove(_:)` — MSAL
+    /// does not do this automatically when the app removes the account from its
+    /// own config. Skipping this step leaves the refresh token in the macOS
+    /// Keychain under the App Group, where a subsequent `addAccount` for the
+    /// same alias (different user) would pick it up via `willAccessCache`.
     public func removeAccount(alias: String) async throws {
         let snap = configStore.snapshot()
-        guard snap.accounts[alias] != nil else {
+        guard let cfg = snap.accounts[alias] else {
             throw OfemAuthError.unknownAlias(alias)
         }
+
+        // Purge the MSAL Keychain refresh token before removing the config
+        // entry so the client is still available for the lookup.
+        if cacheStrategy == .msalKeychain, !cfg.homeAccountID.isEmpty {
+            let effectiveClientID = cfg.clientID.flatMap { $0.isEmpty ? nil : $0 } ?? clientID
+            if let msalClient = try? clientFor(clientID: effectiveClientID, tenantID: cfg.tenantID, alias: alias) {
+                do {
+                    try msalClient.removeAccount(homeAccountID: cfg.homeAccountID)
+                } catch let MsalAuthClientError.accountNotFound(id) {
+                    // Already absent from the MSAL cache — benign.
+                    Self.log.debug("OfemAuth: removeAccount: homeAccountID=\(id, privacy: .public) not in MSAL cache (already purged)")
+                } catch {
+                    Self.log.error("OfemAuth: removeAccount: MSAL remove failed for alias=\(alias, privacy: .public): \(error)")
+                }
+            }
+        }
+
         try await configStore.updateAndSave { config in
             config.accounts.removeValue(forKey: alias)
             if config.defaultAccount == alias {
@@ -127,10 +151,7 @@ public actor OfemAuth {
                 // notFound is benign (no file-backed cache was used for this alias).
             }
         }
-        // Evict all cached MSAL clients for this (clientID, tenantID) pairs
-        // associated with this alias. Since the key is (clientID|tenantID), we
-        // evict by re-computing the key for the removed account if available.
-        // Simpler: evict all entries — they are rebuilt lazily.
+        // Evict the cached MSAL client for the removed account's (clientID, tenantID) pair.
         evictClients(for: alias, in: snap)
     }
 
@@ -260,16 +281,20 @@ public actor OfemAuth {
         return nsError.code == MSALError.interactionRequired.rawValue
     }
 
-    /// Evicts cached MSAL clients associated with the given alias using the
-    /// account snapshot taken before removal.
+    /// Evicts the cached MSAL client for the `(clientID, tenantID)` pair
+    /// associated with the given alias, using the account snapshot taken
+    /// before removal.
+    ///
+    /// The cache key is `"<clientID>|<tenantID>"`. Evicting it here means
+    /// the next token request for any alias sharing the same pair will
+    /// rebuild the client lazily — picking up the correct Keychain state
+    /// after the MSAL remove call in ``removeAccount(alias:)``.
     private func evictClients(for alias: String, in snap: OfemConfig) {
         if let cfg = snap.accounts[alias] {
             let effectiveClientID = cfg.clientID.flatMap { $0.isEmpty ? nil : $0 } ?? clientID
             let key = "\(effectiveClientID)|\(cfg.tenantID)"
             clients.removeValue(forKey: key)
         }
-        // Belt-and-suspenders: also evict any entry whose key contains the alias
-        // (guards against the alias being used as a tiebreaker in future key schemes).
     }
 }
 
@@ -319,9 +344,11 @@ public enum OfemAuthError: Error, CustomStringConvertible, Equatable {
     public static func == (lhs: OfemAuthError, rhs: OfemAuthError) -> Bool {
         switch (lhs, rhs) {
         case (.interactionRequired, .interactionRequired): return true
+        case (.emptyAlias, .emptyAlias): return true
         case let (.duplicateAlias(a), .duplicateAlias(b)): return a == b
         case let (.unknownAlias(a), .unknownAlias(b)): return a == b
-        case (.silentTokenFailed, .silentTokenFailed): return true
+        case (.emptyScopes, .emptyScopes): return true
+        case let (.silentTokenFailed(a, _), .silentTokenFailed(b, _)): return a == b
         default: return false
         }
     }
@@ -332,18 +359,29 @@ public enum OfemAuthError: Error, CustomStringConvertible, Equatable {
     /// than blocking.
     case interactionRequired
 
+    /// The alias provided for the account was empty.
+    case emptyAlias
+
     case duplicateAlias(String)
     case unknownAlias(String)
+
+    /// No OAuth scopes were configured for the token request.
+    case emptyScopes
+
     case silentTokenFailed(String, Error)
 
     public var description: String {
         switch self {
         case .interactionRequired:
             return "auth: interaction required"
+        case .emptyAlias:
+            return "auth: alias must not be empty"
         case let .duplicateAlias(alias):
             return "auth: account \"\(alias)\" already exists"
         case let .unknownAlias(alias):
             return "auth: account \"\(alias)\" not found"
+        case .emptyScopes:
+            return "auth: no scopes configured"
         case let .silentTokenFailed(alias, error):
             return "auth: silent token for \"\(alias)\" failed: \(error)"
         }
