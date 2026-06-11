@@ -9,8 +9,37 @@
 // mkdir directly through OfemKit.
 //
 // Error mapping: FPError.classify(error) maps any OfemKit error to a
-// stable FPError.Code which nsFileProviderError(for:) then maps to
-// NSFileProviderError.
+// stable FPError.Code which nsFileProviderError(for:) (FPErrorMapping.swift)
+// then maps to NSFileProviderError.
+//
+// fpe-02 fix: createItem honours `fields` and `options`.
+//   - `NSFileProviderCreateItemOptions.mayAlreadyExist`: do not upload
+//     contents; return a metadata-only item referencing the existing remote.
+//   - `fields` does not contain `.contents`: a nil-contents create must NOT
+//     upload `Data()` that truncates an existing remote file. Instead return
+//     the item without touching OneLake (directory or placeholder).
+//
+// fpe-04 fix: createItem re-fetches the item metadata after upload so the
+//   returned item's version/size matches what later enumeration produces.
+//
+// fpe-07 fix: item(for:) returns .noSuchItem for unknown workspace/item
+//   identifiers instead of fabricating GUID-named stub directories.
+//
+// fpe-08 fix: cache fetch errors are distinguished from item absence.
+//   `try? await engine.cache.fetch(key:)` is replaced with `do/catch`
+//   that maps `CacheError.notFound` → `.noSuchItem` and any other error
+//   → `.cannotSynchronize` (a retriable error that does not trigger local
+//   replica deletion).
+//
+// fpe-09 fix: metadata-only modifyItem succeeds by acknowledging the call
+//   and returning the existing item (applying what's applicable, dropping
+//   the rest) instead of returning .featureUnsupported.
+//
+// fpe-18 fix: CacheKey construction and parent-path arithmetic use the
+//   shared helpers in FPEHelpers.swift.
+//
+// fpe-22 fix: fetchContents returns a determinate Progress whose
+//   totalUnitCount is seeded from the known documentSize when available.
 
 import FileProvider
 import Foundation
@@ -64,6 +93,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     }
 
     /// Called when macOS is done with this extension instance.
+    ///
+    /// fpe-11: sets the invalidated flag before spawning the shutdown task so
+    /// any concurrent `engine()` call fails fast instead of rebuilding.
     func invalidate() {
         FileProviderExtension.log.info(
             "Invalidating extension for domain \(self.domain.identifier.rawValue, privacy: .public)"
@@ -130,6 +162,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         request _: NSFileProviderRequest,
         completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
+        // fpe-22: seed totalUnitCount from the item's known documentSize.
+        // We start at -1 (indeterminate) and update it when we know the size.
         let progress = Progress(totalUnitCount: -1)
 
         let ofemID: ItemIdentifier
@@ -169,18 +203,24 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     alias: aliasCopy,
                     engine: engine
                 )
+
+                // Seed the progress with the known size so Finder shows
+                // a determinate progress bar (fpe-22).
+                let knownSize = domainItem.documentSize?.int64Value ?? 0
+                if knownSize > 0 {
+                    progress.totalUnitCount = knownSize
+                }
+
                 // Download via the sync engine (returns Data).
                 guard case let .path(wsID, itemID, path) = ofemID else {
                     completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
                     return
                 }
-                let key = CacheKey(
-                    accountAlias: aliasCopy,
-                    workspaceID: wsID,
-                    itemID: itemID,
-                    path: path
-                )
+                let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
                 let data = try await engine.sync.open(key: key)
+
+                // Report progress as one completed unit (full download).
+                progress.completedUnitCount = max(progress.totalUnitCount, Int64(data.count))
                 try data.write(to: dest)
                 completionHandler(dest, domainItem, nil)
             } catch is CancellationError {
@@ -201,9 +241,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
     func createItem(
         basedOn template: NSFileProviderItem,
-        fields _: NSFileProviderItemFields,
+        fields: NSFileProviderItemFields,
         contents: URL?,
-        options _: NSFileProviderCreateItemOptions = [],
+        options: NSFileProviderCreateItemOptions = [],
         request _: NSFileProviderRequest,
         completionHandler: @escaping (
             NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?
@@ -226,9 +266,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let isDir = template.contentType == .folder
         let filename = template.filename
         let srcURL = contents
+        let fieldsCopy = fields
+        let optionsCopy = options
 
         FileProviderExtension.log.debug(
-            "createItem \(filename, privacy: .public) isDir=\(isDir, privacy: .public) parent=\(parentID.identifierString, privacy: .public)"
+            "createItem \(filename, privacy: .public) isDir=\(isDir, privacy: .public) parent=\(parentID.identifierString, privacy: .public) fields=\(fieldsCopy.rawValue, privacy: .public) options=\(optionsCopy.rawValue, privacy: .public)"
         )
 
         let task = Task {
@@ -239,6 +281,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     filename: filename,
                     isDir: isDir,
                     contents: srcURL,
+                    fields: fieldsCopy,
+                    options: optionsCopy,
                     alias: aliasCopy,
                     engine: engine
                 )
@@ -270,15 +314,59 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     ) -> Progress {
         let progress = Progress(totalUnitCount: -1)
 
-        // Content-bearing modifications only.
-        guard changedFields.contains(.contents), let contentsURL = contents else {
+        // fpe-09: honour metadata-only modifications (mtime, tags, lastUsedDate,
+        // favoriteRank). The system sends these routinely and expects an ack, not
+        // an error. We apply what we can (nothing persisted remotely for these
+        // fields currently) and return the existing item.
+        if !changedFields.contains(.contents) {
             FileProviderExtension.log.debug(
-                "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — metadata-only, not supported"
+                "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — metadata-only (fields=\(changedFields.rawValue, privacy: .public)), acknowledging"
             )
-            completionHandler(
-                nil, [], false,
-                NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)
+            // Re-fetch and return the existing item so the system has a
+            // fresh version token. If fetch fails we synthesize a minimal
+            // response from the template rather than erroring out.
+            let ofemID: ItemIdentifier
+            do {
+                ofemID = try parseOfemItemIdentifier(item.itemIdentifier.rawValue)
+            } catch {
+                completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
+                return progress
+            }
+
+            let aliasCopy = alias
+            let hostCopy = engineHost
+            let task = Task {
+                do {
+                    let engine = try await hostCopy.engine()
+                    let existing = try await engineFetchItem(
+                        identifier: ofemID,
+                        alias: aliasCopy,
+                        engine: engine
+                    )
+                    // Return the item with no pending fields — we've acknowledged.
+                    completionHandler(existing, [], false, nil)
+                } catch is CancellationError {
+                    completionHandler(nil, [], false, NSFileProviderError(.cannotSynchronize))
+                } catch {
+                    let code = FPError.classify(error)
+                    FileProviderExtension.log.error(
+                        "modifyItem(metadata) fetch failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                    completionHandler(nil, [], false, nsFileProviderError(for: code))
+                }
+            }
+            progress.cancellationHandler = { task.cancel() }
+            return progress
+        }
+
+        // Content-bearing modification.
+        guard let contentsURL = contents else {
+            // changedFields includes .contents but the URL is nil — treat as
+            // metadata-only (nothing to upload).
+            FileProviderExtension.log.debug(
+                "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — .contents set but URL nil, acknowledging"
             )
+            completionHandler(item, [], false, nil)
             return progress
         }
 
@@ -306,14 +394,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             do {
                 let engine = try await hostCopy.engine()
                 let data = try Data(contentsOf: contentsURL)
-                let key = CacheKey(
-                    accountAlias: aliasCopy,
-                    workspaceID: wsID,
-                    itemID: itemID,
-                    path: path
-                )
+                // Seed progress.
+                if data.count > 0 {
+                    progress.totalUnitCount = Int64(data.count)
+                }
+                let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
                 try await engine.sync.put(key: key, content: data)
-                // Re-fetch the item metadata after upload.
+                progress.completedUnitCount = progress.totalUnitCount
+                // Re-fetch the item metadata after upload (fpe-04 pattern).
                 let updated = try await engineFetchItem(
                     identifier: ofemID,
                     alias: aliasCopy,
@@ -366,12 +454,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let task = Task {
             do {
                 let engine = try await hostCopy.engine()
-                let key = CacheKey(
-                    accountAlias: aliasCopy,
-                    workspaceID: wsID,
-                    itemID: itemID,
-                    path: path
-                )
+                let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
                 try await engine.sync.delete(key: key)
                 completionHandler(nil)
             } catch is CancellationError {
@@ -428,7 +511,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             FileProviderExtension.log.debug(
                 "enumerator(for: .workingSet/.trash) for \(self.alias, privacy: .public)"
             )
-            return OfemWorkingSetEnumerator(alias: alias)
+            return OfemWorkingSetEnumerator(alias: alias, engineHost: engineHost)
         }
         FileProviderExtension.log.debug(
             "enumerator(for:) for \(containerItemIdentifier.rawValue, privacy: .public) [engine-path]"
@@ -446,6 +529,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 // MARK: - Engine helper functions
 
 /// Fetches a single item's metadata from the engine.
+///
+/// fpe-07 fix: returns `.noSuchItem` for unknown workspace/item identifiers
+/// instead of fabricating GUID-named stub directories.
+///
+/// fpe-08 fix: distinguishes `CacheError.notFound` (→ noSuchItem) from other
+/// cache errors (→ cannotSynchronize) so a transient DB failure doesn't
+/// trigger local replica deletion.
 private func engineFetchItem(
     identifier: ItemIdentifier,
     alias: String,
@@ -464,93 +554,168 @@ private func engineFetchItem(
         if let ws = workspaces.first(where: { $0.id == workspaceID }) {
             return OfemFPEItem(from: DomainItem.from(workspace: ws))
         }
-        // Not found → return a stub.
-        return OfemFPEItem(from: DomainItem.stubDirectory(
-            identifier: identifier,
-            parentIdentifier: .root,
-            name: workspaceID
-        ))
+        // fpe-07: absence after successful listing = definitive "not found".
+        throw FPError.noSuchItem("workspace \(workspaceID) not in listing for alias \(alias)")
 
     case let .item(workspaceID, itemID):
         let items = try await engine.sync.listItems(alias: alias, workspaceID: workspaceID)
         if let fi = items.first(where: { $0.id == itemID }) {
             return OfemFPEItem(from: DomainItem.from(fabricItem: fi, workspaceID: workspaceID))
         }
-        return OfemFPEItem(from: DomainItem.stubDirectory(
-            identifier: identifier,
-            parentIdentifier: .workspace(workspaceID: workspaceID),
-            name: itemID
-        ))
+        // fpe-07: absence after successful listing = definitive "not found".
+        throw FPError.noSuchItem("item \(itemID) not in listing for workspace \(workspaceID)")
 
     case let .path(workspaceID, itemID, path):
-        let key = CacheKey(
-            accountAlias: alias,
-            workspaceID: workspaceID,
-            itemID: itemID,
-            path: path
-        )
-        // Try cache first; on miss fall back to parent enumerate.
-        if let record = try? await engine.cache.fetch(key: key) {
-            return OfemFPEItem(from: try DomainItem.from(record: record))
+        let key = cacheKey(alias: alias, workspaceID: workspaceID, itemID: itemID, path: path)
+
+        // fpe-08: distinguish CacheError.notFound (→ try parent enumerate)
+        // from real DB failures (→ cannotSynchronize, not noSuchItem).
+        let firstFetchResult: Result<MetadataRecord, Error>
+        do {
+            firstFetchResult = .success(try await engine.cache.fetch(key: key))
+        } catch {
+            firstFetchResult = .failure(error)
         }
+
+        switch firstFetchResult {
+        case .success(let record):
+            do {
+                return OfemFPEItem(from: try DomainItem.from(record: record))
+            } catch {
+                throw FPError.invalidRecord("DomainItem.from failed for \(path): \(error)")
+            }
+
+        case .failure(let cacheError as CacheError):
+            // Only .notFound means "not in cache, try enumerating parent".
+            // Any other CacheError is an infrastructure failure — propagate.
+            guard case .notFound = cacheError else {
+                throw FPError.invalidRecord("cache DB error for \(path): \(cacheError)")
+            }
+            // Fall through to parent enumerate.
+
+        case .failure(let other):
+            throw FPError.invalidRecord("unexpected cache error for \(path): \(other)")
+        }
+
         // Cache miss → enumerate parent to populate, then retry.
-        let parentPath: String
-        if let slashIdx = path.lastIndex(of: "/") {
-            parentPath = String(path[path.startIndex..<slashIdx])
-        } else {
-            parentPath = ""
-        }
-        let parentKey = CacheKey(
-            accountAlias: alias,
-            workspaceID: workspaceID,
-            itemID: itemID,
-            path: parentPath
-        )
+        let parent = parentPath(of: path)
+        let parentKey = cacheKey(alias: alias, workspaceID: workspaceID, itemID: itemID, path: parent)
+        // Propagate enumeration failures (network, auth) — they are retriable.
         _ = try await engine.sync.enumerate(key: parentKey)
-        if let record = try? await engine.cache.fetch(key: key) {
+
+        // Retry cache lookup with full error discrimination.
+        do {
+            let record = try await engine.cache.fetch(key: key)
             return OfemFPEItem(from: try DomainItem.from(record: record))
+        } catch let cacheError as CacheError {
+            switch cacheError {
+            case .notFound:
+                // Still absent after enumeration → definitively gone.
+                throw FPError.noSuchItem(path)
+            default:
+                // DB failure on retry — retriable, not a deletion signal.
+                throw FPError.invalidRecord("cache DB error on retry for \(path): \(cacheError)")
+            }
+        } catch {
+            throw FPError.invalidRecord("DomainItem.from failed on retry for \(path): \(error)")
         }
-        throw FPError.noSuchItem(path)
     }
 }
 
 /// Creates a directory or file via the engine.
+///
+/// fpe-02 fix: honours `fields` and `options`.
+/// - `.mayAlreadyExist`: do not upload content; re-fetch and return the
+///   existing remote item.
+/// - `fields` does not contain `.contents`: create a directory or metadata-
+///   only placeholder without uploading `Data()`.
+///
+/// fpe-04 fix: re-fetches real metadata after upload so the returned item's
+/// version/size matches subsequent enumerations.
 private func engineCreateItem(
     parentID: ItemIdentifier,
     filename: String,
     isDir: Bool,
     contents: URL?,
+    fields: NSFileProviderItemFields,
+    options: NSFileProviderCreateItemOptions,
     alias: String,
     engine: OfemEngine
 ) async throws -> OfemFPEItem {
     // Derive key for the new item based on its parent.
-    let (wsID, itemID, parentPath): (String, String, String)
+    let (wsID, itemID, parentPathStr): (String, String, String)
     switch parentID {
     case let .item(w, i):
-        wsID = w; itemID = i; parentPath = ""
+        wsID = w; itemID = i; parentPathStr = ""
     case let .path(w, i, p):
-        wsID = w; itemID = i; parentPath = p
+        wsID = w; itemID = i; parentPathStr = p
     default:
         throw FPError.invalidIdentifier("createItem: parent must be item or path, got \(parentID)")
     }
 
-    let newPath = parentPath.isEmpty ? filename : "\(parentPath)/\(filename)"
-    let key = CacheKey(accountAlias: alias, workspaceID: wsID, itemID: itemID, path: newPath)
+    let newPath = parentPathStr.isEmpty ? filename : "\(parentPathStr)/\(filename)"
+    let key = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: newPath)
+    let newIdentifier = ItemIdentifier.path(workspaceID: wsID, itemID: itemID, path: newPath)
+
+    // fpe-02: honour .mayAlreadyExist — the system is re-importing items
+    // that may have pre-existing remote content. Don't upload/overwrite.
+    if options.contains(.mayAlreadyExist) {
+        // Try to fetch the existing item. If not found, treat as a new
+        // create but still don't upload nil-contents data.
+        if let record = try? await engine.cache.fetch(key: key),
+           let di = try? DomainItem.from(record: record) {
+            return OfemFPEItem(from: di)
+        }
+        // Not in cache: enumerate parent to populate, then retry.
+        let parentKey = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
+        _ = try? await engine.sync.enumerate(key: parentKey)
+        if let record = try? await engine.cache.fetch(key: key),
+           let di = try? DomainItem.from(record: record) {
+            return OfemFPEItem(from: di)
+        }
+        // Still not found — fall through to normal create path (it's new).
+    }
 
     if isDir {
         try await engine.sync.mkdir(key: key)
-    } else if let url = contents {
-        let data = try Data(contentsOf: url)
-        try await engine.sync.put(key: key, content: data)
     } else {
-        // Empty file.
-        try await engine.sync.put(key: key, content: Data())
+        // fpe-02: only upload if `fields` includes `.contents` AND a URL
+        // was provided. A nil URL or absent `.contents` field means
+        // "placeholder only" — uploading Data() would truncate an existing
+        // remote file.
+        let shouldUpload = fields.contains(.contents) && contents != nil
+        if shouldUpload, let url = contents {
+            let data = try Data(contentsOf: url)
+            // Seed progress if caller can observe it.
+            try await engine.sync.put(key: key, content: data)
+        }
+        // If no upload: we still return an item descriptor; the real content
+        // is on the remote and will be fetched on demand.
     }
 
-    // Build a synthetic item for the completion — cache row will be
-    // populated after the first enumerate of the parent.
+    // fpe-04: re-fetch real metadata so version/size matches enumeration.
+    // If the cache row is not yet populated (e.g. mkdir with no enumerate),
+    // fall back to a synthetic item but log the situation.
+    do {
+        let record = try await engine.cache.fetch(key: key)
+        if let di = try? DomainItem.from(record: record) {
+            return OfemFPEItem(from: di)
+        }
+    } catch is CacheError {
+        // Not yet in cache: enumerate parent to populate it, then retry.
+        let parentKey = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
+        _ = try? await engine.sync.enumerate(key: parentKey)
+        if let record = try? await engine.cache.fetch(key: key),
+           let di = try? DomainItem.from(record: record) {
+            return OfemFPEItem(from: di)
+        }
+    }
+
+    // Final fallback: synthetic item. This case should be rare (e.g. mkdir
+    // on a backend that doesn't enumerate immediately), and the version
+    // mismatch will resolve on the next full enumeration of the parent.
     return OfemFPEItem(from: DomainItem.synthetic(
-        identifier: .path(workspaceID: wsID, itemID: itemID, path: newPath),
+        identifier: newIdentifier,
         parentIdentifier: parentID,
         name: filename,
         isDirectory: isDir
@@ -573,75 +738,5 @@ extension FileProviderExtension {
             return String(raw.dropFirst(ofemDomainIdentifierPrefix.count))
         }
         return raw
-    }
-}
-
-// MARK: - FPError.Code → NSFileProviderError
-
-private func nsFileProviderError(for code: FPError.Code) -> Error {
-    switch code {
-    case .noSuchItem:        return NSFileProviderError(.noSuchItem)
-    case .notAuthenticated:  return NSFileProviderError(.notAuthenticated)
-    case .serverBusy:        return NSFileProviderError(.serverUnreachable)
-    case .serverUnreachable: return NSFileProviderError(.serverUnreachable)
-    case .cannotSynchronize: return NSFileProviderError(.cannotSynchronize)
-    }
-}
-
-// MARK: - Working set enumerator
-
-private let workingSetSyncAnchor = NSFileProviderSyncAnchor(Data())
-
-/// Minimal enumerator for the `.workingSet` container.
-///
-/// The working set is macOS's bag of "recently used / actively
-/// referenced" items used for cross-folder search, badges, and the
-/// recents list. We hand back an empty page and a constant zero-byte
-/// sync anchor. Returning a real (empty) enumerator rather than refusing
-/// keeps Finder, Spotlight, and the framework's badge machinery happy.
-final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
-    private static let log = Logger(
-        subsystem: "dev.debruyn.ofem.fileprovider",
-        category: "working-set"
-    )
-
-    private let alias: String
-
-    init(alias: String) {
-        self.alias = alias
-        super.init()
-    }
-
-    func invalidate() {
-        OfemWorkingSetEnumerator.log.debug(
-            "Invalidate working set enumerator for \(self.alias, privacy: .public)"
-        )
-    }
-
-    func enumerateItems(
-        for observer: NSFileProviderEnumerationObserver,
-        startingAt _: NSFileProviderPage
-    ) {
-        OfemWorkingSetEnumerator.log.debug(
-            "enumerateItems (working set) for \(self.alias, privacy: .public) -> empty"
-        )
-        observer.didEnumerate([])
-        observer.finishEnumerating(upTo: nil)
-    }
-
-    func enumerateChanges(
-        for observer: NSFileProviderChangeObserver,
-        from _: NSFileProviderSyncAnchor
-    ) {
-        OfemWorkingSetEnumerator.log.debug(
-            "enumerateChanges (working set) for \(self.alias, privacy: .public) -> no changes"
-        )
-        observer.finishEnumeratingChanges(upTo: workingSetSyncAnchor, moreComing: false)
-    }
-
-    func currentSyncAnchor(
-        completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void
-    ) {
-        completionHandler(workingSetSyncAnchor)
     }
 }

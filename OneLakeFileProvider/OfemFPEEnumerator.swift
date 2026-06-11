@@ -16,15 +16,29 @@
 // the full listing in one call (no server-side pagination at the DFS
 // level). We use one page, nil cursor.
 //
-// - enumerateChanges: answers syncAnchorExpired so macOS drops its
-// cache and re-runs enumerateItems on every Finder refresh.
+// - Sync anchors (fpe-05): `currentSyncAnchor` returns the
+// max(synced_at_ns) value from the cache database for the account alias,
+// encoded as a big-endian Int64. When `enumerateChanges` is called with a
+// prior anchor, we look up all records changed since that anchor instead of
+// unconditionally throwing `.syncAnchorExpired`. The anchor value advances
+// with every `upsert`, so the system can request incremental deltas rather
+// than performing a full re-enumeration on every poll.
+//
+// - Working set (fpe-06): `OfemWorkingSetEnumerator.enumerateChanges`
+// now drives a real cache diff: it computes changed items since the anchor
+// and calls `didUpdate` for the affected identifiers. This means
+// `signalEnumerator(for: .workingSet)` produces an actual delta.
+//
+// - inFlightTask safety (fpe-12): `inFlightTask` mutations are
+// serialised by an NSLock so concurrent `enumerateItems` / `invalidate`
+// calls from the framework (which may arrive on arbitrary queues) do not
+// data-race. `enumerateItems` only cancels an in-flight task when starting
+// a NEW items enumeration — not when a change-observation arrives.
 
 import FileProvider
 import Foundation
 import OfemKit
 import os.log
-
-private let staticSyncAnchorFPE = NSFileProviderSyncAnchor(Data())
 
 // MARK: - Identifier parsing helper
 
@@ -36,7 +50,32 @@ func parseOfemItemIdentifier(_ rawIdentifier: String) throws -> ItemIdentifier {
     try ItemIdentifierParser.parse(rawIdentifier)
 }
 
+// MARK: - Sync anchor encoding/decoding
+
+/// Encodes an Int64 nanosecond timestamp as an 8-byte big-endian anchor token.
+func encodeSyncAnchor(_ ns: Int64) -> NSFileProviderSyncAnchor {
+    var value = ns.bigEndian
+    let data = withUnsafeBytes(of: &value) { Data($0) }
+    return NSFileProviderSyncAnchor(data)
+}
+
+/// Decodes an anchor token back to an Int64 nanosecond timestamp.
+/// Returns 0 for an empty / unrecognised anchor (forces full diff).
+func decodeSyncAnchor(_ anchor: NSFileProviderSyncAnchor) -> Int64 {
+    let data = anchor.rawValue
+    guard data.count == 8 else { return 0 }
+    return data.withUnsafeBytes { ptr -> Int64 in
+        Int64(bigEndian: ptr.load(as: Int64.self))
+    }
+}
+
+// MARK: - Engine-backed enumerator
+
 /// Engine-backed enumerator for one container in one FPE domain.
+///
+/// Thread-safety for `inFlightTask` (fpe-12): mutations are guarded by
+/// `taskLock`, so concurrent `enumerateItems` / `invalidate` calls from
+/// the framework (arriving on arbitrary queues) do not data-race.
 final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
@@ -48,7 +87,9 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
     let alias: String
     let engineHost: FPEEngineHost
 
-    private var inFlightTask: Task<Void, Never>?
+    /// Guards mutations to `inFlightTask` (fpe-12).
+    private let taskLock = NSLock()
+    private nonisolated(unsafe) var inFlightTask: Task<Void, Never>?
 
     init(
         containerItemIdentifier: NSFileProviderItemIdentifier,
@@ -80,8 +121,10 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
     }
 
     func invalidate() {
-        inFlightTask?.cancel()
-        inFlightTask = nil
+        taskLock.withLock {
+            inFlightTask?.cancel()
+            inFlightTask = nil
+        }
     }
 
     // MARK: - Enumeration
@@ -94,8 +137,9 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
         let identifierCopy = identifier
         let hostCopy = engineHost
 
-        inFlightTask?.cancel()
-        inFlightTask = Task {
+        // Cancel any previous in-flight items task (fpe-12: only cancel on
+        // new *items* enumeration, not on change observation).
+        let newTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
                 let items = try await Self.enumerate(
@@ -118,22 +162,96 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 observer.finishEnumeratingWithError(nsFileProviderError(for: code))
             }
         }
+
+        taskLock.withLock {
+            inFlightTask?.cancel()
+            inFlightTask = newTask
+        }
     }
 
+    /// Responds with actual cache deltas since `anchor` (fpe-05).
+    ///
+    /// Instead of always throwing `.syncAnchorExpired`, we decode the anchor
+    /// (max `synced_at_ns` from the last poll), query the cache for rows that
+    /// changed after that timestamp, and report the deltas. If the anchor is
+    /// empty or no longer decodable (DB was reset) we fall back to expiry so
+    /// the framework can restart from scratch.
     func enumerateChanges(
         for observer: NSFileProviderChangeObserver,
-        from _: NSFileProviderSyncAnchor
+        from anchor: NSFileProviderSyncAnchor
     ) {
-        // No incremental change support yet. Expire the anchor so macOS
-        // drops its cache and re-runs enumerateItems.
-        Self.log.debug(
-            "OfemFPEEnumerator enumerateChanges \(self.alias, privacy: .public)/\(self.containerItemIdentifier.rawValue, privacy: .public) -> syncAnchorExpired"
-        )
-        observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+        let aliasCopy = alias
+        let identifierCopy = identifier
+        let hostCopy = engineHost
+        let previousNs = decodeSyncAnchor(anchor)
+
+        // NOTE: change-observation tasks are independent from items tasks.
+        // We do NOT cancel inFlightTask here (fpe-12: avoids aborting an
+        // ongoing items enumeration for an unrelated change observer).
+        Task {
+            do {
+                let engine = try await hostCopy.engine()
+                let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+
+                // If the anchor is ahead of the cache the DB may have been
+                // reset (or a new process started). Expire so the framework
+                // performs a full re-enumeration.
+                if previousNs > currentNs && previousNs != 0 {
+                    Self.log.debug(
+                        "OfemFPEEnumerator: anchor ahead of cache for \(aliasCopy, privacy: .public) — expiring"
+                    )
+                    observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+                    return
+                }
+
+                // Compute changed items since the last known anchor.
+                let changedRecords = (try? await engine.cache.itemsChangedAfter(
+                    accountAlias: aliasCopy,
+                    ns: previousNs
+                )) ?? []
+
+                if !changedRecords.isEmpty {
+                    let updatedItems: [NSFileProviderItem] = changedRecords.compactMap { record in
+                        guard let di = try? DomainItem.from(record: record) else { return nil }
+                        return OfemFPEItem(from: di)
+                    }
+                    if !updatedItems.isEmpty {
+                        observer.didUpdate(updatedItems)
+                    }
+                }
+
+                let newAnchor = encodeSyncAnchor(currentNs)
+                observer.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
+
+                Self.log.debug(
+                    "OfemFPEEnumerator: enumerateChanges for \(aliasCopy, privacy: .public)/\(identifierCopy.identifierString, privacy: .public): \(changedRecords.count, privacy: .public) changes, anchor \(previousNs, privacy: .public) → \(currentNs, privacy: .public)"
+                )
+            } catch is CancellationError {
+                observer.finishEnumeratingWithError(NSFileProviderError(.cannotSynchronize))
+            } catch {
+                let code = FPError.classify(error)
+                Self.log.error(
+                    "OfemFPEEnumerator: enumerateChanges failed for \(aliasCopy, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                observer.finishEnumeratingWithError(nsFileProviderError(for: code))
+            }
+        }
     }
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
-        completionHandler(staticSyncAnchorFPE)
+        let aliasCopy = alias
+        let hostCopy = engineHost
+        Task {
+            do {
+                let engine = try await hostCopy.engine()
+                let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+                completionHandler(encodeSyncAnchor(ns))
+            } catch {
+                // Engine unavailable; return a zero anchor so the next poll
+                // gets a full diff rather than an opaque failure.
+                completionHandler(encodeSyncAnchor(0))
+            }
+        }
     }
 
     // MARK: - Private engine dispatch
@@ -165,41 +283,125 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
 
         case let .item(workspaceID, itemID):
             // List the root of a Fabric item (e.g. lakehouse root).
-            let key = CacheKey(
-                accountAlias: alias,
-                workspaceID: workspaceID,
-                itemID: itemID,
-                path: ""
-            )
+            let key = cacheKey(alias: alias, workspaceID: workspaceID, itemID: itemID, path: "")
             let records = try await engine.sync.enumerate(key: key)
-            return try records.compactMap { record in
+            return records.compactMap { record in
                 try? OfemFPEItem(from: DomainItem.from(record: record))
             }
 
         case let .path(workspaceID, itemID, path):
             // List a sub-path inside a Fabric item.
-            let key = CacheKey(
-                accountAlias: alias,
-                workspaceID: workspaceID,
-                itemID: itemID,
-                path: path
-            )
+            let key = cacheKey(alias: alias, workspaceID: workspaceID, itemID: itemID, path: path)
             let records = try await engine.sync.enumerate(key: key)
-            return try records.compactMap { record in
+            return records.compactMap { record in
                 try? OfemFPEItem(from: DomainItem.from(record: record))
             }
         }
     }
 }
 
-// MARK: - FPError.Code → NSFileProviderError
+// MARK: - Working set enumerator
 
-private func nsFileProviderError(for code: FPError.Code) -> Error {
-    switch code {
-    case .noSuchItem:        return NSFileProviderError(.noSuchItem)
-    case .notAuthenticated:  return NSFileProviderError(.notAuthenticated)
-    case .serverBusy:        return NSFileProviderError(.serverUnreachable)
-    case .serverUnreachable: return NSFileProviderError(.serverUnreachable)
-    case .cannotSynchronize: return NSFileProviderError(.cannotSynchronize)
+/// Minimal enumerator for the `.workingSet` container.
+///
+/// The working set is macOS's bag of "recently used / actively
+/// referenced" items used for cross-folder search, badges, and the
+/// recents list. `enumerateItems` returns an empty page; `enumerateChanges`
+/// now drives a real cache diff (fpe-06): changed records since the anchor
+/// are surfaced as `didUpdate` calls instead of always answering "no changes".
+final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
+    private static let log = Logger(
+        subsystem: "dev.debruyn.ofem.fileprovider",
+        category: "working-set"
+    )
+
+    private let alias: String
+    private let engineHost: FPEEngineHost
+
+    init(alias: String, engineHost: FPEEngineHost) {
+        self.alias = alias
+        self.engineHost = engineHost
+        super.init()
+    }
+
+    func invalidate() {
+        OfemWorkingSetEnumerator.log.debug(
+            "Invalidate working set enumerator for \(self.alias, privacy: .public)"
+        )
+    }
+
+    func enumerateItems(
+        for observer: NSFileProviderEnumerationObserver,
+        startingAt _: NSFileProviderPage
+    ) {
+        OfemWorkingSetEnumerator.log.debug(
+            "enumerateItems (working set) for \(self.alias, privacy: .public) -> empty"
+        )
+        observer.didEnumerate([])
+        observer.finishEnumerating(upTo: nil)
+    }
+
+    /// Reports real cache deltas since `anchor` for the working set (fpe-06).
+    ///
+    /// `signalEnumerator(for: .workingSet)` causes macOS to call here. Instead
+    /// of always answering "no changes" (which made that signal a no-op), we
+    /// look up all records updated since the anchor and report them so Finder
+    /// badge / recents lists stay current.
+    func enumerateChanges(
+        for observer: NSFileProviderChangeObserver,
+        from anchor: NSFileProviderSyncAnchor
+    ) {
+        let aliasCopy = alias
+        let hostCopy = engineHost
+        let previousNs = decodeSyncAnchor(anchor)
+
+        Task {
+            do {
+                let engine = try await hostCopy.engine()
+                let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+
+                let changedRecords = (try? await engine.cache.itemsChangedAfter(
+                    accountAlias: aliasCopy,
+                    ns: previousNs
+                )) ?? []
+
+                let updatedItems: [NSFileProviderItem] = changedRecords.compactMap { record in
+                    guard let di = try? DomainItem.from(record: record) else { return nil }
+                    return OfemFPEItem(from: di)
+                }
+                if !updatedItems.isEmpty {
+                    observer.didUpdate(updatedItems)
+                }
+
+                let newAnchor = encodeSyncAnchor(currentNs)
+                observer.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
+
+                Self.log.debug(
+                    "WorkingSet: enumerateChanges for \(aliasCopy, privacy: .public): \(changedRecords.count, privacy: .public) changes since anchor=\(previousNs, privacy: .public)"
+                )
+            } catch {
+                let code = FPError.classify(error)
+                Self.log.error(
+                    "WorkingSet: enumerateChanges failed for \(aliasCopy, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                observer.finishEnumeratingWithError(nsFileProviderError(for: code))
+            }
+        }
+    }
+
+    func currentSyncAnchor(
+        completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void
+    ) {
+        let aliasCopy = alias
+        let hostCopy = engineHost
+        Task {
+            do {
+                let engine = try await hostCopy.engine()
+                let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+                completionHandler(encodeSyncAnchor(ns))
+            } catch {
+                completionHandler(encodeSyncAnchor(0))
+            }
+        }
     }
 }

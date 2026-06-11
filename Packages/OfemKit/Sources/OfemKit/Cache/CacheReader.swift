@@ -124,6 +124,42 @@ public final class CacheReader: Sendable {
         }
     }
 
+    // MARK: - Sync anchor
+
+    /// Returns the maximum `synced_at_ns` value across all rows for the given
+    /// `accountAlias`, or `0` when there are no rows.
+    ///
+    /// Used to compute a real sync anchor: whenever a new `upsert` bumps
+    /// `syncedAtNs`, this value increases, making the anchor non-constant and
+    /// allowing `enumerateChanges` to return real deltas rather than always
+    /// throwing `.syncAnchorExpired`.
+    public func maxSyncedAtNs(accountAlias: String) async throws -> Int64 {
+        try await db.read { db in
+            let sql = """
+                SELECT COALESCE(MAX(synced_at_ns), 0)
+                FROM path_metadata
+                WHERE account_alias = ?
+                """
+            return try Int64.fetchOne(db, sql: sql, arguments: [accountAlias]) ?? 0
+        }
+    }
+
+    // MARK: - Changed items since anchor
+
+    /// Returns all metadata rows for `accountAlias` whose `synced_at_ns` value
+    /// is strictly greater than `afterNs`.
+    ///
+    /// Used by `enumerateChanges` to compute the delta since the last known
+    /// sync anchor.
+    public func itemsChangedAfter(accountAlias: String, ns: Int64) async throws -> [MetadataRecord] {
+        try await db.read { db in
+            try MetadataRecord
+                .filter(MetadataRecord.Columns.accountAlias == accountAlias)
+                .filter(MetadataRecord.Columns.syncedAtNs > ns)
+                .fetchAll(db)
+        }
+    }
+
     // MARK: - Blob byte totals
 
     /// Returns the sum of `blob_size` across distinct `blob_sha256` values.

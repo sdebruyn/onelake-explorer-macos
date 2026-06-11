@@ -247,6 +247,20 @@ public actor CacheStore {
         try await reader().hotItems(since: since)
     }
 
+    // MARK: - Sync anchor helpers
+
+    /// Returns the maximum `synced_at_ns` value across all rows for the given
+    /// `accountAlias`, or `0` when there are no rows. Delegates to ``CacheReader``.
+    public func maxSyncedAtNs(accountAlias: String) async throws -> Int64 {
+        try await reader().maxSyncedAtNs(accountAlias: accountAlias)
+    }
+
+    /// Returns all metadata rows for `accountAlias` whose `synced_at_ns` value
+    /// is strictly greater than `ns`. Delegates to ``CacheReader``.
+    public func itemsChangedAfter(accountAlias: String, ns: Int64) async throws -> [MetadataRecord] {
+        try await reader().itemsChangedAfter(accountAlias: accountAlias, ns: ns)
+    }
+
     // MARK: - Blob: store
 
     /// Writes `data` to the blob store and updates the `blob_sha256` /
