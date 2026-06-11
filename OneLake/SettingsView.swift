@@ -92,13 +92,21 @@ private struct CacheSettingsTab: View {
     @ObservedObject var model: MenuStatusModel
     @State private var showingClearConfirm = false
 
+    /// True once the FPE has returned a non-zero cacheMaxSizeGB.
+    /// The slider is hidden until then so the `max(1, …)` placeholder
+    /// value cannot be written back before real values arrive.
+    private var cacheLoaded: Bool { model.cacheMaxSizeGB > 0 }
+
     /// SwiftUI Slider is Double-backed; we round on write so the visible
     /// number snaps to an integer GB without rendering tick marks under
     /// the track (which `step: 1` would). The model clamps to [1, 100]
     /// and debounces the IPC write at 750 ms.
+    ///
+    /// The binding reads the model directly — no `max(1, …)` fallback —
+    /// so this is only active when `cacheLoaded` is true (cacheMaxSizeGB > 0).
     private var sliderBinding: Binding<Double> {
         Binding(
-            get: { Double(max(1, model.cacheMaxSizeGB)) },
+            get: { Double(model.cacheMaxSizeGB) },
             set: { model.setCacheLimitGB(Int($0.rounded())) }
         )
     }
@@ -107,14 +115,18 @@ private struct CacheSettingsTab: View {
         Form {
             Section {
                 LabeledContent {
-                    HStack(spacing: 12) {
-                        Slider(value: sliderBinding, in: 1...100)
-                            .controlSize(.small)
-                            .frame(minWidth: 240)
-                        Text("\(currentLimitGB) GB")
-                            .font(.body.monospacedDigit())
-                            .foregroundStyle(.primary)
-                            .frame(minWidth: 56, alignment: .trailing)
+                    if cacheLoaded {
+                        HStack(spacing: 12) {
+                            Slider(value: sliderBinding, in: 1...100)
+                                .controlSize(.small)
+                                .frame(minWidth: 240)
+                            Text("\(model.cacheMaxSizeGB) GB")
+                                .font(.body.monospacedDigit())
+                                .foregroundStyle(.primary)
+                                .frame(minWidth: 56, alignment: .trailing)
+                        }
+                    } else {
+                        Text("Loading…").foregroundStyle(.secondary)
                     }
                 } label: {
                     Text("Storage limit")
@@ -178,12 +190,10 @@ private struct CacheSettingsTab: View {
         }
     }
 
-    private var currentLimitGB: Int { max(1, model.cacheMaxSizeGB) }
-
     /// Used / limit clamped to [0, 1]. A transient overage during eviction
     /// would otherwise render as an overflowing bar.
     private var usageFraction: Double {
-        let limitBytes = Double(currentLimitGB) * 1024 * 1024 * 1024
+        let limitBytes = Double(model.cacheMaxSizeGB) * 1024 * 1024 * 1024
         guard limitBytes > 0 else { return 0 }
         return min(1.0, max(0.0, Double(model.cacheBytes) / limitBytes))
     }
@@ -202,7 +212,7 @@ private struct CacheSettingsTab: View {
         f.countStyle = .binary
         f.allowsNonnumericFormatting = false
         let used = f.string(fromByteCount: model.cacheBytes)
-        return "\(used) of \(currentLimitGB) GB"
+        return "\(used) of \(model.cacheMaxSizeGB) GB"
     }
 }
 
@@ -211,16 +221,23 @@ private struct CacheSettingsTab: View {
 private struct NetworkSettingsTab: View {
     @ObservedObject var model: MenuStatusModel
 
+    /// True once the FPE status has been fetched and the net values are loaded.
+    /// The controls are read-only until then to prevent the hardcoded
+    /// display fallbacks from being written back before real values arrive.
+    private var netLoaded: Bool {
+        model.netMaxUploads > 0 && model.netMaxDownloads > 0
+    }
+
     private var uploadsBinding: Binding<Int> {
         Binding(
-            get: { model.netMaxUploads > 0 ? model.netMaxUploads : 4 },
+            get: { model.netMaxUploads },
             set: { model.setNetMaxUploads($0) }
         )
     }
 
     private var downloadsBinding: Binding<Int> {
         Binding(
-            get: { model.netMaxDownloads > 0 ? model.netMaxDownloads : 8 },
+            get: { model.netMaxDownloads },
             set: { model.setNetMaxDownloads($0) }
         )
     }
@@ -228,18 +245,27 @@ private struct NetworkSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                concurrencyRow(
-                    title: "Parallel uploads",
-                    detail: "Maximum simultaneous outgoing transfers per account.",
-                    value: uploadsBinding,
-                    range: 1...16
-                )
-                concurrencyRow(
-                    title: "Parallel downloads",
-                    detail: "Maximum simultaneous incoming transfers per account.",
-                    value: downloadsBinding,
-                    range: 1...32
-                )
+                if netLoaded {
+                    concurrencyRow(
+                        title: "Parallel uploads",
+                        detail: "Maximum simultaneous outgoing transfers per account.",
+                        value: uploadsBinding,
+                        range: 1...16
+                    )
+                    concurrencyRow(
+                        title: "Parallel downloads",
+                        detail: "Maximum simultaneous incoming transfers per account.",
+                        value: downloadsBinding,
+                        range: 1...32
+                    )
+                } else {
+                    LabeledContent("Parallel uploads") {
+                        Text("Loading…").foregroundStyle(.secondary)
+                    }
+                    LabeledContent("Parallel downloads") {
+                        Text("Loading…").foregroundStyle(.secondary)
+                    }
+                }
             } footer: {
                 Text("Lower these on metered networks. Raise the download count when Finder routinely opens many cloud-only files at once.")
                     .font(.caption)
@@ -282,9 +308,12 @@ private struct NetworkSettingsTab: View {
 private struct AdvancedSettingsTab: View {
     @ObservedObject var model: MenuStatusModel
 
+    /// True once the FPE status has been fetched and the log level is loaded.
+    private var logLevelLoaded: Bool { !model.logLevel.isEmpty }
+
     private var logLevelBinding: Binding<String> {
         Binding(
-            get: { model.logLevel.isEmpty ? "info" : model.logLevel },
+            get: { model.logLevel },
             set: { model.setLogLevel($0) }
         )
     }
@@ -292,21 +321,27 @@ private struct AdvancedSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                Picker(selection: logLevelBinding) {
-                    Text("Debug").tag("debug")
-                    Text("Info").tag("info")
-                    Text("Warning").tag("warn")
-                    Text("Error").tag("error")
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Log level")
-                        Text("Higher levels keep logs small; Debug helps when reporting an issue.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                if logLevelLoaded {
+                    Picker(selection: logLevelBinding) {
+                        Text("Debug").tag("debug")
+                        Text("Info").tag("info")
+                        Text("Warning").tag("warn")
+                        Text("Error").tag("error")
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Log level")
+                            Text("Higher levels keep logs small; Debug helps when reporting an issue.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(!model.isRunning)
+                } else {
+                    LabeledContent("Log level") {
+                        Text("Loading…").foregroundStyle(.secondary)
                     }
                 }
-                .pickerStyle(.menu)
-                .disabled(!model.isRunning)
 
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {

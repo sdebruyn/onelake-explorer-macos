@@ -258,7 +258,7 @@ final class MenuStatusModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try SharedOfemAuth.shared.auth.setDefaultAccount(alias: alias)
+                try await SharedOfemAuth.shared.auth.setDefaultAccount(alias: alias)
             } catch {
                 Self.log.error("setDefaultAccount failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -271,7 +271,7 @@ final class MenuStatusModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try SharedOfemAuth.shared.auth.removeAccount(alias: alias)
+                try await SharedOfemAuth.shared.auth.removeAccount(alias: alias)
                 await DomainSyncManager.shared.removeDomain(alias: alias)
             } catch {
                 Self.log.error("removeAccount failed: \(error.localizedDescription, privacy: .public)")
@@ -389,32 +389,33 @@ final class MenuStatusModel: ObservableObject {
 
     // MARK: - Private helpers
 
-    /// Writes a config key/value pair through each account's FPE domain.
+    /// Writes a config key/value pair through the first available FPE domain.
     ///
-    /// Config is stored in a single config.toml, so writing through any
-    /// one domain is sufficient. We fan out to all aliases anyway so the
-    /// in-memory OfemConfigStore inside each FPE process is updated
-    /// without waiting for the next time it reads the file from disk.
+    /// `config.toml` is a single shared file, so one write is sufficient to
+    /// persist the change. `setConfig` on the FPE side calls `updateAndSave`
+    /// (atomic read-merge-write) and then `reloadEngine()`, so the in-memory
+    /// snapshot and the running engine are both updated in one round-trip.
+    /// Fanning out to every alias would produce N redundant write-lock-read-
+    /// merge-write cycles for the same key/value with no additional benefit.
     private func writeConfigToAllAliases(key: String, value: String) async {
         // Read directly from SharedOfemAuth so this works even before the first
         // doRefresh() has populated the published `accounts` property — e.g. when
         // the user changes a setting immediately after app launch.
         let currentAccounts = SharedOfemAuth.shared.auth.listAccounts()
-        for acc in currentAccounts {
-            do {
-                try await OfemFPEClient.shared.setConfig(
-                    alias: acc.alias,
-                    key: key,
-                    value: value
-                )
-                Self.log.info(
-                    "setConfig(\(acc.alias, privacy: .public)) key='\(key, privacy: .public)' applied"
-                )
-            } catch {
-                Self.log.error(
-                    "setConfig(\(acc.alias, privacy: .public)) key='\(key, privacy: .public)' failed: \(error.localizedDescription, privacy: .public)"
-                )
-            }
+        guard let first = currentAccounts.first else { return }
+        do {
+            try await OfemFPEClient.shared.setConfig(
+                alias: first.alias,
+                key: key,
+                value: value
+            )
+            Self.log.info(
+                "setConfig(\(first.alias, privacy: .public)) key='\(key, privacy: .public)' applied"
+            )
+        } catch {
+            Self.log.error(
+                "setConfig(\(first.alias, privacy: .public)) key='\(key, privacy: .public)' failed: \(error.localizedDescription, privacy: .public)"
+            )
         }
     }
 }

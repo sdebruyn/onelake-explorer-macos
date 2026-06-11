@@ -48,13 +48,13 @@ struct OfemAuthTests {
 
     @Test("listAccounts returns accounts sorted by alias")
     @MainActor
-    func listAccountsSorted() throws {
+    func listAccountsSorted() async throws {
         let (store, _) = try makeStore()
         let auth = OfemAuth(configStore: store)
 
-        try auth.addAccount(makeAccount(alias: "zebra"))
-        try auth.addAccount(makeAccount(alias: "alpha"))
-        try auth.addAccount(makeAccount(alias: "middle"))
+        try await auth.addAccount(makeAccount(alias: "zebra"))
+        try await auth.addAccount(makeAccount(alias: "alpha"))
+        try await auth.addAccount(makeAccount(alias: "middle"))
 
         let accounts = auth.listAccounts()
         #expect(accounts.map(\.alias) == ["alpha", "middle", "zebra"])
@@ -64,12 +64,12 @@ struct OfemAuthTests {
 
     @Test("addAccount persists the account to the config store")
     @MainActor
-    func addAccountPersists() throws {
+    func addAccountPersists() async throws {
         let (store, _) = try makeStore()
         let auth = OfemAuth(configStore: store)
         let account = makeAccount(alias: "work")
 
-        try auth.addAccount(account)
+        try await auth.addAccount(account)
 
         let accounts = auth.listAccounts()
         #expect(accounts.count == 1)
@@ -79,19 +79,19 @@ struct OfemAuthTests {
 
     @Test("addAccount rejects duplicate alias")
     @MainActor
-    func addAccountDuplicateAlias() throws {
+    func addAccountDuplicateAlias() async throws {
         let (store, _) = try makeStore()
         let auth = OfemAuth(configStore: store)
 
-        try auth.addAccount(makeAccount(alias: "work"))
-        #expect(throws: OfemAuthError.self) {
-            try auth.addAccount(makeAccount(alias: "work"))
+        try await auth.addAccount(makeAccount(alias: "work"))
+        await #expect(throws: OfemAuthError.self) {
+            try await auth.addAccount(makeAccount(alias: "work"))
         }
     }
 
     @Test("addAccount rejects invalid alias")
     @MainActor
-    func addAccountInvalidAlias() throws {
+    func addAccountInvalidAlias() async throws {
         let (store, _) = try makeStore()
         let auth = OfemAuth(configStore: store)
         let bad = Account(
@@ -101,8 +101,8 @@ struct OfemAuthTests {
             username: "u@c.com",
             addedAt: "2026-01-01T00:00:00Z"
         )
-        #expect(throws: (any Error).self) {
-            try auth.addAccount(bad)
+        await #expect(throws: (any Error).self) {
+            try await auth.addAccount(bad)
         }
     }
 
@@ -110,37 +110,37 @@ struct OfemAuthTests {
 
     @Test("removeAccount removes the account from the config store")
     @MainActor
-    func removeAccountRemoves() throws {
+    func removeAccountRemoves() async throws {
         let (store, _) = try makeStore()
         let auth = OfemAuth(configStore: store)
 
-        try auth.addAccount(makeAccount(alias: "work"))
-        try auth.removeAccount(alias: "work")
+        try await auth.addAccount(makeAccount(alias: "work"))
+        try await auth.removeAccount(alias: "work")
 
         #expect(auth.listAccounts().isEmpty)
     }
 
     @Test("removeAccount throws on unknown alias")
     @MainActor
-    func removeAccountUnknown() throws {
+    func removeAccountUnknown() async throws {
         let (store, _) = try makeStore()
         let auth = OfemAuth(configStore: store)
-        #expect(throws: OfemAuthError.self) {
-            try auth.removeAccount(alias: "nonexistent")
+        await #expect(throws: OfemAuthError.self) {
+            try await auth.removeAccount(alias: "nonexistent")
         }
     }
 
     @Test("removeAccount clears the default if the removed account was default")
     @MainActor
-    func removeAccountClearsDefault() throws {
+    func removeAccountClearsDefault() async throws {
         let (store, _) = try makeStore()
         let auth = OfemAuth(configStore: store)
 
-        try auth.addAccount(makeAccount(alias: "work"))
-        try auth.setDefaultAccount(alias: "work")
+        try await auth.addAccount(makeAccount(alias: "work"))
+        try await auth.setDefaultAccount(alias: "work")
         #expect(auth.defaultAccount() == "work")
 
-        try auth.removeAccount(alias: "work")
+        try await auth.removeAccount(alias: "work")
         #expect(auth.defaultAccount() == nil)
     }
 
@@ -156,34 +156,34 @@ struct OfemAuthTests {
 
     @Test("setDefaultAccount persists and reads back correctly")
     @MainActor
-    func setDefaultAccountRoundTrips() throws {
+    func setDefaultAccountRoundTrips() async throws {
         let (store, _) = try makeStore()
         let auth = OfemAuth(configStore: store)
 
-        try auth.addAccount(makeAccount(alias: "work"))
-        try auth.setDefaultAccount(alias: "work")
+        try await auth.addAccount(makeAccount(alias: "work"))
+        try await auth.setDefaultAccount(alias: "work")
         #expect(auth.defaultAccount() == "work")
     }
 
     @Test("setDefaultAccount throws on unknown alias")
     @MainActor
-    func setDefaultAccountUnknown() throws {
+    func setDefaultAccountUnknown() async throws {
         let (store, _) = try makeStore()
         let auth = OfemAuth(configStore: store)
-        #expect(throws: OfemAuthError.self) {
-            try auth.setDefaultAccount(alias: "nonexistent")
+        await #expect(throws: OfemAuthError.self) {
+            try await auth.setDefaultAccount(alias: "nonexistent")
         }
     }
 
     @Test("Removing one account does not remove others")
     @MainActor
-    func removeAccountIsolated() throws {
+    func removeAccountIsolated() async throws {
         let (store, _) = try makeStore()
         let auth = OfemAuth(configStore: store)
 
-        try auth.addAccount(makeAccount(alias: "work"))
-        try auth.addAccount(makeAccount(alias: "home"))
-        try auth.removeAccount(alias: "work")
+        try await auth.addAccount(makeAccount(alias: "work"))
+        try await auth.addAccount(makeAccount(alias: "home"))
+        try await auth.removeAccount(alias: "work")
 
         let remaining = auth.listAccounts()
         #expect(remaining.count == 1)
