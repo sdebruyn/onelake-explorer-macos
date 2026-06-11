@@ -52,7 +52,7 @@ cask "ofem" do
   desc "Browse Microsoft Fabric OneLake from Finder"
   homepage "https://ofem.debruyn.dev"
 
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
   depends_on arch: :arm64
 
   app "OneLake.app"
@@ -113,7 +113,9 @@ We need:
   - `APPLE_API_KEY_JSON` — the full API key JSON (`key_id`, `issuer_id`, `key`).
   - `APPLE_API_KEY_ID` — the 10-character key identifier (also inside `APPLE_API_KEY_JSON`).
   - `APPLE_API_ISSUER_ID` — the issuer UUID (also inside `APPLE_API_KEY_JSON`).
-- A **Provisioning profile** is not required for non-Mac-App-Store distribution; Developer ID signing is sufficient.
+- **Two Developer ID provisioning profiles** — one for the host app (`dev.debruyn.ofem`) and one for the File Provider Extension (`dev.debruyn.ofem.fileprovider`). Provisioning profiles are required even for non-Mac-App-Store Developer ID distribution when the app uses entitlements that Apple must explicitly grant (App Sandbox, App Groups, File Provider). Create them at [developer.apple.com/account/resources/profiles](https://developer.apple.com/account/resources/profiles) → "+" → "Developer ID". Store the base64-encoded profiles as:
+  - `APPLE_PROVISION_PROFILE_APP` — host app profile.
+  - `APPLE_PROVISION_PROFILE_FP` — File Provider Extension profile.
 
 ## Entitlements
 
@@ -124,12 +126,13 @@ We need:
 - `com.apple.security.files.user-selected.read-write` = true.
 - `com.apple.security.keychain-access-groups` = `[$(AppIdentifierPrefix)group.dev.debruyn.ofem]`.
 
-`OneLakeFileProvider/OneLakeFileProvider.entitlements` adds:
-- `NSExtension` plist with `NSExtensionFileProviderSupportedItemActions` enumerated.
+`OneLakeFileProvider/OneLakeFileProvider.entitlements` carries the same sandbox and
+App Group entitlements as the host app. The `NSExtension` principal class and
+`NSExtensionFileProviderSupportedItemActions` are declared in
+`OneLakeFileProvider/Info.plist`, not in the entitlements file.
 
 Note: `com.apple.developer.file-provider.testing-mode` is **not** used. The paid
-Developer ID team provides a provisioning profile that grants the required File
-Provider entitlements directly.
+Developer ID provisioning profiles grant the required File Provider entitlements directly.
 
 ## GitHub Secrets
 
@@ -145,6 +148,8 @@ pushed. None of them are committed to the repository.
 | `APPLE_API_KEY_JSON` | App Store Connect API key as a JSON object with keys `key_id`, `issuer_id`, and `key` (PEM content). Generate at [appstoreconnect.apple.com/access/integrations/api](https://appstoreconnect.apple.com/access/integrations/api). Store the full JSON as the secret value. |
 | `APPLE_API_KEY_ID` | The 10-character key identifier, also present inside `APPLE_API_KEY_JSON`. Stored separately so it can be used in environment-variable interpolation without parsing JSON. |
 | `APPLE_API_ISSUER_ID` | The issuer UUID, also present inside `APPLE_API_KEY_JSON`. |
+| `APPLE_PROVISION_PROFILE_APP` | Base64-encoded Developer ID provisioning profile for the host app (`dev.debruyn.ofem`). Download from [developer.apple.com/account/resources/profiles](https://developer.apple.com/account/resources/profiles), then encode: `base64 -i profile.provisionprofile \| pbcopy`. |
+| `APPLE_PROVISION_PROFILE_FP` | Base64-encoded Developer ID provisioning profile for the File Provider Extension (`dev.debruyn.ofem.fileprovider`). Same steps as above. |
 | `HOMEBREW_TAP_GH_TOKEN` | Fine-grained GitHub PAT with **Contents: write** on `sdebruyn/homebrew-ofem`. Used by the `Update Homebrew cask` workflow step. |
 
 ### How to generate the Developer ID `.p12`
