@@ -10,7 +10,6 @@
 // names, so the host app can adapt quickly.
 
 import Foundation
-import OfemKit
 
 /// NSSecureCoding-conformant account info for XPC transport.
 ///
@@ -63,18 +62,5 @@ import OfemKit
     }
 }
 
-// MARK: - Convenience bridge
-
-extension XPCAccountInfo {
-    /// Creates an XPCAccountInfo from an OfemKit Account.
-    public convenience init(from account: Account) {
-        self.init(
-            alias: account.alias,
-            username: account.username,
-            tenantId: account.tenantID,
-            tenantName: account.tenantName ?? ""
-        )
-    }
-}
 
 

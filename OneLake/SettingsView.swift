@@ -55,7 +55,7 @@ private struct GeneralSettingsTab: View {
             Section {
                 Toggle(isOn: Binding(
                     get: { loginItem.isRegistered },
-                    set: { _ in loginItem.toggle() }
+                    set: { $0 ? loginItem.register() : loginItem.unregister() }
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Open at Login")
@@ -78,7 +78,7 @@ private struct GeneralSettingsTab: View {
                     }
                 }
                 .toggleStyle(.switch)
-                .disabled(!model.isRunning)
+                .disabled(!model.hasAccounts)
             }
         }
         .formStyle(.grouped)
@@ -131,7 +131,7 @@ private struct CacheSettingsTab: View {
                 } label: {
                     Text("Storage limit")
                 }
-                .disabled(!model.isRunning)
+                .disabled(!model.hasAccounts)
 
                 LabeledContent {
                     VStack(alignment: .trailing, spacing: 6) {
@@ -170,7 +170,7 @@ private struct CacheSettingsTab: View {
                     Button("Clear Cache…") {
                         showingClearConfirm = true
                     }
-                    .disabled(!model.isRunning)
+                    .disabled(!model.hasAccounts)
                 }
             }
         }
@@ -299,7 +299,7 @@ private struct NetworkSettingsTab: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .disabled(!model.isRunning)
+        .disabled(!model.hasAccounts)
     }
 }
 
@@ -336,7 +336,7 @@ private struct AdvancedSettingsTab: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    .disabled(!model.isRunning)
+                    .disabled(!model.hasAccounts)
                 } else {
                     LabeledContent("Log level") {
                         Text("Loading…").foregroundStyle(.secondary)
@@ -354,7 +354,7 @@ private struct AdvancedSettingsTab: View {
                     Button("Reveal in Finder") {
                         openLogsFolder()
                     }
-                    .disabled(!model.isRunning)
+                    .disabled(!model.hasAccounts)
                 }
             }
 

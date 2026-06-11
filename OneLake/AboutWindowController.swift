@@ -18,6 +18,7 @@ import SwiftUI
 
 // MARK: - Singleton controller
 
+@MainActor
 final class AboutWindowController: NSObject {
     static let shared = AboutWindowController()
 

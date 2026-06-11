@@ -48,11 +48,24 @@ final class DomainSyncManager {
     /// Mirrored in `FileProviderExtension.extractAlias` (`ofemDomainIdentifierPrefix`);
     /// the two targets do not share source files, so the constant is defined
     /// twice on purpose.
-    private let identifierPrefix = "ofem."
+    let identifierPrefix = "ofem."
 
-    private init() {}
+    init() {}
 
     // MARK: - Targeted domain operations
+
+    /// Returns the domain identifier string for `alias`.
+    func domainIdentifier(for alias: String) -> String {
+        "\(identifierPrefix)\(alias)"
+    }
+
+    /// Returns an NSFileProviderDomain for `alias`.
+    private func makeDomain(alias: String) -> NSFileProviderDomain {
+        NSFileProviderDomain(
+            identifier: NSFileProviderDomainIdentifier(rawValue: domainIdentifier(for: alias)),
+            displayName: alias
+        )
+    }
 
     /// Registers a single File Provider domain for `alias`.
     ///
@@ -66,13 +79,9 @@ final class DomainSyncManager {
     ///
     /// - Parameter alias: The account alias (e.g. "work").
     func addDomain(alias: String) async {
-        let id = "\(identifierPrefix)\(alias)"
-        let domain = NSFileProviderDomain(
-            identifier: NSFileProviderDomainIdentifier(rawValue: id),
-            displayName: alias
-        )
+        let id = domainIdentifier(for: alias)
         do {
-            try await NSFileProviderManager.add(domain)
+            try await NSFileProviderManager.add(makeDomain(alias: alias))
             Self.log.info("Added File Provider domain \(id, privacy: .public)")
         } catch {
             // "Already exists" is expected on idempotent calls; treat
@@ -92,7 +101,7 @@ final class DomainSyncManager {
     ///
     /// - Parameter alias: The account alias (e.g. "work").
     func removeDomain(alias: String) async {
-        let id = "\(identifierPrefix)\(alias)"
+        let id = domainIdentifier(for: alias)
         let existing: [NSFileProviderDomain]
         do {
             existing = try await Self.existingDomains()
@@ -123,6 +132,8 @@ final class DomainSyncManager {
     ///
     /// Safe to call repeatedly. Logs at info level for every add / remove
     /// so the operator can audit the activity from Console.app.
+    /// Expressed in terms of addDomain/removeDomain so error-handling and
+    /// domain-identifier composition are defined in exactly one place.
     func reconcile() async throws {
         let accounts = await SharedOfemAuth.shared.auth.listAccounts()
         let existing = try await Self.existingDomains()
@@ -130,40 +141,22 @@ final class DomainSyncManager {
             uniqueKeysWithValues: existing.map { ($0.identifier.rawValue, $0) }
         )
 
-        let desiredIds = Set(accounts.map { "\(self.identifierPrefix)\($0.alias)" })
+        let desiredIds = Set(accounts.map { domainIdentifier(for: $0.alias) })
 
         // 1) Add domains for accounts that lack one.
         for account in accounts {
-            let id = "\(self.identifierPrefix)\(account.alias)"
-            if existingById[id] != nil {
-                continue
-            }
-            let domain = NSFileProviderDomain(
-                identifier: NSFileProviderDomainIdentifier(rawValue: id),
-                displayName: account.alias
-            )
-            do {
-                try await NSFileProviderManager.add(domain)
-                Self.log.info("Added File Provider domain \(id, privacy: .public)")
-            } catch {
-                // macOS reports an EEXIST-like error if the domain is
-                // already known; reconcile() should be idempotent so
-                // log and continue rather than aborting.
-                Self.log.notice(
-                    "NSFileProviderManager.add(\(id, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)"
-                )
-            }
+            let id = domainIdentifier(for: account.alias)
+            if existingById[id] != nil { continue }
+            await addDomain(alias: account.alias)
         }
 
         // 2) Remove orphan domains — ones we own (have our prefix)
         // but the config no longer has an account for.
         for (id, domain) in existingById {
-            if !id.hasPrefix(self.identifierPrefix) {
-                continue
-            }
-            if desiredIds.contains(id) {
-                continue
-            }
+            if !id.hasPrefix(self.identifierPrefix) { continue }
+            if desiredIds.contains(id) { continue }
+            // Call the underlying API directly: removeDomain(alias:) would
+            // re-fetch the domain list unnecessarily since we already have it.
             do {
                 try await NSFileProviderManager.remove(
                     domain,

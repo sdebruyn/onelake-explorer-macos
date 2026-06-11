@@ -32,6 +32,10 @@ import os.log
 /// `supportedServiceSources(for:)`. One service source per domain instance;
 /// all domains in the same FPE process share the same underlying
 /// `OfemConfigStore` via `FPEEngineHost.sharedConfigStore()`.
+///
+/// A single NSXPCListener is created lazily on the first `makeListenerEndpoint`
+/// call and reused for all subsequent calls. Replacing the listener on every
+/// call would orphan the previous endpoint's connections.
 final class OfemClientControlService: NSObject, NSFileProviderServiceSource {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
@@ -45,6 +49,8 @@ final class OfemClientControlService: NSObject, NSFileProviderServiceSource {
     // NSXPCListener.delegate is a weak property, so we must retain the delegate
     // ourselves for as long as the listener lives. Both listener and delegate are
     // stored here so they are released together when the service source is released.
+    // Protected by listenerLock so makeListenerEndpoint is safe to call from any thread.
+    private let listenerLock = NSLock()
     private var listener: NSXPCListener?
     private var listenerDelegate: OfemXPCListenerDelegate?
 
@@ -54,17 +60,28 @@ final class OfemClientControlService: NSObject, NSFileProviderServiceSource {
     }
 
     func makeListenerEndpoint() throws -> NSXPCListenerEndpoint {
-        let delegate = OfemXPCListenerDelegate(engineHost: engineHost)
-        let l = NSXPCListener.anonymous()
-        l.delegate = delegate
-        l.resume()
-        // Retain both strongly so neither is released before the endpoint is used.
-        self.listenerDelegate = delegate
-        self.listener = l
-        Self.log.info(
-            "OfemClientControlService: XPC listener endpoint created for alias=\(self.engineHost.alias, privacy: .public)"
-        )
-        return l.endpoint
+        listenerLock.withLock {
+            // Reuse the existing listener if one already exists. Creating a new
+            // listener on every call would orphan connections established against
+            // the previous endpoint.
+            if let existing = listener {
+                Self.log.debug(
+                    "OfemClientControlService: reusing existing XPC listener for alias=\(self.engineHost.alias, privacy: .public)"
+                )
+                return existing.endpoint
+            }
+            let delegate = OfemXPCListenerDelegate(engineHost: engineHost)
+            let l = NSXPCListener.anonymous()
+            l.delegate = delegate
+            l.resume()
+            // Retain both strongly so neither is released before the endpoint is used.
+            self.listenerDelegate = delegate
+            self.listener = l
+            Self.log.info(
+                "OfemClientControlService: XPC listener endpoint created for alias=\(self.engineHost.alias, privacy: .public)"
+            )
+            return l.endpoint
+        }
     }
 }
 
@@ -73,6 +90,10 @@ final class OfemClientControlService: NSObject, NSFileProviderServiceSource {
 /// Accepts and configures incoming XPC connections for the control protocol.
 private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
     private let engineHost: FPEEngineHost
+    private static let log = Logger(
+        subsystem: "dev.debruyn.ofem.fileprovider",
+        category: "control-service"
+    )
 
     init(engineHost: FPEEngineHost) {
         self.engineHost = engineHost
@@ -83,6 +104,30 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
         _ listener: NSXPCListener,
         shouldAcceptNewConnection newConnection: NSXPCConnection
     ) -> Bool {
+        // Validate that the connecting process is the OFEM host app by checking
+        // its code-signing requirement: same team ID and the exact host-app
+        // bundle identifier. This scopes mutating operations (setConfig,
+        // clearCache) to the host app and rejects any other process that
+        // happens to open a file in a OneLake domain and obtain the endpoint.
+        //
+        // `setCodeSigningRequirement` is available on macOS 13+ (our minimum is 14).
+        // Syntax: Code Signing Requirement Language (man csreq / Security.framework).
+        //   - `identifier "..."` — exact CFBundleIdentifier match
+        //   - `anchor apple generic` — any Apple-issued cert chain
+        //   - `certificate leaf[subject.OU]` — Developer Team ID leaf field
+        let requirement = "identifier \"dev.debruyn.ofem\" and anchor apple generic and certificate leaf[subject.OU] = \"6D79CUWZ4J\""
+        do {
+            try newConnection.setCodeSigningRequirement(requirement)
+        } catch {
+            // This catch fires when the requirement string is syntactically
+            // invalid (parse failure), not when a peer fails validation.
+            // Peer validation is lazy and happens on the first message.
+            // With a correct requirement string this branch should never fire.
+            Self.log.error(
+                "XPC: malformed code-signing requirement string: \(error.localizedDescription, privacy: .public)"
+            )
+            return false
+        }
         newConnection.exportedInterface = makeInterface()
         newConnection.exportedObject = OfemControlXPCHandler(engineHost: engineHost)
         newConnection.resume()
@@ -189,37 +234,62 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
         Task { [self] in
             do {
                 let configStore = try engineHost.configStore()
+                var applyError: Error? = nil
                 try await configStore.updateAndSave { cfg in
                     switch key {
                     case "telemetry":
+                        guard value == "on" || value == "off" else {
+                            applyError = SetConfigError.invalidValue(key: key, value: value,
+                                reason: "expected \"on\" or \"off\"")
+                            return
+                        }
                         cfg.telemetry = (value == "on")
                     case "cache.max_size_gb":
-                        if let gb = Int(value) {
-                            // 0 is the "no limit" sentinel; positive values are
-                            // clamped to [minSizeGB, maxSizeGB].
-                            cfg.cache.maxSizeGB = gb == 0
-                                ? 0
-                                : min(max(gb, CacheConfig.minSizeGB), CacheConfig.maxSizeGB)
+                        guard let gb = Int(value) else {
+                            applyError = SetConfigError.invalidValue(key: key, value: value,
+                                reason: "expected an integer")
+                            return
                         }
+                        // 0 is the "no limit" sentinel; positive values are
+                        // clamped to [minSizeGB, maxSizeGB].
+                        cfg.cache.maxSizeGB = gb == 0
+                            ? 0
+                            : min(max(gb, CacheConfig.minSizeGB), CacheConfig.maxSizeGB)
                     case "net.max_concurrent_uploads_per_account":
-                        if let n = Int(value) {
-                            cfg.net.maxConcurrentUploadsPerAccount = min(max(n, 1), 16)
+                        guard let n = Int(value) else {
+                            applyError = SetConfigError.invalidValue(key: key, value: value,
+                                reason: "expected an integer")
+                            return
                         }
+                        cfg.net.maxConcurrentUploadsPerAccount = min(max(n, 1), 16)
                     case "net.max_concurrent_downloads_per_account":
-                        if let n = Int(value) {
-                            cfg.net.maxConcurrentDownloadsPerAccount = min(max(n, 1), 32)
+                        guard let n = Int(value) else {
+                            applyError = SetConfigError.invalidValue(key: key, value: value,
+                                reason: "expected an integer")
+                            return
                         }
+                        cfg.net.maxConcurrentDownloadsPerAccount = min(max(n, 1), 32)
                     case "log.level":
                         let allowed = ["debug", "info", "warn", "error"]
-                        if allowed.contains(value) {
-                            cfg.log.level = value
+                        guard allowed.contains(value) else {
+                            applyError = SetConfigError.invalidValue(key: key, value: value,
+                                reason: "expected one of \(allowed.joined(separator: ", "))")
+                            return
                         }
+                        cfg.log.level = value
                     default:
-                        Self.log.warning(
-                            "setConfig: unknown key '\(key, privacy: .public)' — ignoring"
-                        )
+                        applyError = SetConfigError.unknownKey(key)
                     }
                 }
+
+                if let applyError {
+                    Self.log.warning(
+                        "setConfig: key='\(key, privacy: .public)' rejected: \(applyError.localizedDescription, privacy: .public)"
+                    )
+                    reply(applyError)
+                    return
+                }
+
                 Self.log.info(
                     "setConfig: key='\(key, privacy: .public)' value='\(value, privacy: .public)' applied"
                 )
@@ -256,6 +326,24 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                 )
                 reply(0, error)
             }
+        }
+    }
+}
+
+// MARK: - SetConfig errors
+
+/// Errors returned when the host app sends a setConfig call with an unknown
+/// key or a value that fails validation.
+enum SetConfigError: Error, LocalizedError {
+    case unknownKey(String)
+    case invalidValue(key: String, value: String, reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unknownKey(let k):
+            return "setConfig: unknown key '\(k)'"
+        case .invalidValue(let k, let v, let r):
+            return "setConfig: invalid value '\(v)' for key '\(k)': \(r)"
         }
     }
 }
