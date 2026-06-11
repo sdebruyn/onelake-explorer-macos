@@ -14,7 +14,7 @@ The File Provider Extension owns all engine logic; end users interact with OneLa
 
 ## Build pipeline
 
-The full pipeline is implemented in `.github/workflows/release.yml` as a single macOS-only job.
+The full pipeline is implemented in `.github/workflows/release.yml` as a single macOS-only job. The canonical step-by-step sequence lives there; the summary below reflects the current hardened workflow:
 
 ```
 build-app (macos-15 runner)
@@ -25,16 +25,24 @@ build-app (macos-15 runner)
     temporary keychain (deleted after the job).
 4.  Write App Store Connect API key from APPLE_API_KEY_JSON to a tmp .p8 file.
 5.  Write Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID.
-6.  make gen  -> regenerate OneLake.xcodeproj from project.yml.
-7.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
+6.  Guard against pre-release tags — exits 1 if GITHUB_REF_NAME contains a
+    hyphen (e.g. -rc.1), preventing accidental stable-tap publishes.
+7.  make gen  -> regenerate OneLake.xcodeproj from project.yml.
+8.  swift test (OfemKit unit tests) + make test (host-app unit tests).
+9.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
     (host app + File Provider Extension).
-8.  xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
-9.  create-dmg -> dist-app/OneLake-$VERSION.dmg
-10. xcrun notarytool submit --wait --timeout 45m
-11. xcrun stapler staple
-12. Compute DMG SHA-256
-13. Upload DMG to the GitHub Release (softprops/action-gh-release)
-14. Render homebrew/Casks/ofem.rb.tmpl with the new version + SHA-256 and
+10. xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
+11. codesign --verify --deep --strict build/Export/OneLake.app
+12. xcrun notarytool submit --wait --timeout 45m  (notarize the .app)
+13. xcrun stapler staple build/Export/OneLake.app
+14. create-dmg -> dist-app/OneLake-$VERSION.dmg  (DMG wraps the stapled .app)
+15. xcrun notarytool submit --wait --timeout 45m  (notarize the DMG)
+16. xcrun stapler staple dist-app/OneLake-$VERSION.dmg
+17. spctl --assess --type open ... OneLake.app    (Gatekeeper check, .app)
+    spctl --assess --type install ... OneLake-$VERSION.dmg  (Gatekeeper, DMG)
+18. Compute DMG SHA-256
+19. Upload DMG to the GitHub Release (softprops/action-gh-release)
+20. Render homebrew/Casks/ofem.rb.tmpl with the new version + SHA-256 and
     push it to sdebruyn/homebrew-ofem as Casks/ofem.rb.
 ```
 

@@ -32,10 +32,13 @@ name: Release
 on:
   push:
     tags:
-      # Match stable CalVer tags only (vYYYY.MM.PATCH). The glob intentionally
-      # excludes pre-release suffixes like -rc.1 or -beta.2 — those are
-      # downloaded directly from the Releases page and never pushed to the
-      # stable Homebrew tap. See docs/packaging-homebrew.md.
+      # NOTE: this glob does NOT exclude pre-release tags. GitHub Actions
+      # filter patterns use shell-style globs where * matches any character
+      # including dots and hyphens, so [0-9]* can absorb an rc suffix and
+      # the pattern fires on v2026.05.0-rc.1 just as it does on v2026.05.1.
+      # The four explicit year digits reject obviously-wrong formats early,
+      # but the guard step below is the actual enforcement point that blocks
+      # pre-release tags from publishing to the stable Homebrew tap.
       - "v[0-9][0-9][0-9][0-9].[0-9]*.[0-9]+"
   workflow_dispatch:
 
@@ -328,7 +331,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           spctl --assess --type open --context context:primary-signature --verbose "build/Export/OneLake.app"
-          spctl --assess --type open --context context:primary-signature --verbose "dist-app/OneLake-$VERSION.dmg"
+          spctl --assess --type install --verbose "dist-app/OneLake-$VERSION.dmg"
 
       - name: Compute DMG SHA-256
         id: dmg_sha
