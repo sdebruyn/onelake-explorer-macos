@@ -1,8 +1,10 @@
 version: 2
 updates:
-  # Go module dependencies.
-  - package-ecosystem: gomod
-    directory: "/"
+  # Swift Package Manager dependencies — MSAL, GRDB, TOMLKit.
+  # Keeps security patches (especially MSAL, the auth library) arriving via PR
+  # rather than requiring manual bumps.
+  - package-ecosystem: swift
+    directory: "/Packages/OfemKit"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

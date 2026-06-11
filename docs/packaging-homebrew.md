@@ -14,7 +14,7 @@ The File Provider Extension owns all engine logic; end users interact with OneLa
 
 ## Build pipeline
 
-The full pipeline is implemented in `.github/workflows/release.yml` as a single macOS-only job.
+The full pipeline is implemented in `.github/workflows/release.yml` as a single macOS-only job. The canonical step-by-step sequence lives there; the summary below reflects the current hardened workflow:
 
 ```
 build-app (macos-15 runner)
@@ -25,16 +25,24 @@ build-app (macos-15 runner)
     temporary keychain (deleted after the job).
 4.  Write App Store Connect API key from APPLE_API_KEY_JSON to a tmp .p8 file.
 5.  Write Local.xcconfig with DEVELOPMENT_TEAM=$APPLE_TEAM_ID.
-6.  make gen  -> regenerate OneLake.xcodeproj from project.yml.
-7.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
+6.  Guard against pre-release tags — exits 1 if GITHUB_REF_NAME contains a
+    hyphen (e.g. -rc.1), preventing accidental stable-tap publishes.
+7.  make gen  -> regenerate OneLake.xcodeproj from project.yml.
+8.  swift test (OfemKit unit tests) + make test (host-app unit tests).
+9.  xcodebuild archive -scheme OneLake -archivePath build/OneLake.xcarchive
     (host app + File Provider Extension).
-8.  xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
-9.  create-dmg -> dist-app/OneLake-$VERSION.dmg
-10. xcrun notarytool submit --wait --timeout 45m
-11. xcrun stapler staple
-12. Compute DMG SHA-256
-13. Upload DMG to the GitHub Release (softprops/action-gh-release)
-14. Render homebrew/Casks/ofem.rb.tmpl with the new version + SHA-256 and
+10. xcodebuild -exportArchive (method: developer-id) -> build/Export/OneLake.app
+11. codesign --verify --deep --strict build/Export/OneLake.app
+12. xcrun notarytool submit --wait --timeout 45m  (notarize the .app)
+13. xcrun stapler staple build/Export/OneLake.app
+14. create-dmg -> dist-app/OneLake-$VERSION.dmg  (DMG wraps the stapled .app)
+15. xcrun notarytool submit --wait --timeout 45m  (notarize the DMG)
+16. xcrun stapler staple dist-app/OneLake-$VERSION.dmg
+17. spctl --assess --type open ... OneLake.app    (Gatekeeper check, .app)
+    spctl --assess --type install ... OneLake-$VERSION.dmg  (Gatekeeper, DMG)
+18. Compute DMG SHA-256
+19. Upload DMG to the GitHub Release (softprops/action-gh-release)
+20. Render homebrew/Casks/ofem.rb.tmpl with the new version + SHA-256 and
     push it to sdebruyn/homebrew-ofem as Casks/ofem.rb.
 ```
 
@@ -52,7 +60,7 @@ cask "ofem" do
   desc "Browse Microsoft Fabric OneLake from Finder"
   homepage "https://ofem.debruyn.dev"
 
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
   depends_on arch: :arm64
 
   app "OneLake.app"
@@ -113,7 +121,9 @@ We need:
   - `APPLE_API_KEY_JSON` — the full API key JSON (`key_id`, `issuer_id`, `key`).
   - `APPLE_API_KEY_ID` — the 10-character key identifier (also inside `APPLE_API_KEY_JSON`).
   - `APPLE_API_ISSUER_ID` — the issuer UUID (also inside `APPLE_API_KEY_JSON`).
-- A **Provisioning profile** is not required for non-Mac-App-Store distribution; Developer ID signing is sufficient.
+- **Two Developer ID provisioning profiles** — one for the host app (`dev.debruyn.ofem`) and one for the File Provider Extension (`dev.debruyn.ofem.fileprovider`). Provisioning profiles are required even for non-Mac-App-Store Developer ID distribution when the app uses entitlements that Apple must explicitly grant (App Sandbox, App Groups, File Provider). Create them at [developer.apple.com/account/resources/profiles](https://developer.apple.com/account/resources/profiles) → "+" → "Developer ID". Store the base64-encoded profiles as:
+  - `APPLE_PROVISION_PROFILE_APP` — host app profile.
+  - `APPLE_PROVISION_PROFILE_FP` — File Provider Extension profile.
 
 ## Entitlements
 
@@ -124,12 +134,13 @@ We need:
 - `com.apple.security.files.user-selected.read-write` = true.
 - `com.apple.security.keychain-access-groups` = `[$(AppIdentifierPrefix)group.dev.debruyn.ofem]`.
 
-`OneLakeFileProvider/OneLakeFileProvider.entitlements` adds:
-- `NSExtension` plist with `NSExtensionFileProviderSupportedItemActions` enumerated.
+`OneLakeFileProvider/OneLakeFileProvider.entitlements` carries the same sandbox and
+App Group entitlements as the host app. The `NSExtension` principal class and
+`NSExtensionFileProviderSupportedItemActions` are declared in
+`OneLakeFileProvider/Info.plist`, not in the entitlements file.
 
 Note: `com.apple.developer.file-provider.testing-mode` is **not** used. The paid
-Developer ID team provides a provisioning profile that grants the required File
-Provider entitlements directly.
+Developer ID provisioning profiles grant the required File Provider entitlements directly.
 
 ## GitHub Secrets
 
@@ -145,6 +156,8 @@ pushed. None of them are committed to the repository.
 | `APPLE_API_KEY_JSON` | App Store Connect API key as a JSON object with keys `key_id`, `issuer_id`, and `key` (PEM content). Generate at [appstoreconnect.apple.com/access/integrations/api](https://appstoreconnect.apple.com/access/integrations/api). Store the full JSON as the secret value. |
 | `APPLE_API_KEY_ID` | The 10-character key identifier, also present inside `APPLE_API_KEY_JSON`. Stored separately so it can be used in environment-variable interpolation without parsing JSON. |
 | `APPLE_API_ISSUER_ID` | The issuer UUID, also present inside `APPLE_API_KEY_JSON`. |
+| `APPLE_PROVISION_PROFILE_APP` | Base64-encoded Developer ID provisioning profile for the host app (`dev.debruyn.ofem`). Download from [developer.apple.com/account/resources/profiles](https://developer.apple.com/account/resources/profiles), then encode: `base64 -i profile.provisionprofile \| pbcopy`. |
+| `APPLE_PROVISION_PROFILE_FP` | Base64-encoded Developer ID provisioning profile for the File Provider Extension (`dev.debruyn.ofem.fileprovider`). Same steps as above. |
 | `HOMEBREW_TAP_GH_TOKEN` | Fine-grained GitHub PAT with **Contents: write** on `sdebruyn/homebrew-ofem`. Used by the `Update Homebrew cask` workflow step. |
 
 ### How to generate the Developer ID `.p12`

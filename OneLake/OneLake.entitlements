@@ -17,10 +17,20 @@
 	  menu bar "Open in Finder" hands an absolute URL under
 	  ~/Library/CloudStorage/ to NSWorkspace; without this exception,
 	  macOS prompts the user "OneLake does not have permission to open
-	  OneLake-<alias>" on every click. Scoped read-only and to the
-	  specific subtree so we don't broaden the sandbox beyond what the
-	  feature needs. Finder itself is not sandboxed and reads the
-	  mount fine — this exception only covers the URL hand-off.
+	  OneLake-<alias>" on every click. Finder itself is not sandboxed and
+	  reads the mount fine — this exception only covers the URL hand-off.
+
+	  The path /Library/CloudStorage/ is the parent of every File Provider
+	  domain on the machine (iCloud Drive, OneDrive, Dropbox, Google Drive,
+	  and our own OneLake-<alias> mounts). home-relative-path exceptions are
+	  prefix-based, so it is not possible to scope this to a specific alias
+	  because aliases are user-defined at runtime and can be arbitrary strings.
+	  NSFileProviderManager.getUserVisibleURL would be the alternative, but
+	  it returns a security-scoped URL that must be opened with
+	  startAccessingSecurityScopedResource — wiring that through every
+	  NSWorkspace.open call site adds significant complexity for no functional
+	  benefit. We accept the broad prefix and document it here so future
+	  maintainers understand why the narrower path is not feasible.
 	-->
 	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
 	<array>
