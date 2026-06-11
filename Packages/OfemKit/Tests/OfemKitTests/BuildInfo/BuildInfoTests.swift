@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import OfemKit
 
@@ -10,23 +11,28 @@ struct BuildInfoTests {
         #expect(!v.contains(" "), "version must not contain spaces: \(v)")
     }
 
-    @Test("version in test context falls back to dev string or real version")
+    @Test("version in test context is the dev fallback or a valid CalVer string")
     func versionFallback() {
-        // In xctest the bundle is the test runner; it either has no
-        // CFBundleShortVersionString (→ fallback) or has a real one.
-        // Either way it must not be empty.
+        // In xctest the bundle is the test runner; CFBundleShortVersionString
+        // is absent, so we expect exactly the "0.0.0-dev" fallback.
+        // In a fully-versioned Xcode build the value must match CalVer:
+        // YYYY.MM.PATCH with each component being digits only.
         let v = BuildInfo.version
         let isDevFallback = v == "0.0.0-dev"
-        let looksLikeCalVer = v.split(separator: ".").count >= 2
-        #expect(isDevFallback || looksLikeCalVer,
-                "version \(v) is neither the dev fallback nor CalVer")
+        // CalVer: three dot-separated numeric components (YYYY.MM.PATCH).
+        let calVerRegex = /^\d{4}\.\d+\.\d+$/
+        let looksLikeCalVer = v.wholeMatch(of: calVerRegex) != nil
+        #expect(
+            isDevFallback || looksLikeCalVer,
+            "version '\(v)' is neither '0.0.0-dev' nor a YYYY.MM.PATCH CalVer string"
+        )
     }
 
-    @Test("appInsightsConnectionString contains InstrumentationKey")
-    func connectionStringContainsInstrumentationKey() {
+    @Test("appInsightsConnectionString starts with InstrumentationKey")
+    func connectionStringStartsWithInstrumentationKey() {
         #expect(
-            BuildInfo.appInsightsConnectionString.contains("InstrumentationKey="),
-            "connection string must begin with InstrumentationKey="
+            BuildInfo.appInsightsConnectionString.hasPrefix("InstrumentationKey="),
+            "connection string must start with InstrumentationKey="
         )
     }
 
@@ -36,12 +42,5 @@ struct BuildInfoTests {
             BuildInfo.appInsightsConnectionString.contains("IngestionEndpoint="),
             "connection string must include IngestionEndpoint="
         )
-    }
-
-    @Test("commit and date are strings (may be empty in test builds)")
-    func commitAndDateAreStrings() {
-        // These are empty in source/test builds — just verify the type compiles.
-        let _ = BuildInfo.commit as String
-        let _ = BuildInfo.date as String
     }
 }
