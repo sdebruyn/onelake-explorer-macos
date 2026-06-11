@@ -36,11 +36,6 @@ final class ChangeWatcher {
         Self.log.info("ChangeWatcher: one-shot launch resync triggered (FPE-owned change signaling)")
     }
 
-    /// No-op in the FPE-only architecture. Kept for call-site compatibility.
-    func stop() {
-        Self.log.debug("ChangeWatcher: stop() called (no-op in FPE-only mode)")
-    }
-
     // MARK: - Signaling
 
     private func signalAllDomains() async {
