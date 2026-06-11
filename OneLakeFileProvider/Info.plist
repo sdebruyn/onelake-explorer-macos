@@ -20,8 +20,11 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
+	<!-- LSMinimumSystemVersion is intentionally absent here: Xcode derives it
+	     from MACOSX_DEPLOYMENT_TARGET (set via options.deploymentTarget.macOS
+	     in project.yml) and embeds it automatically in the built bundle. A
+	     duplicate hardcoded value here creates drift risk if the floor is ever
+	     bumped. -->
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>
