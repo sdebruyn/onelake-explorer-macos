@@ -6,6 +6,7 @@
 
 import XCTest
 import AppKit
+import Combine
 import OfemKit
 
 // MARK: - Mocks
@@ -40,9 +41,11 @@ private final class MockSignInProvider: SignInProvider, @unchecked Sendable {
 
 private final class MockDomainRegistrar: DomainRegistrar, @unchecked Sendable {
     var registeredAliases: [String] = []
+    var onRegister: ((String) -> Void)?
 
     func registerDomain(alias: String) async {
         registeredAliases.append(alias)
+        onRegister?(alias)
     }
 }
 
@@ -97,17 +100,13 @@ final class AddAccountCoordinatorTests: XCTestCase {
         let window = NSWindow()
         signInProvider.behaviour = .succeed(username: "alice@contoso.com")
 
-        // Wait for success phase first, then verify domain was registered.
-        let successExpectation = expectation(description: "phase becomes .success")
-        let observation = coordinator.$phase.sink { phase in
-            if case .success = phase { successExpectation.fulfill() }
-        }
-        coordinator.startLogin(alias: "work", tenant: nil, clientID: nil, window: window)
-        await fulfillment(of: [successExpectation], timeout: 2)
-        observation.cancel()
+        // Fulfill an expectation from inside registerDomain — no sleep needed.
+        let registerExpectation = expectation(description: "domain registered")
+        domainRegistrar.onRegister = { _ in registerExpectation.fulfill() }
 
-        // Give the async domain registration a moment to complete.
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        coordinator.startLogin(alias: "work", tenant: nil, clientID: nil, window: window)
+        await fulfillment(of: [registerExpectation], timeout: 2)
+
         XCTAssertEqual(domainRegistrar.registeredAliases, ["work"],
                        "Domain should have been registered for alias 'work'")
     }

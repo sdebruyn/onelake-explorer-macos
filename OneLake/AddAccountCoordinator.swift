@@ -82,6 +82,11 @@ final class AddAccountCoordinator: ObservableObject {
 
     private var loginTask: Task<Void, Never>?
 
+    /// Set synchronously by `cancel()` before the task cancel call. Checked
+    /// inside the task at each @MainActor turn so that a result racing a
+    /// cancel() cannot overwrite the idle reset with .success or .failure.
+    private var isCancelled = false
+
     // MARK: - Public interface
 
     /// Drives the sign-in flow.
@@ -98,6 +103,7 @@ final class AddAccountCoordinator: ObservableObject {
         window: NSWindow
     ) {
         guard phase != .waiting else { return }
+        isCancelled = false
         phase = .waiting
         loginTask = Task { [weak self] in
             await self?.runLogin(alias: alias, tenant: tenant, clientID: clientID, window: window)
@@ -105,7 +111,13 @@ final class AddAccountCoordinator: ObservableObject {
     }
 
     /// Cancels the in-flight login task and resets to idle.
+    ///
+    /// Sets `isCancelled` synchronously before cancelling the Task so that
+    /// any @MainActor turn already in flight (e.g. the task resumed with a
+    /// sign-in result just before this call) sees the flag and skips writing
+    /// .success or .failure, preventing the cancelled-but-succeeded race.
     func cancel() {
+        isCancelled = true
         loginTask?.cancel()
         loginTask = nil
         phase = .idle
@@ -127,7 +139,7 @@ final class AddAccountCoordinator: ObservableObject {
                 window: window
             )
 
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, !isCancelled else { return }
             Self.log.info(
                 "sign-in succeeded: alias=\(alias, privacy: .public) user=\(info.username, privacy: .private)"
             )
@@ -142,7 +154,7 @@ final class AddAccountCoordinator: ObservableObject {
             // phase was already reset by cancel() or remains .waiting —
             // callers should call cancel() to reset; don't touch phase here.
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, !isCancelled else { return }
             Self.log.error("sign-in failed: \(error.localizedDescription, privacy: .public)")
             phase = .failure(AddAccountCoordinator.friendlyError(error))
         }

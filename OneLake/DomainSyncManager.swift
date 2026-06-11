@@ -50,7 +50,7 @@ final class DomainSyncManager {
     /// twice on purpose.
     let identifierPrefix = "ofem."
 
-    private init() {}
+    init() {}
 
     // MARK: - Targeted domain operations
 

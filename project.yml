@@ -136,6 +136,10 @@ targets:
           - "**/Info.plist"
           - "**/Assets.xcassets"
           - "**/*.entitlements"
+          # OneLakeApp.swift carries @main which is invalid in a test bundle
+          # (a bundle module cannot have an entry point). Exclude it so the
+          # host-logic tests compile without the SwiftUI App entry point.
+          - "OneLakeApp.swift"
       - path: Shared
     dependencies:
       - package: OfemKit

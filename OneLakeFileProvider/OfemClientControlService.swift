@@ -105,18 +105,26 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
         shouldAcceptNewConnection newConnection: NSXPCConnection
     ) -> Bool {
         // Validate that the connecting process is the OFEM host app by checking
-        // its code-signing requirement: same team ID and a bundle ID under the
-        // dev.debruyn.ofem prefix. This scopes mutating operations (removeAccount,
-        // setConfig, clearCache) to the host app and rejects any other process
-        // that happens to open a file in a OneLake domain and obtain the endpoint.
+        // its code-signing requirement: same team ID and the exact host-app
+        // bundle identifier. This scopes mutating operations (setConfig,
+        // clearCache) to the host app and rejects any other process that
+        // happens to open a file in a OneLake domain and obtain the endpoint.
         //
         // `setCodeSigningRequirement` is available on macOS 13+ (our minimum is 14).
-        let requirement = "anchor apple generic and certificate leaf[subject.OU] = \"SBMJ3PA2W3\" and identifier[prefix] = \"dev.debruyn.ofem\""
+        // Syntax: Code Signing Requirement Language (man csreq / Security.framework).
+        //   - `identifier "..."` — exact CFBundleIdentifier match
+        //   - `anchor apple generic` — any Apple-issued cert chain
+        //   - `certificate leaf[subject.OU]` — Developer Team ID leaf field
+        let requirement = "identifier \"dev.debruyn.ofem\" and anchor apple generic and certificate leaf[subject.OU] = \"6D79CUWZ4J\""
         do {
             try newConnection.setCodeSigningRequirement(requirement)
         } catch {
+            // This catch fires when the requirement string is syntactically
+            // invalid (parse failure), not when a peer fails validation.
+            // Peer validation is lazy and happens on the first message.
+            // With a correct requirement string this branch should never fire.
             Self.log.error(
-                "XPC: rejected connection — code-signing requirement failed: \(error.localizedDescription, privacy: .public)"
+                "XPC: malformed code-signing requirement string: \(error.localizedDescription, privacy: .public)"
             )
             return false
         }

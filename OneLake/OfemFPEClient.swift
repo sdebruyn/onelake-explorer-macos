@@ -91,9 +91,29 @@ final class OfemFPEClient {
     /// - Parameter alias: Account alias identifying the domain.
     /// - Returns: `XPCEngineStatus` on success.
     func getEngineStatus(alias: String) async throws -> XPCEngineStatus {
-        let proxy = try await proxy(for: alias)
+        let (connection, domainIdentifier) = try await connection(for: alias)
         return try await withCheckedThrowingContinuation { rawContinuation in
             let cont = OneShotContinuation(rawContinuation)
+            // Construct the proxy inside the continuation body so the error
+            // handler captures `cont` and can resume it on connection fault.
+            // This guarantees the task never hangs: XPC fires either the reply
+            // block or the error handler — never both — but never neither.
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
+                Task { @MainActor [weak self] in
+                    if let old = self?.connections.removeValue(forKey: domainIdentifier) {
+                        old.invalidate()
+                    }
+                }
+                OfemFPEClient.log.error(
+                    "FPE XPC proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                cont.resume(throwing: error)
+            }) as? any OfemClientControlProtocol else {
+                cont.resume(throwing: OfemFPEClientError.connectionFailed(
+                    "proxy cast failed for \(domainIdentifier)"
+                ))
+                return
+            }
             proxy.getEngineStatus { status, error in
                 if let error {
                     cont.resume(throwing: error)
@@ -117,9 +137,25 @@ final class OfemFPEClient {
     ///   - key:   Config key in dot notation.
     ///   - value: New value as a string.
     func setConfig(alias: String, key: String, value: String) async throws {
-        let proxy = try await proxy(for: alias)
+        let (connection, domainIdentifier) = try await connection(for: alias)
         try await withCheckedThrowingContinuation { (rawContinuation: CheckedContinuation<Void, Error>) in
             let cont = OneShotContinuation(rawContinuation)
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
+                Task { @MainActor [weak self] in
+                    if let old = self?.connections.removeValue(forKey: domainIdentifier) {
+                        old.invalidate()
+                    }
+                }
+                OfemFPEClient.log.error(
+                    "FPE XPC proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                cont.resume(throwing: error)
+            }) as? any OfemClientControlProtocol else {
+                cont.resume(throwing: OfemFPEClientError.connectionFailed(
+                    "proxy cast failed for \(domainIdentifier)"
+                ))
+                return
+            }
             proxy.setConfig(key: key, value: value) { error in
                 if let error {
                     cont.resume(throwing: error)
@@ -138,9 +174,25 @@ final class OfemFPEClient {
     /// - Returns: Byte count remaining after the wipe (always 0 on success).
     @discardableResult
     func clearCache(alias: String) async throws -> Int64 {
-        let proxy = try await proxy(for: alias)
+        let (connection, domainIdentifier) = try await connection(for: alias)
         return try await withCheckedThrowingContinuation { rawContinuation in
             let cont = OneShotContinuation(rawContinuation)
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
+                Task { @MainActor [weak self] in
+                    if let old = self?.connections.removeValue(forKey: domainIdentifier) {
+                        old.invalidate()
+                    }
+                }
+                OfemFPEClient.log.error(
+                    "FPE XPC proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                cont.resume(throwing: error)
+            }) as? any OfemClientControlProtocol else {
+                cont.resume(throwing: OfemFPEClientError.connectionFailed(
+                    "proxy cast failed for \(domainIdentifier)"
+                ))
+                return
+            }
             proxy.clearCache { remaining, error in
                 if let error {
                     cont.resume(throwing: error)
@@ -161,37 +213,26 @@ final class OfemFPEClient {
     /// domain await the same Task rather than each building a connection.
     private var inFlightConnections: [String: Task<NSXPCConnection, Error>] = [:]
 
-    /// Returns the proxy for the FPE's control service for the domain
+    /// Returns the NSXPCConnection (and its domain identifier) for the domain
     /// identified by `alias`. Creates a connection if needed.
-    private func proxy(for alias: String) async throws -> any OfemClientControlProtocol {
+    ///
+    /// Callers are responsible for constructing the proxy with
+    /// `remoteObjectProxyWithErrorHandler` INSIDE their own continuation body so
+    /// the error handler captures their `OneShotContinuation` and can resume it
+    /// on connection fault. This ensures no task can hang when the FPE crashes.
+    private func connection(for alias: String) async throws -> (NSXPCConnection, String) {
         let domainIdentifier = "ofem.\(alias)"
 
-        // Check for a cached, still-valid connection.
+        // Return a cached connection if one exists.
         if let conn = connections[domainIdentifier] {
-            // Use remoteObjectProxyWithErrorHandler so a connection fault routes
-            // into the OneShotContinuation's error path in the call site.
-            guard let proxy = conn.remoteObjectProxyWithErrorHandler({ [weak self] error in
-                Task { @MainActor [weak self] in
-                    if let old = self?.connections.removeValue(forKey: domainIdentifier) {
-                        old.invalidate()
-                    }
-                }
-                OfemFPEClient.log.error(
-                    "FPE XPC proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                )
-            }) as? any OfemClientControlProtocol else {
-                connections.removeValue(forKey: domainIdentifier)
-                conn.invalidate()
-                throw OfemFPEClientError.connectionFailed("proxy cast failed for \(domainIdentifier)")
-            }
-            return proxy
+            return (conn, domainIdentifier)
         }
 
         // If a build is already in flight for this domain, await it rather than
         // starting a second one (prevents the check-then-insert race).
         if let inFlight = inFlightConnections[domainIdentifier] {
-            let connection = try await inFlight.value
-            return try makeProxy(connection: connection, domainIdentifier: domainIdentifier)
+            let conn = try await inFlight.value
+            return (conn, domainIdentifier)
         }
 
         // Build a new connection under a tracked Task so concurrent callers
@@ -204,40 +245,25 @@ final class OfemFPEClient {
         }
         inFlightConnections[domainIdentifier] = buildTask
 
-        let connection: NSXPCConnection
+        let conn: NSXPCConnection
         do {
-            connection = try await buildTask.value
+            conn = try await buildTask.value
         } catch {
             inFlightConnections.removeValue(forKey: domainIdentifier)
             throw error
         }
         inFlightConnections.removeValue(forKey: domainIdentifier)
 
-        let proxy = try makeProxy(connection: connection, domainIdentifier: domainIdentifier)
+        // Cache here — after buildTask.value returns — so the connection is
+        // stored exactly once. `buildConnection` must NOT store it; otherwise
+        // concurrent in-flight waiters joining via the task above would each
+        // call makeProxy on the same connection, creating double error-handlers
+        // that both try to invalidate the same connection on fault.
+        connections[domainIdentifier] = conn
         Self.log.info(
             "FPE XPC connection established for domain \(domainIdentifier, privacy: .public)"
         )
-        return proxy
-    }
-
-    /// Wraps a connection in a proxy, wiring the error handler to evict + invalidate.
-    private func makeProxy(
-        connection: NSXPCConnection,
-        domainIdentifier: String
-    ) throws -> any OfemClientControlProtocol {
-        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
-            Task { @MainActor [weak self] in
-                if let old = self?.connections.removeValue(forKey: domainIdentifier) {
-                    old.invalidate()
-                }
-            }
-            OfemFPEClient.log.error(
-                "FPE XPC proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
-            )
-        }) as? any OfemClientControlProtocol else {
-            throw OfemFPEClientError.connectionFailed("proxy cast failed for \(domainIdentifier)")
-        }
-        return proxy
+        return (conn, domainIdentifier)
     }
 
     /// Build and configure a new NSXPCConnection for `domainIdentifier`.
@@ -312,8 +338,6 @@ final class OfemFPEClient {
             }
         }
         connection.resume()
-        // Store the connection so subsequent calls reuse it.
-        connections[domainIdentifier] = connection
         return connection
     }
 
