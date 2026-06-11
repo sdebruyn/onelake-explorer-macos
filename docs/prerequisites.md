@@ -87,16 +87,24 @@ swift test
 
 ### GitHub Actions secrets to configure
 
+The authoritative secret list lives in the header comment of `.github/workflows/release.yml`.
+The table below mirrors it for quick reference.
+
 | Secret | Source | Purpose |
 |---|---|---|
-| `DEVELOPER_ID_APPLICATION_P12_BASE64` | `base64 -i your-cert.p12` | Code-signing certificate |
-| `DEVELOPER_ID_APPLICATION_P12_PASSWORD` | the password you set when exporting | Decrypts the .p12 in CI |
-| `KEYCHAIN_PASSWORD` | random string | Temporary CI keychain password |
-| `NOTARY_KEY_ID` | App Store Connect API key id (10 chars) | notarytool auth |
-| `NOTARY_ISSUER_ID` | App Store Connect issuer id (UUID) | notarytool auth |
-| `NOTARY_API_KEY_P8` | contents of the `.p8` file from App Store Connect | notarytool auth |
-| `OFEM_APPINSIGHTS_CONNSTRING` | App Insights resource → Properties → Connection String | Embedded in release binary |
-| `HOMEBREW_TAP_GH_TOKEN` | a fine-grained PAT with `contents: write` on `homebrew-ofem` | The release workflow pushes the rendered cask to the tap |
+| `APPLE_CERT_P12` | `base64 -i cert.p12 \| pbcopy` — export Developer ID Application cert from Keychain Access | Base64-encoded `.p12` certificate for code signing |
+| `APPLE_CERT_PASSWORD` | the password you set when exporting the `.p12` | Decrypts `APPLE_CERT_P12` in CI |
+| `APPLE_TEAM_ID` | [developer.apple.com/account](https://developer.apple.com/account) → Membership | Apple Developer Team ID (10 chars) |
+| `APPLE_API_KEY_JSON` | JSON with `key_id`, `issuer_id`, and `key` fields — see `docs/packaging-homebrew.md` | App Store Connect API key for `notarytool` |
+| `APPLE_API_KEY_ID` | 10-character key identifier (also inside `APPLE_API_KEY_JSON`) | `notarytool --key-id` |
+| `APPLE_API_ISSUER_ID` | UUID (also inside `APPLE_API_KEY_JSON`) | `notarytool --issuer` |
+| `APPLE_PROVISION_PROFILE_APP` | Base64-encoded Developer ID provisioning profile for `dev.debruyn.ofem` — download from [developer.apple.com/account/resources/profiles](https://developer.apple.com/account/resources/profiles), then `base64 -i profile.provisionprofile \| pbcopy` | Host app provisioning profile; required for manual signing in `xcodebuild archive` |
+| `APPLE_PROVISION_PROFILE_FP` | Base64-encoded Developer ID provisioning profile for `dev.debruyn.ofem.fileprovider` — same steps as above | File Provider Extension provisioning profile; required for manual signing |
+| `HOMEBREW_TAP_GH_TOKEN` | fine-grained PAT with **Contents: write** on `sdebruyn/homebrew-ofem` | The release workflow pushes the rendered cask to the tap |
+
+> **Note:** Provisioning profiles are required for Developer ID distribution even outside the Mac App Store. Each profile maps a bundle ID to the signing certificate. Create them at [developer.apple.com/account/resources/profiles](https://developer.apple.com/account/resources/profiles) → "+" → "Developer ID" → "macOS App" (select the app ID) or "Mac App Extension" (for the FPE).
+
+For detailed instructions on generating the `.p12` and App Store Connect API key, see `docs/packaging-homebrew.md`.
 
 ### Domain ownership
 
