@@ -10,7 +10,6 @@
 // ChangeWatcher (moved here from the old ContentView.task).
 //   - applicationDidBecomeActive: re-reconcile so accounts added while
 //     the host was inactive appear in Finder without a restart.
-//   - applicationWillTerminate: stop the ChangeWatcher poll loop.
 
 import SwiftUI
 import AppKit
@@ -74,11 +73,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        // stop() is synchronous and non-blocking; a Task would never run
-        // because macOS terminates the process immediately after this returns.
-        ChangeWatcher.shared.stop()
-    }
+    // applicationWillTerminate intentionally absent: the FPE owns ongoing
+    // enumeration signaling and the host has no long-lived loops to tear down.
 }
 
 /// Root SwiftUI app — menu-bar agent only, no window, no Dock icon.
