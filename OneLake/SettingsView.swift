@@ -211,16 +211,23 @@ private struct CacheSettingsTab: View {
 private struct NetworkSettingsTab: View {
     @ObservedObject var model: MenuStatusModel
 
+    /// True once the FPE status has been fetched and the net values are loaded.
+    /// The controls are read-only until then to prevent the hardcoded
+    /// display fallbacks from being written back before real values arrive.
+    private var netLoaded: Bool {
+        model.netMaxUploads > 0 && model.netMaxDownloads > 0
+    }
+
     private var uploadsBinding: Binding<Int> {
         Binding(
-            get: { model.netMaxUploads > 0 ? model.netMaxUploads : 4 },
+            get: { model.netMaxUploads },
             set: { model.setNetMaxUploads($0) }
         )
     }
 
     private var downloadsBinding: Binding<Int> {
         Binding(
-            get: { model.netMaxDownloads > 0 ? model.netMaxDownloads : 8 },
+            get: { model.netMaxDownloads },
             set: { model.setNetMaxDownloads($0) }
         )
     }
@@ -228,18 +235,27 @@ private struct NetworkSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                concurrencyRow(
-                    title: "Parallel uploads",
-                    detail: "Maximum simultaneous outgoing transfers per account.",
-                    value: uploadsBinding,
-                    range: 1...16
-                )
-                concurrencyRow(
-                    title: "Parallel downloads",
-                    detail: "Maximum simultaneous incoming transfers per account.",
-                    value: downloadsBinding,
-                    range: 1...32
-                )
+                if netLoaded {
+                    concurrencyRow(
+                        title: "Parallel uploads",
+                        detail: "Maximum simultaneous outgoing transfers per account.",
+                        value: uploadsBinding,
+                        range: 1...16
+                    )
+                    concurrencyRow(
+                        title: "Parallel downloads",
+                        detail: "Maximum simultaneous incoming transfers per account.",
+                        value: downloadsBinding,
+                        range: 1...32
+                    )
+                } else {
+                    LabeledContent("Parallel uploads") {
+                        Text("Loading…").foregroundStyle(.secondary)
+                    }
+                    LabeledContent("Parallel downloads") {
+                        Text("Loading…").foregroundStyle(.secondary)
+                    }
+                }
             } footer: {
                 Text("Lower these on metered networks. Raise the download count when Finder routinely opens many cloud-only files at once.")
                     .font(.caption)
@@ -282,9 +298,12 @@ private struct NetworkSettingsTab: View {
 private struct AdvancedSettingsTab: View {
     @ObservedObject var model: MenuStatusModel
 
+    /// True once the FPE status has been fetched and the log level is loaded.
+    private var logLevelLoaded: Bool { !model.logLevel.isEmpty }
+
     private var logLevelBinding: Binding<String> {
         Binding(
-            get: { model.logLevel.isEmpty ? "info" : model.logLevel },
+            get: { model.logLevel },
             set: { model.setLogLevel($0) }
         )
     }
@@ -292,21 +311,27 @@ private struct AdvancedSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                Picker(selection: logLevelBinding) {
-                    Text("Debug").tag("debug")
-                    Text("Info").tag("info")
-                    Text("Warning").tag("warn")
-                    Text("Error").tag("error")
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Log level")
-                        Text("Higher levels keep logs small; Debug helps when reporting an issue.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                if logLevelLoaded {
+                    Picker(selection: logLevelBinding) {
+                        Text("Debug").tag("debug")
+                        Text("Info").tag("info")
+                        Text("Warning").tag("warn")
+                        Text("Error").tag("error")
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Log level")
+                            Text("Higher levels keep logs small; Debug helps when reporting an issue.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(!model.isRunning)
+                } else {
+                    LabeledContent("Log level") {
+                        Text("Loading…").foregroundStyle(.secondary)
                     }
                 }
-                .pickerStyle(.menu)
-                .disabled(!model.isRunning)
 
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
