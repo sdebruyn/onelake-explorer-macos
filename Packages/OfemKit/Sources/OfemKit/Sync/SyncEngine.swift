@@ -62,6 +62,11 @@ public actor SyncEngine {
     /// racing on the spill file (sync-06).
     private var inFlightDownloads: [String: Task<Data, any Error>] = [:]
 
+    /// Generation counter per key — incremented each time a new download task is
+    /// spawned for a key. Used to guard against a stale cleanup (from a previous,
+    /// now-cancelled task) removing an entry that belongs to a newer task.
+    private var downloadGenerations: [String: UInt64] = [:]
+
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "SyncEngine")
 
     // MARK: - Init
@@ -546,16 +551,50 @@ public actor SyncEngine {
         }
 
         // Coalesce concurrent opens for the same key (sync-06).
+        //
+        // Livelock guard: if the first task was cancelled, `existing.value`
+        // throws `CancellationError`. We remove the dead map entry and spawn a
+        // fresh download for this caller so the key is not permanently poisoned.
+        // A generation token ensures the stale task's cleanup does not remove an
+        // entry that belongs to the new task we are about to register.
         let keyString = "\(key.accountAlias)\0\(key.workspaceID)\0\(key.itemID)\0\(key.path)"
         if let existing = inFlightDownloads[keyString] {
-            return try await existing.value
+            do {
+                return try await existing.value
+            } catch is CancellationError {
+                // The first task was cancelled — clear the stale entry and fall
+                // through to spawn a fresh task for this caller. Propagate the
+                // cancellation normally if *this* task is also cancelled.
+                inFlightDownloads.removeValue(forKey: keyString)
+                try Task.checkCancellation()
+                // Fall through to spawn a fresh download below.
+            }
+            // For any other error the entry was already cleaned up by the
+            // spawning task's defer; re-throw directly.
+            // (Swift does not reach here — the only non-CancellationError path
+            // re-throws from the `do` block above.)
         }
+
+        let myGeneration: UInt64 = {
+            let next = (downloadGenerations[keyString] ?? 0) + 1
+            downloadGenerations[keyString] = next
+            return next
+        }()
 
         let task = Task<Data, any Error> { [self] in
             try await self.performDownload(key: key, start: start, cached: cached)
         }
         inFlightDownloads[keyString] = task
-        defer { inFlightDownloads.removeValue(forKey: keyString) }
+
+        defer {
+            // Only remove the entry when it still belongs to this generation,
+            // so a stale cleanup from a cancelled task does not evict a newer
+            // task registered for the same key.
+            if downloadGenerations[keyString] == myGeneration {
+                inFlightDownloads.removeValue(forKey: keyString)
+                downloadGenerations.removeValue(forKey: keyString)
+            }
+        }
         return try await task.value
     }
 
@@ -779,14 +818,24 @@ public actor SyncEngine {
                 rangeStart = 0
                 hasPartial = false
                 pinnedEtag = nil
-                (bodyData, props) = try await onelake.read(
-                    alias: key.accountAlias,
-                    workspaceGUID: key.workspaceID,
-                    itemGUID: key.itemID,
-                    path: key.path,
-                    range: nil,
-                    ifMatch: ""
-                )
+                do {
+                    (bodyData, props) = try await onelake.read(
+                        alias: key.accountAlias,
+                        workspaceGUID: key.workspaceID,
+                        itemGUID: key.itemID,
+                        path: key.path,
+                        range: nil,
+                        ifMatch: ""
+                    )
+                } catch {
+                    // C3: route the retry's error through the shared handler so
+                    // telemetry is emitted and the pause manager is consulted,
+                    // even if the server sends a second 412 (non-spec but observed).
+                    try await withRemoteOperationError(
+                        error: error, key: key, eventName: "file_download",
+                        failCode: "read_failed", start: start
+                    )
+                }
             } else {
                 try await withRemoteOperationError(
                     error: error, key: key, eventName: "file_download",
@@ -838,6 +887,11 @@ public actor SyncEngine {
         if row.name.isEmpty { row.name = Enumerator.baseName(key.path) }
         let downloadRow = row
         await loggedTry({ try await self.cache.upsert(downloadRow) }, "open: upsert")
+        // C2: storeBlob updates blob_sha256 on success. When it fails (e.g.
+        // disk-full), blob_sha256 stays empty on the upserted row. The next
+        // open() skips the blob-fresh fast-path and issues a full HEAD + download
+        // again — acceptable per the project's best-effort cache policy (the
+        // remote download already succeeded; the local persistence is optional).
         await loggedTry({ try await self.cache.storeBlob(key: key, data: allBytes) }, "open: storeBlob")
 
         // Return bytes from cache when available; fall back to in-memory bytes
@@ -864,8 +918,17 @@ public actor SyncEngine {
 
     // MARK: - Private helpers
 
-    /// Returns `(isFresh, props)` by issuing a HEAD against the remote path.
-    /// Returns `nil` when there is no cached row with blob.
+    /// Returns `(isFresh, children)` from the metadata cache.
+    ///
+    /// - `(true, children)` — parent row exists, is a directory, and is within
+    ///   the `recentFolderTTL` freshness window. `children` contains the cached
+    ///   child rows.
+    /// - `(false, [])` — parent row is missing or stale. Caller should issue a
+    ///   remote refresh.
+    ///
+    /// Throws `FPError.wrongItemKind` when `key` refers to a file, not a
+    /// directory, so the caller can surface the typed error without attempting
+    /// a remote listing.
     private func enumerateFromCache(key: CacheKey) async throws -> (Bool, [MetadataRecord])? {
         guard let parent = try? await cache.fetch(key: key) else { return (false, []) }
         guard parent.isDir else {

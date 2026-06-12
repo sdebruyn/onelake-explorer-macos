@@ -167,4 +167,40 @@ struct AsyncSemaphoreTests {
         try await sem.wait()
         sem.signal()
     }
+
+    // MARK: - T3: net-zero permit accounting after signal/cancel race
+
+    @Test("Cancelled waiter leaves semaphore at full capacity — a fresh wait() succeeds immediately")
+    func cancelledWaiterNetZeroPermitAccounting() async throws {
+        // capacity = 2, consume both slots so any additional waiter blocks.
+        let sem = AsyncSemaphore(value: 2)
+        try await sem.wait()
+        try await sem.wait()
+
+        // A third task must queue as a waiter.
+        let blocked = Task<Void, any Error> { try await sem.wait() }
+        while sem.waiterCount < 1 { await Task.yield() }
+
+        // Cancel the blocked waiter.
+        blocked.cancel()
+
+        // Await cancellation propagation.
+        do {
+            try await blocked.value
+            Issue.record("Expected CancellationError")
+        } catch is CancellationError { /* expected */ }
+
+        // Release both original slots.
+        sem.signal()
+        sem.signal()
+
+        // Capacity is back to 2. A fresh waiter should succeed immediately
+        // (no blocking, no deadlock) proving net-zero permit accounting.
+        try await sem.wait()
+        #expect(sem.waiterCount == 0)
+        sem.signal()
+        try await sem.wait()
+        #expect(sem.waiterCount == 0)
+        sem.signal()
+    }
 }

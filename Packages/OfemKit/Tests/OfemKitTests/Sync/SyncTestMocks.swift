@@ -105,19 +105,93 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
 
     // MARK: - Private helper
 
+    // Dequeue under lock to avoid races in concurrent tests (e.g. testConcurrentOpensCoalesce).
     func dequeue<T>(_ arr: inout [Result<T, any Error>], name: String) throws -> T {
-        guard !arr.isEmpty else {
-            throw MockError.stubsExhausted(name)
+        let result: Result<T, any Error> = lock.withLock {
+            guard !arr.isEmpty else {
+                return .failure(MockError.stubsExhausted(name))
+            }
+            return arr.removeFirst()
         }
-        return try arr.removeFirst().get()
+        return try result.get()
     }
 
     private func dequeueVoid(_ arr: inout [Result<Void, any Error>], name: String) throws {
-        guard !arr.isEmpty else {
-            throw MockError.stubsExhausted(name)
+        let result: Result<Void, any Error> = lock.withLock {
+            guard !arr.isEmpty else {
+                return .failure(MockError.stubsExhausted(name))
+            }
+            return arr.removeFirst()
         }
-        try arr.removeFirst().get()
+        try result.get()
     }
+}
+
+// MARK: - BlockingMockOneLakeClient
+
+/// A ``OneLakeClientProtocol`` mock whose `read()` blocks until `unblock()` or
+/// `failWith(_:)` is called. Used by T1 (livelock test) to control exactly when
+/// the first download task completes so the test can reliably cancel it while
+/// a second `open()` is coalescing on it.
+final class BlockingMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
+
+    // MARK: - State
+
+    /// Continuation for the blocked `read()` call.
+    private var pendingContinuation: CheckedContinuation<(Data, PathProperties), any Error>?
+    private let lock = NSLock()
+
+    /// Signals when the mock has entered `read()` and is suspending.
+    private let readEnteredContinuation = AsyncStream<Void>.makeStream()
+    var readEntered: AsyncStream<Void> { readEnteredContinuation.stream }
+
+    // MARK: - Control
+
+    /// Resolves the blocked `read()` with a successful result.
+    func unblock(data: Data, props: PathProperties) {
+        let cont = lock.withLock { () -> CheckedContinuation<(Data, PathProperties), any Error>? in
+            let c = pendingContinuation; pendingContinuation = nil; return c
+        }
+        cont?.resume(returning: (data, props))
+    }
+
+    /// Resolves the blocked `read()` with an error.
+    func failWith(_ error: any Error) {
+        let cont = lock.withLock { () -> CheckedContinuation<(Data, PathProperties), any Error>? in
+            let c = pendingContinuation; pendingContinuation = nil; return c
+        }
+        cont?.resume(throwing: error)
+    }
+
+    // MARK: - OneLakeClientProtocol
+
+    func read(
+        alias: String, workspaceGUID: String, itemGUID: String,
+        path: String, range: Range<Int64>?, ifMatch: String
+    ) async throws -> (Data, PathProperties) {
+        return try await withTaskCancellationHandler(
+            operation: {
+                try await withCheckedThrowingContinuation { cont in
+                    lock.withLock { pendingContinuation = cont }
+                    readEnteredContinuation.continuation.yield(())
+                }
+            },
+            onCancel: {
+                // Unblock the continuation with a CancellationError so the
+                // Task that awaits this mock can exit cleanly on cancellation.
+                let cont = lock.withLock { () -> CheckedContinuation<(Data, PathProperties), any Error>? in
+                    let c = pendingContinuation; pendingContinuation = nil; return c
+                }
+                cont?.resume(throwing: CancellationError())
+            }
+        )
+    }
+
+    func listPath(alias: String, workspaceGUID: String, itemGUID: String, directory: String, recursive: Bool) async throws -> ListResult { ListResult(entries: []) }
+    func getProperties(alias: String, workspaceGUID: String, itemGUID: String, path: String) async throws -> PathProperties { PathProperties.make() }
+    func write(alias: String, workspaceGUID: String, itemGUID: String, path: String, content: Data, size: Int64) async throws {}
+    func createDirectory(alias: String, workspaceGUID: String, itemGUID: String, path: String) async throws {}
+    func delete(alias: String, workspaceGUID: String, itemGUID: String, path: String, recursive: Bool) async throws {}
 }
 
 // MARK: - MockFabricClient

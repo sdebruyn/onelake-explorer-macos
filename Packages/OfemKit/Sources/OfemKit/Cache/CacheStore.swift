@@ -175,19 +175,31 @@ public actor CacheStore {
     /// Blob link cleanup (orphan blobs) is deferred to the background orphan
     /// sweep; this method focuses on the transactional delete. It is safe
     /// for rows that do not exist (a no-op per key).
+    ///
+    /// When `key.path` is empty the semantics match ``delete(key:)``: all rows
+    /// for the given `(accountAlias, workspaceID, itemID)` triple are removed,
+    /// not just the root row.
     public func batchDelete(_ keys: [CacheKey]) async throws {
         guard !keys.isEmpty else { return }
         try await dbPool.write { db in
             for key in keys {
-                let escaped = escapeLike(key.path)
-                try db.execute(sql: """
-                    DELETE FROM path_metadata
-                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                      AND (path = ? OR path LIKE ? ESCAPE '\\')
-                    """, arguments: [
-                        key.accountAlias, key.workspaceID, key.itemID,
-                        key.path, escaped + "/%",
-                    ])
+                if key.path.isEmpty {
+                    // Empty path: wipe entire item — mirrors delete(key:) semantics.
+                    try db.execute(sql: """
+                        DELETE FROM path_metadata
+                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                        """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
+                } else {
+                    let escaped = escapeLike(key.path)
+                    try db.execute(sql: """
+                        DELETE FROM path_metadata
+                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                          AND (path = ? OR path LIKE ? ESCAPE '\\')
+                        """, arguments: [
+                            key.accountAlias, key.workspaceID, key.itemID,
+                            key.path, escaped + "/%",
+                        ])
+                }
             }
         }
     }

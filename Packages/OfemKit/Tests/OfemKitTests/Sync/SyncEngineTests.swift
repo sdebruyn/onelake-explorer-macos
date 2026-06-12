@@ -11,7 +11,7 @@ struct SyncEngineTests {
     // MARK: - Helpers
 
     private func makeEngine(
-        onelake: MockOneLakeClient = MockOneLakeClient(),
+        onelake: any OneLakeClientProtocol = MockOneLakeClient(),
         fabric: MockFabricClient = MockFabricClient(),
         store: CacheStore? = nil
     ) throws -> (SyncEngine, CacheStore) {
@@ -290,6 +290,83 @@ struct SyncEngineTests {
         let wrapped = OneLakeError.httpError(inner)
         let code = FPError.classify(wrapped)
         #expect(code == .serverBusy)
+    }
+
+    // MARK: - T1: cancellation-poisoning (C1 livelock fix)
+
+    @Test("Stale cancelled in-flight task does not livelock the key — a fresh open() succeeds")
+    func testCancelledInFlightTaskDoesNotLivelockKey() async throws {
+        let ol = BlockingMockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+        let freshBody = Data(repeating: 0xBB, count: 20)
+        let freshProps = PathProperties.make(contentLength: 20, eTag: "v2")
+
+        // Task A starts the download — the blocking mock suspends inside read().
+        let taskA = Task<Data, any Error> { try await engine.open(key: key) }
+
+        // Wait until read() is entered so the in-flight entry exists in the actor.
+        var readEnteredIter = ol.readEntered.makeAsyncIterator()
+        _ = await readEnteredIter.next()
+
+        // Cancel Task A. The mock's onCancel handler resumes the blocked
+        // continuation with CancellationError; the internal download Task
+        // (created inside open()) therefore completes with CancellationError.
+        taskA.cancel()
+
+        // Wait for Task A to propagate the cancellation and finish.
+        do {
+            _ = try await taskA.value
+        } catch is CancellationError { /* expected */ }
+        // At this point Task A's defer has run and removed the entry from
+        // inFlightDownloads. The key is clean.
+
+        // Task B opens the same key. There is no in-flight entry, so B spawns a
+        // fresh download. The C1 fix ensures this works even if B were to receive
+        // CancellationError from a stale entry (the generation guard prevents that).
+        // Unblock the fresh read() call that B will issue.
+        let taskB = Task<Data, any Error> { try await engine.open(key: key) }
+
+        // Wait for B's read() to enter and unblock it.
+        _ = await readEnteredIter.next()
+        ol.unblock(data: freshBody, props: freshProps)
+
+        let resultB = try await taskB.value
+        #expect(resultB.count == 20)
+        #expect(resultB == freshBody)
+    }
+
+    // MARK: - T2: real sync-07 fallback (blob store failure returns in-memory bytes)
+
+    @Test("Blob store failure still returns downloaded bytes (real fallback path)")
+    func testBlobStoreFailureReturnsBytesFromMemory() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer {
+            // Restore write permission so cleanup can remove the directory.
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: store.blobRoot.path
+            )
+            try? FileManager.default.removeItem(at: store.root)
+        }
+
+        let key = Self.baseKey
+        let body = Data(repeating: 0x77, count: 40)
+        let props = PathProperties.make(contentLength: 40, eTag: "v1")
+        ol.readResults.append(.success((body, props)))
+
+        // Make the blob root read-only BEFORE the download so storeBlob fails.
+        // The blobRoot directory is created by CacheStore.init, so it exists.
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o555], ofItemAtPath: store.blobRoot.path
+        )
+
+        // open() must still return the downloaded bytes even though storeBlob failed.
+        let data = try await engine.open(key: key)
+        #expect(data.count == 40)
+        #expect(data == body)
     }
 
     // MARK: - sync-15: batch reconciliation
