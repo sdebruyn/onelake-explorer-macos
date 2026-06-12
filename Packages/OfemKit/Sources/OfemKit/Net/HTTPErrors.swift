@@ -86,7 +86,7 @@ public struct APIError: Sendable, CustomStringConvertible {
     /// The full status string (e.g. `"404 Not Found"`).
     public let status: String
 
-    /// Raw response body, truncated at 256 bytes for logging.
+    /// Raw response body (stored in full; truncated to 256 bytes only in `description`).
     public let body: Data
 
     /// Parsed `Retry-After` delay; zero if the header was absent or

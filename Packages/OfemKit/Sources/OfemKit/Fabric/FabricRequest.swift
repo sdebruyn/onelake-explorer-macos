@@ -9,10 +9,9 @@ public let fabricDefaultBaseURL = URL(string: "https://api.fabric.microsoft.com"
 
 /// Builds a URL for a Fabric REST collection endpoint.
 ///
-/// The path is appended to `base` directly; query items are added when
-/// `continuationToken` is non-nil (replays the original path with the token
-/// appended as a query parameter).
-/// `listAllPages`.
+/// The path is appended to `base` directly; the optional `continuationToken`
+/// is percent-encoded via ``percentEncodedQueryItem(_:)`` so that `+` in the
+/// token value is not silently decoded as a space by the server (net-05).
 ///
 /// - Parameters:
 /// - base: The Fabric REST base URL (e.g. `https://api.fabric.microsoft.com`).
@@ -23,7 +22,9 @@ func fabricListURL(base: URL, path: String, continuationToken: String? = nil) ->
     var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
     components.path = path
     if let tok = continuationToken, !tok.isEmpty {
-        components.queryItems = [URLQueryItem(name: "continuationToken", value: tok)]
+        // net-05: percent-encode the token so '+' is not decoded as a space.
+        let item = URLQueryItem(name: "continuationToken", value: tok)
+        components.percentEncodedQueryItems = [percentEncodedQueryItem(item)]
     } else {
         components.queryItems = nil
     }
@@ -45,18 +46,23 @@ func fabricItemURL(base: URL, path: String) -> URL {
 
 // MARK: - continuationUri resolver
 
-/// Resolves a Fabric `continuationUri` (an absolute URL) into a URL that can
-/// be used directly as the next page request.
+/// Resolves a Fabric `continuationUri` string into an absolute URL that can
+/// be used directly as the next-page request.
 ///
-/// The URI must either be relative (path-only) or have the same host as `base`.
-/// Pointing to a different host is rejected to prevent open-redirect attacks.
+/// Two forms are accepted:
+/// - **Absolute** (has a host): the scheme must be `https` and the host must
+///   match `base`. Same-host absolute URIs are returned as-is.
+/// - **Relative** (no host, no scheme): resolved against `base` using
+///   `URL(string:relativeTo:).absoluteURL` so the result is a fully formed
+///   URL (net-06: previously relative URIs were returned scheme-/host-less,
+///   causing ``HTTPClient`` to reject them with `.badURL`).
 ///
 /// - Parameters:
 /// - raw: The raw `continuationUri` string from the API response.
 /// - base: The configured Fabric base URL.
 /// - Returns: A URL suitable for the next page request.
 /// - Throws: ``FabricError/continuationURIHostMismatch(_:)`` when `raw` points
-/// to a different host.
+///   to a different host or uses a non-HTTPS scheme.
 func resolveContinuationURI(_ raw: String, base: URL) throws -> URL {
     guard let parsed = URL(string: raw) else {
         throw FabricError.httpError(URLError(.badURL, userInfo: [NSURLErrorFailingURLStringErrorKey: raw]))
@@ -78,17 +84,24 @@ func resolveContinuationURI(_ raw: String, base: URL) throws -> URL {
                 "continuationUri scheme \"\(scheme)\" is not https"
             )
         }
+        // Absolute URL with matching host — use as-is.
+        return parsed
     } else {
-        // Relative URI (no host). If a scheme is present it is not a plain
-        // path-relative URI — reject it (covers file://, javascript:, etc.).
+        // Relative URI (no host).
+        // If a scheme is present without a host, reject it
+        // (covers file://, javascript:, etc.).
         if let scheme = parsed.scheme, !scheme.isEmpty {
             throw FabricError.continuationURIHostMismatch(
                 "continuationUri has unexpected scheme \"\(scheme)\" without a host"
             )
         }
+        // net-06: resolve the path-relative URI against base so the result
+        // carries scheme + host and can be used directly by HTTPClient.
+        guard let resolved = URL(string: raw, relativeTo: base)?.absoluteURL else {
+            throw FabricError.httpError(URLError(.badURL, userInfo: [NSURLErrorFailingURLStringErrorKey: raw]))
+        }
+        return resolved
     }
-
-    return parsed
 }
 
 // MARK: - Common Fabric request builder

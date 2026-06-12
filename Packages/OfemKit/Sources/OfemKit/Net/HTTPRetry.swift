@@ -157,9 +157,7 @@ func isRetriableURLError(_ error: any Error) -> Bool {
     if let urlError = error as? URLError {
         switch urlError.code {
         // Permanent / misconfiguration errors — do not retry.
-        case .cannotFindHost,
-             .cannotConnectToHost,
-             .secureConnectionFailed,
+        case .secureConnectionFailed,
              .serverCertificateHasBadDate,
              .serverCertificateUntrusted,
              .serverCertificateHasUnknownRoot,
@@ -169,10 +167,16 @@ func isRetriableURLError(_ error: any Error) -> Bool {
             return false
 
         // Transient network conditions — retry.
+        // net-16: .cannotFindHost and .cannotConnectToHost are transient on
+        // Apple platforms (VPN flaps, captive portals, sleep/wake races, LB
+        // restarts) — the same class of failure as .dnsLookupFailed, which
+        // one you get is resolver-implementation dependent.
         case .timedOut,
              .networkConnectionLost,
              .notConnectedToInternet,
              .dnsLookupFailed,
+             .cannotFindHost,
+             .cannotConnectToHost,
              .resourceUnavailable,
              .requestBodyStreamExhausted:
             return true

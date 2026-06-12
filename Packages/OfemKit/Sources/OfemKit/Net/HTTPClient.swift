@@ -84,14 +84,16 @@ public final class HTTPClient: Sendable {
     ///
     /// - Parameters:
     /// - request: A fully formed `URLRequest`. The `Authorization` header
-    /// is overwritten by `tokenProvider` / `alias` if supplied.
-    /// - tokenProvider: Supplies an access token. When non-nil, a
-    /// `Authorization: Bearer …` header is injected (or refreshed on
-    /// 401 retry).
+    ///   is overwritten by `tokenProvider` / `alias` if supplied.
+    /// - tokenProvider: Supplies an access token. When non-nil and `alias` is
+    ///   non-empty, an `Authorization: Bearer …` header is injected. Supplying
+    ///   a `tokenProvider` with an empty `alias` is a contract violation and
+    ///   throws ``HTTPClientError/tokenAcquisitionFailed(_:)`` immediately
+    ///   (net-14: fail fast rather than silently sending an unauthenticated request).
     /// - alias: Account alias forwarded to `tokenProvider`.
     /// - scope: OAuth scope forwarded to `tokenProvider`.
     /// - idempotent: Passed to ``HTTPRetryPolicy/canRetryTransportError(method:)``
-    /// to decide whether a mid-flight transport error is retried.
+    ///   to decide whether a mid-flight transport error is retried.
     /// - Returns: `(Data, HTTPURLResponse)` on success.
     /// - Throws: ``HTTPClientError`` on failure.
     public func execute(
@@ -101,6 +103,15 @@ public final class HTTPClient: Sendable {
         scope: TokenScope = .oneLake,
         idempotent: Bool = false
     ) async throws -> (Data, HTTPURLResponse) {
+        // net-14: fail fast when a TokenProvider is given but alias is empty —
+        // sending the request unauthenticated would produce a confusing remote 401.
+        if let _ = tokenProvider, alias.isEmpty {
+            throw HTTPClientError.tokenAcquisitionFailed(
+                URLError(.userAuthenticationRequired,
+                         userInfo: [NSLocalizedDescriptionKey: "TokenProvider supplied but alias is empty"])
+            )
+        }
+
         guard let url = request.url, let host = url.host else {
             throw HTTPClientError.transport(
                 URLError(.badURL, userInfo: [NSURLErrorFailingURLStringErrorKey: request.url?.absoluteString ?? "nil"])
@@ -132,7 +143,8 @@ public final class HTTPClient: Sendable {
             // Build an authorised copy of the request.
             var authorised = request
             authorised.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-            if let tp = tokenProvider, !alias.isEmpty {
+            if let tp = tokenProvider {
+                // alias non-empty is guaranteed by the guard above.
                 do {
                     let tok = try await tp.token(alias: alias, scope: scope)
                     authorised.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
@@ -152,7 +164,10 @@ public final class HTTPClient: Sendable {
                 if error is CancellationError {
                     throw HTTPClientError.cancelled
                 }
-                if isRetriableURLError(error), policy.canRetryTransportError(method: request.httpMethod ?? "GET") {
+                // Unwrap nested errors before classifying (net-09: wrapped errors).
+                let rootError = (error as NSError).userInfo[NSUnderlyingErrorKey] as? any Error ?? error
+                if isRetriableURLError(error) || isRetriableURLError(rootError),
+                   policy.canRetryTransportError(method: request.httpMethod ?? "GET") {
                     lastError = error
                     Self.log.warning("HTTPClient: transport error attempt \(attempt)/\(policy.maxAttempts, privacy: .public): \(error.localizedDescription, privacy: .public)")
                     if attempt < policy.maxAttempts {
@@ -176,12 +191,9 @@ public final class HTTPClient: Sendable {
             // httpgate/roundtripper.go: penalty is applied before the body
             // is released so peer goroutines observe it immediately).
             if status == 429 || status == 503 {
-                let retryAfterHeader = httpResponse.value(forHTTPHeaderField: "Retry-After") ?? ""
-                if let delay = parseRetryAfter(retryAfterHeader) {
+                let retryAfterDelay = retryAfterDuration(from: httpResponse, defaults: defaults)
+                if let delay = retryAfterDelay {
                     let deadline = ContinuousClock.now + delay
-                    await gate.penalty(until: deadline)
-                } else if defaults.missingRetryAfter > .zero {
-                    let deadline = ContinuousClock.now + defaults.missingRetryAfter
                     await gate.penalty(until: deadline)
                 }
             }
@@ -201,10 +213,9 @@ public final class HTTPClient: Sendable {
 
             // Non-retriable 4xx — surface immediately.
             if !HTTPClientError.isRetriableStatus(status) {
-                let retryAfterDuration: Duration
-                let retryHeader = httpResponse.value(forHTTPHeaderField: "Retry-After") ?? ""
-                retryAfterDuration = parseRetryAfter(retryHeader) ?? .zero
-                let ae = APIError(statusCode: status, status: httpResponse.httpStatus, body: data, retryAfter: retryAfterDuration, attempts: attempt)
+                let retryDelay = parseRetryAfter(httpResponse.value(forHTTPHeaderField: "Retry-After") ?? "")
+                let ae = APIError(statusCode: status, status: httpResponse.httpStatus, body: data,
+                                  retryAfter: retryDelay ?? .zero, attempts: attempt)
                 if let sentinel = ae.sentinel {
                     throw sentinel
                 }
@@ -212,15 +223,15 @@ public final class HTTPClient: Sendable {
             }
 
             // Retriable status (408, 425, 429, 5xx).
-            let retryHeader = httpResponse.value(forHTTPHeaderField: "Retry-After") ?? ""
-            let retryAfterOverride = parseRetryAfter(retryHeader)
-            let ae = APIError(statusCode: status, status: httpResponse.httpStatus, body: data, retryAfter: retryAfterOverride ?? .zero, attempts: attempt)
+            let retryDelay = parseRetryAfter(httpResponse.value(forHTTPHeaderField: "Retry-After") ?? "")
+            let ae = APIError(statusCode: status, status: httpResponse.httpStatus, body: data,
+                              retryAfter: retryDelay ?? .zero, attempts: attempt)
             lastError = HTTPClientError.apiError(ae)
 
             if attempt == policy.maxAttempts { break }
 
             let sleepDuration: Duration
-            if let override = retryAfterOverride {
+            if let override = retryDelay {
                 sleepDuration = min(override, policy.maxBackoff)
             } else {
                 sleepDuration = jitter(wait)
@@ -232,6 +243,20 @@ public final class HTTPClient: Sendable {
 
         let finalError = lastError ?? HTTPClientError.serverError(0)
         throw HTTPClientError.retriesExhausted(attempts: policy.maxAttempts, last: finalError)
+    }
+
+    // MARK: - Private helpers
+
+    /// Extracts a Retry-After delay from the response, falling back to the
+    /// registry default when the header is absent.
+    private func retryAfterDuration(
+        from response: HTTPURLResponse,
+        defaults: HTTPGateDefaults
+    ) -> Duration? {
+        let header = response.value(forHTTPHeaderField: "Retry-After") ?? ""
+        if let d = parseRetryAfter(header) { return d }
+        if defaults.missingRetryAfter > .zero { return defaults.missingRetryAfter }
+        return nil
     }
 }
 
