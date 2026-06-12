@@ -70,6 +70,23 @@ cd Packages/OfemKit && swift test
 make gen
 ```
 
+### Running tests/builds — never pipe to head/tail
+
+NEVER pipe a test or build command through `head`, `tail`, or any other
+command (`swift test | tail`, `make test | tail`, `make build | head`, etc.).
+A shell hook rewrites `swift test` → `rtk swift test`; the proxy and the
+downstream pipe deadlock, leaving the run hung for hours with zero compiler
+activity. Always redirect the full output to a file and read the file instead:
+
+```bash
+swift test > /tmp/ofem-test.log 2>&1   # then Read the log file
+make test  > /tmp/ofem-test.log 2>&1
+make build > /tmp/ofem-build.log 2>&1
+```
+
+Run only one `swift test` / `make build` at a time — concurrent runs across
+worktrees contend on the SwiftPM build lock and stall.
+
 ## Things to avoid
 
 - Don't suggest FUSE-T, macFUSE, or any kernel-extension-based approach.
