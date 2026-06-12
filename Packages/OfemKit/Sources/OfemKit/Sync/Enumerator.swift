@@ -78,9 +78,15 @@ enum Enumerator {
     // MARK: - Freshness
 
     /// Returns `true` when the parent's children were listed within `ttl`.
-    static func isFresh(record: MetadataRecord, ttl: TimeInterval) -> Bool {
+    ///
+    /// - Parameters:
+    ///   - record: The metadata record to check.
+    ///   - ttl: The maximum age (in seconds) before a cached listing is considered stale.
+    ///   - now: The current time. Defaults to `Date()` in production; pass an
+    ///     explicit value in tests to exercise boundary behaviour deterministically.
+    static func isFresh(record: MetadataRecord, ttl: TimeInterval, now: Date = Date()) -> Bool {
         guard let childrenSyncedAt = record.childrenSyncedAt else { return false }
-        return Date().timeIntervalSince(childrenSyncedAt) <= ttl
+        return now.timeIntervalSince(childrenSyncedAt) <= ttl
     }
 
     // MARK: - Diff helpers

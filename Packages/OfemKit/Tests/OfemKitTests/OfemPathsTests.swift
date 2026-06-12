@@ -89,8 +89,7 @@ struct OfemPathsTests {
     }
 
     @Test("appGroupIdentifier has stable value")
-    func appGroupIdentifierMatchesGoConst() {
-        // Go: GroupID = "6D79CUWZ4J.group.dev.debruyn.ofem"
+    func appGroupIdentifierHasStableValue() {
         #expect(OfemPaths.appGroupIdentifier == "6D79CUWZ4J.group.dev.debruyn.ofem")
     }
 
