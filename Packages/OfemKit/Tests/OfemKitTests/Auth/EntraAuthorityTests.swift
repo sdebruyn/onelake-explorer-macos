@@ -94,3 +94,86 @@ struct EntraAuthorityTests {
         #expect(!hasFabric)
     }
 }
+
+// MARK: - EntraAuthorityTenantHintValidationTests
+
+/// Tests for ``EntraAuthorityResolver/validateTenantHint(_:)``.
+@Suite("EntraAuthorityResolver tenant hint validation")
+struct EntraAuthorityTenantHintValidationTests {
+
+    // MARK: - Valid inputs (should not throw)
+
+    @Test("Valid GUID passes validation")
+    func validGUID() throws {
+        try EntraAuthorityResolver.validateTenantHint("aaaabbbb-cccc-dddd-eeee-ffffffffffff")
+    }
+
+    @Test("Valid GUID uppercase passes validation")
+    func validGUIDUppercase() throws {
+        try EntraAuthorityResolver.validateTenantHint("AAAABBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF")
+    }
+
+    @Test("Valid single DNS label passes validation")
+    func validSingleLabel() throws {
+        try EntraAuthorityResolver.validateTenantHint("contoso")
+    }
+
+    @Test("Valid multi-label domain passes validation")
+    func validDomain() throws {
+        try EntraAuthorityResolver.validateTenantHint("contoso.onmicrosoft.com")
+    }
+
+    @Test("Label with hyphens passes validation")
+    func labelWithHyphens() throws {
+        try EntraAuthorityResolver.validateTenantHint("my-company.onmicrosoft.com")
+    }
+
+    @Test("Empty string passes validation (treated as nil/organizations)")
+    func emptyString() throws {
+        try EntraAuthorityResolver.validateTenantHint("")
+    }
+
+    // MARK: - Invalid inputs (should throw invalidTenantHint)
+
+    @Test("Hint with path separator is rejected")
+    func hintWithPathSeparator() throws {
+        #expect(throws: EntraAuthorityError.self) {
+            try EntraAuthorityResolver.validateTenantHint("contoso.com/extra")
+        }
+    }
+
+    @Test("Hint with query string is rejected")
+    func hintWithQueryString() throws {
+        #expect(throws: EntraAuthorityError.self) {
+            try EntraAuthorityResolver.validateTenantHint("contoso.com?foo=bar")
+        }
+    }
+
+    @Test("Hint with fragment is rejected")
+    func hintWithFragment() throws {
+        #expect(throws: EntraAuthorityError.self) {
+            try EntraAuthorityResolver.validateTenantHint("contoso.com#section")
+        }
+    }
+
+    @Test("Full URL as hint is rejected")
+    func fullURLAsHint() throws {
+        #expect(throws: EntraAuthorityError.self) {
+            try EntraAuthorityResolver.validateTenantHint("https://contoso.com")
+        }
+    }
+
+    @Test("Hint with @ character is rejected")
+    func hintWithAt() throws {
+        #expect(throws: EntraAuthorityError.self) {
+            try EntraAuthorityResolver.validateTenantHint("user@contoso.com")
+        }
+    }
+
+    @Test("Label starting with dash is rejected")
+    func labelStartingWithDash() throws {
+        #expect(throws: EntraAuthorityError.self) {
+            try EntraAuthorityResolver.validateTenantHint("-contoso.com")
+        }
+    }
+}
