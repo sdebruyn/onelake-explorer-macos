@@ -135,7 +135,7 @@ final class DomainSyncManager {
     /// Expressed in terms of addDomain/removeDomain so error-handling and
     /// domain-identifier composition are defined in exactly one place.
     func reconcile() async throws {
-        let accounts = SharedOfemAuth.shared.auth.listAccounts()
+        let accounts = await SharedOfemAuth.shared.auth.listAccounts()
         let existing = try await Self.existingDomains()
         let existingById: [String: NSFileProviderDomain] = Dictionary(
             uniqueKeysWithValues: existing.map { ($0.identifier.rawValue, $0) }
