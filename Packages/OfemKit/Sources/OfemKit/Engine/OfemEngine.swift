@@ -6,12 +6,30 @@ import os.log
 /// Façade that assembles all OfemKit subsystems into a single, ready-to-use
 /// engine object.
 ///
-/// `OfemEngine` is a **facade / wire-up container** that builds the full
-/// dependency graph (auth → HTTP client → Fabric + OneLake clients → cache →
-/// sync engine) in the correct order and exposes the subsystems to callers
-/// via public properties. The File Provider Extension instantiates one
-/// `OfemEngine` and forwards `NSFileProviderEnumerator` / change-observer
-/// calls to `SyncEngine`.
+/// `OfemEngine` is a **facade / wire-up container** that builds the per-alias
+/// dependency graph (auth → HTTP client → Fabric + OneLake clients → sync
+/// engine) using process-wide shared subsystems (cache, telemetry, HTTP gate
+/// registry) that are injected at initialisation time.
+///
+/// ## Process-wide shared vs per-alias
+///
+/// Three subsystems are process-wide singletons, shared across every engine
+/// instance in the same FPE process (arch-04):
+///
+/// - `CacheStore` — one SQLite file + shard dir, already row-keyed by
+///   `account_alias`.  One shared actor eliminates the N-pools-over-one-file
+///   hazard and ensures the blob byte-budget is enforced once, globally.
+/// - `TelemetryClient` — one flush timer.  All per-alias telemetry events
+///   flow through the shared client.
+/// - `HTTPGateRegistry` — endpoint-protection budgets are per-host, not
+///   per-account; sharing the registry prevents the budgets from being
+///   multiplied by the number of accounts.
+///
+/// Per-alias subsystems that remain private to each `OfemEngine`:
+///
+/// - `OfemAuth` — per-account `MSALPublicClientApplication` + Keychain slice.
+/// - `SyncEngine` — per-account download/upload semaphores + in-flight map.
+/// - `OfemLogger` — category tag includes the alias for easy log filtering.
 ///
 /// ## Thread safety
 ///
@@ -25,14 +43,13 @@ public actor OfemEngine {
     /// Authentication facade (token acquisition, account management).
     public nonisolated let auth: OfemAuth
 
-    /// Metadata + blob cache.
+    /// Metadata + blob cache (process-wide shared instance, arch-04).
     public nonisolated let cache: CacheStore
 
     /// Sync coordinator (enumerate / open / put / delete / mkdir).
     public nonisolated let sync: SyncEngine
 
-    /// Telemetry client. Telemetry is opt-out; when the config sets
-    /// `telemetry = false` this is a noop-sink-backed client.
+    /// Telemetry client (process-wide shared instance, arch-04).
     public nonisolated let telemetry: TelemetryClient
 
     /// Structured logger.
@@ -43,10 +60,13 @@ public actor OfemEngine {
     private var started = false
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "OfemEngine")
 
-    // MARK: - Initialiser
+    // MARK: - Initialisers
 
-    /// Builds all subsystems from a loaded ``OfemConfigStore`` and
-    /// ``OfemPaths``.
+    /// Builds per-alias subsystems from a loaded ``OfemConfigStore`` and
+    /// ``OfemPaths``, reusing process-wide shared subsystems.
+    ///
+    /// Use this initialiser in the FPE where `FPEEngineHost` has already
+    /// constructed the shared singletons.
     ///
     /// ## Config reload
     ///
@@ -65,6 +85,78 @@ public actor OfemEngine {
     /// - Parameters:
     ///   - configStore: The loaded TOML config.
     ///   - paths: Resolved on-disk paths (cache dir, log dir, etc.).
+    ///   - sharedCache: Process-wide CacheStore to share across engines.
+    ///   - sharedTelemetry: Process-wide TelemetryClient to share across engines.
+    ///   - sharedGateRegistry: Process-wide HTTPGateRegistry to share across engines.
+    ///   - httpBaseURLs: Override the default DFS / Fabric base URLs. Pass
+    ///     `nil` to use the production endpoints.
+    public init(
+        configStore: OfemConfigStore,
+        paths: OfemPaths,
+        sharedCache: CacheStore,
+        sharedTelemetry: TelemetryClient,
+        sharedGateRegistry: HTTPGateRegistry,
+        httpBaseURLs: (oneLake: URL, fabric: URL)? = nil
+    ) throws {
+        let cfg = configStore.snapshot()
+
+        // 1. Logger (per-alias).
+        // store-14: wire RotatingFileWriter so on-disk logs are produced.
+        // Use LogLevel(string:) to honour all four levels; fall back to .info
+        // for an unrecognised value (matches LogLevel.init(string:) semantics).
+        let logLevel: LogLevel = LogLevel(string: cfg.log.level) ?? .info
+        let fileWriter = RotatingFileWriter(logDirectory: paths.logDir)
+        let logConfig = LogConfiguration(
+            subsystem: "dev.debruyn.ofem",
+            category: "engine",
+            level: logLevel,
+            fileWriter: fileWriter
+        )
+        let logger = OfemLogger(configuration: logConfig)
+        self.logger = logger
+
+        // 2. Shared subsystems — injected from the process-wide container.
+        self.cache = sharedCache
+        self.telemetry = sharedTelemetry
+
+        // 3. Auth — OfemAuth is a Swift actor (not @MainActor), so init
+        //    no longer forces the engine init onto the main thread.
+        let auth = OfemAuth(configStore: configStore)
+        self.auth = auth
+
+        // 4. HTTP clients — use the shared gate registry.
+        let http = HTTPClient(gateRegistry: sharedGateRegistry)
+
+        let oneLakeURL = httpBaseURLs?.oneLake ?? OneLakeClient.defaultBaseURL
+        let fabricURL  = httpBaseURLs?.fabric  ?? URL(string: "https://api.fabric.microsoft.com")!
+
+        let tokenProvider = TokenProviderAdapter(auth: auth)
+        let onelake = OneLakeClient(http: http, tokenProvider: tokenProvider, baseURL: oneLakeURL)
+        let fabric  = FabricClient(http: http, tokenProvider: tokenProvider, baseURL: fabricURL)
+
+        // 5. Sync engine (per-alias).
+        let scratchBase = paths.cacheDir.appendingPathComponent("partials")
+        let syncEngine = SyncEngine(
+            cache: sharedCache,
+            onelake: onelake,
+            fabric: fabric,
+            logger: logger,
+            telemetry: sharedTelemetry,
+            scratchBase: scratchBase
+        )
+        self.sync = syncEngine
+    }
+
+    /// Builds all subsystems autonomously — constructs its own cache, telemetry,
+    /// and gate registry.
+    ///
+    /// Intended for standalone use (tests, CLI tools, one-engine scenarios) where
+    /// a process-wide shared container is not available. Production FPE code should
+    /// use the injected-dependency initialiser to share subsystems across engines.
+    ///
+    /// - Parameters:
+    ///   - configStore: The loaded TOML config.
+    ///   - paths: Resolved on-disk paths (cache dir, log dir, etc.).
     ///   - httpBaseURLs: Override the default DFS / Fabric base URLs. Pass
     ///     `nil` to use the production endpoints.
     public init(
@@ -75,9 +167,6 @@ public actor OfemEngine {
         let cfg = configStore.snapshot()
 
         // 1. Logger.
-        // store-14: wire RotatingFileWriter so on-disk logs are produced.
-        // Use LogLevel(string:) to honour all four levels; fall back to .info
-        // for an unrecognised value (matches LogLevel.init(string:) semantics).
         let logLevel: LogLevel = LogLevel(string: cfg.log.level) ?? .info
         let fileWriter = RotatingFileWriter(logDirectory: paths.logDir)
         let logConfig = LogConfiguration(
@@ -112,8 +201,7 @@ public actor OfemEngine {
         )
         self.telemetry = telClient
 
-        // 3. Auth — OfemAuth is now a Swift actor (not @MainActor), so init
-        //    no longer forces the engine init onto the main thread.
+        // 3. Auth.
         let auth = OfemAuth(configStore: configStore)
         self.auth = auth
 
@@ -151,6 +239,9 @@ public actor OfemEngine {
     // MARK: - Lifecycle
 
     /// Starts background tasks (telemetry flush timer).
+    ///
+    /// When using a shared `TelemetryClient`, `start()` is idempotent — the
+    /// client's own guard prevents double-starting.
     public func start() async {
         guard !started else { return }
         started = true
@@ -159,6 +250,10 @@ public actor OfemEngine {
     }
 
     /// Stops background tasks and performs a final telemetry flush.
+    ///
+    /// When using a shared `TelemetryClient`, the caller (FPEEngineHost) is
+    /// responsible for calling `shutdown()` only once, after the last engine
+    /// that owns the client has been torn down.
     public func shutdown() async {
         await telemetry.shutdown()
         Self.log.info("OfemEngine: shutdown complete")

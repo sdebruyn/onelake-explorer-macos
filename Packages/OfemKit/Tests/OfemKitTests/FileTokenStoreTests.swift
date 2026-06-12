@@ -135,17 +135,55 @@ struct FileTokenStoreTests {
         #expect(try store.read(alias: alias) == data)
     }
 
-    @Test("alias with special characters maps to unique filename (no collisions)")
-    func noAliasCollisions() throws {
+    // NOTE: The old test named "noAliasCollisions" used plain ASCII aliases
+    // ("alias-a" vs "alias-b") which duplicated multipleAliasesIndependent and
+    // proved nothing about collision resistance. It has been renamed to reflect
+    // what it actually tests (tests-21).
+    @Test("ASCII aliases that differ by one character produce distinct filenames")
+    func asciiAliasesDifferByOneCharAreDistinct() throws {
         let store = try makeStore()
-        // These aliases differ only in non-trivial byte sequences —
-        // the hex encoding must produce different filenames.
         let a = Data("alias-a".utf8)
         let b = Data("alias-b".utf8)
         try store.write(alias: "alias-a", data: a)
         try store.write(alias: "alias-b", data: b)
         #expect(try store.read(alias: "alias-a") == a)
         #expect(try store.read(alias: "alias-b") == b)
+    }
+
+    // Real collision-resistance test: aliases that only differ after
+    // URL / percent encoding or case folding — a naïve encoder might
+    // produce the same filename for these pairs (tests-21).
+    @Test("aliases differing only after percent-encoding produce distinct filenames")
+    func aliasesWithPercentEncodingAmbiguityAreDistinct() throws {
+        let store = try makeStore()
+        // "a/b" and "a_b" could collide if "/" is percent-encoded to "_"
+        // (it must not be — hex encoding avoids this).
+        let aSlash = Data("token-slash".utf8)
+        let aUnderscore = Data("token-underscore".utf8)
+        try store.write(alias: "a/b", data: aSlash)
+        try store.write(alias: "a_b", data: aUnderscore)
+        #expect(try store.read(alias: "a/b") == aSlash)
+        #expect(try store.read(alias: "a_b") == aUnderscore)
+    }
+
+    @Test("precomposed and decomposed Unicode aliases produce distinct filenames")
+    func precomposedVsDecomposedAliasesAreDistinct() throws {
+        let store = try makeStore()
+        // "é" as precomposed (U+00E9) vs decomposed (U+0065 U+0301).
+        // A naïve percent/name encoder might normalise these to the same string.
+        let precomposed = "\u{00E9}"    // é (one code point)
+        let decomposed  = "\u{0065}\u{0301}"  // e + combining accent (two code points)
+        // Sanity check: Swift String treats these as equal (canonical equivalence).
+        // The file-system path derived from raw UTF-8 bytes differs, so the
+        // hex encoder must not lose that distinction.
+        let dataA = Data("precomposed".utf8)
+        let dataB = Data("decomposed".utf8)
+        // If the store uses raw UTF-8 hex encoding, the two aliases produce
+        // different byte sequences → different filenames → no collision.
+        try store.write(alias: precomposed, data: dataA)
+        try store.write(alias: decomposed,  data: dataB)
+        #expect(try store.read(alias: precomposed) == dataA)
+        #expect(try store.read(alias: decomposed)  == dataB)
     }
 
     // MARK: - Overwrite

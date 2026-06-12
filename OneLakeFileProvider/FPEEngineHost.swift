@@ -21,6 +21,16 @@
 // domain's handler just wrote. OfemClientControlService accesses the
 // store via `engineHost.configStore()` which returns this shared instance.
 //
+// Process-wide shared subsystems (arch-04): all FPEEngineHost instances also
+// share one CacheStore, one TelemetryClient, and one HTTPGateRegistry via the
+// `shared*` static properties below.  This eliminates:
+//   - N DatabasePool writers over the same SQLite file.
+//   - N BlobShardCache instances over the same shard directory.
+//   - N TelemetryClient flush timers.
+//   - N HTTPGateRegistry instances that would multiply per-host budgets.
+//   - Blob byte-budget enforcement N times over a shared store (each engine
+//     believed it could use the full cap independently).
+//
 // fpe-10 fix: a transient build failure is not cached permanently.
 //   A failed build stores `_buildError` plus the timestamp of the
 //   failure. `engine()` retries after a short back-off window
@@ -80,6 +90,96 @@ final class FPEEngineHost: Sendable {
         }
     }
 
+    // MARK: - Process-wide shared subsystems (arch-04)
+
+    // CacheStore, TelemetryClient, and HTTPGateRegistry are shared across all
+    // FPEEngineHost instances in this process.  Building N copies over the same
+    // on-disk state causes:
+    //   - N DatabasePool writers contending over one SQLite WAL file.
+    //   - N BlobShardCache instances over the same shard directory.
+    //   - Blob byte-budget multiplied: each engine believed it owned the full cap.
+    //   - N TelemetryClient flush timers.
+    //   - N HTTPGateRegistry instances multiplying per-endpoint budgets.
+    // One shared instance of each fixes all of the above.
+
+    private static let sharedSubsystemsLock = NSLock()
+    private static nonisolated(unsafe) var _sharedCache: CacheStore?
+    private static nonisolated(unsafe) var _sharedTelemetry: TelemetryClient?
+    private static nonisolated(unsafe) var _sharedGateRegistry: HTTPGateRegistry?
+
+    /// Returns (or lazily creates) the process-wide CacheStore.
+    ///
+    /// The first call constructs the store from the default `OfemPaths.cacheDir`
+    /// and the `cfg.cache.maxBytes` limit read from the shared config store.
+    ///
+    /// - Throws: `CacheError` if the SQLite file cannot be opened or migrated.
+    static func sharedCache() throws -> CacheStore {
+        try sharedSubsystemsLock.withLock {
+            if let c = _sharedCache { return c }
+            let cfg = try sharedConfigStore().snapshot()
+            let paths = OfemPaths()
+            let c = try CacheStore(root: paths.cacheDir, maxBlobBytes: cfg.cache.maxBytes)
+            _sharedCache = c
+            return c
+        }
+    }
+
+    /// Returns (or lazily creates) the process-wide TelemetryClient.
+    ///
+    /// - Throws: `OfemConfigError` if the shared config store cannot be loaded.
+    static func sharedTelemetry() throws -> TelemetryClient {
+        try sharedSubsystemsLock.withLock {
+            if let t = _sharedTelemetry { return t }
+            let cfg = try sharedConfigStore().snapshot()
+            let telSink: any TelemetrySink
+            if cfg.telemetry,
+               let sink = try? AppInsightsSink(
+                   connectionString: BuildInfo.appInsightsConnectionString,
+                   installID: cfg.installID,
+                   appVersion: BuildInfo.version
+               ) {
+                telSink = sink
+            } else {
+                telSink = NoopTelemetrySink()
+            }
+            let t = TelemetryClient(
+                sink: telSink,
+                appVersion: BuildInfo.version,
+                installID: cfg.installID,
+                configuration: TelemetryConfiguration(optOut: !cfg.telemetry)
+            )
+            _sharedTelemetry = t
+            return t
+        }
+    }
+
+    /// Returns (or lazily creates) the process-wide HTTPGateRegistry.
+    static func sharedGateRegistry() -> HTTPGateRegistry {
+        sharedSubsystemsLock.withLock {
+            if let g = _sharedGateRegistry { return g }
+            let g = HTTPGateRegistry.makeDefault()
+            _sharedGateRegistry = g
+            return g
+        }
+    }
+
+    /// Invalidates all process-wide shared subsystem singletons.
+    ///
+    /// Called when the FPE process is torn down (all domains have been
+    /// invalidated) so that the next process launch starts clean.  Not
+    /// needed in the normal flow — the OS kills the FPE process after the
+    /// last domain shuts down — but useful for testing.
+    static func resetSharedSubsystems() {
+        sharedSubsystemsLock.withLock {
+            _sharedCache = nil
+            _sharedTelemetry = nil
+            _sharedGateRegistry = nil
+        }
+        sharedStoreLock.withLock {
+            _sharedConfigStore = nil
+        }
+    }
+
     // MARK: - Mutable state (guarded by lock)
 
     private let lock = NSLock()
@@ -134,10 +234,12 @@ final class FPEEngineHost: Sendable {
 
     /// Returns the engine, building it on first call.
     ///
-    /// Building the engine involves loading the config, creating the
-    /// SQLite cache store, and wiring up the HTTP clients — all safe
-    /// to do in the FPE's process. Construction is serialised by a
-    /// lock so concurrent callers do not race to create multiple engines.
+    /// Building the engine involves loading the config, wiring up the HTTP
+    /// clients, and constructing the per-alias subsystems — all safe to do
+    /// in the FPE's process. The shared CacheStore, TelemetryClient, and
+    /// HTTPGateRegistry are obtained from process-wide singletons. Construction
+    /// is serialised by a lock so concurrent callers do not race to create
+    /// multiple engines.
     ///
     /// - Throws:
     ///   - `NSFileProviderError(.cannotSynchronize)` once ``shutdown()`` or
@@ -189,6 +291,10 @@ final class FPEEngineHost: Sendable {
     /// `OfemClientControlService` calls this after a successful `setConfig`
     /// write so the new settings (log level, telemetry, cache limit, etc.)
     /// take effect without waiting for the FPE process to terminate.
+    ///
+    /// Note: reloading an engine does NOT recreate the shared CacheStore,
+    /// TelemetryClient, or HTTPGateRegistry — those are process-wide singletons
+    /// that persist for the lifetime of the FPE process.
     func reloadEngine() async {
         let existing: OfemEngine? = lock.withLock {
             let e = _engine
@@ -247,10 +353,24 @@ final class FPEEngineHost: Sendable {
             // read from the same in-memory snapshot.
             let cs = try configStore()
             let paths = OfemPaths()
-            let engine = try OfemEngine(configStore: cs, paths: paths)
+
+            // Obtain (or lazily create) the process-wide shared subsystems.
+            // All engines in this FPE process share the same CacheStore,
+            // TelemetryClient, and HTTPGateRegistry (arch-04).
+            let cache = try FPEEngineHost.sharedCache()
+            let telemetry = try FPEEngineHost.sharedTelemetry()
+            let gateRegistry = FPEEngineHost.sharedGateRegistry()
+
+            let engine = try OfemEngine(
+                configStore: cs,
+                paths: paths,
+                sharedCache: cache,
+                sharedTelemetry: telemetry,
+                sharedGateRegistry: gateRegistry
+            )
             lock.withLock { _engine = engine }
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine built")
-            // Fire-and-forget start (telemetry flush timer, etc.)
+            // Fire-and-forget start (telemetry flush timer start is idempotent).
             Task { await engine.start() }
             return engine
         } catch {

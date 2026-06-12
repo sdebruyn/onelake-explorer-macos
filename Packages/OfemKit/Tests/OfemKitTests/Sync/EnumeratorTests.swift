@@ -141,4 +141,121 @@ struct EnumeratorTests {
             try Enumerator.page(items: items, cursor: "not-base64!!!")
         }
     }
+
+    // MARK: - isFresh (tests-17: deterministic via injectable clock)
+
+    private func makeDir(childrenSyncedAt: Date?) -> MetadataRecord {
+        MetadataRecord(
+            accountAlias: "test",
+            workspaceID: "ws",
+            itemID: "item",
+            path: "Files",
+            parentPath: "",
+            name: "Files",
+            isDir: true,
+            childrenSyncedAtNs: childrenSyncedAt.map { Int64($0.timeIntervalSince1970 * 1_000_000_000) } ?? 0
+        )
+    }
+
+    @Test func isFreshNilChildrenSyncedAtIsAlwaysStale() {
+        let record = makeDir(childrenSyncedAt: nil)
+        #expect(!Enumerator.isFresh(record: record, ttl: 300))
+    }
+
+    @Test func isFreshWithinTTLReturnsFresh() {
+        let anchor = Date(timeIntervalSince1970: 1_000_000)
+        let record = makeDir(childrenSyncedAt: anchor)
+        // "now" is 60 s after anchor, TTL = 300 s → still fresh.
+        let now = anchor.addingTimeInterval(60)
+        #expect(Enumerator.isFresh(record: record, ttl: 300, now: now))
+    }
+
+    @Test func isFreshExactlyAtTTLBoundaryReturnsFresh() {
+        let anchor = Date(timeIntervalSince1970: 1_000_000)
+        let record = makeDir(childrenSyncedAt: anchor)
+        // "now" is exactly TTL seconds after anchor — boundary: still fresh.
+        let now = anchor.addingTimeInterval(300)
+        #expect(Enumerator.isFresh(record: record, ttl: 300, now: now))
+    }
+
+    @Test func isFreshOneSecondOverTTLReturnsStale() {
+        let anchor = Date(timeIntervalSince1970: 1_000_000)
+        let record = makeDir(childrenSyncedAt: anchor)
+        // "now" is one second past TTL — stale.
+        let now = anchor.addingTimeInterval(301)
+        #expect(!Enumerator.isFresh(record: record, ttl: 300, now: now))
+    }
+
+    @Test func isFreshZeroTTLAlwaysStale() {
+        let anchor = Date(timeIntervalSince1970: 1_000_000)
+        let record = makeDir(childrenSyncedAt: anchor)
+        // TTL = 0 and now is after anchor → stale.
+        let now = anchor.addingTimeInterval(1)
+        #expect(!Enumerator.isFresh(record: record, ttl: 0, now: now))
+    }
+
+    // MARK: - entryChanged (tests-17: diff predicate coverage)
+
+    private func makeRecord(
+        isDir: Bool = false,
+        contentLength: Int64 = 100,
+        etag: String = "abc",
+        lastModifiedNs: Int64 = 1000,
+        name: String = "file.txt",
+        parentPath: String = "Files"
+    ) -> MetadataRecord {
+        MetadataRecord(
+            accountAlias: "test",
+            workspaceID: "ws",
+            itemID: "item",
+            path: "Files/file.txt",
+            parentPath: parentPath,
+            name: name,
+            isDir: isDir,
+            contentLength: contentLength,
+            etag: etag,
+            lastModifiedNs: lastModifiedNs
+        )
+    }
+
+    @Test func entryChangedIdenticalRecordsReturnsFalse() {
+        let r = makeRecord()
+        #expect(!Enumerator.entryChanged(current: r, next: r))
+    }
+
+    @Test func entryChangedIsDirChange() {
+        let current = makeRecord(isDir: false)
+        let next = makeRecord(isDir: true)
+        #expect(Enumerator.entryChanged(current: current, next: next))
+    }
+
+    @Test func entryChangedContentLengthChange() {
+        let current = makeRecord(contentLength: 100)
+        let next = makeRecord(contentLength: 200)
+        #expect(Enumerator.entryChanged(current: current, next: next))
+    }
+
+    @Test func entryChangedEtagChange() {
+        let current = makeRecord(etag: "abc")
+        let next = makeRecord(etag: "def")
+        #expect(Enumerator.entryChanged(current: current, next: next))
+    }
+
+    @Test func entryChangedLastModifiedChange() {
+        let current = makeRecord(lastModifiedNs: 1000)
+        let next = makeRecord(lastModifiedNs: 2000)
+        #expect(Enumerator.entryChanged(current: current, next: next))
+    }
+
+    @Test func entryChangedNameChange() {
+        let current = makeRecord(name: "old.txt")
+        let next = makeRecord(name: "new.txt")
+        #expect(Enumerator.entryChanged(current: current, next: next))
+    }
+
+    @Test func entryChangedParentPathChange() {
+        let current = makeRecord(parentPath: "Files")
+        let next = makeRecord(parentPath: "Tables")
+        #expect(Enumerator.entryChanged(current: current, next: next))
+    }
 }
