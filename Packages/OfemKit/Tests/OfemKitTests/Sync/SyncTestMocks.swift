@@ -45,7 +45,8 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
     struct WriteCall {
         let alias: String
         let path: String
-        let content: Data
+        let content: Data?
+        let sourceURL: URL?
         let size: Int64
     }
 
@@ -81,11 +82,30 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
         return try dequeue(&readResults, name: "read")
     }
 
+    func read(
+        alias: String, workspaceGUID: String, itemGUID: String,
+        path: String, range: Range<Int64>?, ifMatch: String,
+        destination: FileHandle
+    ) async throws -> PathProperties {
+        lock.withLock { readCalls.append(ReadCall(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, path: path, range: range, ifMatch: ifMatch)) }
+        let (data, props) = try dequeue(&readResults, name: "read")
+        try destination.write(contentsOf: data)
+        return props
+    }
+
     func write(
         alias: String, workspaceGUID: String, itemGUID: String,
         path: String, content: Data, size: Int64
     ) async throws {
-        lock.withLock { writeCalls.append(WriteCall(alias: alias, path: path, content: content, size: size)) }
+        lock.withLock { writeCalls.append(WriteCall(alias: alias, path: path, content: content, sourceURL: nil, size: size)) }
+        try dequeueVoid(&writeResults, name: "write")
+    }
+
+    func write(
+        alias: String, workspaceGUID: String, itemGUID: String,
+        path: String, sourceURL: URL, size: Int64
+    ) async throws {
+        lock.withLock { writeCalls.append(WriteCall(alias: alias, path: path, content: nil, sourceURL: sourceURL, size: size)) }
         try dequeueVoid(&writeResults, name: "write")
     }
 
@@ -187,9 +207,15 @@ final class BlockingMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendabl
         )
     }
 
+    func read(alias: String, workspaceGUID: String, itemGUID: String, path: String, range: Range<Int64>?, ifMatch: String, destination: FileHandle) async throws -> PathProperties {
+        let (data, props) = try await read(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, path: path, range: range, ifMatch: ifMatch)
+        try destination.write(contentsOf: data)
+        return props
+    }
     func listPath(alias: String, workspaceGUID: String, itemGUID: String, directory: String, recursive: Bool) async throws -> ListResult { ListResult(entries: []) }
     func getProperties(alias: String, workspaceGUID: String, itemGUID: String, path: String) async throws -> PathProperties { PathProperties.make() }
     func write(alias: String, workspaceGUID: String, itemGUID: String, path: String, content: Data, size: Int64) async throws {}
+    func write(alias: String, workspaceGUID: String, itemGUID: String, path: String, sourceURL: URL, size: Int64) async throws {}
     func createDirectory(alias: String, workspaceGUID: String, itemGUID: String, path: String) async throws {}
     func delete(alias: String, workspaceGUID: String, itemGUID: String, path: String, recursive: Bool) async throws {}
 }
