@@ -150,7 +150,7 @@ public actor OfemEngine {
 
     // MARK: - Lifecycle
 
-    /// Starts background tasks (telemetry flush timer, paused workspace sweep).
+    /// Starts background tasks (telemetry flush timer).
     public func start() async {
         guard !started else { return }
         started = true

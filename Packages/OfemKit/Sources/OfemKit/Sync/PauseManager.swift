@@ -28,7 +28,7 @@ public actor PauseManager {
     // MARK: - State
 
     private let cache: CacheStore
-    private let onelake: OneLakeClient
+    private let onelake: any OneLakeClientProtocol
     private let probeInterval: Duration
     private var inFlightProbes: Set<String> = []
 
@@ -63,7 +63,7 @@ public actor PauseManager {
     /// workspace. Default: ``defaultProbeInterval``.
     public init(
         cache: CacheStore,
-        onelake: OneLakeClient,
+        onelake: any OneLakeClientProtocol,
         probeInterval: Duration = PauseManager.defaultProbeInterval
     ) {
         self.cache = cache
@@ -117,15 +117,6 @@ public actor PauseManager {
             Self.log.warning("PauseManager: failed to persist paused status alias=\(alias, privacy: .public) ws=\(workspaceID, privacy: .public) err=\(error, privacy: .public)")
         }
         return true
-    }
-
-    /// Sweeps all workspaces currently flagged as paused and runs one recovery
-    /// probe per workspace.
-    public func sweepPausedWorkspaces() async {
-        guard let rows = try? await cache.allWorkspaceStatuses() else { return }
-        for row in rows where row.state == .paused {
-            _ = await probe(workspaceID: row.workspaceID, alias: row.accountAlias, current: row)
-        }
     }
 
     // MARK: - Paused-capacity detection (internal, nonisolated for reuse)

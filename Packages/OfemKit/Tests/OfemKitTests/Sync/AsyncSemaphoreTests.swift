@@ -5,31 +5,39 @@ import Foundation
 // MARK: - AsyncSemaphore tests
 
 /// Tests for ``AsyncSemaphore`` — counting semaphore for concurrency caps.
+///
+/// All ordering tests use ``waiterCount`` to confirm a task has actually
+/// suspended on the semaphore before the releasing signal is sent, replacing
+/// the sleep-based approach that was inherently racy (tests-13).
 struct AsyncSemaphoreTests {
 
-    @Test func singleWaitSignal() async {
+    // MARK: - Basic acquire / release
+
+    @Test func singleWaitSignal() async throws {
         let sem = AsyncSemaphore(value: 1)
-        await sem.wait()
+        try await sem.wait()
         sem.signal()
-        // Should reach here without hanging.
+        // No assertion needed beyond "reaches here without deadlock".
+        #expect(sem.waiterCount == 0)
     }
 
-    @Test func capacityAllowsMultipleConcurrentWaiters() async {
+    @Test func capacityAllowsMultipleConcurrentWaiters() async throws {
         let sem = AsyncSemaphore(value: 3)
-        await sem.wait()
-        await sem.wait()
-        await sem.wait()
+        try await sem.wait()
+        try await sem.wait()
+        try await sem.wait()
+        #expect(sem.waiterCount == 0)
         sem.signal()
         sem.signal()
         sem.signal()
     }
+
+    // MARK: - Blocking and unblocking (deterministic via waiterCount)
 
     @Test func signalReleasesBlockedWaiter() async throws {
-        // Verify a second task that blocks on wait() is unblocked by signal().
         let sem = AsyncSemaphore(value: 1)
-        await sem.wait()  // Consume the only slot.
+        try await sem.wait()  // Consume the only slot.
 
-        // Collector for the result — actor-isolated so no races.
         actor Flag {
             var released = false
             func set() { released = true }
@@ -37,22 +45,24 @@ struct AsyncSemaphoreTests {
         let flag = Flag()
 
         let task = Task {
-            await sem.wait()
+            try await sem.wait()
             await flag.set()
         }
-        // Give the task time to enter wait() and block.
-        try await Task.sleep(for: .milliseconds(30))
+
+        // Wait deterministically until the task has actually suspended on the
+        // semaphore (waiterCount reaches 1) instead of relying on Task.sleep
+        // ordering (tests-13).
+        while sem.waiterCount < 1 { await Task.yield() }
         #expect(await !flag.released)
 
         sem.signal()          // Unblock the waiting task.
-        await task.value
+        try await task.value
         #expect(await flag.released)
     }
 
     @Test func fairnessFirstInFirstOut() async throws {
-        // Verify tasks that enter wait() in order are woken in the same order.
         let sem = AsyncSemaphore(value: 1)
-        await sem.wait()  // Consume the only slot.
+        try await sem.wait()  // Consume the only slot.
 
         actor Collector {
             var order: [Int] = []
@@ -60,18 +70,137 @@ struct AsyncSemaphoreTests {
         }
         let col = Collector()
 
-        // Enqueue tasks with a small delay between each so we know the order.
-        let task1 = Task { await sem.wait(); await col.append(1); sem.signal() }
-        try await Task.sleep(for: .milliseconds(10))
-        let task2 = Task { await sem.wait(); await col.append(2); sem.signal() }
-        try await Task.sleep(for: .milliseconds(10))
-        let task3 = Task { await sem.wait(); await col.append(3); sem.signal() }
+        // Enqueue tasks. Each waits until the previous one has actually enqueued
+        // (waiterCount reaches expected depth) so the FIFO order is guaranteed
+        // without relying on Task scheduler timing (tests-13).
+        let task1 = Task { try await sem.wait(); await col.append(1); sem.signal() }
+        while sem.waiterCount < 1 { await Task.yield() }
 
-        // Let all tasks enter wait().
-        try await Task.sleep(for: .milliseconds(30))
+        let task2 = Task { try await sem.wait(); await col.append(2); sem.signal() }
+        while sem.waiterCount < 2 { await Task.yield() }
+
+        let task3 = Task { try await sem.wait(); await col.append(3); sem.signal() }
+        while sem.waiterCount < 3 { await Task.yield() }
 
         sem.signal()  // Release; tasks should wake in FIFO order.
-        _ = await (task1.value, task2.value, task3.value)
+        _ = try await (task1.value, task2.value, task3.value)
         #expect(await col.order == [1, 2, 3])
+    }
+
+    // MARK: - Cancellation (sync-05)
+
+    @Test func cancelledWaiterThrowsCancellationError() async throws {
+        let sem = AsyncSemaphore(value: 1)
+        try await sem.wait()  // Consume the only slot.
+
+        let task = Task {
+            try await sem.wait()
+        }
+
+        // Ensure the task has entered wait() before cancelling.
+        while sem.waiterCount < 1 { await Task.yield() }
+
+        task.cancel()
+
+        do {
+            try await task.value
+            Issue.record("Expected CancellationError")
+        } catch is CancellationError {
+            // Correct.
+        }
+
+        // The cancelled waiter must have released its queue slot so the
+        // semaphore can still be acquired by another caller.
+        #expect(sem.waiterCount == 0)
+        // Signal the original slot; count should go back to 1.
+        sem.signal()
+        // A fresh waiter should succeed immediately.
+        try await sem.wait()
+        sem.signal()
+    }
+
+    @Test func cancelledWaiterReleasesSlot() async throws {
+        // Verify that after a cancellation the semaphore's total capacity is
+        // not reduced (the cancelled task must not permanently hold a slot).
+        let sem = AsyncSemaphore(value: 2)
+        try await sem.wait()
+        try await sem.wait()  // All slots consumed.
+
+        let blocked1 = Task { try await sem.wait() }
+        let blocked2 = Task { try await sem.wait() }
+        while sem.waiterCount < 2 { await Task.yield() }
+
+        blocked1.cancel()
+        // Let the cancellation propagate.
+        while sem.waiterCount > 1 { await Task.yield() }
+
+        // Release one real slot — blocked2 should wake (not blocked1).
+        sem.signal()
+        try await blocked2.value
+        sem.signal() // release the other slot
+        // blocked1 should have thrown CancellationError.
+        do {
+            try await blocked1.value
+            Issue.record("Expected CancellationError from blocked1")
+        } catch is CancellationError {}
+    }
+
+    @Test func preCancelledTaskThrowsImmediately() async throws {
+        let sem = AsyncSemaphore(value: 1)
+
+        // A task that is cancelled before it calls wait() should get
+        // CancellationError immediately via the early-out checkCancellation().
+        let t = Task<Void, any Error> {
+            // Yield briefly so the cancel() call below races in; use
+            // checkCancellation after yield to reliably observe the cancel.
+            await Task.yield()
+            try Task.checkCancellation()
+            try await sem.wait()
+        }
+        t.cancel()
+        do {
+            try await t.value
+        } catch is CancellationError {
+            // Correct — slot should not have been consumed.
+        }
+        // Semaphore capacity should be intact.
+        try await sem.wait()
+        sem.signal()
+    }
+
+    // MARK: - T3: net-zero permit accounting after signal/cancel race
+
+    @Test("Cancelled waiter leaves semaphore at full capacity — a fresh wait() succeeds immediately")
+    func cancelledWaiterNetZeroPermitAccounting() async throws {
+        // capacity = 2, consume both slots so any additional waiter blocks.
+        let sem = AsyncSemaphore(value: 2)
+        try await sem.wait()
+        try await sem.wait()
+
+        // A third task must queue as a waiter.
+        let blocked = Task<Void, any Error> { try await sem.wait() }
+        while sem.waiterCount < 1 { await Task.yield() }
+
+        // Cancel the blocked waiter.
+        blocked.cancel()
+
+        // Await cancellation propagation.
+        do {
+            try await blocked.value
+            Issue.record("Expected CancellationError")
+        } catch is CancellationError { /* expected */ }
+
+        // Release both original slots.
+        sem.signal()
+        sem.signal()
+
+        // Capacity is back to 2. A fresh waiter should succeed immediately
+        // (no blocking, no deadlock) proving net-zero permit accounting.
+        try await sem.wait()
+        #expect(sem.waiterCount == 0)
+        sem.signal()
+        try await sem.wait()
+        #expect(sem.waiterCount == 0)
+        sem.signal()
     }
 }

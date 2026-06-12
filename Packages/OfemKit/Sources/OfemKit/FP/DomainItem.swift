@@ -286,11 +286,22 @@ func fallbackVersion(seed: String, size: Int64, mtime: Date?) -> Data {
     return Data(h.digest().bigEndian.bytes).base64EncodedData()
 }
 
+/// `ISO8601DateFormatter` is thread-safe; caching it as a `static let` avoids
+/// allocating one per `rfc3339(_:)` call — enumerating a 1,000-item page
+/// previously allocated ~2,000 formatters (sync-20).
 private func rfc3339(_ date: Date) -> String {
+    rfc3339Formatter.string(from: date)
+}
+
+// `ISO8601DateFormatter` is not `Sendable` but is safe to use from any
+// thread after construction — its configuration (formatOptions) is set
+// once and never mutated. `nonisolated(unsafe)` suppresses the Swift 6
+// diagnostic for this read-only global pattern (sync-20).
+nonisolated(unsafe) private let rfc3339Formatter: ISO8601DateFormatter = {
     let fmt = ISO8601DateFormatter()
     fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return fmt.string(from: date)
-}
+    return fmt
+}()
 
 // MARK: - Parent identifier helper
 

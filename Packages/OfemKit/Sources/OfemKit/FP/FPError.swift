@@ -118,6 +118,13 @@ private func oneLakeCode(for error: OneLakeError) -> FPError.Code {
         return .noSuchItem
     case .retriesExhausted:
         return .serverUnreachable
+    case .httpError(let inner):
+        // Unwrap the wrapped HTTPClientError so that throttling (429) is
+        // correctly classified as serverBusy (sync-12).
+        if let httpErr = inner as? HTTPClientError {
+            return httpCode(for: httpErr)
+        }
+        return .cannotSynchronize
     default:
         return .cannotSynchronize
     }
