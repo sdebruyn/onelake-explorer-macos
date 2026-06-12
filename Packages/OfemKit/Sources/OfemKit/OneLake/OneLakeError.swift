@@ -36,8 +36,18 @@ public enum OneLakeError: Error, Sendable {
     /// HTTP 412 — an ETag `If-Match` precondition failed.
     case preconditionFailed
 
+    /// HTTP 429 — the server is throttling this client.
+    ///
+    /// ``HTTPClient`` retries with backoff; this is only surfaced after all
+    /// retry attempts are exhausted.
+    case rateLimited
+
     /// Retries were exhausted. `attempts` is the total attempt count.
     case retriesExhausted(attempts: Int)
+
+    /// The task was cancelled by the caller. ``OneLakeClient`` maps
+    /// ``HTTPClientError/cancelled`` here.
+    case cancelled
 
     /// An unexpected HTTP or transport error.
     case httpError(any Error)
@@ -53,17 +63,33 @@ public enum OneLakeError: Error, Sendable {
 extension OneLakeError {
     /// Converts an ``HTTPClientError`` (or any error from the Net layer) to
     /// an ``OneLakeError``.
+    ///
+    /// Handles wrapped errors by unwrapping one level of `apiError` to match
+    /// the inner sentinel where possible.
     static func from(_ error: any Error) -> OneLakeError {
-        switch error {
+        // Unwrap apiError wrapper to reach the sentinel first.
+        let resolved: any Error
+        if let httpErr = error as? HTTPClientError,
+           case let HTTPClientError.apiError(ae) = httpErr,
+           let sentinel = ae.sentinel {
+            resolved = sentinel
+        } else {
+            resolved = error
+        }
+
+        switch resolved {
         case HTTPClientError.unauthorized:        return .unauthorized
         case HTTPClientError.forbidden:           return .forbidden
         case HTTPClientError.notFound:            return .notFound
         case HTTPClientError.conflict:            return .conflict
         case HTTPClientError.preconditionFailed:  return .preconditionFailed
+        case HTTPClientError.throttled:           return .rateLimited
+        case HTTPClientError.cancelled:           return .cancelled
+        case is CancellationError:                return .cancelled
         case let HTTPClientError.retriesExhausted(attempts, _):
             return .retriesExhausted(attempts: attempts)
         default:
-            return .httpError(error)
+            return .httpError(resolved)
         }
     }
 }

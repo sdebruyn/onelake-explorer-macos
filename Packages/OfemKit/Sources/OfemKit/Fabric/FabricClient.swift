@@ -68,8 +68,11 @@ public final class FabricClient: Sendable {
     /// - Parameters:
     /// - alias: Account alias to acquire the Fabric bearer token for.
     /// - continuation: Opaque continuation token from the previous page;
-    /// pass `nil` for the first page.
+    ///   pass `nil` for the first page.
     /// - Returns: A ``WorkspacePage`` with items and an optional next token.
+    ///   When the server returns only a `continuationUri` (no token), the page's
+    ///   `continuationToken` is `nil`; use ``listAllWorkspaces(alias:)`` to
+    ///   follow both continuation forms exhaustively (net-12).
     /// - Throws: ``FabricError`` on failure.
     public func listWorkspaces(
         alias: String,
@@ -77,14 +80,14 @@ public final class FabricClient: Sendable {
     ) async throws -> WorkspacePage {
         let url = fabricListURL(base: baseURL, path: "/v1/workspaces", continuationToken: continuation)
         let (data, _) = try await doRequest(alias: alias, method: "GET", url: url)
+        // net-13: the `catch let fabErr as FabricError` clause was unreachable —
+        // JSONDecoder never throws FabricError. Use a single catch instead.
         do {
             let page = try JSONDecoder().decode(FabricPageResponse<WireWorkspace>.self, from: data)
             return WorkspacePage(
                 items: page.value.map { $0.toWorkspace() },
                 continuationToken: resolvedContinuationToken(page)
             )
-        } catch let fabErr as FabricError {
-            throw fabErr
         } catch {
             throw FabricError.decodeFailed(error)
         }
@@ -128,14 +131,13 @@ public final class FabricClient: Sendable {
         let path = "/v1/workspaces/\(workspaceID)/items"
         let url = fabricListURL(base: baseURL, path: path, continuationToken: continuation)
         let (data, _) = try await doRequest(alias: alias, method: "GET", url: url)
+        // net-13: removed unreachable `catch let fabErr as FabricError` clause.
         do {
             let page = try JSONDecoder().decode(FabricPageResponse<WireItem>.self, from: data)
             return ItemPage(
                 items: page.value.map { $0.toItem() },
                 continuationToken: resolvedContinuationToken(page)
             )
-        } catch let fabErr as FabricError {
-            throw fabErr
         } catch {
             throw FabricError.decodeFailed(error)
         }
@@ -180,14 +182,13 @@ public final class FabricClient: Sendable {
         let path = "/v1/workspaces/\(workspaceID)/folders"
         let url = fabricListURL(base: baseURL, path: path, continuationToken: continuation)
         let (data, _) = try await doRequest(alias: alias, method: "GET", url: url)
+        // net-13: removed unreachable `catch let fabErr as FabricError` clause.
         do {
             let page = try JSONDecoder().decode(FabricPageResponse<WireFolder>.self, from: data)
             return FolderPage(
                 items: page.value.map { $0.toFolder() },
                 continuationToken: resolvedContinuationToken(page)
             )
-        } catch let fabErr as FabricError {
-            throw fabErr
         } catch {
             throw FabricError.decodeFailed(error)
         }
@@ -235,10 +236,9 @@ public final class FabricClient: Sendable {
         let path = "/v1/workspaces/\(workspaceID)/items/\(itemID)"
         let url = fabricItemURL(base: baseURL, path: path)
         let (data, _) = try await doRequest(alias: alias, method: "GET", url: url)
+        // net-13: removed unreachable `catch let fabErr as FabricError` clause.
         do {
             return try JSONDecoder().decode(WireItem.self, from: data).toItem()
-        } catch let fabErr as FabricError {
-            throw fabErr
         } catch {
             throw FabricError.decodeFailed(error)
         }
@@ -273,7 +273,7 @@ public final class FabricClient: Sendable {
 
     /// Walks a paginated Fabric collection, honouring either
     /// `continuationToken` (token replayed on the original path) or
-    /// `continuationUri` (absolute URL — issued as-is).
+    /// `continuationUri` (absolute or relative URL — resolved and issued directly).
     ///
     /// Three guards prevent a misbehaving server from looping forever:
     /// - Hard cap of ``maxPaginationPages``.
@@ -313,6 +313,8 @@ public final class FabricClient: Sendable {
                 nextURL = fabricListURL(base: baseURL, path: path, continuationToken: tok)
                 Self.log.debug("FabricClient: following continuationToken, page \(page + 1, privacy: .public), \(all.count, privacy: .public) items so far")
             } else if let uriString = pr.continuationUri, !uriString.isEmpty {
+                // net-12: a continuationUri-only response means more pages exist;
+                // it must not be silently treated as "last page".
                 // Guard against an identical URI returned twice in a row.
                 if uriString == prevURI {
                     throw FabricError.loopingPagination(
@@ -321,6 +323,8 @@ public final class FabricClient: Sendable {
                 }
                 prevURI = uriString
                 prevToken = ""
+                // net-06: resolveContinuationURI now resolves relative URIs
+                // against base so the result is always a usable absolute URL.
                 nextURL = try resolveContinuationURI(uriString, base: baseURL)
                 Self.log.debug("FabricClient: following continuationUri, page \(page + 1, privacy: .public), \(all.count, privacy: .public) items so far")
             } else {
@@ -337,12 +341,11 @@ public final class FabricClient: Sendable {
 
 /// Extracts the effective continuation token from a page response.
 ///
-/// Returns `continuationToken` when present. Returns `nil` when only
-/// `continuationUri` is present — the single-page API cannot safely round-trip
-/// a URI as an opaque token (it would be misinterpreted as a query parameter).
-/// Callers that need to follow `continuationUri` pagination must use the
-/// exhaust-all variants (``FabricClient/listAllWorkspaces(alias:)`` etc.),
-/// which handle both branches internally.
+/// Returns `continuationToken` when present and non-empty. Returns `nil` when
+/// only `continuationUri` is present — the single-page API callers cannot
+/// round-trip a URI as an opaque token. In that case the next-page state is
+/// lost; use the exhaust-all variants (``FabricClient/listAllWorkspaces(alias:)``
+/// etc.) which follow both continuation forms internally (net-12).
 private func resolvedContinuationToken<T>(_ page: FabricPageResponse<T>) -> String? {
     if let tok = page.continuationToken, !tok.isEmpty { return tok }
     return nil

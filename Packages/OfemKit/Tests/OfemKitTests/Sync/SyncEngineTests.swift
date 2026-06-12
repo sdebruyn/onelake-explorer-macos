@@ -93,7 +93,7 @@ struct SyncEngineTests {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
 
-        // Use a real store to test the "loadBlob fails so return allBytes" path.
+        // Use a real store to test the "blob URL is accessible after download" path.
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
@@ -103,9 +103,8 @@ struct SyncEngineTests {
         ol.readResults.append(.success((body, props)))
 
         // No cached blob → skip freshness check → download.
-        let data = try await engine.open(key: key)
-        // Even if the blob store failed (it won't in this test, but the path
-        // exercised is: loadBlob after storeBlob should return the same bytes).
+        let fileURL = try await engine.open(key: key)
+        let data = try Data(contentsOf: fileURL)
         #expect(data.count == 50)
     }
 
@@ -128,8 +127,10 @@ struct SyncEngineTests {
         // Launch two concurrent opens for the same key.
         async let r1 = engine.open(key: key)
         async let r2 = engine.open(key: key)
-        let (d1, d2) = try await (r1, r2)
+        let (url1, url2) = try await (r1, r2)
 
+        let d1 = try Data(contentsOf: url1)
+        let d2 = try Data(contentsOf: url2)
         #expect(d1.count == 30)
         #expect(d2.count == 30)
         // Only one network read should have occurred.
@@ -168,7 +169,8 @@ struct SyncEngineTests {
         ol.getPropertiesResults.append(.success(props))
 
         // Second open: should be served from cache without consuming the slot.
-        let data = try await engine.open(key: key)
+        let blobURL = try await engine.open(key: key)
+        let data = try Data(contentsOf: blobURL)
         #expect(data.count == 10)
         // Only one network read total (the first open).
         #expect(ol.readCalls.count == 1)
@@ -305,7 +307,7 @@ struct SyncEngineTests {
         let freshProps = PathProperties.make(contentLength: 20, eTag: "v2")
 
         // Task A starts the download — the blocking mock suspends inside read().
-        let taskA = Task<Data, any Error> { try await engine.open(key: key) }
+        let taskA = Task<URL, any Error> { try await engine.open(key: key) }
 
         // Wait until read() is entered so the in-flight entry exists in the actor.
         var readEnteredIter = ol.readEntered.makeAsyncIterator()
@@ -327,13 +329,14 @@ struct SyncEngineTests {
         // fresh download. The C1 fix ensures this works even if B were to receive
         // CancellationError from a stale entry (the generation guard prevents that).
         // Unblock the fresh read() call that B will issue.
-        let taskB = Task<Data, any Error> { try await engine.open(key: key) }
+        let taskB = Task<URL, any Error> { try await engine.open(key: key) }
 
         // Wait for B's read() to enter and unblock it.
         _ = await readEnteredIter.next()
         ol.unblock(data: freshBody, props: freshProps)
 
-        let resultB = try await taskB.value
+        let urlB = try await taskB.value
+        let resultB = try Data(contentsOf: urlB)
         #expect(resultB.count == 20)
         #expect(resultB == freshBody)
     }
@@ -363,10 +366,52 @@ struct SyncEngineTests {
             [.posixPermissions: 0o555], ofItemAtPath: store.blobRoot.path
         )
 
-        // open() must still return the downloaded bytes even though storeBlob failed.
-        let data = try await engine.open(key: key)
+        // open() must still return a usable file URL even though storeBlobFromURL failed.
+        let fileURL = try await engine.open(key: key)
+        let data = try Data(contentsOf: fileURL)
         #expect(data.count == 40)
         #expect(data == body)
+    }
+
+    // MARK: - blocker-1 regression: failed download discards spill so next open re-downloads
+
+    @Test("Non-412 download failure discards the spill so the next open re-downloads from scratch")
+    func testFailedDownloadDiscardsSpill() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+
+        // First attempt: network error mid-download.
+        // Wrap a transport error as OneLakeError.httpError (the form SyncEngine receives).
+        let networkErr = URLError(.networkConnectionLost)
+        ol.readResults.append(.failure(OneLakeError.httpError(networkErr)))
+
+        do {
+            _ = try await engine.open(key: key)
+            Issue.record("Expected error to be thrown on first open")
+        } catch {
+            // Expected — download failed.
+        }
+
+        // Second attempt: succeeds. If the spill was NOT discarded the engine
+        // would try to resume from a stale offset using a stale/missing etag, which
+        // could corrupt the download or produce a confusing error. The fix ensures
+        // discard() is called so the second open issues a fresh full download.
+        let body = Data(repeating: 0xAB, count: 20)
+        let props = PathProperties.make(contentLength: 20, eTag: "v1")
+        ol.readResults.append(.success((body, props)))
+
+        let url = try await engine.open(key: key)
+        let data = try Data(contentsOf: url)
+        #expect(data.count == 20)
+        #expect(data == body)
+        // Exactly one read call for each attempt (first fails, second succeeds).
+        #expect(ol.readCalls.count == 2)
+        // Second read must use range: nil (full download, not a resume).
+        #expect(ol.readCalls[1].range == nil)
     }
 
     // MARK: - sync-15: batch reconciliation

@@ -60,7 +60,10 @@ public actor SyncEngine {
     /// In-flight download tasks keyed by CacheKey string representation.
     /// A second `open()` for the same key awaits the first's result rather than
     /// racing on the spill file (sync-06).
-    private var inFlightDownloads: [String: Task<Data, any Error>] = [:]
+    ///
+    /// The task resolves to a file URL pointing to the committed blob in the
+    /// blob cache (or a spill file when cache storage failed).
+    private var inFlightDownloads: [String: Task<URL, any Error>] = [:]
 
     /// Generation counter per key — incremented each time a new download task is
     /// spawned for a key. Used to guard against a stale cleanup (from a previous,
@@ -485,13 +488,17 @@ public actor SyncEngine {
 
     /// Downloads a file, serving from the local blob cache when fresh.
     ///
+    /// Returns a file URL rather than in-memory `Data` so the FPE can write
+    /// directly to its staging destination without buffering the entire file
+    /// (arch-07/sync-02: streaming contract).
+    ///
     /// Concurrent calls for the same key are coalesced: the second caller
     /// awaits the first's in-flight task rather than issuing a duplicate
     /// download (sync-06).
     ///
     /// The blob cache is checked BEFORE acquiring a download semaphore slot, so
     /// cache hits never consume a slot (sync-19).
-    public func open(key: CacheKey) async throws -> Data {
+    public func open(key: CacheKey) async throws -> URL {
         let start = Date()
         try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)
 
@@ -505,7 +512,7 @@ public actor SyncEngine {
                 let (fresh, _) = try await isBlobFresh(key: key, cached: c)
                 if fresh {
                     await offlineTracker.observe(nil)
-                    if let data = try? await cache.loadBlob(key: key) {
+                    if let blobURL = try? await cache.blobURL(key: key) {
                         await loggedTry({ try await self.cache.touch(key: key) }, "open: touch")
                         await track(TelemetryEvent(
                             name: "file_download",
@@ -513,7 +520,7 @@ public actor SyncEngine {
                             durationMs: elapsedMs(since: start),
                             success: true
                         ))
-                        return data
+                        return blobURL
                     }
                 }
                 // Remote moved on — fall through to download.
@@ -534,8 +541,8 @@ public actor SyncEngine {
                     ))
                     throw SyncError.workspacePaused
                 }
-                // Offline fallback: serve stale bytes when the HEAD failed offline.
-                if await offlineTracker.isOffline, let data = try? await cache.loadBlob(key: key) {
+                // Offline fallback: serve stale blob when the HEAD failed offline.
+                if await offlineTracker.isOffline, let blobURL = try? await cache.blobURL(key: key) {
                     logger.debug("offline; serving stale cached blob", metadata: ["path": key.path])
                     await track(TelemetryEvent(
                         name: "file_download",
@@ -544,7 +551,7 @@ public actor SyncEngine {
                         success: true,
                         errorCode: "served_stale_offline"
                     ))
-                    return data
+                    return blobURL
                 }
                 throw error
             }
@@ -581,7 +588,7 @@ public actor SyncEngine {
             return next
         }()
 
-        let task = Task<Data, any Error> { [self] in
+        let task = Task<URL, any Error> { [self] in
             try await self.performDownload(key: key, start: start, cached: cached)
         }
         inFlightDownloads[keyString] = task
@@ -613,10 +620,16 @@ public actor SyncEngine {
 
     // MARK: - Put (upload)
 
-    /// Uploads `content` to OneLake and mirrors the result in the blob cache.
+    /// Uploads the file at `sourceURL` to OneLake and mirrors it in the blob
+    /// cache.
+    ///
+    /// Streams the content in bounded chunks from `sourceURL` so the entire
+    /// file is never resident in memory (arch-07/sync-02). The source file is
+    /// also stored in the blob cache via ``CacheStore/storeBlobFromURL(_:key:)``
+    /// which moves/copies the file without reading it into RAM.
     ///
     /// macOS metadata files are silently swallowed (no telemetry, no upload).
-    public func put(key: CacheKey, content: Data) async throws {
+    public func put(key: CacheKey, sourceURL: URL) async throws {
         if isMacOSMetadata(key.path) {
             logger.debug("ignoring macOS metadata upload", metadata: ["path": key.path])
             return
@@ -627,7 +640,16 @@ public actor SyncEngine {
         defer { releaseUploadSlot(alias: key.accountAlias) }
 
         let start = Date()
-        let size = Int64(content.count)
+        // Determine size from the file on disk.
+        // FileAttributeKey.size is typed as NSNumber on Apple platforms; use
+        // int64Value to avoid the direct Int64 cast silently returning nil.
+        let fileSize: Int64
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
+            fileSize = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        } catch {
+            throw SyncError.spillFileError(error)
+        }
 
         do {
             try await onelake.write(
@@ -635,8 +657,8 @@ public actor SyncEngine {
                 workspaceGUID: key.workspaceID,
                 itemGUID: key.itemID,
                 path: key.path,
-                content: content,
-                size: size
+                sourceURL: sourceURL,
+                size: fileSize
             )
         } catch {
             try await withRemoteOperationError(
@@ -657,7 +679,7 @@ public actor SyncEngine {
             parentPath: Enumerator.parentPath(key.path),
             name: Enumerator.baseName(key.path),
             isDir: false,
-            contentLength: size,
+            contentLength: fileSize,
             lastAccessedNs: nowNs,
             syncedAtNs: nowNs
         )
@@ -674,15 +696,20 @@ public actor SyncEngine {
         }
         let rowCopy = row
         await loggedTry({ try await self.cache.upsert(rowCopy) }, "put: upsert")
-        // Mirror bytes locally (best-effort: upload already succeeded).
-        await loggedTry({ try await self.cache.storeBlob(key: key, data: content) }, "put: storeBlob")
+        // Mirror locally (best-effort: upload already succeeded).
+        // Note: storeBlobFromURL prefers an atomic moveItem (same-volume, zero-copy),
+        // which removes sourceURL from its original location. On FPE retry the
+        // source URL supplied by the framework may be absent, but deduplication in
+        // BlobShardCache means the blob is already stored and the loggedTry silently
+        // ignores the missing-source error without impacting cache correctness.
+        await loggedTry({ try await self.cache.storeBlobFromURL(sourceURL, key: key) }, "put: storeBlobFromURL")
 
         await track(TelemetryEvent(
             name: "file_upload",
             accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
             durationMs: elapsedMs(since: start),
             success: true,
-            bytesTransferred: size
+            bytesTransferred: fileSize
         ))
     }
 
@@ -793,9 +820,13 @@ public actor SyncEngine {
     /// Executes the actual network download for `open()`.
     ///
     /// Acquires a semaphore slot, handles the 412-resume-discard-retry path
-    /// with correct state reset (sync-01), and ensures downloaded bytes are
-    /// returned even when the blob-store write fails (sync-07).
-    private func performDownload(key: CacheKey, start: Date, cached: MetadataRecord?) async throws -> Data {
+    /// with correct state reset (sync-01), and returns a file URL rather than
+    /// in-memory `Data` (arch-07/sync-02: streaming contract).
+    ///
+    /// The download streams into the spill file via the FileHandle-based
+    /// ``OneLakeClientProtocol/read(alias:workspaceGUID:itemGUID:path:range:ifMatch:destination:)``
+    /// overload — the response body is never resident in memory as a whole.
+    private func performDownload(key: CacheKey, start: Date, cached: MetadataRecord?) async throws -> URL {
         try await acquireDownloadSlot(alias: key.accountAlias)
         defer { releaseDownloadSlot(alias: key.accountAlias) }
 
@@ -811,16 +842,41 @@ public actor SyncEngine {
         let range: Range<Int64>? = hasPartial ? rangeStart..<Int64.max : nil
         let ifMatch = pinnedEtag ?? ""
 
-        var bodyData: Data
-        var props: PathProperties
+        // Open (or create) the spill file at the write offset so the streaming
+        // read writes directly to disk without a full in-memory buffer.
+        let spillURL = partials.partialURL(for: key)
+        try FileManager.default.createDirectory(
+            at: spillURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        if !FileManager.default.fileExists(atPath: spillURL.path) {
+            FileManager.default.createFile(atPath: spillURL.path, contents: nil)
+        }
+        let spillHandle: FileHandle
         do {
-            (bodyData, props) = try await onelake.read(
+            spillHandle = try FileHandle(forUpdating: spillURL)
+        } catch {
+            throw SyncError.spillFileError(error)
+        }
+        defer { try? spillHandle.close() }
+        // Seek to the resume offset so appended bytes land in the right place.
+        try spillHandle.seek(toOffset: UInt64(rangeStart))
+
+        // Sentinel initializer: withRemoteOperationError is Never-returning, so the
+        // compiler already considers both catch branches exhaustive. The explicit
+        // initializer guards against a future refactor that weakens that guarantee
+        // and would otherwise leave `props` read uninitialised (blocker-2).
+        var props = PathProperties(
+            isDirectory: false, contentLength: 0, eTag: "", lastModified: .distantPast, contentType: ""
+        )
+        do {
+            props = try await onelake.read(
                 alias: key.accountAlias,
                 workspaceGUID: key.workspaceID,
                 itemGUID: key.itemID,
                 path: key.path,
                 range: range,
-                ifMatch: ifMatch
+                ifMatch: ifMatch,
+                destination: spillHandle
             )
         } catch {
             // 412 on resume: reset ALL resume state so the full-file retry
@@ -831,25 +887,42 @@ public actor SyncEngine {
                 rangeStart = 0
                 hasPartial = false
                 pinnedEtag = nil
+                // Re-create the spill file from scratch.
+                try? spillHandle.close()
+                try? FileManager.default.removeItem(at: spillURL)
+                FileManager.default.createFile(atPath: spillURL.path, contents: nil)
+                let freshHandle: FileHandle
                 do {
-                    (bodyData, props) = try await onelake.read(
+                    freshHandle = try FileHandle(forUpdating: spillURL)
+                } catch {
+                    throw SyncError.spillFileError(error)
+                }
+                defer { try? freshHandle.close() }
+                do {
+                    props = try await onelake.read(
                         alias: key.accountAlias,
                         workspaceGUID: key.workspaceID,
                         itemGUID: key.itemID,
                         path: key.path,
                         range: nil,
-                        ifMatch: ""
+                        ifMatch: "",
+                        destination: freshHandle
                     )
                 } catch {
-                    // C3: route the retry's error through the shared handler so
-                    // telemetry is emitted and the pause manager is consulted,
-                    // even if the server sends a second 412 (non-spec but observed).
+                    // C3: discard spill before rethrowing so the next open()
+                    // starts from scratch rather than resuming into a new remote
+                    // file at a stale offset (blocker-1).
+                    partials.discard(for: key)
                     try await withRemoteOperationError(
                         error: error, key: key, eventName: "file_download",
                         failCode: "read_failed", start: start
                     )
                 }
             } else {
+                // Non-412 failure: discard any spill + etag sidecar before
+                // rethrowing so the next open() re-downloads from scratch
+                // instead of resuming at a stale offset (blocker-1).
+                partials.discard(for: key)
                 try await withRemoteOperationError(
                     error: error, key: key, eventName: "file_download",
                     failCode: "read_failed", start: start
@@ -861,7 +934,7 @@ public actor SyncEngine {
         // Pin the partial etag.
         if !hasPartial && !props.eTag.isEmpty {
             let etagToStore = props.eTag
-        await loggedTry({ try self.partials.storeEtag(etagToStore, for: key) }, "open: storeEtag")
+            await loggedTry({ try self.partials.storeEtag(etagToStore, for: key) }, "open: storeEtag")
         }
 
         // Compute total expected.
@@ -870,16 +943,34 @@ public actor SyncEngine {
             expectedTotal = hasPartial ? rangeStart + props.contentLength : props.contentLength
         }
 
-        let expectedSHA = hasPartial ? cached?.blobSHA256 : nil
-        let allBytes = try partials.finalise(
-            key: key,
-            body: bodyData,
-            rangeStart: rangeStart,
-            expectedTotal: expectedTotal,
-            expectedSHA: expectedSHA
-        )
+        // Determine how many bytes were written to the spill file.
+        // FileAttributeKey.size is typed as NSNumber on Apple platforms; use
+        // int64Value to avoid the direct Int64 cast silently returning nil.
+        let spillSize: Int64
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: spillURL.path)
+            spillSize = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        } catch {
+            throw SyncError.spillFileError(error)
+        }
 
-        // Upsert metadata row first (needed before storeBlob can link the SHA).
+        if expectedTotal > 0, spillSize != expectedTotal {
+            if spillSize > expectedTotal { partials.discard(for: key) }
+            throw SyncError.shortDownload(expected: expectedTotal, got: spillSize)
+        }
+
+        // SHA verification when an expected hash is known (sync-02: streaming
+        // hash — read file once rather than loading all bytes into memory).
+        let expectedSHA = hasPartial ? cached?.blobSHA256 : nil
+        if let expected = expectedSHA, !expected.isEmpty {
+            let got = try partials.hashSpillFile(spillURL)
+            if got != expected {
+                partials.discard(for: key)
+                throw SyncError.blobSHAMismatch(got: got, expected: expected)
+            }
+        }
+
+        // Upsert metadata row first (needed before storeBlobFromURL links the SHA).
         let now = Date()
         let nowNs = dateToNs(now)!
         var row = MetadataRecord(
@@ -890,7 +981,7 @@ public actor SyncEngine {
             parentPath: Enumerator.parentPath(key.path),
             name: Enumerator.baseName(key.path),
             isDir: false,
-            contentLength: expectedTotal > 0 ? expectedTotal : Int64(allBytes.count),
+            contentLength: expectedTotal > 0 ? expectedTotal : spillSize,
             etag: props.eTag,
             lastModifiedNs: dateToNs(props.lastModified) ?? 0,
             contentType: props.contentType,
@@ -900,33 +991,37 @@ public actor SyncEngine {
         if row.name.isEmpty { row.name = Enumerator.baseName(key.path) }
         let downloadRow = row
         await loggedTry({ try await self.cache.upsert(downloadRow) }, "open: upsert")
-        // C2: storeBlob updates blob_sha256 on success. When it fails (e.g.
-        // disk-full), blob_sha256 stays empty on the upserted row. The next
-        // open() skips the blob-fresh fast-path and issues a full HEAD + download
-        // again — acceptable per the project's best-effort cache policy (the
-        // remote download already succeeded; the local persistence is optional).
-        await loggedTry({ try await self.cache.storeBlob(key: key, data: allBytes) }, "open: storeBlob")
 
-        // Return bytes from cache when available; fall back to in-memory bytes
-        // when the blob store write failed (cache failure must not discard a
-        // successful download — sync-07).
-        let data: Data
-        if let cached = try? await cache.loadBlob(key: key) {
-            data = cached
+        // Move/copy spill file into the blob cache — no in-memory read needed.
+        await loggedTry(
+            { try await self.cache.storeBlobFromURL(spillURL, key: key) },
+            "open: storeBlobFromURL"
+        )
+
+        // Return the blob URL when available; fall back to the spill file when
+        // the cache store failed (sync-07 analogue: cache failure must not
+        // discard a successful download).
+        if let blobURL = try? await cache.blobURL(key: key) {
+            await track(TelemetryEvent(
+                name: "file_download",
+                accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
+                durationMs: elapsedMs(since: start),
+                success: true,
+                bytesTransferred: spillSize
+            ))
+            return blobURL
         } else {
-            logger.warn("open: blob cache unavailable; returning in-memory bytes",
+            logger.warn("open: blob cache unavailable; returning spill file URL",
                         metadata: ["path": key.path])
-            data = allBytes
+            await track(TelemetryEvent(
+                name: "file_download",
+                accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
+                durationMs: elapsedMs(since: start),
+                success: true,
+                bytesTransferred: spillSize
+            ))
+            return spillURL
         }
-
-        await track(TelemetryEvent(
-            name: "file_download",
-            accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-            durationMs: elapsedMs(since: start),
-            success: true,
-            bytesTransferred: Int64(data.count)
-        ))
-        return data
     }
 
     // MARK: - Private helpers
@@ -989,7 +1084,6 @@ public actor SyncEngine {
     /// event, and always rethrows.
     ///
     /// This collapses the five formerly copy-pasted catch/telemetry/pause blocks.
-    @discardableResult
     private func withRemoteOperationError(
         error: any Error,
         key: CacheKey,

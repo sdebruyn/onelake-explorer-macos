@@ -285,6 +285,31 @@ struct BlobShardCacheTests {
         #expect(reclaimed == 0)
     }
 
+    // MARK: - storeFromURL dedup returns correct size (blocker-4 regression)
+
+    @Test("storeFromURL deduplicate path returns the source file size, not 0 (blocker-4)")
+    func storeFromURLDedupReturnsCorrectSize() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let content = Data(repeating: 0x42, count: 256)
+
+        // Write a temp file and store it (first store — moves it to the blob store).
+        let src1 = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try content.write(to: src1)
+        // Use a copy so the original stays available for the second store call.
+        let src2 = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try content.write(to: src2)
+
+        let (sha1, size1) = try cache.storeFromURL(src1)
+        #expect(size1 == 256, "first store must return 256 bytes")
+
+        // Second store: the blob already exists — dedup path must return 256, not 0.
+        let (sha2, size2) = try cache.storeFromURL(src2)
+        #expect(sha1 == sha2, "SHA must match — same content")
+        #expect(size2 == 256, "dedup store must return the actual size, not 0 (blocker-4)")
+    }
+
     // MARK: - Wipe
 
     @Test("Wipe clears all blobs and metadata links")

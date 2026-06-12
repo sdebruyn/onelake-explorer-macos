@@ -115,6 +115,80 @@ public struct BlobShardCache: Sendable {
         }
     }
 
+    // MARK: - Store from URL
+
+    /// Hashes the file at `sourceURL`, moves/copies it into the blob store, and
+    /// returns its lowercase hex SHA-256 digest and size.
+    ///
+    /// Prefers an atomic `moveItem` from the same volume; falls back to a
+    /// copy + rename when the source is on a different volume or is read-only.
+    /// The existing blob is reused when a file with the same SHA-256 is already
+    /// present (deduplication).
+    ///
+    /// - Parameter sourceURL: Writable temporary file on the same volume as the
+    ///   blob store for a zero-copy move; any URL for a copy fallback.
+    public func storeFromURL(_ sourceURL: URL) throws -> (sha256: String, size: Int64) {
+        // Hash the source file in chunks — never load into memory.
+        var hasher = SHA256()
+        let hashHandle = try FileHandle(forReadingFrom: sourceURL)
+        defer { try? hashHandle.close() }
+        let bufSize = 1 * 1024 * 1024 // 1 MiB
+        while true {
+            let chunk = try hashHandle.read(upToCount: bufSize) ?? Data()
+            guard !chunk.isEmpty else { break }
+            hasher.update(data: chunk)
+        }
+        let sha = hasher.finalize().hexString
+        try? hashHandle.close()
+
+        let (shardDir, destURL) = shardPath(for: sha)
+
+        // Deduplicate: blob already on disk.
+        // Read the actual size from the source file (already hashed above) rather
+        // than the dest blob to avoid a silent zero when the NSNumber-typed
+        // FileAttributeKey.size cannot be cast to Int64 (blocker-4).
+        let srcAttrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
+        let size = (srcAttrs[.size] as? NSNumber)?.int64Value ?? 0
+
+        if FileManager.default.fileExists(atPath: destURL.path) {
+            Self.log.debug("BlobShardCache: blob already present sha=\(sha, privacy: .public) bytes=\(size, privacy: .public)")
+            return (sha, size)
+        }
+
+        try FileManager.default.createDirectory(at: shardDir, withIntermediateDirectories: true)
+
+        // Try atomic move first (same-volume, zero-copy).
+        do {
+            try FileManager.default.moveItem(at: sourceURL, to: destURL)
+        } catch CocoaError.fileWriteFileExists {
+            // Race: another writer arrived first — deduplicate.
+        } catch {
+            // Cross-volume or read-only source: copy then rename.
+            let tmpURL = blobRoot.appendingPathComponent("blob-\(UUID().uuidString).tmp")
+            defer { try? FileManager.default.removeItem(at: tmpURL) }
+            try FileManager.default.copyItem(at: sourceURL, to: tmpURL)
+            do {
+                try FileManager.default.moveItem(at: tmpURL, to: destURL)
+            } catch CocoaError.fileWriteFileExists {
+                // Race during fallback — deduplicate.
+            }
+        }
+
+        Self.log.debug("BlobShardCache: storedFromURL sha=\(sha, privacy: .public) bytes=\(size, privacy: .public)")
+        return (sha, size)
+    }
+
+    // MARK: - File URL
+
+    /// Returns the on-disk URL for the blob identified by `sha256`, or `nil`
+    /// when no such blob is stored.
+    public func fileURL(sha256: String) -> URL? {
+        guard sha256.count == Self.shaLength else { return nil }
+        let (_, url) = shardPath(for: sha256)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
     // MARK: - Delete
 
     /// Removes the blob file for `sha256`. A no-op if the file does not exist.
