@@ -231,13 +231,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 let blobURL = try await engine.sync.open(key: key)
 
                 // Copy blob to the staging destination without loading into RAM.
+                // Remove dest first so retries are idempotent: copyItem throws
+                // fileWriteFileExists if dest already exists from a prior attempt
+                // (non-blocking #6).
+                try? FileManager.default.removeItem(at: dest)
                 try FileManager.default.copyItem(at: blobURL, to: dest)
 
                 // Update progress from the file size on disk.
+                // FileAttributeKey.size is typed as NSNumber on Apple platforms;
+                // use int64Value to avoid the direct Int64 cast silently returning nil.
                 let actualBytes: Int64
                 if let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path),
-                   let sz = attrs[.size] as? Int64 {
-                    actualBytes = sz
+                   let sz = attrs[.size] as? NSNumber {
+                    actualBytes = sz.int64Value
                 } else {
                     actualBytes = knownSize
                 }
@@ -417,10 +423,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             do {
                 let engine = try await hostCopy.engine()
                 // Seed progress from file size — no in-memory load (fpe-03/arch-07).
+                // FileAttributeKey.size is typed as NSNumber on Apple platforms;
+                // use int64Value to avoid the direct Int64 cast silently returning nil.
                 let fileSize: Int64
                 if let attrs = try? FileManager.default.attributesOfItem(atPath: contentsURL.path),
-                   let sz = attrs[.size] as? Int64 {
-                    fileSize = sz
+                   let sz = attrs[.size] as? NSNumber {
+                    fileSize = sz.int64Value
                 } else {
                     fileSize = 0
                 }

@@ -30,9 +30,9 @@ public final class OneLakeClient: Sendable {
     /// Default DFS endpoint.
     public static let defaultBaseURL = URL(string: "https://onelake.dfs.fabric.microsoft.com")!
 
-    /// Body size for a single append call. 4 MiB is well under Azure's
+    /// Default body size for a single append call. 4 MiB is well under Azure's
     /// per-append limit (100 MiB) and aligns with typical FS block sizes.
-    static let chunkSize = 4 * 1024 * 1024
+    static let defaultChunkSize = 4 * 1024 * 1024
 
     /// Maximum pagination pages before giving up.
     static let maxPaginationPages = 1_000
@@ -42,6 +42,8 @@ public final class OneLakeClient: Sendable {
     private let http: HTTPClient
     private let tokenProvider: any TokenProvider
     private let baseURL: URL
+    /// Effective chunk size for append operations. Overridable in tests.
+    let chunkSize: Int
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "OneLakeClient")
 
@@ -53,14 +55,18 @@ public final class OneLakeClient: Sendable {
     /// - http: Shared ``HTTPClient`` (carries gate registry + retry policy).
     /// - tokenProvider: Supplies bearer tokens for account aliases.
     /// - baseURL: DFS endpoint. Default: ``defaultBaseURL``.
+    /// - chunkSize: Maximum bytes per append PATCH. Defaults to 4 MiB.
+    ///   Override in tests to exercise multi-chunk paths with small payloads.
     public init(
         http: HTTPClient,
         tokenProvider: any TokenProvider,
-        baseURL: URL = OneLakeClient.defaultBaseURL
+        baseURL: URL = OneLakeClient.defaultBaseURL,
+        chunkSize: Int = 4 * 1024 * 1024
     ) {
         self.http = http
         self.tokenProvider = tokenProvider
         self.baseURL = baseURL
+        self.chunkSize = chunkSize
     }
 
     // MARK: - ListPath
@@ -327,7 +333,7 @@ public final class OneLakeClient: Sendable {
         var pos: Int64 = 0
         var remaining = size
         while remaining > 0 {
-            let want = min(Int64(Self.chunkSize), remaining)
+            let want = min(Int64(chunkSize), remaining)
             let start = Int(pos)
             let end   = Int(pos + want)
             guard end <= buf.count else {
@@ -444,18 +450,31 @@ public final class OneLakeClient: Sendable {
         _ = try await doRequest(alias: alias, method: "PUT", url: createURL, body: nil, extraHeaders: nil, idempotent: true)
 
         // 2. Append in chunks, reading from the handle.
+        //
+        // FileHandle.read(upToCount:) returns UP TO the requested count. A short
+        // read is valid (e.g. kernel page boundary, network-backed volume) and must
+        // not be treated as EOF. We accumulate until `want` bytes are received or
+        // until the handle returns an empty read (true EOF / error), so the append
+        // is always sent at the correct `position=` offset (blocker-3).
         var pos: Int64 = 0
         var remaining = size
         while remaining > 0 {
-            let want = min(Int64(Self.chunkSize), remaining)
-            let chunk: Data
-            do {
-                chunk = try handle.read(upToCount: Int(want)) ?? Data()
-            } catch {
-                throw OneLakeError.shortRead(offset: pos)
-            }
-            guard !chunk.isEmpty else {
-                throw OneLakeError.shortRead(offset: pos)
+            let want = min(Int64(chunkSize), remaining)
+            var chunk = Data()
+            chunk.reserveCapacity(Int(want))
+            while chunk.count < Int(want) {
+                let needed = Int(want) - chunk.count
+                let slice: Data
+                do {
+                    slice = try handle.read(upToCount: needed) ?? Data()
+                } catch {
+                    throw OneLakeError.shortRead(offset: pos + Int64(chunk.count))
+                }
+                guard !slice.isEmpty else {
+                    // Genuine EOF before we accumulated `want` bytes.
+                    throw OneLakeError.shortRead(offset: pos + Int64(chunk.count))
+                }
+                chunk.append(slice)
             }
             let appendURL = oneLakePathURL(
                 base: baseURL,

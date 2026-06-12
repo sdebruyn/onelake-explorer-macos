@@ -323,6 +323,74 @@ struct OneLakeClientStreamingWriteTests {
         #expect(session.requests[0].httpMethod == "PUT")
         #expect(session.requests[1].url?.query?.contains("action=flush") == true)
     }
+
+    /// Verifies that multi-chunk uploads send the correct `position=` on each
+    /// PATCH and that the flush position matches the total file size (non-blocking #8).
+    ///
+    /// `chunkSize` is set to 32 bytes so a 100-byte payload requires 4 appends
+    /// (32 + 32 + 32 + 4) and a flush at position 100.
+    @Test("write(sourceURL:) multi-chunk: position= on each PATCH is correct (non-blocking #8)")
+    func writeFromURLMultiChunk() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+        let fileURL = tmpDir.appendingPathComponent(UUID().uuidString)
+        let content = Data(0..<100)  // 100 bytes: 0x00…0x63
+        try content.write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        // 4 appends + 1 flush = 5 requests after the initial PUT (create).
+        // Total: 1 PUT + 4 PATCHes (append) + 1 PATCH (flush) = 6.
+        let stubs = [
+            makeStub(status: 201),  // create
+            makeStub(status: 202),  // append chunk 0 (bytes 0-31)
+            makeStub(status: 202),  // append chunk 1 (bytes 32-63)
+            makeStub(status: 202),  // append chunk 2 (bytes 64-95)
+            makeStub(status: 202),  // append chunk 3 (bytes 96-99)
+            makeStub(status: 200),  // flush
+        ]
+        let session = MockURLSession(stubs: stubs)
+
+        let http = HTTPClient(
+            session: session,
+            gateRegistry: makeGate(),
+            retryPolicy: HTTPRetryPolicy(maxAttempts: 1)
+        )
+        // Use a 32-byte chunk size to force 4 append requests for the 100-byte file.
+        let client = OneLakeClient(
+            http: http,
+            tokenProvider: MockTokenProvider(token: "tok"),
+            baseURL: dfsBaseURL,
+            chunkSize: 32
+        )
+
+        try await client.write(
+            alias: "a",
+            workspaceGUID: "ws-guid",
+            itemGUID: "item-guid",
+            path: "Files/multi.bin",
+            sourceURL: fileURL,
+            size: 100
+        )
+
+        #expect(session.requests.count == 6)
+
+        // Verify append positions.
+        let appendPositions: [Int64] = session.requests
+            .compactMap { req -> Int64? in
+                guard let q = req.url?.query, q.contains("action=append") else { return nil }
+                // Extract position= value from the query string.
+                let components = URLComponents(string: "?\(q)")
+                return components?.queryItems?.first(where: { $0.name == "position" })
+                    .flatMap { Int64($0.value ?? "") }
+            }
+        #expect(appendPositions == [0, 32, 64, 96])
+
+        // Verify flush position.
+        let flushReq = session.requests.last!
+        let flushComponents = URLComponents(string: "?\(flushReq.url?.query ?? "")")
+        let flushPos = flushComponents?.queryItems?.first(where: { $0.name == "position" })
+            .flatMap { Int64($0.value ?? "") }
+        #expect(flushPos == 100)
+    }
 }
 
 // MARK: - OneLakeClient listPath pagination test (net-05)

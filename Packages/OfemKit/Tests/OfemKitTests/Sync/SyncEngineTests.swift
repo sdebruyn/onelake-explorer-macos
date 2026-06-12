@@ -373,6 +373,47 @@ struct SyncEngineTests {
         #expect(data == body)
     }
 
+    // MARK: - blocker-1 regression: failed download discards spill so next open re-downloads
+
+    @Test("Non-412 download failure discards the spill so the next open re-downloads from scratch")
+    func testFailedDownloadDiscardsSpill() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+
+        // First attempt: network error mid-download.
+        // Wrap a transport error as OneLakeError.httpError (the form SyncEngine receives).
+        let networkErr = URLError(.networkConnectionLost)
+        ol.readResults.append(.failure(OneLakeError.httpError(networkErr)))
+
+        do {
+            _ = try await engine.open(key: key)
+            Issue.record("Expected error to be thrown on first open")
+        } catch {
+            // Expected — download failed.
+        }
+
+        // Second attempt: succeeds. If the spill was NOT discarded the engine
+        // would try to resume from a stale offset using a stale/missing etag, which
+        // could corrupt the download or produce a confusing error. The fix ensures
+        // discard() is called so the second open issues a fresh full download.
+        let body = Data(repeating: 0xAB, count: 20)
+        let props = PathProperties.make(contentLength: 20, eTag: "v1")
+        ol.readResults.append(.success((body, props)))
+
+        let url = try await engine.open(key: key)
+        let data = try Data(contentsOf: url)
+        #expect(data.count == 20)
+        #expect(data == body)
+        // Exactly one read call for each attempt (first fails, second succeeds).
+        #expect(ol.readCalls.count == 2)
+        // Second read must use range: nil (full download, not a resume).
+        #expect(ol.readCalls[1].range == nil)
+    }
+
     // MARK: - sync-15: batch reconciliation
 
     @Test("refreshFolder upserts are batched (batchUpsert API exists and works)")

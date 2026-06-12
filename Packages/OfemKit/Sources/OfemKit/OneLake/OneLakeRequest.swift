@@ -77,13 +77,20 @@ func oneLakeListURL(
 /// `URLComponents.queryItems` uses `urlQueryAllowed`, which includes `+`; Azure
 /// interprets unencoded `+` in query strings as a space, corrupting base64-
 /// flavoured continuation tokens (net-05).
+///
+/// Only the *value* has `=`, `&`, and `+` removed from the allowed set. The
+/// *name* only has `+` and `&` removed so that `=` in a future parameter name
+/// is not over-encoded to `%3D` (non-blocking #5).
 func percentEncodedQueryItem(_ item: URLQueryItem) -> URLQueryItem {
-    var allowed = CharacterSet.urlQueryAllowed
-    // Remove sub-delimiters that have special meaning in query strings.
-    allowed.remove(charactersIn: "+&=")
-    let encodedName  = item.name.addingPercentEncoding(withAllowedCharacters: allowed) ?? item.name
+    // Name: only encode `+` and `&` — `=` is safe in a parameter name.
+    var nameAllowed = CharacterSet.urlQueryAllowed
+    nameAllowed.remove(charactersIn: "+&")
+    // Value: also encode `=` so it cannot be misread as a key=value separator.
+    var valueAllowed = nameAllowed
+    valueAllowed.remove(charactersIn: "=")
+    let encodedName  = item.name.addingPercentEncoding(withAllowedCharacters: nameAllowed) ?? item.name
     let encodedValue = item.value.map {
-        $0.addingPercentEncoding(withAllowedCharacters: allowed) ?? $0
+        $0.addingPercentEncoding(withAllowedCharacters: valueAllowed) ?? $0
     }
     return URLQueryItem(name: encodedName, value: encodedValue)
 }

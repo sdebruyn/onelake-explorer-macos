@@ -144,14 +144,16 @@ public struct BlobShardCache: Sendable {
         let (shardDir, destURL) = shardPath(for: sha)
 
         // Deduplicate: blob already on disk.
+        // Read the actual size from the source file (already hashed above) rather
+        // than the dest blob to avoid a silent zero when the NSNumber-typed
+        // FileAttributeKey.size cannot be cast to Int64 (blocker-4).
+        let srcAttrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
+        let size = (srcAttrs[.size] as? NSNumber)?.int64Value ?? 0
+
         if FileManager.default.fileExists(atPath: destURL.path) {
-            let attrs = try FileManager.default.attributesOfItem(atPath: destURL.path)
-            let size = (attrs[.size] as? Int64) ?? 0
+            Self.log.debug("BlobShardCache: blob already present sha=\(sha, privacy: .public) bytes=\(size, privacy: .public)")
             return (sha, size)
         }
-
-        let srcAttrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
-        let size = (srcAttrs[.size] as? Int64) ?? 0
 
         try FileManager.default.createDirectory(at: shardDir, withIntermediateDirectories: true)
 

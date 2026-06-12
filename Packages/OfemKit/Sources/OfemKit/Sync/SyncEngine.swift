@@ -641,10 +641,12 @@ public actor SyncEngine {
 
         let start = Date()
         // Determine size from the file on disk.
+        // FileAttributeKey.size is typed as NSNumber on Apple platforms; use
+        // int64Value to avoid the direct Int64 cast silently returning nil.
         let fileSize: Int64
         do {
             let attrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
-            fileSize = (attrs[.size] as? Int64) ?? 0
+            fileSize = (attrs[.size] as? NSNumber)?.int64Value ?? 0
         } catch {
             throw SyncError.spillFileError(error)
         }
@@ -695,6 +697,11 @@ public actor SyncEngine {
         let rowCopy = row
         await loggedTry({ try await self.cache.upsert(rowCopy) }, "put: upsert")
         // Mirror locally (best-effort: upload already succeeded).
+        // Note: storeBlobFromURL prefers an atomic moveItem (same-volume, zero-copy),
+        // which removes sourceURL from its original location. On FPE retry the
+        // source URL supplied by the framework may be absent, but deduplication in
+        // BlobShardCache means the blob is already stored and the loggedTry silently
+        // ignores the missing-source error without impacting cache correctness.
         await loggedTry({ try await self.cache.storeBlobFromURL(sourceURL, key: key) }, "put: storeBlobFromURL")
 
         await track(TelemetryEvent(
@@ -854,7 +861,13 @@ public actor SyncEngine {
         // Seek to the resume offset so appended bytes land in the right place.
         try spillHandle.seek(toOffset: UInt64(rangeStart))
 
-        var props: PathProperties
+        // Sentinel initializer: withRemoteOperationError is Never-returning, so the
+        // compiler already considers both catch branches exhaustive. The explicit
+        // initializer guards against a future refactor that weakens that guarantee
+        // and would otherwise leave `props` read uninitialised (blocker-2).
+        var props = PathProperties(
+            isDirectory: false, contentLength: 0, eTag: "", lastModified: .distantPast, contentType: ""
+        )
         do {
             props = try await onelake.read(
                 alias: key.accountAlias,
@@ -896,13 +909,20 @@ public actor SyncEngine {
                         destination: freshHandle
                     )
                 } catch {
-                    // C3: route the retry's error through the shared handler.
+                    // C3: discard spill before rethrowing so the next open()
+                    // starts from scratch rather than resuming into a new remote
+                    // file at a stale offset (blocker-1).
+                    partials.discard(for: key)
                     try await withRemoteOperationError(
                         error: error, key: key, eventName: "file_download",
                         failCode: "read_failed", start: start
                     )
                 }
             } else {
+                // Non-412 failure: discard any spill + etag sidecar before
+                // rethrowing so the next open() re-downloads from scratch
+                // instead of resuming at a stale offset (blocker-1).
+                partials.discard(for: key)
                 try await withRemoteOperationError(
                     error: error, key: key, eventName: "file_download",
                     failCode: "read_failed", start: start
@@ -924,10 +944,12 @@ public actor SyncEngine {
         }
 
         // Determine how many bytes were written to the spill file.
+        // FileAttributeKey.size is typed as NSNumber on Apple platforms; use
+        // int64Value to avoid the direct Int64 cast silently returning nil.
         let spillSize: Int64
         do {
             let attrs = try FileManager.default.attributesOfItem(atPath: spillURL.path)
-            spillSize = (attrs[.size] as? Int64) ?? 0
+            spillSize = (attrs[.size] as? NSNumber)?.int64Value ?? 0
         } catch {
             throw SyncError.spillFileError(error)
         }
