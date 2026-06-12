@@ -588,6 +588,88 @@ struct CacheStoreTests {
         #expect(children.count == 1)
         #expect(children[0].name == "child.txt")
     }
+
+    // MARK: - Deletion tombstones (C1)
+
+    @Test("delete writes a tombstone; itemsChangedAfter returns the deleted identifier")
+    func deletionTombstoneAppearsInChangedAfter() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let anchorNs: Int64 = 1_000_000_000
+
+        // Insert a file entry with a synced_at_ns before the anchor.
+        let record = MetadataRecord(
+            accountAlias: "dev",
+            workspaceID: "ws-1",
+            itemID: "lh-1",
+            path: "Files/gone.txt",
+            parentPath: "Files",
+            name: "gone.txt",
+            isDir: false,
+            contentLength: 10,
+            etag: "\"v1\"",
+            syncedAtNs: anchorNs - 1
+        )
+        try await store.upsert(record)
+
+        // Snapshot: at anchorNs, the file exists and no deletions are pending.
+        let (updatedBefore, deletedBefore) = try await store.itemsChangedAfter(
+            accountAlias: "dev",
+            ns: anchorNs
+        )
+        #expect(updatedBefore.isEmpty)
+        #expect(deletedBefore.isEmpty)
+
+        // Simulate reconciliation: remote no longer lists "Files/gone.txt".
+        let key = CacheKey(accountAlias: "dev", workspaceID: "ws-1", itemID: "lh-1", path: "Files/gone.txt")
+        try await store.delete(key: key)
+
+        // The item must be gone from path_metadata.
+        let fetched = try? await store.fetch(key: key)
+        #expect(fetched == nil)
+
+        // itemsChangedAfter must surface the deletion via the tombstone table.
+        let (updatedAfter, deletedAfter) = try await store.itemsChangedAfter(
+            accountAlias: "dev",
+            ns: anchorNs
+        )
+        #expect(updatedAfter.isEmpty)
+        #expect(deletedAfter.count == 1)
+        #expect(deletedAfter.first == "ws-1/lh-1/Files/gone.txt")
+    }
+
+    @Test("delete of a directory writes tombstones for all descendants")
+    func deletionTombstoneCoversDescendants() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let anchorNs: Int64 = 1_000_000_000
+
+        // Insert parent dir + two children.
+        for (path, parentPath, name, isDir) in [
+            ("Files/dir", "Files", "dir", true),
+            ("Files/dir/a.csv", "Files/dir", "a.csv", false),
+            ("Files/dir/b.csv", "Files/dir", "b.csv", false),
+        ] {
+            try await store.upsert(MetadataRecord(
+                accountAlias: "dev", workspaceID: "ws-1", itemID: "lh-1",
+                path: path, parentPath: parentPath, name: name, isDir: isDir,
+                syncedAtNs: anchorNs - 1
+            ))
+        }
+
+        // Delete the parent directory (should cascade to children).
+        let dirKey = CacheKey(accountAlias: "dev", workspaceID: "ws-1", itemID: "lh-1", path: "Files/dir")
+        try await store.delete(key: dirKey)
+
+        let (_, deleted) = try await store.itemsChangedAfter(accountAlias: "dev", ns: anchorNs)
+        // All three rows must have tombstones.
+        let sortedDeleted = deleted.sorted()
+        #expect(sortedDeleted.contains("ws-1/lh-1/Files/dir"))
+        #expect(sortedDeleted.contains("ws-1/lh-1/Files/dir/a.csv"))
+        #expect(sortedDeleted.contains("ws-1/lh-1/Files/dir/b.csv"))
+    }
 }
 
 // MARK: - Test helper: SHA-256 hex string

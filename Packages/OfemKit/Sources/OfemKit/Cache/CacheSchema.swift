@@ -5,10 +5,20 @@ import GRDB
 
 /// SQLite schema definition and migration sequence for the OFEM metadata cache.
 ///
-/// ## Version history
+/// ## Schema
 ///
-/// - **v1** — initial schema: `path_metadata` + `workspace_status` + all indexes.
-///   (Pre-stable product — schema started clean; no upgrade history to maintain.)
+/// Single `v1` migration — the complete initial schema. Pre-stable product:
+/// the schema starts clean with no upgrade history to maintain, so new tables
+/// and indexes fold into `v1` rather than accreting migration steps.
+///
+/// - `path_metadata` + `workspace_status` + their indexes.
+/// - `deletion_tombstones`: soft-delete log keyed by `(account_alias, identifier_string)`.
+///   `refreshFolder` writes a row here before hard-deleting from `path_metadata`
+///   so `enumerateChanges` can call `didDeleteItems` and Finder reflects removals.
+/// - `idx_pm_synced_at`: composite index on `(account_alias, synced_at_ns)` used
+///   by `itemsChangedAfter` to avoid full `path_metadata` scans.
+/// - `idx_dt_deleted_at`: composite index on `(account_alias, deleted_at_ns)` used
+///   by `deletionsSince` to avoid full `deletion_tombstones` scans.
 public enum CacheSchema {
 
     // MARK: - Migrator
@@ -76,6 +86,31 @@ public enum CacheSchema {
                     probed_at_ns   INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (account_alias, workspace_id)
                 );
+                """)
+
+            // deletion_tombstones: soft-delete log, one row per remote-deleted item
+            // per reconciliation. `refreshFolder` writes here before hard-deleting from
+            // path_metadata so `enumerateChanges` can call `didDeleteItems` and Finder
+            // sees removals.
+            try db.execute(sql: """
+                CREATE TABLE deletion_tombstones (
+                    account_alias     TEXT    NOT NULL,
+                    identifier_string TEXT    NOT NULL,
+                    deleted_at_ns     INTEGER NOT NULL,
+                    PRIMARY KEY (account_alias, identifier_string)
+                );
+                """)
+
+            // Index for the tombstone query in `deletionsSince`.
+            try db.execute(sql: """
+                CREATE INDEX idx_dt_deleted_at
+                    ON deletion_tombstones (account_alias, deleted_at_ns);
+                """)
+
+            // Index for the itemsChangedAfter query.
+            try db.execute(sql: """
+                CREATE INDEX idx_pm_synced_at
+                    ON path_metadata (account_alias, synced_at_ns);
                 """)
         }
 

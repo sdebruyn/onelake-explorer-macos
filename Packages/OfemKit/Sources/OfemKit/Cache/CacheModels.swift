@@ -297,6 +297,51 @@ public struct WorkspaceStatusRecord: FetchableRecord, PersistableRecord, Sendabl
     }
 }
 
+// MARK: - DeletionTombstoneRecord
+
+/// A soft-delete log row recording that an item was removed during remote
+/// reconciliation.
+///
+/// `refreshFolder` writes one row here before hard-deleting from
+/// `path_metadata`.  `itemsChangedAfter` queries this table to return
+/// deleted identifier strings so `enumerateChanges` can call
+/// `didDeleteItems(withIdentifiers:)` and Finder reflects the removal.
+public struct DeletionTombstoneRecord: FetchableRecord, PersistableRecord, Sendable {
+
+    public static let databaseTableName = "deletion_tombstones"
+
+    public enum Columns {
+        public static let accountAlias = Column("account_alias")
+        public static let identifierString = Column("identifier_string")
+        public static let deletedAtNs = Column("deleted_at_ns")
+    }
+
+    /// The account alias for this item.
+    public var accountAlias: String
+    /// The opaque `ItemIdentifier.identifierString` for the deleted item.
+    public var identifierString: String
+    /// Unix nanoseconds at which the deletion was recorded.
+    public var deletedAtNs: Int64
+
+    public init(accountAlias: String, identifierString: String, deletedAtNs: Int64) {
+        self.accountAlias = accountAlias
+        self.identifierString = identifierString
+        self.deletedAtNs = deletedAtNs
+    }
+
+    public init(row: Row) throws {
+        accountAlias = row[Columns.accountAlias]
+        identifierString = row[Columns.identifierString]
+        deletedAtNs = row[Columns.deletedAtNs]
+    }
+
+    public func encode(to container: inout PersistenceContainer) {
+        container[Columns.accountAlias] = accountAlias
+        container[Columns.identifierString] = identifierString
+        container[Columns.deletedAtNs] = deletedAtNs
+    }
+}
+
 // MARK: - Private helpers
 
 /// Converts Unix nanoseconds to `Date`. Returns `nil` for zero (= "unset").

@@ -124,6 +124,55 @@ public final class CacheReader: Sendable {
         }
     }
 
+    // MARK: - Sync anchor
+
+    /// Returns the maximum `synced_at_ns` value across all rows for the given
+    /// `accountAlias`, or `0` when there are no rows.
+    ///
+    /// Used to compute a real sync anchor: whenever a new `upsert` bumps
+    /// `syncedAtNs`, this value increases, making the anchor non-constant and
+    /// allowing `enumerateChanges` to return real deltas rather than always
+    /// throwing `.syncAnchorExpired`.
+    public func maxSyncedAtNs(accountAlias: String) async throws -> Int64 {
+        try await db.read { db in
+            let sql = """
+                SELECT COALESCE(MAX(synced_at_ns), 0)
+                FROM path_metadata
+                WHERE account_alias = ?
+                """
+            return try Int64.fetchOne(db, sql: sql, arguments: [accountAlias]) ?? 0
+        }
+    }
+
+    // MARK: - Changed items since anchor
+
+    /// Returns items changed and deletions recorded after `ns` for `accountAlias`.
+    ///
+    /// - `updated`: metadata rows whose `synced_at_ns` is strictly greater than `ns`.
+    /// - `deletedIdentifierStrings`: identifier strings from `deletion_tombstones`
+    ///   whose `deleted_at_ns` is strictly greater than `ns`.
+    ///
+    /// Used by `enumerateChanges` so the FPE can call both `didUpdate` and
+    /// `didDeleteItems(withIdentifiers:)` in a single delta pass.
+    public func itemsChangedAfter(
+        accountAlias: String,
+        ns: Int64
+    ) async throws -> (updated: [MetadataRecord], deletedIdentifierStrings: [String]) {
+        try await db.read { db in
+            let updated = try MetadataRecord
+                .filter(MetadataRecord.Columns.accountAlias == accountAlias)
+                .filter(MetadataRecord.Columns.syncedAtNs > ns)
+                .fetchAll(db)
+
+            let deleted = try String.fetchAll(db, sql: """
+                SELECT identifier_string FROM deletion_tombstones
+                WHERE account_alias = ? AND deleted_at_ns > ?
+                """, arguments: [accountAlias, ns])
+
+            return (updated, deleted)
+        }
+    }
+
     // MARK: - Blob byte totals
 
     /// Returns the sum of `blob_size` across distinct `blob_sha256` values.

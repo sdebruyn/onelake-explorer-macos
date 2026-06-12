@@ -1,0 +1,136 @@
+import Testing
+import Foundation
+@testable import OfemKit
+
+// MARK: - FPError.classify tests (tests-07)
+//
+// `FPError.classify(_:)` is the FPE's single error boundary — every engine
+// error becomes an NSFileProviderError through this mapping. A misrouted case
+// silently changes Finder behaviour for every user, so we test the full matrix.
+
+struct FPErrorClassifyTests {
+
+    // MARK: - FPError domain errors
+
+    @Test func noSuchItemMapsToNoSuchItem() {
+        #expect(FPError.classify(FPError.noSuchItem("x")) == .noSuchItem)
+    }
+
+    @Test func invalidIdentifierMapsToNoSuchItem() {
+        #expect(FPError.classify(FPError.invalidIdentifier("bad")) == .noSuchItem)
+    }
+
+    @Test func wrongItemKindMapsToNoSuchItem() {
+        #expect(FPError.classify(FPError.wrongItemKind("dir for file")) == .noSuchItem)
+    }
+
+    @Test func invalidRecordMapsToCannotSynchronize() {
+        #expect(FPError.classify(FPError.invalidRecord("missing field")) == .cannotSynchronize)
+    }
+
+    // MARK: - URLError transport errors
+
+    @Test func urlErrorNotConnectedMapsToServerUnreachable() {
+        let err = URLError(.notConnectedToInternet)
+        #expect(FPError.classify(err) == .serverUnreachable)
+    }
+
+    @Test func urlErrorNetworkConnectionLostMapsToServerUnreachable() {
+        let err = URLError(.networkConnectionLost)
+        #expect(FPError.classify(err) == .serverUnreachable)
+    }
+
+    @Test func urlErrorTimedOutMapsToServerUnreachable() {
+        let err = URLError(.timedOut)
+        #expect(FPError.classify(err) == .serverUnreachable)
+    }
+
+    @Test func urlErrorCannotFindHostMapsToServerUnreachable() {
+        let err = URLError(.cannotFindHost)
+        #expect(FPError.classify(err) == .serverUnreachable)
+    }
+
+    @Test func urlErrorCannotConnectToHostMapsToServerUnreachable() {
+        let err = URLError(.cannotConnectToHost)
+        #expect(FPError.classify(err) == .serverUnreachable)
+    }
+
+    @Test func urlErrorDnsLookupFailedMapsToServerUnreachable() {
+        let err = URLError(.dnsLookupFailed)
+        #expect(FPError.classify(err) == .serverUnreachable)
+    }
+
+    @Test func urlErrorOtherMapsToCannotSynchronize() {
+        let err = URLError(.badURL)
+        #expect(FPError.classify(err) == .cannotSynchronize)
+    }
+
+    // MARK: - HTTPClientError
+
+    @Test func httpUnauthorizedMapsToNotAuthenticated() {
+        #expect(FPError.classify(HTTPClientError.unauthorized) == .notAuthenticated)
+    }
+
+    @Test func httpForbiddenMapsToNotAuthenticated() {
+        #expect(FPError.classify(HTTPClientError.forbidden) == .notAuthenticated)
+    }
+
+    @Test func httpNotFoundMapsToNoSuchItem() {
+        #expect(FPError.classify(HTTPClientError.notFound) == .noSuchItem)
+    }
+
+    @Test func httpGoneMapsToNoSuchItem() {
+        #expect(FPError.classify(HTTPClientError.gone) == .noSuchItem)
+    }
+
+    @Test func httpThrottledMapsToServerBusy() {
+        #expect(FPError.classify(HTTPClientError.throttled) == .serverBusy)
+    }
+
+    @Test func httpTransportMapsToServerUnreachable() {
+        #expect(FPError.classify(HTTPClientError.transport(URLError(.timedOut))) == .serverUnreachable)
+    }
+
+    @Test func httpRetriesExhaustedMapsToServerUnreachable() {
+        #expect(FPError.classify(HTTPClientError.retriesExhausted(attempts: 3, last: URLError(.timedOut))) == .serverUnreachable)
+    }
+
+    // MARK: - OneLakeError
+
+    @Test func oneLakeUnauthorizedMapsToNotAuthenticated() {
+        #expect(FPError.classify(OneLakeError.unauthorized) == .notAuthenticated)
+    }
+
+    @Test func oneLakeForbiddenMapsToNotAuthenticated() {
+        #expect(FPError.classify(OneLakeError.forbidden) == .notAuthenticated)
+    }
+
+    @Test func oneLakeNotFoundMapsToNoSuchItem() {
+        #expect(FPError.classify(OneLakeError.notFound) == .noSuchItem)
+    }
+
+    @Test func oneLakeRetriesExhaustedMapsToServerUnreachable() {
+        #expect(FPError.classify(OneLakeError.retriesExhausted(attempts: 3)) == .serverUnreachable)
+    }
+
+    // MARK: - FabricError
+
+    @Test func fabricUnauthorizedMapsToNotAuthenticated() {
+        #expect(FPError.classify(FabricError.unauthorized) == .notAuthenticated)
+    }
+
+    @Test func fabricForbiddenMapsToNotAuthenticated() {
+        #expect(FPError.classify(FabricError.forbidden) == .notAuthenticated)
+    }
+
+    @Test func fabricNotFoundMapsToNoSuchItem() {
+        #expect(FPError.classify(FabricError.notFound) == .noSuchItem)
+    }
+
+    // MARK: - Unknown error falls back to cannotSynchronize
+
+    @Test func unknownErrorMapsToCannotSynchronize() {
+        let err = NSError(domain: "com.example.custom", code: 42)
+        #expect(FPError.classify(err) == .cannotSynchronize)
+    }
+}
