@@ -153,6 +153,13 @@ struct FileTokenStoreTests {
     // Real collision-resistance test: aliases that only differ after
     // URL / percent encoding or case folding — a naïve encoder might
     // produce the same filename for these pairs (tests-21).
+    //
+    // Safety guarantee: FileTokenStore encodes aliases as hex(Data(alias.utf8))
+    // — the raw UTF-8 byte sequence, not the Swift String.  Characters that a
+    // naïve percent- or name-encoder might map to the same output (e.g. "/"
+    // → "%2F" or "_") still produce distinct hex strings because the
+    // underlying byte values differ.  APFS filename normalization is not a
+    // concern because the filename is a lowercase hex string (all ASCII).
     @Test("aliases differing only after percent-encoding produce distinct filenames")
     func aliasesWithPercentEncodingAmbiguityAreDistinct() throws {
         let store = try makeStore()
@@ -170,16 +177,16 @@ struct FileTokenStoreTests {
     func precomposedVsDecomposedAliasesAreDistinct() throws {
         let store = try makeStore()
         // "é" as precomposed (U+00E9) vs decomposed (U+0065 U+0301).
-        // A naïve percent/name encoder might normalise these to the same string.
-        let precomposed = "\u{00E9}"    // é (one code point)
-        let decomposed  = "\u{0065}\u{0301}"  // e + combining accent (two code points)
-        // Sanity check: Swift String treats these as equal (canonical equivalence).
-        // The file-system path derived from raw UTF-8 bytes differs, so the
-        // hex encoder must not lose that distinction.
+        let precomposed = "\u{00E9}"    // é (one code point, 2 UTF-8 bytes: 0xC3 0xA9)
+        let decomposed  = "\u{0065}\u{0301}"  // e + combining accent (3 UTF-8 bytes: 0x65 0xCC 0x81)
+        // Swift String treats these as equal via canonical equivalence, but
+        // FileTokenStore calls Data(alias.utf8) — the raw UTF-8 byte sequence —
+        // NOT the Swift String.  The two aliases produce different byte sequences
+        // (2 bytes vs 3 bytes) and therefore different hex filenames: no collision.
+        // APFS filename normalisation is irrelevant because the filename is the
+        // lowercase hex string (all ASCII digits).
         let dataA = Data("precomposed".utf8)
         let dataB = Data("decomposed".utf8)
-        // If the store uses raw UTF-8 hex encoding, the two aliases produce
-        // different byte sequences → different filenames → no collision.
         try store.write(alias: precomposed, data: dataA)
         try store.write(alias: decomposed,  data: dataB)
         #expect(try store.read(alias: precomposed) == dataA)

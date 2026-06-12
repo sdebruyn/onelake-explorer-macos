@@ -31,6 +31,14 @@
 //   - Blob byte-budget enforcement N times over a shared store (each engine
 //     believed it could use the full cap independently).
 //
+// Telemetry ownership: because the TelemetryClient is shared, individual
+// OfemEngine.shutdown() calls do NOT stop the flush timer — only the owning
+// container does.  After the last FPEEngineHost.shutdown() returns, call
+// FPEEngineHost.shutdownSharedSubsystems() to flush remaining events and
+// cancel the flush timer.  In normal FPE operation the OS terminates the
+// process immediately after the last domain is invalidated, so this acts as
+// a belt-and-suspenders process-exit hook.
+//
 // fpe-10 fix: a transient build failure is not cached permanently.
 //   A failed build stores `_buildError` plus the timestamp of the
 //   failure. `engine()` retries after a short back-off window
@@ -112,44 +120,68 @@ final class FPEEngineHost: Sendable {
     /// The first call constructs the store from the default `OfemPaths.cacheDir`
     /// and the `cfg.cache.maxBytes` limit read from the shared config store.
     ///
+    /// `CacheStore.init` performs directory creation, SQLite open, and an
+    /// orphan sweep.  To avoid blocking other shared-subsystem callers for the
+    /// full duration of that I/O, the construction is done **outside** the
+    /// lock using a double-checked pattern: read config under the lock, build
+    /// outside, then re-acquire to CAS the result.  If two threads race on the
+    /// very first call they may each construct a store; only the first one to
+    /// re-acquire the lock wins, and the duplicate is discarded (harmless
+    /// because `CacheStore.init` is idempotent for the same directory).
+    ///
     /// - Throws: `CacheError` if the SQLite file cannot be opened or migrated.
     static func sharedCache() throws -> CacheStore {
-        try sharedSubsystemsLock.withLock {
+        // Fast path — already created.
+        if let c = sharedSubsystemsLock.withLock({ _sharedCache }) { return c }
+
+        // Build outside the lock to avoid blocking other callers during I/O.
+        let cfg = try sharedSubsystemsLock.withLock { try sharedConfigStore().snapshot() }
+        let paths = OfemPaths()
+        let candidate = try CacheStore(root: paths.cacheDir, maxBlobBytes: cfg.cache.maxBytes)
+
+        // CAS: install only if no one else already created it.
+        return sharedSubsystemsLock.withLock {
             if let c = _sharedCache { return c }
-            let cfg = try sharedConfigStore().snapshot()
-            let paths = OfemPaths()
-            let c = try CacheStore(root: paths.cacheDir, maxBlobBytes: cfg.cache.maxBytes)
-            _sharedCache = c
-            return c
+            _sharedCache = candidate
+            return candidate
         }
     }
 
     /// Returns (or lazily creates) the process-wide TelemetryClient.
     ///
+    /// Uses the same double-checked pattern as `sharedCache()` to avoid
+    /// running `AppInsightsSink.init` under the broad subsystems lock.
+    ///
     /// - Throws: `OfemConfigError` if the shared config store cannot be loaded.
     static func sharedTelemetry() throws -> TelemetryClient {
-        try sharedSubsystemsLock.withLock {
+        // Fast path — already created.
+        if let t = sharedSubsystemsLock.withLock({ _sharedTelemetry }) { return t }
+
+        // Build outside the lock.
+        let cfg = try sharedSubsystemsLock.withLock { try sharedConfigStore().snapshot() }
+        let telSink: any TelemetrySink
+        if cfg.telemetry,
+           let sink = try? AppInsightsSink(
+               connectionString: BuildInfo.appInsightsConnectionString,
+               installID: cfg.installID,
+               appVersion: BuildInfo.version
+           ) {
+            telSink = sink
+        } else {
+            telSink = NoopTelemetrySink()
+        }
+        let candidate = TelemetryClient(
+            sink: telSink,
+            appVersion: BuildInfo.version,
+            installID: cfg.installID,
+            configuration: TelemetryConfiguration(optOut: !cfg.telemetry)
+        )
+
+        // CAS: install only if no one else already created it.
+        return sharedSubsystemsLock.withLock {
             if let t = _sharedTelemetry { return t }
-            let cfg = try sharedConfigStore().snapshot()
-            let telSink: any TelemetrySink
-            if cfg.telemetry,
-               let sink = try? AppInsightsSink(
-                   connectionString: BuildInfo.appInsightsConnectionString,
-                   installID: cfg.installID,
-                   appVersion: BuildInfo.version
-               ) {
-                telSink = sink
-            } else {
-                telSink = NoopTelemetrySink()
-            }
-            let t = TelemetryClient(
-                sink: telSink,
-                appVersion: BuildInfo.version,
-                installID: cfg.installID,
-                configuration: TelemetryConfiguration(optOut: !cfg.telemetry)
-            )
-            _sharedTelemetry = t
-            return t
+            _sharedTelemetry = candidate
+            return candidate
         }
     }
 
@@ -163,22 +195,52 @@ final class FPEEngineHost: Sendable {
         }
     }
 
+    /// Shuts down the process-wide shared subsystems and performs a final
+    /// telemetry flush.
+    ///
+    /// Call this once, after **all** per-alias engines and their
+    /// `FPEEngineHost` containers have been shut down (i.e. after the last
+    /// `FPEEngineHost.shutdown()` completes).  In normal FPE operation the
+    /// OS terminates the extension process after the last domain is
+    /// invalidated, so this method acts as a belt-and-suspenders process-exit
+    /// hook that guarantees the final telemetry batch is flushed before the
+    /// process exits.
+    ///
+    /// This is distinct from `OfemEngine.shutdown()` for injected-subsystem
+    /// engines: individual engine shutdown does **not** stop the shared
+    /// `TelemetryClient` so that the flush timer keeps running while other
+    /// domains are still active.
+    static func shutdownSharedSubsystems() async {
+        let telemetry = sharedSubsystemsLock.withLock { _sharedTelemetry }
+        if let t = telemetry {
+            await t.shutdown()
+        }
+    }
+
     /// Invalidates all process-wide shared subsystem singletons.
     ///
-    /// Called when the FPE process is torn down (all domains have been
-    /// invalidated) so that the next process launch starts clean.  Not
-    /// needed in the normal flow — the OS kills the FPE process after the
-    /// last domain shuts down — but useful for testing.
+    /// **Test-only.** Nils out the shared singletons so the next call to
+    /// `sharedCache()`, `sharedTelemetry()`, or `sharedGateRegistry()` starts
+    /// fresh.  Only safe to call after all engines have been shut down and no
+    /// concurrent `buildEngine()` calls are in flight — calling it while a
+    /// background task holds a reference to a shared subsystem will silently
+    /// revert to the N-pools bug for any engine rebuilt after the reset.
+    #if DEBUG
     static func resetSharedSubsystems() {
+        // Acquire both locks in a consistent order (subsystems first, then
+        // store) so the reset is atomic with respect to concurrent
+        // sharedCache() / sharedTelemetry() calls that also nest
+        // sharedSubsystemsLock → sharedStoreLock.
         sharedSubsystemsLock.withLock {
+            sharedStoreLock.withLock {
+                _sharedConfigStore = nil
+            }
             _sharedCache = nil
             _sharedTelemetry = nil
             _sharedGateRegistry = nil
         }
-        sharedStoreLock.withLock {
-            _sharedConfigStore = nil
-        }
     }
+    #endif
 
     // MARK: - Mutable state (guarded by lock)
 
@@ -289,12 +351,16 @@ final class FPEEngineHost: Sendable {
     /// once at init, so applying a new config requires shutting down the
     /// current engine and letting it be lazily rebuilt on the next use.
     /// `OfemClientControlService` calls this after a successful `setConfig`
-    /// write so the new settings (log level, telemetry, cache limit, etc.)
-    /// take effect without waiting for the FPE process to terminate.
+    /// write so per-alias settings (log level, per-alias auth, etc.) take
+    /// effect without waiting for the FPE process to terminate.
     ///
-    /// Note: reloading an engine does NOT recreate the shared CacheStore,
-    /// TelemetryClient, or HTTPGateRegistry — those are process-wide singletons
-    /// that persist for the lifetime of the FPE process.
+    /// **Process-wide shared subsystems are NOT recreated on reload.**
+    /// `CacheStore`, `TelemetryClient`, and `HTTPGateRegistry` are
+    /// process-wide singletons captured at first construction.  Config fields
+    /// that only affect those subsystems (e.g. `cache.maxBytes`,
+    /// `telemetry`) will not take effect until the FPE process restarts.
+    /// This is intentional: the shared-subsystem design eliminates N-pools,
+    /// and recreating them on every reload would re-introduce that hazard.
     func reloadEngine() async {
         let existing: OfemEngine? = lock.withLock {
             let e = _engine
