@@ -595,7 +595,20 @@ public actor SyncEngine {
                 downloadGenerations.removeValue(forKey: keyString)
             }
         }
-        return try await task.value
+        // Propagate cancellation to the unstructured download task so that if
+        // the caller is cancelled while we are awaiting the result, the inner
+        // task (which may be blocked inside onelake.read()) also gets cancelled
+        // and eventually completes — preventing a permanently hung inFlightDownloads
+        // entry and an unresolved CheckedContinuation inside the network mock /
+        // production network layer. Without this, a cancelled caller leaves the
+        // inner task running indefinitely (it is unstructured and would otherwise
+        // outlive its logical owner), blocking the test or next open() for the
+        // same key on the semaphore slot the orphaned task holds.
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     // MARK: - Put (upload)
