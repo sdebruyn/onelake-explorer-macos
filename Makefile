@@ -3,7 +3,7 @@
 # Day-to-day:
 #   make app        — signed macOS app; THE build to run after pulling
 #   make build      — Debug build of OneLake.app via xcodebuild
-#   make test       — run Swift unit tests (unsigned, host-less)
+#   make test       — run Swift unit tests (OfemKit + host-app logic)
 #   make build-ci   — unsigned compile-only build (used in CI)
 #   make clean      — remove build artefacts + unregister from LaunchServices
 #   make gen        — regenerate OneLake.xcodeproj from project.yml
@@ -63,11 +63,15 @@ build-ci: gen ## Compile app + .appex unsigned (CI gate)
 		$(APPLE_UNSIGNED) \
 		build
 
-# Run the host-less XCTest bundle unsigned. Includes pure logic tests
-# for the identifier grammar.
-test: gen ## Run Swift unit tests (unsigned, host-less)
+# Run unit tests:
+#   OfemKit          — engine logic + identifier-grammar contract (swift test)
+#   OneLakeHostTests — host-app pure logic (write fence, icon state,
+#                      mount-path helper, sign-in coordinator,
+#                      domain identifier composition)
+test: gen ## Run Swift unit tests (OfemKit + host-app logic)
+	cd Packages/OfemKit && swift test
 	xcodebuild -project $(XCODE_PROJECT) \
-		-scheme OneLakeTests \
+		-scheme OneLakeHostTests \
 		-configuration Debug \
 		-destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath DerivedData \

@@ -23,7 +23,11 @@ import os.log
 /// - The `auth` instance drives interactive sign-in and persists account
 ///   metadata to the shared config after a successful flow.
 ///
-/// Thread safety: `@MainActor` isolated — matches `OfemAuth`.
+/// Thread safety: `@MainActor` isolated — the interactive sign-in path
+/// (`MSALWebviewParameters`, `ASWebAuthenticationSession`) is UI-bound and
+/// must stay on the main actor. `OfemAuth` itself is a Swift actor that
+/// runs off the main thread; method calls to it from here are `await`ed
+/// and hop to its own executor automatically.
 @MainActor
 final class SharedOfemAuth {
     static let shared = SharedOfemAuth()
@@ -57,8 +61,8 @@ final class SharedOfemAuth {
     ///
     /// 1. Calls `InteractiveSignIn.acquireToken` — opens the Microsoft
     ///    login page via ASWebAuthenticationSession in the host process.
-    /// 2. Assigns the user-chosen `alias` to the returned account.
-    /// 3. Persists the account to config.toml via `OfemAuth.addAccount`.
+    /// 2. Uses `InteractiveSignInResult.commit(alias:to:)` to atomically
+    ///    transfer any scratch blob and persist the account via `OfemAuth`.
     ///
     /// Returns an `XPCAccountInfo` the caller can relay to the FPE via XPC
     /// so the FPE can register the domain without re-reading config.
@@ -96,16 +100,17 @@ final class SharedOfemAuth {
             cacheStrategy: .msalKeychain
         )
 
-        // Assign the user-chosen alias and optional custom clientID.
-        var account = result.account
-        account.alias = trimmedAlias
+        // Assign the optional custom clientID to the account before committing.
+        var accountToCommit = result
         if let cid = clientID, !cid.isEmpty {
-            account.clientID = cid
+            accountToCommit.account.clientID = cid
         }
 
-        // Persist to config.toml (shared with FPE via App Group container).
-        try auth.addAccount(account)
+        // commit(alias:to:) atomically transfers any scratch blob (not needed
+        // here since we use .msalKeychain) and calls auth.addAccount.
+        try await accountToCommit.commit(alias: trimmedAlias, to: auth)
 
+        let account = accountToCommit.account
         Self.log.info(
             "SharedOfemAuth.signIn: signed in alias=\(trimmedAlias, privacy: .public) user=\(account.username, privacy: .private)"
         )

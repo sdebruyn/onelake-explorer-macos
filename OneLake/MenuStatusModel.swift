@@ -66,7 +66,6 @@ final class MenuStatusModel: ObservableObject {
 
     // MARK: Published
 
-    @Published private(set) var isRunning: Bool = false
     @Published private(set) var cacheBytes: Int64 = -1
     @Published private(set) var cacheMaxBytes: Int64 = 0
     /// User-editable LRU ceiling in whole gigabytes; the menubar Stepper
@@ -91,15 +90,18 @@ final class MenuStatusModel: ObservableObject {
 
     var pausedCount: Int { pausedWorkspaces.count }
 
+    /// True when at least one account is registered.
+    var hasAccounts: Bool { !accounts.isEmpty }
+
     /// Icon state for the menu-bar label. Priority: not-running > paused > normal.
     var menuIconState: MenuIconState {
-        if !isRunning { return .notRunning }
+        if accounts.isEmpty { return .notRunning }
         if pausedCount > 0 { return .paused }
         return .normal
     }
 
     var headerLabel: String {
-        guard isRunning else { return "○ Not running" }
+        guard hasAccounts else { return "○ Not running" }
         if pausedCount > 0 {
             let noun = pausedCount == 1 ? "workspace" : "workspaces"
             return "⏸ \(pausedCount) paused \(noun)"
@@ -144,17 +146,37 @@ final class MenuStatusModel: ObservableObject {
     // key into `pendingWrites` before the optimistic publish and removes
     // it once the XPC call has returned. `doRefresh` skips any field
     // whose key is currently fenced.
-    private enum WriteKey: Hashable {
+    // Internal (not private) so tests can verify fence behaviour via @testable import.
+    enum WriteKey: Hashable {
         case cacheMaxSize
         case netMaxUploads
         case netMaxDownloads
         case logLevel
         case telemetry
     }
-    private var pendingWrites: Set<WriteKey> = []
+    // Counted multiset: each concurrent writer for the same key increments the
+    // counter; endWrite decrements. The fence lifts only when the count reaches
+    // zero, so overlapping writes to the same key don't prematurely expose stale
+    // refresh snapshots.
+    private var pendingWrites: [WriteKey: Int] = [:]
 
-    private func beginWrite(_ key: WriteKey) { pendingWrites.insert(key) }
-    private func endWrite(_ key: WriteKey) { pendingWrites.remove(key) }
+    // Internal (not private) so tests can verify fence behaviour via @testable import.
+    func beginWrite(_ key: WriteKey) {
+        pendingWrites[key, default: 0] += 1
+    }
+
+    func endWrite(_ key: WriteKey) {
+        let current = pendingWrites[key, default: 0]
+        if current <= 1 {
+            pendingWrites.removeValue(forKey: key)
+        } else {
+            pendingWrites[key] = current - 1
+        }
+    }
+
+    func isFenced(_ key: WriteKey) -> Bool {
+        (pendingWrites[key] ?? 0) > 0
+    }
 
     /// Debounce window for setCacheLimitGB writes.
     static let setCacheLimitDebounce: Duration = .milliseconds(750)
@@ -162,6 +184,11 @@ final class MenuStatusModel: ObservableObject {
     static let setNetConcurrencyDebounce: Duration = .milliseconds(750)
 
     // MARK: - Refresh
+
+    /// Generation counter incremented on every doRefresh() call. A stale
+    /// completion that sees a mismatched generation discards its results
+    /// rather than overwriting fresher state.
+    private var refreshGeneration: UInt64 = 0
 
     /// Fetch account list + engine status. Call this on menu open;
     /// safe to call concurrently — a running fetch is cancelled and restarted.
@@ -184,11 +211,19 @@ final class MenuStatusModel: ObservableObject {
     }
 
     private func doRefresh() async {
+        // Stamp this refresh so we can discard stale results when a newer
+        // refresh has already completed (generation counter fix for app-07).
+        refreshGeneration &+= 1
+        let myGeneration = refreshGeneration
+
         // Primary path: read accounts from SharedOfemAuth (config.toml).
         // Works whether or not any FPE domain is loaded.
-        let nativeAccounts = SharedOfemAuth.shared.auth.listAccounts()
-        let nativeDefault = SharedOfemAuth.shared.auth.defaultAccount() ?? ""
-        isRunning = true
+        let nativeAccounts = await SharedOfemAuth.shared.auth.listAccounts()
+        let nativeDefault = await SharedOfemAuth.shared.auth.defaultAccount() ?? ""
+
+        // Check cancellation before publishing (no suspension between read and publish).
+        guard !Task.isCancelled else { return }
+
         accounts = nativeAccounts.map { acc in
             AccountInfo(
                 alias: acc.alias,
@@ -211,23 +246,27 @@ final class MenuStatusModel: ObservableObject {
         do {
             let status = try await OfemFPEClient.shared.getEngineStatus(alias: firstAlias)
 
-            if !pendingWrites.contains(.cacheMaxSize) {
+            // Discard results if a newer refresh already ran while we were
+            // awaiting the XPC reply (stale-snapshot guard for app-07).
+            guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
+
+            if !isFenced(.cacheMaxSize) {
                 cacheBytes = status.cacheBytes
                 cacheMaxBytes = status.cacheMaxBytes
                 if status.cacheMaxSizeGB > 0 {
                     cacheMaxSizeGB = status.cacheMaxSizeGB
                 }
             }
-            if !pendingWrites.contains(.telemetry) {
+            if !isFenced(.telemetry) {
                 telemetryEnabled = status.telemetryEnabled
             }
-            if status.netMaxUploads > 0, !pendingWrites.contains(.netMaxUploads) {
+            if status.netMaxUploads > 0, !isFenced(.netMaxUploads) {
                 netMaxUploads = status.netMaxUploads
             }
-            if status.netMaxDownloads > 0, !pendingWrites.contains(.netMaxDownloads) {
+            if status.netMaxDownloads > 0, !isFenced(.netMaxDownloads) {
                 netMaxDownloads = status.netMaxDownloads
             }
-            if !status.logLevel.isEmpty, !pendingWrites.contains(.logLevel) {
+            if !status.logLevel.isEmpty, !isFenced(.logLevel) {
                 logLevel = status.logLevel
             }
 
@@ -258,7 +297,7 @@ final class MenuStatusModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try SharedOfemAuth.shared.auth.setDefaultAccount(alias: alias)
+                try await SharedOfemAuth.shared.auth.setDefaultAccount(alias: alias)
             } catch {
                 Self.log.error("setDefaultAccount failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -271,7 +310,7 @@ final class MenuStatusModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try SharedOfemAuth.shared.auth.removeAccount(alias: alias)
+                try await SharedOfemAuth.shared.auth.removeAccount(alias: alias)
                 await DomainSyncManager.shared.removeDomain(alias: alias)
             } catch {
                 Self.log.error("removeAccount failed: \(error.localizedDescription, privacy: .public)")
@@ -284,9 +323,11 @@ final class MenuStatusModel: ObservableObject {
     func cacheClear() {
         Task { [weak self] in
             guard let self else { return }
-            // Clear cache on each registered account's FPE domain.
-            // Each domain has its own CacheStore keyed by its alias.
-            for acc in accounts {
+            // Read directly from SharedOfemAuth so this works even before the first
+            // doRefresh() has populated the published `accounts` property — same
+            // rationale as writeConfigToAllAliases.
+            let currentAccounts = await SharedOfemAuth.shared.auth.listAccounts()
+            for acc in currentAccounts {
                 do {
                     let remaining = try await OfemFPEClient.shared.clearCache(alias: acc.alias)
                     Self.log.info(
@@ -389,32 +430,33 @@ final class MenuStatusModel: ObservableObject {
 
     // MARK: - Private helpers
 
-    /// Writes a config key/value pair through each account's FPE domain.
+    /// Writes a config key/value pair through the first available FPE domain.
     ///
-    /// Config is stored in a single config.toml, so writing through any
-    /// one domain is sufficient. We fan out to all aliases anyway so the
-    /// in-memory OfemConfigStore inside each FPE process is updated
-    /// without waiting for the next time it reads the file from disk.
+    /// `config.toml` is a single shared file, so one write is sufficient to
+    /// persist the change. `setConfig` on the FPE side calls `updateAndSave`
+    /// (atomic read-merge-write) and then `reloadEngine()`, so the in-memory
+    /// snapshot and the running engine are both updated in one round-trip.
+    /// Fanning out to every alias would produce N redundant write-lock-read-
+    /// merge-write cycles for the same key/value with no additional benefit.
     private func writeConfigToAllAliases(key: String, value: String) async {
         // Read directly from SharedOfemAuth so this works even before the first
         // doRefresh() has populated the published `accounts` property — e.g. when
         // the user changes a setting immediately after app launch.
-        let currentAccounts = SharedOfemAuth.shared.auth.listAccounts()
-        for acc in currentAccounts {
-            do {
-                try await OfemFPEClient.shared.setConfig(
-                    alias: acc.alias,
-                    key: key,
-                    value: value
-                )
-                Self.log.info(
-                    "setConfig(\(acc.alias, privacy: .public)) key='\(key, privacy: .public)' applied"
-                )
-            } catch {
-                Self.log.error(
-                    "setConfig(\(acc.alias, privacy: .public)) key='\(key, privacy: .public)' failed: \(error.localizedDescription, privacy: .public)"
-                )
-            }
+        let currentAccounts = await SharedOfemAuth.shared.auth.listAccounts()
+        guard let first = currentAccounts.first else { return }
+        do {
+            try await OfemFPEClient.shared.setConfig(
+                alias: first.alias,
+                key: key,
+                value: value
+            )
+            Self.log.info(
+                "setConfig(\(first.alias, privacy: .public)) key='\(key, privacy: .public)' applied"
+            )
+        } catch {
+            Self.log.error(
+                "setConfig(\(first.alias, privacy: .public)) key='\(key, privacy: .public)' failed: \(error.localizedDescription, privacy: .public)"
+            )
         }
     }
 }

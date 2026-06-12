@@ -8,6 +8,19 @@ import Foundation
 /// Strict validation: any identifier with an empty segment (leading slash,
 /// double slash, empty workspace or item component) is rejected with
 /// ``FPError/invalidIdentifier(_:)``.
+///
+/// Well-known sentinel handling:
+/// - `""` or `NSFileProviderRootContainerItemIdentifier`  → `.root`
+/// - `NSFileProviderTrashContainerItemIdentifier`         → `.trash`
+/// - `NSFileProviderWorkingSetContainerItemIdentifier`    → `.workingSet`
+///
+/// Trailing-slash normalisation (sync-13):
+/// - `"ws/item/"` is normalised to `.item`, matching `"ws/item"`.
+///
+/// Double-slash rejection in path tail (sync-13):
+/// - Any empty segment in the path portion (e.g. `"ws/item//file"`) is
+///   rejected so callers surface `noSuchItem` instead of emitting a
+///   malformed double-slash DFS URL.
 public enum ItemIdentifierParser {
 
     // MARK: - Parse
@@ -15,13 +28,18 @@ public enum ItemIdentifierParser {
     /// Parses an opaque identifier string.
     ///
     /// - Parameter raw: The identifier string from the File Provider stack.
-    /// `""` and `".rootContainer"` both map to `.root`.
     /// - Returns: The structured ``ItemIdentifier``.
     /// - Throws: ``FPError/invalidIdentifier(_:)`` for malformed identifiers.
     public static func parse(_ raw: String) throws -> ItemIdentifier {
-        // Empty string or the explicit root-container sentinel.
+        // Well-known sentinels — check before any other processing.
         if raw.isEmpty || raw == ItemIdentifier.rootContainerString {
             return .root
+        }
+        if raw == ItemIdentifier.trashContainerString {
+            return .trash
+        }
+        if raw == ItemIdentifier.workingSetString {
+            return .workingSet
         }
 
         // Leading slash is always invalid.
@@ -54,22 +72,25 @@ public enum ItemIdentifierParser {
             if ws.isEmpty || item.isEmpty {
                 throw FPError.invalidIdentifier("empty workspace or item segment in \"\(raw)\"")
             }
-            // Trim trailing slash from the path component (mirrors Go's
-            // `strings.TrimSuffix(parts[2], "/")` in parseIdentifier).
-            let path = String(parts[2]).trimmingSuffix("/")
-            return .path(workspaceID: ws, itemID: item, path: path)
+            let rawPath = String(parts[2])
+
+            // Trailing slash normalisation (sync-13): "ws/item/" → .item.
+            if rawPath.isEmpty {
+                return .item(workspaceID: ws, itemID: item)
+            }
+
+            // Reject any empty segment in the path tail (sync-13).
+            // "ws/item//file" would produce a malformed double-slash DFS URL.
+            if rawPath.hasPrefix("/") || rawPath.contains("//") {
+                throw FPError.invalidIdentifier(
+                    "empty path segment in \"\(raw)\""
+                )
+            }
+
+            return .path(workspaceID: ws, itemID: item, path: rawPath)
 
         default:
             throw FPError.invalidIdentifier("unexpected segment count in \"\(raw)\"")
         }
-    }
-}
-
-// MARK: - String extension helper
-
-private extension String {
-    /// Removes a single trailing occurrence of `suffix`.
-    func trimmingSuffix(_ suffix: String) -> String {
-        hasSuffix(suffix) ? String(dropLast(suffix.count)) : self
     }
 }

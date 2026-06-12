@@ -18,51 +18,60 @@ import os.log
 ///
 /// ## Thread safety
 ///
-/// `OfemAuth` is `@MainActor` isolated to keep it simple. Token acquisition
-/// dispatches to MSAL's own concurrency model via `async/await`. The client
-/// cache dictionary is read and written only on the main actor.
-@MainActor
-public final class OfemAuth {
+/// `OfemAuth` is a Swift `actor`. Token acquisition runs on the actor's own
+/// executor — not the main actor — so the FPE's concurrent Finder I/O calls
+/// do not serialize through the main thread. The in-process MSAL client cache
+/// dictionary is accessed only within the actor.
+///
+/// The genuinely UI-bound part of authentication — interactive sign-in via
+/// `ASWebAuthenticationSession` — lives in the host app's `SharedOfemAuth`
+/// and remains `@MainActor` isolated as a leaf, separate from this actor.
+public actor OfemAuth {
     // MARK: - Properties
 
     private let configStore: OfemConfigStore
     private let clientID: String
     private let cacheStrategy: TokenCacheStrategy
     private let fileTokenStore: FileTokenStore?
+    private let msalClientFactory: MsalAuthClientFactory
 
-    /// In-process MSAL client cache: key = `"<tenantID>|<alias>"`.
-    /// Cleared when an account is removed.
-    private var clients: [String: MsalAuthClient] = [:]
+    /// In-process MSAL client cache: key = `"<clientID>|<tenantID>"`.
+    ///
+    /// Keyed on `(clientID, tenantID)` per the class contract: one
+    /// `MSALPublicClientApplication` per app-registration+tenant pair,
+    /// shared across aliases that use the same pair. The key includes
+    /// `clientID` so a config change that updates the client ID for an
+    /// account correctly builds a fresh client rather than reusing a stale one.
+    private var clients: [String: any MsalAuthClientProtocol] = [:]
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "OfemAuth")
-
-    // MARK: - ErrInteractionRequired
-
-    /// Sentinel thrown when MSAL cannot silently acquire a token and the
-    /// user must sign in interactively again.
-    public static let interactionRequired = OfemAuthError.interactionRequired
 
     // MARK: - Initialisation
 
     /// Creates an `OfemAuth` instance.
     ///
     /// - Parameters:
-    /// - configStore: Loaded `OfemConfigStore` (accounts are read from
-    /// here and written back after `addAccount`/`removeAccount`).
-    /// - clientID: The Entra App Registration GUID. Default:
-    /// ``ofemEntraClientID`` (built-in OFEM registration).
-    /// - cacheStrategy: Token cache backend. Default: `.msalKeychain`.
-    /// - fileTokenStore: Required when `cacheStrategy ==.fileBackedFallback`.
+    ///   - configStore: Loaded `OfemConfigStore` (accounts are read from
+    ///     here and written back after `addAccount`/`removeAccount`).
+    ///   - clientID: The Entra App Registration GUID. Default:
+    ///     ``ofemEntraClientID`` (built-in OFEM registration).
+    ///   - cacheStrategy: Token cache backend. Default: `.msalKeychain`.
+    ///   - fileTokenStore: Required when `cacheStrategy == .fileBackedFallback`.
+    ///   - msalClientFactory: Factory for creating MSAL client instances.
+    ///     Default: ``DefaultMsalAuthClientFactory`` (real MSAL). Inject a
+    ///     test double to cover the token-acquisition path in unit tests.
     public init(
         configStore: OfemConfigStore,
         clientID: String = ofemEntraClientID,
         cacheStrategy: TokenCacheStrategy = .msalKeychain,
-        fileTokenStore: FileTokenStore? = nil
+        fileTokenStore: FileTokenStore? = nil,
+        msalClientFactory: MsalAuthClientFactory = DefaultMsalAuthClientFactory()
     ) {
         self.configStore = configStore
         self.clientID = clientID
         self.cacheStrategy = cacheStrategy
         self.fileTokenStore = fileTokenStore
+        self.msalClientFactory = msalClientFactory
     }
 
     // MARK: - Account management
@@ -78,7 +87,7 @@ public final class OfemAuth {
     /// The MSAL token cache is already in the Keychain at this point
     /// (written by `MsalAuthClient` during the interactive flow). This
     /// method only updates the TOML config with the account metadata.
-    public func addAccount(_ account: Account) throws {
+    public func addAccount(_ account: Account) async throws {
         guard !account.alias.isEmpty else {
             throw OfemAuthError.emptyAlias
         }
@@ -87,32 +96,63 @@ public final class OfemAuth {
         if snap.accounts[account.alias] != nil {
             throw OfemAuthError.duplicateAlias(account.alias)
         }
-        try configStore.updateAndSave { config in
+        try await configStore.updateAndSave { config in
             config.accounts[account.alias] = account
         }
     }
 
-    /// Removes the account with the given alias from the config.
+    /// Removes the account with the given alias from the config, purges its
+    /// MSAL Keychain refresh token, and deletes the on-disk token blob
+    /// (`.fileBackedFallback` only) so refresh tokens do not survive account
+    /// removal or resurrect under a re-added alias.
     ///
-    /// Also evicts the cached MSAL client for that alias so a subsequent
-    /// add-then-remove-then-add cycle does not reuse a stale client.
-    ///
-    /// Note: the MSAL Keychain cache entry is NOT removed here because MSAL
-    /// manages its own cache lifecycle. If the alias is re-added, MSAL will
-    /// try the existing cache first, which is the correct behaviour.
-    public func removeAccount(alias: String) throws {
+    /// Per `docs/auth.md` logout step 1, the MSAL Keychain item must be
+    /// explicitly removed via `MSALPublicClientApplication.remove(_:)` — MSAL
+    /// does not do this automatically when the app removes the account from its
+    /// own config. Skipping this step leaves the refresh token in the macOS
+    /// Keychain under the App Group, where a subsequent `addAccount` for the
+    /// same alias (different user) would pick it up via `willAccessCache`.
+    public func removeAccount(alias: String) async throws {
         let snap = configStore.snapshot()
-        guard snap.accounts[alias] != nil else {
+        guard let cfg = snap.accounts[alias] else {
             throw OfemAuthError.unknownAlias(alias)
         }
-        try configStore.updateAndSave { config in
+
+        // Purge the MSAL Keychain refresh token before removing the config
+        // entry so the client is still available for the lookup.
+        if cacheStrategy == .msalKeychain, !cfg.homeAccountID.isEmpty {
+            let effectiveClientID = cfg.clientID.flatMap { $0.isEmpty ? nil : $0 } ?? clientID
+            if let msalClient = try? clientFor(clientID: effectiveClientID, tenantID: cfg.tenantID, alias: alias) {
+                do {
+                    try msalClient.removeAccount(homeAccountID: cfg.homeAccountID)
+                } catch let MsalAuthClientError.accountNotFound(id) {
+                    // Already absent from the MSAL cache — benign.
+                    Self.log.debug("OfemAuth: removeAccount: homeAccountID=\(id, privacy: .public) not in MSAL cache (already purged)")
+                } catch {
+                    Self.log.error("OfemAuth: removeAccount: MSAL remove failed for alias=\(alias, privacy: .public): \(error)")
+                }
+            }
+        }
+
+        try await configStore.updateAndSave { config in
             config.accounts.removeValue(forKey: alias)
             if config.defaultAccount == alias {
                 config.defaultAccount = ""
             }
         }
-        // Evict all cached MSAL clients for this alias.
-        evictClients(for: alias)
+        // Delete the file-backed token blob so re-adding the same alias for a
+        // different user does not resurrect the previous user's refresh token.
+        if let store = fileTokenStore {
+            do {
+                try store.delete(alias: alias)
+            } catch FileTokenStoreError.deleteFailed(let a, let e) {
+                Self.log.error("OfemAuth: failed to delete token blob for alias=\(a, privacy: .public): \(e)")
+            } catch {
+                // notFound is benign (no file-backed cache was used for this alias).
+            }
+        }
+        // Evict the cached MSAL client for the removed account's (clientID, tenantID) pair.
+        evictClients(for: alias, in: snap)
     }
 
     /// Returns the alias of the configured default account.
@@ -123,12 +163,12 @@ public final class OfemAuth {
     }
 
     /// Sets the default account alias.
-    public func setDefaultAccount(alias: String) throws {
+    public func setDefaultAccount(alias: String) async throws {
         let snap = configStore.snapshot()
         guard snap.accounts[alias] != nil else {
             throw OfemAuthError.unknownAlias(alias)
         }
-        try configStore.updateAndSave { config in
+        try await configStore.updateAndSave { config in
             config.defaultAccount = alias
         }
     }
@@ -146,14 +186,17 @@ public final class OfemAuth {
         guard let cfg = snap.accounts[alias] else {
             throw OfemAuthError.unknownAlias(alias)
         }
+        guard !cfg.homeAccountID.isEmpty else {
+            Self.log.warning("OfemAuth: account \(alias, privacy: .public) has no homeAccountID; re-auth required")
+            throw OfemAuthError.interactionRequired
+        }
 
         let effectiveClientID = cfg.clientID.flatMap { $0.isEmpty ? nil : $0 } ?? clientID
-        let client = try clientFor(alias: alias, tenantID: cfg.tenantID, effectiveClientID: effectiveClientID)
+        let client = try clientFor(clientID: effectiveClientID, tenantID: cfg.tenantID, alias: alias)
 
-        let msalAccount = try msalAccount(for: client, homeAccountID: cfg.homeAccountID, alias: alias)
         return try await silentToken(
             client: client,
-            account: msalAccount,
+            homeAccountID: cfg.homeAccountID,
             scopes: scope.scopes,
             alias: alias
         )
@@ -161,17 +204,23 @@ public final class OfemAuth {
 
     // MARK: - Private helpers
 
-    /// Returns the cached MSAL client for the `(alias, tenantID, clientID)`
-    /// triple, building it lazily on first use.
+    /// Returns the cached MSAL client for the `(clientID, tenantID)` pair,
+    /// building it lazily on first use.
+    ///
+    /// Cache key is `"<clientID>|<tenantID>"` — one `MSALPublicClientApplication`
+    /// per app-registration+tenant pair, shared across aliases that authenticate
+    /// against the same pair. Including `clientID` in the key ensures that an
+    /// account whose `clientID` changes in config rebuilds the client rather than
+    /// reusing a stale instance.
     private func clientFor(
-        alias: String,
+        clientID: String,
         tenantID: String,
-        effectiveClientID: String
-    ) throws -> MsalAuthClient {
-        let key = "\(tenantID)|\(alias)"
+        alias: String
+    ) throws -> any MsalAuthClientProtocol {
+        let key = "\(clientID)|\(tenantID)"
         if let cached = clients[key] { return cached }
-        let client = try MsalAuthClient(
-            clientID: effectiveClientID,
+        let client = try msalClientFactory.makeClient(
+            clientID: clientID,
             tenantID: tenantID,
             cacheStrategy: cacheStrategy,
             fileTokenStore: fileTokenStore,
@@ -181,55 +230,27 @@ public final class OfemAuth {
         return client
     }
 
-    /// Finds the `MSALAccount` in the client's cache whose identifier
-    /// matches `homeAccountID`.
-    private func msalAccount(
-        for client: MsalAuthClient,
-        homeAccountID: String,
-        alias: String
-    ) throws -> MSALAccount {
-        guard !homeAccountID.isEmpty else {
-            Self.log.warning("OfemAuth: account \(alias, privacy: .public) has no homeAccountID; re-auth required")
-            throw OfemAuthError.interactionRequired
-        }
-        let allAccounts = try client.accounts()
-        for account in allAccounts {
-            guard let identifier = account.identifier, !identifier.isEmpty else { continue }
-            if identifier == homeAccountID {
-                return account
-            }
-        }
-        Self.log.warning("OfemAuth: account \(alias, privacy: .public) not in MSAL cache; re-auth required")
-        throw OfemAuthError.interactionRequired
-    }
-
     /// Runs MSAL silent token acquisition and maps interaction-required
     /// errors to ``OfemAuthError/interactionRequired``.
     ///
-    /// The `account` parameter is passed with `nonisolated(unsafe)` to
-    /// cross the `@MainActor` isolation boundary into the MSAL async call.
-    /// `MSALAccount` is an Objective-C class that MSAL treats as thread-safe
-    /// for read operations; we only pass it in and never mutate it.
+    /// Account lookup is handled inside ``MsalAuthClientProtocol/acquireTokenSilent(scopes:homeAccountID:)``.
+    /// `MsalAuthClientError.accountNotFound` maps to ``OfemAuthError/interactionRequired``
+    /// because a missing cache entry means the user must sign in again.
     private func silentToken(
-        client: MsalAuthClient,
-        account: MSALAccount,
+        client: any MsalAuthClientProtocol,
+        homeAccountID: String,
         scopes: [String],
         alias: String
     ) async throws -> String {
-        guard !scopes.isEmpty else {
-            throw OfemAuthError.emptyScopes
-        }
-        // Capture account in a nonisolated(unsafe) wrapper so it can cross
-        // the actor boundary without a Sendable warning. MSALAccount is an
-        // Objective-C class; MSAL guarantees it is safe to read from any
-        // thread after it is fully initialised.
-        nonisolated(unsafe) let msalAccount = account
         do {
-            let result = try await client.acquireTokenSilent(scopes: scopes, account: msalAccount)
-            return result.accessToken
+            return try await client.acquireTokenSilent(scopes: scopes, homeAccountID: homeAccountID)
         } catch {
             if isInteractionRequired(error) {
                 Self.log.info("OfemAuth: silent acquisition for \(alias, privacy: .public) requires interaction: \(error.localizedDescription, privacy: .public)")
+                throw OfemAuthError.interactionRequired
+            }
+            if case MsalAuthClientError.accountNotFound = error {
+                Self.log.warning("OfemAuth: account \(alias, privacy: .public) not in MSAL cache; re-auth required")
                 throw OfemAuthError.interactionRequired
             }
             throw OfemAuthError.silentTokenFailed(alias, error)
@@ -239,66 +260,114 @@ public final class OfemAuth {
     /// Returns `true` when the MSAL error indicates the user must interact
     /// again (Conditional Access challenge, MFA re-prompt, expired refresh
     /// token, consent required, etc.).
-    private func isInteractionRequired(_ error: Error) -> Bool {
-        let msg = error.localizedDescription.lowercased()
-        let signals = [
-            "interaction_required",
-            "login_required",
-            "consent_required",
-            "invalid_grant",
-            "mfa_required",
-            "password_change_required",
-            "aadsts50076",
-            "aadsts50079",
-            "aadsts50158",
-            "aadsts50173",
-            "aadsts65001",
-            "aadsts70043",
-            "aadsts700082",
-        ]
-        for signal in signals {
-            if msg.contains(signal) { return true }
-        }
-        // MSAL Swift also reports interaction-required via a typed error code.
-        // MSALError.interactionRequired covers expired refresh tokens, Conditional
-        // Access challenges, MFA re-prompts, and similar cases that require the
-        // user to interact again. MSALError.serverDeclinedScopes is intentionally
-        // excluded here: it means the server issued tokens for a subset of the
-        // requested scopes (e.g. OneLake granted but Fabric admin-consent missing).
-        // That is a partial-success case that callers should handle at a higher
-        // level (e.g. disable Fabric discovery) rather than forcing a full re-auth.
+    ///
+    /// Detection is based on the **typed** MSAL error code and domain rather
+    /// than substring-matching `localizedDescription`, which is a user-facing,
+    /// potentially localized string with no contractual guarantee to contain
+    /// OAuth error codes.
+    ///
+    /// `MSALError.interactionRequired` covers expired refresh tokens, Conditional
+    /// Access challenges, MFA re-prompts, and similar cases.
+    /// `MSALError.serverDeclinedScopes` is intentionally excluded: it means the
+    /// server issued tokens for a subset of the requested scopes — a partial-
+    /// success case callers should handle at a higher level rather than forcing
+    /// a full re-auth.
+    func isInteractionRequired(_ error: Error) -> Bool {
         let nsError = error as NSError
-        if nsError.domain == MSALErrorDomain {
-            if nsError.code == MSALError.interactionRequired.rawValue {
-                return true
-            }
+        guard nsError.domain == MSALErrorDomain else {
+            // Non-MSAL errors (network timeouts, etc.) are not interaction-required.
+            return false
         }
-        return false
+        return nsError.code == MSALError.interactionRequired.rawValue
     }
 
-    /// Evicts all cached MSAL clients for the given alias suffix.
-    private func evictClients(for alias: String) {
-        let suffix = "|\(alias)"
-        clients.keys
-            .filter { $0.hasSuffix(suffix) }
-            .forEach { clients.removeValue(forKey: $0) }
+    /// Evicts the cached MSAL client for the `(clientID, tenantID)` pair
+    /// associated with the given alias, using the account snapshot taken
+    /// before removal.
+    ///
+    /// The cache key is `"<clientID>|<tenantID>"`. Evicting it here means
+    /// the next token request for any alias sharing the same pair will
+    /// rebuild the client lazily — picking up the correct Keychain state
+    /// after the MSAL remove call in ``removeAccount(alias:)``.
+    private func evictClients(for alias: String, in snap: OfemConfig) {
+        if let cfg = snap.accounts[alias] {
+            let effectiveClientID = cfg.clientID.flatMap { $0.isEmpty ? nil : $0 } ?? clientID
+            let key = "\(effectiveClientID)|\(cfg.tenantID)"
+            clients.removeValue(forKey: key)
+        }
+    }
+}
+
+// MARK: - MsalAuthClientFactory
+
+/// Factory protocol for creating ``MsalAuthClientProtocol`` instances.
+///
+/// Inject a test double via ``OfemAuth/init(configStore:clientID:cacheStrategy:fileTokenStore:msalClientFactory:)``
+/// to cover the token-acquisition path in unit tests without a real MSAL transport.
+public protocol MsalAuthClientFactory: Sendable {
+    func makeClient(
+        clientID: String,
+        tenantID: String,
+        cacheStrategy: TokenCacheStrategy,
+        fileTokenStore: FileTokenStore?,
+        alias: String
+    ) throws -> any MsalAuthClientProtocol
+}
+
+// MARK: - DefaultMsalAuthClientFactory
+
+/// Production factory: builds real ``MsalAuthClient`` instances.
+public struct DefaultMsalAuthClientFactory: MsalAuthClientFactory, Sendable {
+    public init() {}
+
+    public func makeClient(
+        clientID: String,
+        tenantID: String,
+        cacheStrategy: TokenCacheStrategy,
+        fileTokenStore: FileTokenStore?,
+        alias: String
+    ) throws -> any MsalAuthClientProtocol {
+        try MsalAuthClient(
+            clientID: clientID,
+            tenantID: tenantID,
+            cacheStrategy: cacheStrategy,
+            fileTokenStore: fileTokenStore,
+            alias: alias
+        )
     }
 }
 
 // MARK: - OfemAuthError
 
 /// Errors thrown by ``OfemAuth``.
-public enum OfemAuthError: Error, CustomStringConvertible {
+public enum OfemAuthError: Error, CustomStringConvertible, Equatable {
+    public static func == (lhs: OfemAuthError, rhs: OfemAuthError) -> Bool {
+        switch (lhs, rhs) {
+        case (.interactionRequired, .interactionRequired): return true
+        case (.emptyAlias, .emptyAlias): return true
+        case let (.duplicateAlias(a), .duplicateAlias(b)): return a == b
+        case let (.unknownAlias(a), .unknownAlias(b)): return a == b
+        case (.emptyScopes, .emptyScopes): return true
+        case let (.silentTokenFailed(a, _), .silentTokenFailed(b, _)): return a == b
+        default: return false
+        }
+    }
+
     /// The user must interact again to complete authentication.
     ///
     /// Callers should surface a "click to re-authenticate" indicator rather
     /// than blocking.
     case interactionRequired
 
+    /// The alias provided for the account was empty.
     case emptyAlias
+
     case duplicateAlias(String)
     case unknownAlias(String)
+
+    /// No OAuth scopes were configured for the token request.
     case emptyScopes
+
     case silentTokenFailed(String, Error)
 
     public var description: String {
@@ -312,7 +381,7 @@ public enum OfemAuthError: Error, CustomStringConvertible {
         case let .unknownAlias(alias):
             return "auth: account \"\(alias)\" not found"
         case .emptyScopes:
-            return "auth: at least one scope is required"
+            return "auth: no scopes configured"
         case let .silentTokenFailed(alias, error):
             return "auth: silent token for \"\(alias)\" failed: \(error)"
         }

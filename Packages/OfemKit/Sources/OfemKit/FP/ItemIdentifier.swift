@@ -1,3 +1,4 @@
+import FileProvider
 import Foundation
 
 // MARK: - ItemIdentifier
@@ -7,11 +8,12 @@ import Foundation
 /// The identifier grammar:
 ///
 /// ```
-/// "" →.root
-/// ".rootContainer" →.root
-/// "<ws>" →.workspace(workspaceID: ws)
-/// "<ws>/<item>" →.item(workspaceID: ws, itemID: item)
-/// "<ws>/<item>/<path>" →.path(workspaceID: ws, itemID: item, path: path)
+/// "" | NSFileProviderRootContainerItemIdentifier  → .root
+/// NSFileProviderTrashContainerItemIdentifier      → .trash
+/// NSFileProviderWorkingSetContainerItemIdentifier → .workingSet
+/// "<ws>"                 → .workspace(workspaceID: ws)
+/// "<ws>/<item>"          → .item(workspaceID: ws, itemID: item)
+/// "<ws>/<item>/<path>"   → .path(workspaceID: ws, itemID: item, path: path)
 /// ```
 ///
 /// Identifiers are strictly validated on construction; any identifier with an
@@ -26,6 +28,14 @@ public enum ItemIdentifier: Hashable, Sendable {
     /// Maps to `NSFileProviderItemIdentifier.rootContainer` on the FPE side.
     case root
 
+    /// The trash container sentinel. OFEM never places items here; the FPE
+    /// must short-circuit on this case and return `noSuchItem`.
+    case trash
+
+    /// The working-set container sentinel owned by the File Provider framework.
+    /// The FPE must short-circuit on this case.
+    case workingSet
+
     /// A Fabric workspace. The identifier string is `workspaceID`.
     case workspace(workspaceID: String)
 
@@ -37,11 +47,25 @@ public enum ItemIdentifier: Hashable, Sendable {
     /// The identifier string is `"<workspaceID>/<itemID>/<path>"`.
     case path(workspaceID: String, itemID: String, path: String)
 
-    // MARK: - Well-known string
+    // MARK: - Well-known strings (pinned to Apple framework constants)
 
-    /// The canonical string for the root container, matching
-    /// `NSFileProviderItemIdentifier.rootContainer`'s backing value.
-    public static let rootContainerString = ".rootContainer"
+    /// The canonical string for the root container.
+    ///
+    /// Equals `NSFileProviderItemIdentifier.rootContainer.rawValue`
+    /// (`"NSFileProviderRootContainerItemIdentifier"`).
+    public static let rootContainerString = NSFileProviderItemIdentifier.rootContainer.rawValue
+
+    /// The canonical string for the trash container.
+    ///
+    /// Equals `NSFileProviderItemIdentifier.trashContainer.rawValue`
+    /// (`"NSFileProviderTrashContainerItemIdentifier"`).
+    public static let trashContainerString = NSFileProviderItemIdentifier.trashContainer.rawValue
+
+    /// The canonical string for the working-set container.
+    ///
+    /// Equals `NSFileProviderItemIdentifier.workingSet.rawValue`
+    /// (`"NSFileProviderWorkingSetContainerItemIdentifier"`).
+    public static let workingSetString = NSFileProviderItemIdentifier.workingSet.rawValue
 
     // MARK: - Stringified identifier
 
@@ -50,6 +74,10 @@ public enum ItemIdentifier: Hashable, Sendable {
         switch self {
         case .root:
             return Self.rootContainerString
+        case .trash:
+            return Self.trashContainerString
+        case .workingSet:
+            return Self.workingSetString
         case .workspace(let ws):
             return ws
         case .item(let ws, let item):
@@ -67,7 +95,7 @@ public enum ItemIdentifier: Hashable, Sendable {
     /// Returns the identifier of the parent container.
     public var parentIdentifier: ItemIdentifier {
         switch self {
-        case .root:
+        case .root, .trash, .workingSet:
             return .root
         case .workspace:
             return .root

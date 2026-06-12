@@ -73,11 +73,11 @@ struct OfemConfigTests {
     // MARK: - Round-trip: TOML → struct → TOML
 
     @Test("round-trip: canonical config survives encode/decode")
-    func roundTripCanonical() throws {
+    func roundTripCanonical() async throws {
         let paths = makePaths()
         let store = try OfemConfigStore(paths: paths)
 
-        try store.updateAndSave { cfg in
+        try await store.updateAndSave { cfg in
             cfg.installID = "abc-123"
             cfg.telemetry = false
             cfg.defaultAccount = "work"
@@ -110,10 +110,10 @@ struct OfemConfigTests {
     }
 
     @Test("round-trip: file permissions are 0600")
-    func roundTripFilePermissions() throws {
+    func roundTripFilePermissions() async throws {
         let paths = makePaths()
         let store = try OfemConfigStore(paths: paths)
-        try store.updateAndSave { cfg in cfg.installID = "perm-test" }
+        try await store.updateAndSave { cfg in cfg.installID = "perm-test" }
 
         let attrs = try FileManager.default.attributesOfItem(
             atPath: paths.configFile.path(percentEncoded: false)
@@ -123,11 +123,11 @@ struct OfemConfigTests {
     }
 
     @Test("round-trip: optional Account fields survive")
-    func roundTripOptionalAccountFields() throws {
+    func roundTripOptionalAccountFields() async throws {
         let paths = makePaths()
         let store = try OfemConfigStore(paths: paths)
 
-        try store.updateAndSave { cfg in
+        try await store.updateAndSave { cfg in
             cfg.accounts["byo"] = Account(
                 alias: "byo",
                 tenantID: "t2",
@@ -229,7 +229,7 @@ struct OfemConfigTests {
         await withTaskGroup(of: Void.self) { group in
             for i in 0..<20 {
                 group.addTask {
-                    try? store.updateAndSave { cfg in
+                    try? await store.updateAndSave { cfg in
                         cfg.installID = "run-\(i)"
                     }
                 }
@@ -239,5 +239,167 @@ struct OfemConfigTests {
         // Must not throw.
         let store2 = try OfemConfigStore(paths: paths)
         #expect(!store2.snapshot().installID.isEmpty)
+    }
+
+    // MARK: - Intra-process write safety (arch-01 / auth-01)
+    //
+    // Two OfemConfigStore instances opened over the same path in the *same*
+    // process share a process-wide serial DispatchQueue (keyed by the
+    // canonical config-file path). This ensures their updateAndSave calls are
+    // properly serialised within the process without relying on fcntl record
+    // locks, which are per-process and would therefore not exclude two stores
+    // in the same process from each other.
+    //
+    // Cross-process exclusion (host app vs FPE) is handled by the fcntl
+    // record locks in acquireFileLock — that path cannot be exercised in an
+    // in-process unit test because a single process always gets the lock
+    // immediately regardless of other file descriptors it holds.
+
+    @Test("two stores over one file: interleaved writes to different fields both survive")
+    func twoStoresInterleavedWrites() async throws {
+        let paths = makePaths()
+
+        // Seed the file with known values.
+        let seed = try OfemConfigStore(paths: paths)
+        try await seed.updateAndSave { cfg in
+            cfg.installID = "seed"
+            cfg.telemetry = true
+            cfg.log.level = "info"
+        }
+
+        // storeA and storeB share the same process-wide serial queue for
+        // this path, so their concurrent updateAndSave calls are serialised
+        // via the intra-process registry — not via fcntl.
+        let storeA = try OfemConfigStore(paths: paths)
+        let storeB = try OfemConfigStore(paths: paths)
+
+        // Run 10 rounds of interleaved writes.
+        // storeA writes telemetry=false; storeB writes log.level="debug".
+        // Both are different fields — neither write should revert the other.
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<10 {
+                group.addTask {
+                    try? await storeA.updateAndSave { cfg in cfg.telemetry = false }
+                }
+                group.addTask {
+                    try? await storeB.updateAndSave { cfg in cfg.log.level = "debug" }
+                }
+            }
+        }
+
+        // Re-read from disk — both mutations must be present.
+        let final = try OfemConfigStore(paths: paths)
+        let snap = final.snapshot()
+        #expect(snap.telemetry == false, "storeA's telemetry write must survive storeB's concurrent writes")
+        #expect(snap.log.level == "debug", "storeB's log.level write must survive storeA's concurrent writes")
+    }
+
+    @Test("two stores over one file: account written by storeA is not erased by storeB")
+    func twoStoresAccountNotErased() async throws {
+        let paths = makePaths()
+
+        // storeA writes an account.
+        let storeA = try OfemConfigStore(paths: paths)
+        try await storeA.updateAndSave { cfg in
+            cfg.accounts["work"] = Account(
+                alias: "work",
+                tenantID: "t1",
+                homeAccountID: "u1.t1",
+                username: "alice@contoso.com",
+                addedAt: "2026-06-01T00:00:00Z"
+            )
+        }
+
+        // storeB was opened BEFORE storeA wrote the account (stale snapshot).
+        // It writes a different field. The account must still be present
+        // because updateAndSave re-reads the on-disk state before applying
+        // the mutation (read-merge-write), and both stores share the
+        // intra-process serial queue, so the writes are properly ordered.
+        let storeB = try OfemConfigStore(paths: paths)
+        try await storeB.updateAndSave { cfg in
+            cfg.cache.maxSizeGB = 20
+        }
+
+        let final = try OfemConfigStore(paths: paths)
+        let snap = final.snapshot()
+        #expect(snap.accounts["work"] != nil, "account written by storeA must survive storeB's write")
+        #expect(snap.cache.maxSizeGB == 20, "storeB's cache write must be present")
+    }
+
+    // MARK: - max_size_gb = 0 honoured as no-limit (auth-07)
+
+    @Test("max_size_gb = 0 is preserved as no-limit sentinel, not rewritten to default")
+    func maxSizeGBZeroIsNoLimit() throws {
+        let paths = makePaths()
+        let toml = "[cache]\nmax_size_gb = 0\n"
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().cache.maxSizeGB == 0, "max_size_gb = 0 must be preserved, not rewritten to \(CacheConfig.defaultSizeGB)")
+        #expect(store.snapshot().cache.maxBytes == 0, "maxBytes must be 0 when maxSizeGB is 0 (no-limit)")
+    }
+
+    @Test("absent max_size_gb still seeds default (not 0)")
+    func absentMaxSizeGBSeedsDefault() throws {
+        let paths = makePaths()
+        try writeFile("install_id = \"x\"\n", at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().cache.maxSizeGB == CacheConfig.defaultSizeGB)
+    }
+
+    // MARK: - Cache bounds enforced at load time (auth-08)
+
+    @Test("max_size_gb below minSizeGB is clamped up to minSizeGB at load")
+    func maxSizeGBClampedToMin() throws {
+        let paths = makePaths()
+        // A value of -5 is below the minimum (1 GB) — must be clamped.
+        let toml = "[cache]\nmax_size_gb = -5\n"
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().cache.maxSizeGB == CacheConfig.minSizeGB,
+                "negative max_size_gb must be clamped to \(CacheConfig.minSizeGB)")
+    }
+
+    @Test("max_size_gb above maxSizeGB is clamped down to maxSizeGB at load")
+    func maxSizeGBClampedToMax() throws {
+        let paths = makePaths()
+        // A value of 999 exceeds the maximum (100 GB) — must be clamped.
+        let toml = "[cache]\nmax_size_gb = 999\n"
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().cache.maxSizeGB == CacheConfig.maxSizeGB,
+                "huge max_size_gb must be clamped to \(CacheConfig.maxSizeGB)")
+    }
+
+    @Test("CacheConfig.maxBytes does not overflow on absurdly large maxSizeGB")
+    func maxBytesOverflowGuard() {
+        // Int64.max / bytesPerGB is approximately 8_589_934_591 GB.
+        // A value well above that must not overflow to a negative number.
+        let absurd = CacheConfig(maxSizeGB: Int.max)
+        #expect(absurd.maxBytes >= 0, "maxBytes must not overflow to a negative value")
+        #expect(absurd.maxBytes == Int64.max, "absurd maxSizeGB must clamp maxBytes to Int64.max")
+    }
+
+    // MARK: - Defaults single source of truth (auth-15)
+
+    @Test("RawConfig missing fields fall back to makeDefault() values, not separate literals")
+    func rawConfigDefaultsMatchMakeDefault() throws {
+        let paths = makePaths()
+        // Write a TOML with only install_id — all other fields absent.
+        try writeFile("install_id = \"abc\"\n", at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        let snap = store.snapshot()
+        let def = OfemConfig.makeDefault()
+
+        // Every field that has a default must match makeDefault().
+        #expect(snap.telemetry == def.telemetry)
+        #expect(snap.net.maxConcurrentUploadsPerAccount == def.net.maxConcurrentUploadsPerAccount)
+        #expect(snap.net.maxConcurrentDownloadsPerAccount == def.net.maxConcurrentDownloadsPerAccount)
+        #expect(snap.log.level == def.log.level)
+        #expect(snap.cache.maxSizeGB == def.cache.maxSizeGB)
     }
 }
