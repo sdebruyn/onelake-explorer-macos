@@ -190,19 +190,32 @@ public actor CacheStore {
 
     /// Removes the row for `key` and all its descendants (for directories).
     ///
+    /// Before hard-deleting, writes a deletion tombstone for each removed row
+    /// so that `itemsChangedAfter` / `enumerateChanges` can surface the removal
+    /// to the File Provider framework via `didDeleteItems(withIdentifiers:)`.
+    ///
     /// Blob files referenced exclusively by deleted rows are unlinked from disk.
     /// A no-op when the key does not exist.
     public func delete(key: CacheKey) async throws {
         try validateKey(key)
 
-        // 1. Collect SHA-256 digests of blobs that will be deleted.
+        // 1. Collect paths and SHA-256 digests of rows that will be deleted,
+        //    and write tombstones for each, all in one transaction.
+        let nowNs = currentNs()
         let shas: [String] = try await dbPool.write { db in
             let shaRows: [String]
+            let deletedPaths: [String]
             if key.path.isEmpty {
                 shaRows = try String.fetchAll(db, sql: """
                     SELECT blob_sha256 FROM path_metadata
                     WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
                       AND blob_sha256 != ''
+                    """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
+
+                // Collect paths for tombstones before deleting.
+                deletedPaths = try String.fetchAll(db, sql: """
+                    SELECT path FROM path_metadata
+                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
                     """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
 
                 try db.execute(sql: """
@@ -221,6 +234,15 @@ public actor CacheStore {
                         key.path, escaped + "/%",
                     ])
 
+                deletedPaths = try String.fetchAll(db, sql: """
+                    SELECT path FROM path_metadata
+                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                      AND (path = ? OR path LIKE ? ESCAPE '\\')
+                    """, arguments: [
+                        key.accountAlias, key.workspaceID, key.itemID,
+                        key.path, escaped + "/%",
+                    ])
+
                 try db.execute(sql: """
                     DELETE FROM path_metadata
                     WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
@@ -230,6 +252,22 @@ public actor CacheStore {
                         key.path, escaped + "/%",
                     ])
             }
+
+            // Write tombstones for all deleted rows.
+            for path in deletedPaths {
+                let identStr = cacheKeyToIdentifierString(
+                    workspaceID: key.workspaceID,
+                    itemID: key.itemID,
+                    path: path
+                )
+                let tombstone = DeletionTombstoneRecord(
+                    accountAlias: key.accountAlias,
+                    identifierString: identStr,
+                    deletedAtNs: nowNs
+                )
+                try tombstone.save(db)
+            }
+
             return shaRows
         }
 
@@ -255,10 +293,39 @@ public actor CacheStore {
         try await reader().maxSyncedAtNs(accountAlias: accountAlias)
     }
 
-    /// Returns all metadata rows for `accountAlias` whose `synced_at_ns` value
-    /// is strictly greater than `ns`. Delegates to ``CacheReader``.
-    public func itemsChangedAfter(accountAlias: String, ns: Int64) async throws -> [MetadataRecord] {
+    /// Returns items changed and deletions recorded after `ns` for `accountAlias`.
+    ///
+    /// Returns a tuple of:
+    /// - `updated`: metadata rows whose `synced_at_ns` is strictly greater than `ns`.
+    /// - `deletedIdentifierStrings`: identifier strings from `deletion_tombstones`
+    ///   whose `deleted_at_ns` is strictly greater than `ns`.
+    ///
+    /// Delegates to ``CacheReader``.
+    public func itemsChangedAfter(
+        accountAlias: String,
+        ns: Int64
+    ) async throws -> (updated: [MetadataRecord], deletedIdentifierStrings: [String]) {
         try await reader().itemsChangedAfter(accountAlias: accountAlias, ns: ns)
+    }
+
+    // MARK: - Deletion tombstones
+
+    /// Writes a deletion tombstone for `identifierString` at the current time.
+    ///
+    /// Called by `delete(key:)` before the hard-delete so the change path can
+    /// surface the removal to the File Provider framework.
+    public func recordDeletion(accountAlias: String, identifierString: String) async throws {
+        guard !accountAlias.isEmpty else { throw CacheError.missingArgument("accountAlias") }
+        guard !identifierString.isEmpty else { throw CacheError.missingArgument("identifierString") }
+        let nowNs = currentNs()
+        let tombstone = DeletionTombstoneRecord(
+            accountAlias: accountAlias,
+            identifierString: identifierString,
+            deletedAtNs: nowNs
+        )
+        try await dbPool.write { db in
+            try tombstone.save(db)
+        }
     }
 
     // MARK: - Blob: store
@@ -655,4 +722,15 @@ private func escapeLike(_ s: String) -> String {
     s.replacingOccurrences(of: "\\", with: "\\\\")
      .replacingOccurrences(of: "%", with: "\\%")
      .replacingOccurrences(of: "_", with: "\\_")
+}
+
+/// Reconstructs the ItemIdentifier.identifierString for a `(workspaceID, itemID, path)` triple.
+///
+/// Mirrors ``ItemIdentifier/identifierString`` without importing the full
+/// FileProvider framework from the cache layer.
+private func cacheKeyToIdentifierString(workspaceID: String, itemID: String, path: String) -> String {
+    if path.isEmpty {
+        return "\(workspaceID)/\(itemID)"
+    }
+    return "\(workspaceID)/\(itemID)/\(path)"
 }

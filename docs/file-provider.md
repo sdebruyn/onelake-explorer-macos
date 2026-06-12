@@ -143,7 +143,7 @@ When the user saves a modified file, macOS calls `createItem` or `modifyItem`. T
 4. On success, returns the updated `NSFileProviderItem` with the server-assigned etag/mtime from the post-upload HEAD.
 5. On failure (network, throttling, capacity-paused), returns an `NSFileProviderError` macOS understands; macOS surfaces it in the UI and may retry later (we honor `Retry-After`).
 
-`modifyItem` only processes calls where `changedFields` includes `.contents`. Metadata-only changes (rename, reparent) return an `NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)`.
+`modifyItem` only processes calls where `changedFields` includes `.contents`. Metadata-only changes (rename, reparent) are acknowledged: the extension applies what it can (no rename/reparent on OneLake) and returns the existing item unchanged, so macOS treats the call as a no-op rather than surfacing an error to the user.
 
 ## Conflict resolution
 

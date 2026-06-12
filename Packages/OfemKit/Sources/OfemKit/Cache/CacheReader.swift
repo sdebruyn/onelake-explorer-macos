@@ -146,17 +146,30 @@ public final class CacheReader: Sendable {
 
     // MARK: - Changed items since anchor
 
-    /// Returns all metadata rows for `accountAlias` whose `synced_at_ns` value
-    /// is strictly greater than `afterNs`.
+    /// Returns items changed and deletions recorded after `ns` for `accountAlias`.
     ///
-    /// Used by `enumerateChanges` to compute the delta since the last known
-    /// sync anchor.
-    public func itemsChangedAfter(accountAlias: String, ns: Int64) async throws -> [MetadataRecord] {
+    /// - `updated`: metadata rows whose `synced_at_ns` is strictly greater than `ns`.
+    /// - `deletedIdentifierStrings`: identifier strings from `deletion_tombstones`
+    ///   whose `deleted_at_ns` is strictly greater than `ns`.
+    ///
+    /// Used by `enumerateChanges` so the FPE can call both `didUpdate` and
+    /// `didDeleteItems(withIdentifiers:)` in a single delta pass.
+    public func itemsChangedAfter(
+        accountAlias: String,
+        ns: Int64
+    ) async throws -> (updated: [MetadataRecord], deletedIdentifierStrings: [String]) {
         try await db.read { db in
-            try MetadataRecord
+            let updated = try MetadataRecord
                 .filter(MetadataRecord.Columns.accountAlias == accountAlias)
                 .filter(MetadataRecord.Columns.syncedAtNs > ns)
                 .fetchAll(db)
+
+            let deleted = try String.fetchAll(db, sql: """
+                SELECT identifier_string FROM deletion_tombstones
+                WHERE account_alias = ? AND deleted_at_ns > ?
+                """, arguments: [accountAlias, ns])
+
+            return (updated, deleted)
         }
     }
 

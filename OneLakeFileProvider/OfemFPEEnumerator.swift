@@ -205,13 +205,15 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 }
 
                 // Compute changed items since the last known anchor.
-                let changedRecords = (try? await engine.cache.itemsChangedAfter(
+                // C5: propagate SQLite errors rather than silently returning an
+                // empty delta with an advanced anchor (which would hide data loss).
+                let (updatedRecords, deletedIdStrings) = try await engine.cache.itemsChangedAfter(
                     accountAlias: aliasCopy,
                     ns: previousNs
-                )) ?? []
+                )
 
-                if !changedRecords.isEmpty {
-                    let updatedItems: [NSFileProviderItem] = changedRecords.compactMap { record in
+                if !updatedRecords.isEmpty {
+                    let updatedItems: [NSFileProviderItem] = updatedRecords.compactMap { record in
                         guard let di = try? DomainItem.from(record: record) else { return nil }
                         return OfemFPEItem(from: di)
                     }
@@ -220,11 +222,19 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                     }
                 }
 
+                // C1: report remote deletions so Finder removes the items.
+                if !deletedIdStrings.isEmpty {
+                    let deletedIdentifiers = deletedIdStrings.map {
+                        NSFileProviderItemIdentifier($0)
+                    }
+                    observer.didDeleteItems(withIdentifiers: deletedIdentifiers)
+                }
+
                 let newAnchor = encodeSyncAnchor(currentNs)
                 observer.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
 
                 Self.log.debug(
-                    "OfemFPEEnumerator: enumerateChanges for \(aliasCopy, privacy: .public)/\(identifierCopy.identifierString, privacy: .public): \(changedRecords.count, privacy: .public) changes, anchor \(previousNs, privacy: .public) → \(currentNs, privacy: .public)"
+                    "OfemFPEEnumerator: enumerateChanges for \(aliasCopy, privacy: .public)/\(identifierCopy.identifierString, privacy: .public): \(updatedRecords.count, privacy: .public) updates, \(deletedIdStrings.count, privacy: .public) deletions, anchor \(previousNs, privacy: .public) → \(currentNs, privacy: .public)"
                 )
             } catch is CancellationError {
                 observer.finishEnumeratingWithError(NSFileProviderError(.cannotSynchronize))
@@ -360,12 +370,13 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 let engine = try await hostCopy.engine()
                 let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
 
-                let changedRecords = (try? await engine.cache.itemsChangedAfter(
+                // C5: propagate SQLite errors; C1: report deletions.
+                let (updatedRecords, deletedIdStrings) = try await engine.cache.itemsChangedAfter(
                     accountAlias: aliasCopy,
                     ns: previousNs
-                )) ?? []
+                )
 
-                let updatedItems: [NSFileProviderItem] = changedRecords.compactMap { record in
+                let updatedItems: [NSFileProviderItem] = updatedRecords.compactMap { record in
                     guard let di = try? DomainItem.from(record: record) else { return nil }
                     return OfemFPEItem(from: di)
                 }
@@ -373,11 +384,18 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                     observer.didUpdate(updatedItems)
                 }
 
+                if !deletedIdStrings.isEmpty {
+                    let deletedIdentifiers = deletedIdStrings.map {
+                        NSFileProviderItemIdentifier($0)
+                    }
+                    observer.didDeleteItems(withIdentifiers: deletedIdentifiers)
+                }
+
                 let newAnchor = encodeSyncAnchor(currentNs)
                 observer.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
 
                 Self.log.debug(
-                    "WorkingSet: enumerateChanges for \(aliasCopy, privacy: .public): \(changedRecords.count, privacy: .public) changes since anchor=\(previousNs, privacy: .public)"
+                    "WorkingSet: enumerateChanges for \(aliasCopy, privacy: .public): \(updatedRecords.count, privacy: .public) updates, \(deletedIdStrings.count, privacy: .public) deletions since anchor=\(previousNs, privacy: .public)"
                 )
             } catch {
                 let code = FPError.classify(error)

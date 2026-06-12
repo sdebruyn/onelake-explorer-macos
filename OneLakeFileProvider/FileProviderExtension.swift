@@ -667,8 +667,9 @@ private func engineCreateItem(
             return OfemFPEItem(from: di)
         }
         // Not in cache: enumerate parent to populate, then retry.
+        // C4: propagate auth/network errors instead of silently swallowing them.
         let parentKey = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
-        _ = try? await engine.sync.enumerate(key: parentKey)
+        _ = try await engine.sync.enumerate(key: parentKey)
         if let record = try? await engine.cache.fetch(key: key),
            let di = try? DomainItem.from(record: record) {
             return OfemFPEItem(from: di)
@@ -714,6 +715,10 @@ private func engineCreateItem(
     // Final fallback: synthetic item. This case should be rare (e.g. mkdir
     // on a backend that doesn't enumerate immediately), and the version
     // mismatch will resolve on the next full enumeration of the parent.
+    // N2: log the fallback so it is visible in diagnostics.
+    Self.log.warning(
+        "createItem: using synthetic fallback for \(filename, privacy: .public) parent=\(parentID.identifierString, privacy: .public)"
+    )
     return OfemFPEItem(from: DomainItem.synthetic(
         identifier: newIdentifier,
         parentIdentifier: parentID,

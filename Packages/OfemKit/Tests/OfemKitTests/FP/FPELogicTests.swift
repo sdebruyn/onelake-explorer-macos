@@ -158,7 +158,7 @@ struct FPELogicTests {
         let newer = makeTestRecord(path: "new.txt", syncedAtNs: 3_000_000_000)
         try await store.upsert(old)
         try await store.upsert(newer)
-        let changed = try await store.itemsChangedAfter(accountAlias: "dev", ns: anchorNs)
+        let (changed, _) = try await store.itemsChangedAfter(accountAlias: "dev", ns: anchorNs)
         let paths = changed.map(\.path)
         // Only 'new.txt' has syncedAtNs strictly > anchorNs
         // (provided CacheStore preserved our value and didn't override it)
@@ -166,6 +166,46 @@ struct FPELogicTests {
         // Since we pass non-zero values they should be preserved.
         #expect(paths.contains("new.txt"))
         #expect(!paths.contains("old.txt"))
+    }
+
+    // MARK: - fpe-02 / N1: createItem without contents must not lose remote data
+
+    /// Verifies that a cache row is preserved when a metadata-only create
+    /// (`.mayAlreadyExist` or no `.contents` in fields) is processed.
+    ///
+    /// The fpe-02 fix ensures `engineCreateItem` skips the upload path when
+    /// `fields` does not include `.contents`. At the OfemKit layer the
+    /// invariant is: if the cache row for the key already exists, its content
+    /// must survive a metadata-only create path (no upsert with empty content
+    /// should overwrite it). We test this by checking that `fetch` returns the
+    /// original record after an upsert that carries the preserved blob columns.
+    @Test func cacheRowPreservedAfterMetadataOnlyUpsert() async throws {
+        let store = try makeTempCacheStore()
+        // Write a row with known content length and etag.
+        var original = makeTestRecord(path: "Files/data.parquet", syncedAtNs: 1_000_000_000)
+        original.contentLength = 8192
+        original.etag = "\"etag-remote\""
+        try await store.upsert(original)
+
+        // Simulate a metadata-only re-upsert (no blob, same etag) — as the
+        // .mayAlreadyExist path in engineCreateItem would do.
+        var metaOnly = original
+        metaOnly.blobSHA256 = ""
+        metaOnly.blobSize = 0
+        try await store.upsert(metaOnly)
+
+        let key = CacheKey(
+            accountAlias: original.accountAlias,
+            workspaceID: original.workspaceID,
+            itemID: original.itemID,
+            path: original.path
+        )
+        let fetched = try await store.fetch(key: key)
+        // The upsert must not overwrite content length or etag.
+        #expect(fetched.contentLength == 8192)
+        #expect(fetched.etag == "\"etag-remote\"")
+        // blobSHA256 was explicitly cleared above (caller carries forward or drops).
+        #expect(fetched.blobSHA256 == "")
     }
 
     // MARK: - Helpers

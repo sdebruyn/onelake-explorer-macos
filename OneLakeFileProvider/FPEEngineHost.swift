@@ -158,8 +158,15 @@ final class FPEEngineHost: Sendable {
 
         // fpe-10: honour a cached build error only within the back-off window.
         // After the window expires, clear the cached error and try again.
-        if let err = lock.withLock({ _buildError }) {
-            let elapsedNs = DispatchTime.now().uptimeNanoseconds &- _buildErrorTimestampNs
+        // C2: capture both _buildError and _buildErrorTimestampNs inside one
+        // lock.withLock closure to avoid reading _buildErrorTimestampNs outside
+        // the critical section.
+        let cachedError: (Error, UInt64)? = lock.withLock {
+            guard let err = _buildError else { return nil }
+            return (err, _buildErrorTimestampNs)
+        }
+        if let (err, ts) = cachedError {
+            let elapsedNs = DispatchTime.now().uptimeNanoseconds &- ts
             if elapsedNs < FPEEngineHost.buildErrorBackoffNs {
                 throw err
             }
@@ -221,8 +228,14 @@ final class FPEEngineHost: Sendable {
             throw NSFileProviderError(.cannotSynchronize)
         }
         if let e = lock.withLock({ _engine }) { return e }
-        if let err = lock.withLock({ _buildError }) {
-            let elapsedNs = DispatchTime.now().uptimeNanoseconds &- _buildErrorTimestampNs
+        // C2: capture both fields inside one lock.withLock to avoid reading
+        // _buildErrorTimestampNs outside the critical section.
+        let cachedErr: (Error, UInt64)? = lock.withLock {
+            guard let e = _buildError else { return nil }
+            return (e, _buildErrorTimestampNs)
+        }
+        if let (err, ts) = cachedErr {
+            let elapsedNs = DispatchTime.now().uptimeNanoseconds &- ts
             if elapsedNs < FPEEngineHost.buildErrorBackoffNs { throw err }
             lock.withLock { _buildError = nil; _buildErrorTimestampNs = 0 }
         }
