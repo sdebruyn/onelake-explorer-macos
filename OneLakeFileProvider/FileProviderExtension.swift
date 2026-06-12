@@ -219,8 +219,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
                 let data = try await engine.sync.open(key: key)
 
-                // Report progress as one completed unit (full download).
-                progress.completedUnitCount = max(progress.totalUnitCount, Int64(data.count))
+                // Update totalUnitCount to the actual size if it was unknown or
+                // underestimated, so completedUnitCount never exceeds totalUnitCount.
+                let actualBytes = Int64(data.count)
+                if progress.totalUnitCount < actualBytes {
+                    progress.totalUnitCount = actualBytes
+                }
+                progress.completedUnitCount = actualBytes
                 try data.write(to: dest)
                 completionHandler(dest, domainItem, nil)
             } catch is CancellationError {
@@ -323,8 +328,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — metadata-only (fields=\(changedFields.rawValue, privacy: .public)), acknowledging"
             )
             // Re-fetch and return the existing item so the system has a
-            // fresh version token. If fetch fails we synthesize a minimal
-            // response from the template rather than erroring out.
+            // fresh version token. If fetch fails the error is mapped and
+            // returned so the system can retry.
             let ofemID: ItemIdentifier
             do {
                 ofemID = try parseOfemItemIdentifier(item.itemIdentifier.rawValue)
