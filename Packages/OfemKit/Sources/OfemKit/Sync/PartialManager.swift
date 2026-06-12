@@ -104,7 +104,25 @@ final class PartialManager: Sendable {
         return (fileSize, etag, true)
     }
 
-    // MARK: - Finalise
+    // MARK: - SHA hash of a spill file
+
+    /// Computes the hex SHA-256 of the file at `url` by reading it in 1 MiB
+    /// chunks, without loading the entire file into memory (sync-02).
+    func hashSpillFile(_ url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        let bufferSize = 1 * 1024 * 1024 // 1 MiB
+        while true {
+            let chunk = try handle.read(upToCount: bufferSize) ?? Data()
+            guard !chunk.isEmpty else { break }
+            hasher.update(data: chunk)
+        }
+        let digest = hasher.finalize()
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    // MARK: - Finalise (legacy — kept for existing callers during migration)
 
     /// Appends `body` to any existing partial spill for `key`, SHA-verifies
     /// (when `expectedSHA` is provided), and returns all assembled bytes.
@@ -112,6 +130,11 @@ final class PartialManager: Sendable {
     /// The caller is responsible for storing the returned bytes in the blob
     /// cache (via ``CacheStore/storeBlob(key:data:)`` after upserting the
     /// metadata row).
+    ///
+    /// - Note: The streaming download path in ``SyncEngine`` no longer calls
+    ///   this method; it writes directly to the spill file via
+    ///   ``OneLakeClientProtocol/read(alias:workspaceGUID:itemGUID:path:range:ifMatch:destination:)``
+    ///   and uses ``hashSpillFile(_:)`` for SHA verification.
     func finalise(
         key: CacheKey,
         body: Data,
@@ -126,8 +149,6 @@ final class PartialManager: Sendable {
         )
 
         // Open (or create) the spill file and seek to rangeStart.
-        // Always open for update (read+write) so we can later seek to 0 and
-        // readToEnd() for SHA verification (sync-08).
         let handle: FileHandle
         if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: nil)
@@ -136,9 +157,9 @@ final class PartialManager: Sendable {
         defer { try? handle.close() }
 
         try handle.seek(toOffset: UInt64(rangeStart))
-        // Use the throwing write variant (sync-08): the legacy `write(_:)` raises
-        // an ObjC NSException on disk-full, which crashes the process; `write(contentsOf:)`
-        // throws a typed Swift error instead.
+        // sync-08: use the throwing write variant — the legacy `write(_:)` raises
+        // an ObjC NSException on disk-full; `write(contentsOf:)` throws a typed
+        // Swift error instead.
         do {
             try handle.write(contentsOf: body)
         } catch {

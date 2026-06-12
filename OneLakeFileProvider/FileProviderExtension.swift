@@ -218,22 +218,33 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     progress.totalUnitCount = knownSize
                 }
 
-                // Download via the sync engine (returns Data).
+                // Download via the sync engine.
+                // open() returns a file URL (streaming path — arch-07/fpe-03):
+                // bytes never pass through memory as a whole. We copy the blob
+                // file to `dest` so the File Provider framework can hand it to
+                // the system without touching the shared blob cache.
                 guard case let .path(wsID, itemID, path) = ofemID else {
                     completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
                     return
                 }
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
-                let data = try await engine.sync.open(key: key)
+                let blobURL = try await engine.sync.open(key: key)
 
-                // Update totalUnitCount to the actual size if it was unknown or
-                // underestimated, so completedUnitCount never exceeds totalUnitCount.
-                let actualBytes = Int64(data.count)
+                // Copy blob to the staging destination without loading into RAM.
+                try FileManager.default.copyItem(at: blobURL, to: dest)
+
+                // Update progress from the file size on disk.
+                let actualBytes: Int64
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path),
+                   let sz = attrs[.size] as? Int64 {
+                    actualBytes = sz
+                } else {
+                    actualBytes = knownSize
+                }
                 if progress.totalUnitCount < actualBytes {
                     progress.totalUnitCount = actualBytes
                 }
                 progress.completedUnitCount = actualBytes
-                try data.write(to: dest)
                 completionHandler(dest, domainItem, nil)
             } catch is CancellationError {
                 completionHandler(nil, nil, NSFileProviderError(.cannotSynchronize))
@@ -405,13 +416,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let task = Task {
             do {
                 let engine = try await hostCopy.engine()
-                let data = try Data(contentsOf: contentsURL)
-                // Seed progress.
-                if data.count > 0 {
-                    progress.totalUnitCount = Int64(data.count)
+                // Seed progress from file size — no in-memory load (fpe-03/arch-07).
+                let fileSize: Int64
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: contentsURL.path),
+                   let sz = attrs[.size] as? Int64 {
+                    fileSize = sz
+                } else {
+                    fileSize = 0
+                }
+                if fileSize > 0 {
+                    progress.totalUnitCount = fileSize
                 }
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
-                try await engine.sync.put(key: key, content: data)
+                try await engine.sync.put(key: key, sourceURL: contentsURL)
                 progress.completedUnitCount = progress.totalUnitCount
                 // Re-fetch the item metadata after upload (fpe-04 pattern).
                 let updated = try await engineFetchItem(
@@ -698,9 +715,8 @@ private func engineCreateItem(
         // remote file.
         let shouldUpload = fields.contains(.contents) && contents != nil
         if shouldUpload, let url = contents {
-            let data = try Data(contentsOf: url)
-            // Seed progress if caller can observe it.
-            try await engine.sync.put(key: key, content: data)
+            // Stream from the provided URL — no in-memory Data load (fpe-03/arch-07).
+            try await engine.sync.put(key: key, sourceURL: url)
         }
         // If no upload: we still return an item descriptor; the real content
         // is on the remote and will be fetched on demand.

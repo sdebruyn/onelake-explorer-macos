@@ -469,6 +469,53 @@ public actor CacheStore {
         return data
     }
 
+    // MARK: - Blob: blobURL
+
+    /// Returns the on-disk file URL of the cached blob for `key`, or `nil`
+    /// when the metadata row has no blob or the blob file is missing.
+    ///
+    /// The returned URL is a stable path inside the blob shard cache that
+    /// callers can read directly — avoiding an in-memory `Data` load.
+    public func blobURL(key: CacheKey) async throws -> URL? {
+        try validateKey(key)
+        let record = try await fetch(key: key)
+        guard !record.blobSHA256.isEmpty else { return nil }
+        return blobs.fileURL(sha256: record.blobSHA256)
+    }
+
+    // MARK: - Blob: storeBlobFromURL
+
+    /// Hashes the file at `sourceURL`, moves/copies it into the blob store, and
+    /// updates the `blob_sha256` / `blob_size` columns on the metadata row for
+    /// `key`.
+    ///
+    /// The metadata row must already exist (call ``upsert(_:)`` first).
+    ///
+    /// Prefer this over ``storeBlob(key:data:)`` when the bytes are already on
+    /// disk — it avoids loading the entire file into memory.
+    public func storeBlobFromURL(_ sourceURL: URL, key: CacheKey) async throws {
+        try validateKey(key)
+        let (sha, size) = try blobs.storeFromURL(sourceURL)
+
+        let affected = try await dbPool.write { db -> Int in
+            try db.execute(sql: """
+                UPDATE path_metadata
+                SET blob_sha256 = ?, blob_size = ?, last_accessed_ns = ?
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+                """, arguments: [sha, size, currentNs(),
+                                 key.accountAlias, key.workspaceID, key.itemID, key.path])
+            return db.changesCount
+        }
+        if affected == 0 {
+            throw CacheError.notFound(
+                "\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)"
+            )
+        }
+        if maxBlobBytes > 0 {
+            _ = try await evictToLimit()
+        }
+    }
+
     // MARK: - Blob: blobBytes
 
     /// Returns the deduplicated on-disk byte total for all cached blobs.

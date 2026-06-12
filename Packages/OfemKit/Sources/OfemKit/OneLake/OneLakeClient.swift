@@ -17,11 +17,11 @@ import os.log
 /// ```swift
 /// let client = OneLakeClient(http: myHTTPClient, tokenProvider: myOfemAuth)
 /// let listing = try await client.listPath(
-/// alias: "work",
-/// workspaceGUID: "...",
-/// itemGUID: "...",
-/// directory: "Files",
-/// recursive: false
+///     alias: "work",
+///     workspaceGUID: "...",
+///     itemGUID: "...",
+///     directory: "Files",
+///     recursive: false
 /// )
 /// ```
 public final class OneLakeClient: Sendable {
@@ -85,6 +85,9 @@ public final class OneLakeClient: Sendable {
         var continuation: String? = nil
 
         for page in 0..<Self.maxPaginationPages {
+            // net-05: query values are percent-encoded via oneLakeListURL /
+            // percentEncodedQueryItem so '+' in continuation tokens and
+            // directory names is not decoded as a space by Azure.
             var queryItems: [URLQueryItem] = [
                 URLQueryItem(name: "resource", value: "filesystem"),
                 URLQueryItem(name: "recursive", value: recursive ? "true" : "false"),
@@ -154,14 +157,60 @@ public final class OneLakeClient: Sendable {
 
     // MARK: - Read
 
-    /// Downloads a file or a byte range from a file.
+    /// Downloads a file or a byte range from a file, writing the response body
+    /// into `destination`.
+    ///
+    /// The response body is received via the standard ``HTTPClient`` path and
+    /// appended to `destination` using the throwing ``FileHandle/write(contentsOf:)``
+    /// API so disk-full surfaces as a typed error rather than an ObjC exception.
     ///
     /// Pass `range: nil` to download the entire file.
     /// Pass `ifMatch: ""` to skip the `If-Match` header.
     ///
-    /// Returns the file body as `Data` together with the response headers
-    /// parsed as ``PathProperties``. The caller does not need a follow-up
-    /// HEAD request if it already issues a full GET.
+    /// - Parameters:
+    /// - destination: An open `FileHandle` (writable, positioned at the write
+    ///   offset) that receives the response body bytes.
+    /// - Returns: The response headers parsed as ``PathProperties``; the caller
+    ///   does not need a follow-up HEAD request after a full GET.
+    public func read(
+        alias: String,
+        workspaceGUID: String,
+        itemGUID: String,
+        path: String,
+        range: Range<Int64>? = nil,
+        ifMatch: String = "",
+        destination: FileHandle
+    ) async throws -> PathProperties {
+        guard !workspaceGUID.isEmpty, !itemGUID.isEmpty else {
+            throw OneLakeError.missingArgument("workspaceGUID and itemGUID required")
+        }
+        let url = oneLakePathURL(base: baseURL, workspaceGUID: workspaceGUID, itemGUID: itemGUID, relPath: path)
+        var extra: [String: String] = [:]
+        if let r = range {
+            extra["Range"] = "bytes=\(r.lowerBound)-\(r.upperBound - 1)"
+        }
+        if !ifMatch.isEmpty {
+            extra["If-Match"] = ifMatch
+        }
+        let (data, response) = try await doRequest(
+            alias: alias,
+            method: "GET",
+            url: url,
+            body: nil,
+            extraHeaders: extra.isEmpty ? nil : extra,
+            idempotent: true
+        )
+        // Write the response bytes into the caller-provided handle using the
+        // throwing variant so disk-full surfaces as a typed Swift error.
+        try destination.write(contentsOf: data)
+        return propertiesFromHeaders(response.allHeaderFields)
+    }
+
+    /// Downloads a file or a byte range, returning the body as `Data`.
+    ///
+    /// Convenience overload for callers that require the raw bytes (e.g. small
+    /// metadata payloads). For large files use ``read(alias:workspaceGUID:itemGUID:path:range:ifMatch:destination:)``
+    /// to avoid buffering the entire response in memory.
     public func read(
         alias: String,
         workspaceGUID: String,
@@ -194,13 +243,54 @@ public final class OneLakeClient: Sendable {
 
     // MARK: - Write (Create + Append + Flush)
 
-    /// Uploads content to `path` using the DFS create + append + flush pattern.
+    /// Uploads content from a file URL to `path` using the DFS create + append
+    /// + flush pattern.
     ///
-    /// The body is consumed in 4 MiB chunks so memory use stays bounded
-    /// regardless of file size.
+    /// The file is read in 4 MiB chunks so memory use stays bounded regardless
+    /// of file size (arch-07/net-10: streaming source rather than in-memory `Data`).
     ///
-    /// `size` must equal the number of bytes in `content`. If `content`
-    /// supplies fewer bytes the call throws ``OneLakeError/shortRead(offset:)``.
+    /// - Parameters:
+    /// - sourceURL: Local file URL to read upload content from.
+    /// - size: Byte count to upload. Must equal the file size at `sourceURL`.
+    ///   Throws ``OneLakeError/shortRead(offset:)`` if the file is shorter.
+    public func write(
+        alias: String,
+        workspaceGUID: String,
+        itemGUID: String,
+        path: String,
+        sourceURL: URL,
+        size: Int64
+    ) async throws {
+        guard !workspaceGUID.isEmpty, !itemGUID.isEmpty else {
+            throw OneLakeError.missingArgument("workspaceGUID and itemGUID required")
+        }
+        guard !path.isEmpty else {
+            throw OneLakeError.missingArgument("path required")
+        }
+        guard size >= 0 else {
+            throw OneLakeError.missingArgument("size must be >= 0")
+        }
+
+        // Open the source file for reading.
+        let handle = try FileHandle(forReadingFrom: sourceURL)
+        defer { try? handle.close() }
+
+        try await writeFromHandle(
+            alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID,
+            path: path, handle: handle, size: size
+        )
+    }
+
+    /// Uploads content from an in-memory `Data` buffer to `path` using the DFS
+    /// create + append + flush pattern.
+    ///
+    /// Use this overload for small payloads (metadata, manifests). For large
+    /// files prefer ``write(alias:workspaceGUID:itemGUID:path:sourceURL:size:)``
+    /// which streams from a file without loading all bytes into memory.
+    ///
+    /// - Parameters:
+    /// - content: The bytes to upload. Must contain exactly `size` bytes.
+    /// - size: Must equal `content.count`.
     public func write(
         alias: String,
         workspaceGUID: String,
@@ -230,16 +320,20 @@ public final class OneLakeClient: Sendable {
         _ = try await doRequest(alias: alias, method: "PUT", url: createURL, body: nil, extraHeaders: nil, idempotent: true)
 
         // 2. Append in chunks.
+        // net-11: normalise to a zero-based Data so chunk subscripting is safe
+        // regardless of the buffer's startIndex (a Data slice preserves the
+        // parent's indices; re-wrapping gives startIndex == 0).
+        let buf = content.startIndex == 0 ? content : Data(content)
         var pos: Int64 = 0
         var remaining = size
-        let buf = content
         while remaining > 0 {
             let want = min(Int64(Self.chunkSize), remaining)
             let start = Int(pos)
-            let end = Int(pos + want)
+            let end   = Int(pos + want)
             guard end <= buf.count else {
                 throw OneLakeError.shortRead(offset: pos)
             }
+            // Safe: buf.startIndex == 0 after normalisation above.
             let chunk = buf[start..<end]
             let appendURL = oneLakePathURL(
                 base: baseURL,
@@ -264,17 +358,7 @@ public final class OneLakeClient: Sendable {
         }
 
         // 3. Flush.
-        let flushURL = oneLakePathURL(
-            base: baseURL,
-            workspaceGUID: workspaceGUID,
-            itemGUID: itemGUID,
-            relPath: path,
-            query: [
-                URLQueryItem(name: "action", value: "flush"),
-                URLQueryItem(name: "position", value: "\(size)"),
-            ]
-        )
-        _ = try await doRequest(alias: alias, method: "PATCH", url: flushURL, body: nil, extraHeaders: nil, idempotent: true)
+        try await doFlush(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, path: path, size: size)
     }
 
     // MARK: - CreateDirectory
@@ -337,10 +421,95 @@ public final class OneLakeClient: Sendable {
 
     // MARK: - Private helpers
 
+    /// Streams content from `handle` to the DFS endpoint in 4 MiB chunks.
+    ///
+    /// The file handle must be positioned at the start of the content to upload
+    /// and must remain valid for the duration of the call.
+    private func writeFromHandle(
+        alias: String,
+        workspaceGUID: String,
+        itemGUID: String,
+        path: String,
+        handle: FileHandle,
+        size: Int64
+    ) async throws {
+        // 1. Create file.
+        let createURL = oneLakePathURL(
+            base: baseURL,
+            workspaceGUID: workspaceGUID,
+            itemGUID: itemGUID,
+            relPath: path,
+            query: [URLQueryItem(name: "resource", value: "file")]
+        )
+        _ = try await doRequest(alias: alias, method: "PUT", url: createURL, body: nil, extraHeaders: nil, idempotent: true)
+
+        // 2. Append in chunks, reading from the handle.
+        var pos: Int64 = 0
+        var remaining = size
+        while remaining > 0 {
+            let want = min(Int64(Self.chunkSize), remaining)
+            let chunk: Data
+            do {
+                chunk = try handle.read(upToCount: Int(want)) ?? Data()
+            } catch {
+                throw OneLakeError.shortRead(offset: pos)
+            }
+            guard !chunk.isEmpty else {
+                throw OneLakeError.shortRead(offset: pos)
+            }
+            let appendURL = oneLakePathURL(
+                base: baseURL,
+                workspaceGUID: workspaceGUID,
+                itemGUID: itemGUID,
+                relPath: path,
+                query: [
+                    URLQueryItem(name: "action", value: "append"),
+                    URLQueryItem(name: "position", value: "\(pos)"),
+                ]
+            )
+            _ = try await doRequest(
+                alias: alias,
+                method: "PATCH",
+                url: appendURL,
+                body: chunk,
+                extraHeaders: nil,
+                idempotent: true // Position-addressed: replay is safe.
+            )
+            pos += Int64(chunk.count)
+            remaining -= Int64(chunk.count)
+        }
+
+        // 3. Flush.
+        try await doFlush(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, path: path, size: size)
+    }
+
+    /// Issues the DFS flush PATCH for `path` at the given `size`.
+    private func doFlush(
+        alias: String,
+        workspaceGUID: String,
+        itemGUID: String,
+        path: String,
+        size: Int64
+    ) async throws {
+        let flushURL = oneLakePathURL(
+            base: baseURL,
+            workspaceGUID: workspaceGUID,
+            itemGUID: itemGUID,
+            relPath: path,
+            query: [
+                URLQueryItem(name: "action", value: "flush"),
+                URLQueryItem(name: "position", value: "\(size)"),
+            ]
+        )
+        _ = try await doRequest(alias: alias, method: "PATCH", url: flushURL, body: nil, extraHeaders: nil, idempotent: true)
+    }
+
     /// Builds and executes a DFS request via ``HTTPClient``.
     ///
-    /// Injects the `x-ms-version` header, acquires a bearer token for
-    /// `alias`, and maps ``HTTPClientError`` to ``OneLakeError``.
+    /// Injects the `x-ms-version` header (using the single ``oneLakeDFSAPIVersion``
+    /// constant — net-17: the dead `oneLakeVersionHeader()` helper has been removed),
+    /// acquires a bearer token for `alias`, and maps ``HTTPClientError`` to
+    /// ``OneLakeError``.
     @discardableResult
     private func doRequest(
         alias: String,
@@ -352,7 +521,7 @@ public final class OneLakeClient: Sendable {
     ) async throws -> (Data, HTTPURLResponse) {
         var req = URLRequest(url: url)
         req.httpMethod = method
-        req.setValue("2021-08-06", forHTTPHeaderField: "x-ms-version")
+        req.setValue(oneLakeDFSAPIVersion, forHTTPHeaderField: "x-ms-version")
         if let b = body {
             req.httpBody = b
             req.setValue("\(b.count)", forHTTPHeaderField: "Content-Length")
