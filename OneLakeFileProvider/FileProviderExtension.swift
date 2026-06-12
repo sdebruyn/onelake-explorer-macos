@@ -54,6 +54,13 @@ import os.log
 ///
 /// `NSFileProviderServicing` is the optional protocol for exposing
 /// `NSFileProviderService` sources to the host app over XPC.
+/// File-scoped logger for the free `engineXxx` helper functions, which cannot
+/// reach `FileProviderExtension`'s private static logger.
+private let fpeLog = Logger(
+    subsystem: "dev.debruyn.ofem.fileprovider",
+    category: "extension"
+)
+
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderServicing {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
@@ -721,7 +728,7 @@ private func engineCreateItem(
     // on a backend that doesn't enumerate immediately), and the version
     // mismatch will resolve on the next full enumeration of the parent.
     // N2: log the fallback so it is visible in diagnostics.
-    Self.log.warning(
+    fpeLog.warning(
         "createItem: using synthetic fallback for \(filename, privacy: .public) parent=\(parentID.identifierString, privacy: .public)"
     )
     return OfemFPEItem(from: DomainItem.synthetic(
