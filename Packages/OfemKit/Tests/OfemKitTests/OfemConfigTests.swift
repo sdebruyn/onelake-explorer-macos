@@ -229,7 +229,7 @@ struct OfemConfigTests {
         await withTaskGroup(of: Void.self) { group in
             for i in 0..<20 {
                 group.addTask {
-                    try? await store.updateAndSave { cfg in
+                    _ = try? await store.updateAndSave { cfg in
                         cfg.installID = "run-\(i)"
                     }
                 }
@@ -279,10 +279,10 @@ struct OfemConfigTests {
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<10 {
                 group.addTask {
-                    try? await storeA.updateAndSave { cfg in cfg.telemetry = false }
+                    _ = try? await storeA.updateAndSave { cfg in cfg.telemetry = false }
                 }
                 group.addTask {
-                    try? await storeB.updateAndSave { cfg in cfg.log.level = "debug" }
+                    _ = try? await storeB.updateAndSave { cfg in cfg.log.level = "debug" }
                 }
             }
         }

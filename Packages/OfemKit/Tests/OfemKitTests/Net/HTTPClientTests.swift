@@ -28,7 +28,7 @@ final class MockURLSession: URLSessionProtocol, @unchecked Sendable {
             precondition(!stubs.isEmpty, "MockURLSession: stubs exhausted")
             return stubs.removeFirst()
         }
-        var allHeaders: [String: String] = stub.headers
+        let allHeaders: [String: String] = stub.headers
         // HTTPURLResponse requires these.
         let response = HTTPURLResponse(
             url: stub.url,

@@ -346,7 +346,7 @@ public final class FileTokenStore: Sendable {
         lk.l_whence = Int16(SEEK_SET)
         lk.l_start  = 0
         lk.l_len    = 0
-        Darwin.fcntl(fd, F_SETLK, &lk)
+        _ = Darwin.fcntl(fd, F_SETLK, &lk)
         Darwin.close(fd)
     }
 
