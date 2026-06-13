@@ -1,0 +1,147 @@
+name: Integration tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'
+  pull_request:
+    types: [labeled, synchronize]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: integration-tests
+  cancel-in-progress: false
+
+jobs:
+  integration:
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'integration') }}
+    runs-on: macos-15
+    environment: integration
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure Azure CLI is available
+        run: which az || brew install azure-cli
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resume Fabric capacity
+        run: |
+          set -e
+          CAPACITY_ID="${{ vars.OFEM_TEST_CAPACITY_ID }}"
+
+          # Wait for the capacity to leave any transitional state, up to 5 min
+          for i in {1..30}; do
+            STATE=$(az resource show --ids "$CAPACITY_ID" --query 'properties.state' -o tsv 2>/dev/null || echo "Unknown")
+            echo "Pre-resume state: $STATE"
+            case "$STATE" in
+              Active)  echo "Already Active, skipping resume"; exit 0 ;;
+              Paused)  break ;;
+              *)       sleep 10 ;;
+            esac
+          done
+
+          # Issue resume, but tolerate transient BadRequest
+          for attempt in {1..6}; do
+            if az resource invoke-action --ids "$CAPACITY_ID" --action resume; then
+              break
+            fi
+            echo "Resume attempt $attempt failed (likely transient), waiting 15s..."
+            sleep 15
+          done
+
+          # Poll until Active, then sleep 120s for data-plane warm-up (max ~7 min)
+          for i in {1..30}; do
+            STATE=$(az resource show --ids "$CAPACITY_ID" --query 'properties.state' -o tsv)
+            echo "Post-resume state: $STATE"
+            if [[ "$STATE" == "Active" ]]; then
+              echo "Capacity is Active; sleeping 120s for Fabric data-plane to settle..."
+              sleep 120
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "Capacity did not reach Active state within 5 minutes" >&2
+          exit 1
+
+      - name: Mint bearer tokens
+        run: |
+          FABRIC_TOKEN=$(az account get-access-token --resource https://analysis.windows.net/powerbi/api --query accessToken -o tsv)
+          echo "::add-mask::$FABRIC_TOKEN"
+          echo "OFEM_TOKEN_FABRIC=$FABRIC_TOKEN" >> "$GITHUB_ENV"
+
+          ONELAKE_TOKEN=$(az account get-access-token --resource https://storage.azure.com --query accessToken -o tsv)
+          echo "::add-mask::$ONELAKE_TOKEN"
+          echo "OFEM_TOKEN_ONELAKE=$ONELAKE_TOKEN" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Seed warehouse table
+        env:
+          OFEM_TEST_WH_SERVER: ${{ vars.OFEM_TEST_WH_SERVER }}
+          OFEM_TEST_WH_DATABASE: ${{ vars.OFEM_TEST_WH_DATABASE }}
+          OFEM_TEST_WH_TABLE: ${{ vars.OFEM_TEST_WH_TABLE }}
+        run: |
+          pip install mssql-python
+          # Retry loop: warehouse SQL endpoint may need time to warm up after capacity resume
+          for attempt in 1 2 3 4 5; do
+            if python scripts/prep_warehouse.py; then exit 0; fi
+            echo "prep attempt $attempt failed, waiting 20s..."; sleep 20
+          done
+          echo "warehouse prep failed after retries" >&2; exit 1
+
+      - name: Run integration tests
+        env:
+          OFEM_TEST_WORKSPACE_ID: ${{ vars.OFEM_TEST_WORKSPACE_ID }}
+          OFEM_TEST_LAKEHOUSE_ID: ${{ vars.OFEM_TEST_LAKEHOUSE_ID }}
+          OFEM_TEST_WAREHOUSE_ID: ${{ vars.OFEM_TEST_WAREHOUSE_ID }}
+        run: make test-integration
+
+      - name: Suspend Fabric capacity
+        if: always()
+        run: |
+          set -e
+          CAPACITY_ID="${{ vars.OFEM_TEST_CAPACITY_ID }}"
+
+          # Wait for the capacity to leave any transitional state, up to 5 min
+          for i in {1..30}; do
+            STATE=$(az resource show --ids "$CAPACITY_ID" --query 'properties.state' -o tsv 2>/dev/null || echo "Unknown")
+            echo "Pre-suspend state: $STATE"
+            case "$STATE" in
+              Paused)  echo "Already Paused, skipping suspend"; exit 0 ;;
+              Active)  break ;;
+              *)       sleep 10 ;;
+            esac
+          done
+
+          # Issue suspend, but tolerate transient BadRequest
+          for attempt in {1..6}; do
+            if az resource invoke-action --ids "$CAPACITY_ID" --action suspend; then
+              break
+            fi
+            echo "Suspend attempt $attempt failed (likely transient), waiting 15s..."
+            sleep 15
+          done
+
+          # Poll until Paused, max 5 min
+          for i in {1..30}; do
+            STATE=$(az resource show --ids "$CAPACITY_ID" --query 'properties.state' -o tsv)
+            echo "Post-suspend state: $STATE"
+            [[ "$STATE" == "Paused" ]] && exit 0
+            sleep 10
+          done
+
+          echo "Capacity did not reach Paused state within 5 minutes" >&2
+          exit 1

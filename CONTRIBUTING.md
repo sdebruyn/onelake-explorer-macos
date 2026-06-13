@@ -85,6 +85,8 @@ The release workflow uses these to auto-generate the release notes on each GitHu
 - Unit tests run on every PR and merge to main, host-less and unsigned. They don't touch the network — OneLake and Fabric HTTP calls are mocked.
 - Run them with `make test` (OfemKit engine + host app), or `cd Packages/OfemKit && swift test` for the engine alone.
 - Aim for >80% line coverage on `Packages/OfemKit/Sources/`.
+- Integration tests run against a live Fabric workspace and exercise the real OneLake DFS data plane and Fabric REST discovery — no mocks. They are gated behind `OFEM_INTEGRATION=1` and skipped in the normal unit-test pass. Run them with `make test-integration`; this requires bearer tokens and workspace coordinates in the environment (`OFEM_TOKEN_ONELAKE`, `OFEM_TOKEN_FABRIC`, `OFEM_TEST_WORKSPACE_ID`, `OFEM_TEST_LAKEHOUSE_ID`) — see [docs/auth.md](docs/auth.md) for how CI provisions those. In CI they run on a schedule, on demand, and on any pull request that carries the `integration` label (via `.github/workflows/integration.yml`).
+- The warehouse tests additionally read a prepared Delta table. Seed it first with `scripts/prep_warehouse.py` (uses `mssql-python` with `Authentication=ActiveDirectoryDefault`, needs `OFEM_TEST_WH_SERVER` / `OFEM_TEST_WH_DATABASE`), then set `OFEM_TEST_WAREHOUSE_ID` to enable the warehouse suite. CI runs the seed step automatically before the tests.
 
 ## Documentation
 
