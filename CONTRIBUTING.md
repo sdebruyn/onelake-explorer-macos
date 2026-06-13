@@ -31,11 +31,8 @@ make gen
 # build the signed app (requires Developer ID certificate in keychain)
 make build
 
-# run Swift unit tests (OfemKit)
-cd Packages/OfemKit && swift test
-
-# run integration tests (requires a Fabric workspace you can sign in to)
-OFEM_INTEGRATION=1 swift test
+# run the unit tests (OfemKit engine + host app)
+make test
 ```
 
 You need Xcode for all work on this project. The entire codebase is Swift.
@@ -80,13 +77,13 @@ The release workflow uses these to auto-generate the release notes on each GitHu
 - SwiftLint with the included `.swiftlint.yml`.
 - Use `os.log` (unified logging) for everything that should land in Console.app.
 - Avoid blocking the File Provider Extension's main queue; everything should be async via `Task { … }`.
-- Tests live next to the code they test inside `Tests/` in the OfemKit package or `OneLakeTests/`.
-- Use `XCTest` for unit tests. Prefer small, focused test functions with descriptive names.
+- Tests live in `Tests/` in the OfemKit package and in `OneLakeHostTests/` for the host app.
+- OfemKit tests use [swift-testing](https://github.com/swiftlang/swift-testing) (`@Test`); the host-app tests use `XCTest`. Prefer small, focused test functions with descriptive names.
 
 ## Testing
 
-- **Unit tests**: run on every PR and merge to main. Should not require network. Mock HTTP responses for OneLake/Fabric calls.
-- **Integration tests**: run weekly on `main` and on PRs with a `/integration` comment from the maintainer. Hit real Fabric. Gated behind `OFEM_INTEGRATION=1`.
+- Unit tests run on every PR and merge to main, host-less and unsigned. They don't touch the network — OneLake and Fabric HTTP calls are mocked.
+- Run them with `make test` (OfemKit engine + host app), or `cd Packages/OfemKit && swift test` for the engine alone.
 - Aim for >80% line coverage on `Packages/OfemKit/Sources/`.
 
 ## Documentation
