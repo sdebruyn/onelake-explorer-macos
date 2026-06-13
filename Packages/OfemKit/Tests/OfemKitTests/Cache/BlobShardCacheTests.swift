@@ -188,8 +188,8 @@ struct BlobShardCacheTests {
         defer { try? FileManager.default.removeItem(at: tmp) }
         let d1 = Data("alpha".utf8)
         let d2 = Data("beta".utf8)
-        try cache.store(d1)
-        try cache.store(d2)
+        _ = try cache.store(d1)
+        _ = try cache.store(d2)
 
         let (count, bytes) = try cache.diskUsage()
         #expect(count == 2)

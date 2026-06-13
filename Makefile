@@ -11,7 +11,7 @@
 XCODE_PROJECT := OneLake.xcodeproj
 APPLE_CONFIG  := Local.xcconfig
 
-.PHONY: app bootstrap gen build build-ci test clean help
+.PHONY: app bootstrap gen build build-ci test test-integration clean help
 
 # Build the signed macOS app. This is THE single build to run after pulling main.
 app: build ## Build signed macOS app (THE build to run after pulling)
@@ -77,6 +77,19 @@ test: gen ## Run Swift unit tests (OfemKit + host-app logic)
 		-derivedDataPath DerivedData \
 		$(APPLE_UNSIGNED) \
 		test
+
+# Run the live integration tests against a real Fabric workspace.
+#
+# Requires injected bearer tokens and workspace coordinates in the environment:
+#   OFEM_TOKEN_ONELAKE      bearer token, audience https://storage.azure.com/
+#   OFEM_TOKEN_FABRIC       bearer token, audience https://analysis.windows.net/powerbi/api
+#   OFEM_TEST_WORKSPACE_ID  Fabric workspace GUID
+#   OFEM_TEST_LAKEHOUSE_ID  Lakehouse item GUID
+#
+# Mint the tokens locally with the Azure CLI (see docs/auth.md); CI provisions
+# them via OIDC in .github/workflows/integration.yml.
+test-integration: ## Run live integration tests (needs OFEM_TOKEN_* + OFEM_TEST_* env)
+	cd Packages/OfemKit && OFEM_INTEGRATION=1 swift test --filter IntegrationTests
 
 # Removes generated/build artefacts AND unregisters the built app from
 # LaunchServices. Local.xcconfig is preserved (per-developer

@@ -130,7 +130,7 @@ struct FPELogicTests {
 
     @Test func maxSyncedAtNsReflectsUpsertedRecord() async throws {
         let store = try makeTempCacheStore()
-        var record = makeTestRecord(path: "Files/f.txt", syncedAtNs: 1_000_000_000)
+        let record = makeTestRecord(path: "Files/f.txt", syncedAtNs: 1_000_000_000)
         try await store.upsert(record)
         let ns = try await store.maxSyncedAtNs(accountAlias: "dev")
         // The upsert stamps syncedAtNs with current time when it is 0; since
@@ -140,8 +140,8 @@ struct FPELogicTests {
 
     @Test func maxSyncedAtNsOnlyAccountsForGivenAlias() async throws {
         let store = try makeTempCacheStore()
-        var r1 = makeTestRecord(path: "f.txt", alias: "alice", syncedAtNs: 5_000_000_000)
-        var r2 = makeTestRecord(path: "g.txt", alias: "bob", syncedAtNs: 1_000_000_000)
+        let r1 = makeTestRecord(path: "f.txt", alias: "alice", syncedAtNs: 5_000_000_000)
+        let r2 = makeTestRecord(path: "g.txt", alias: "bob", syncedAtNs: 1_000_000_000)
         try await store.upsert(r1)
         try await store.upsert(r2)
         let nsAlice = try await store.maxSyncedAtNs(accountAlias: "alice")

@@ -46,6 +46,7 @@ inside the File Provider Extension process. The host app communicates with the e
 via standard Apple XPC (`NSFileProviderService`).
 
 - [Architecture overview](docs/design/overview.md) — process model, source layout, and design decisions
+- [Authentication design](docs/auth.md) — MSAL flow, multi-tenant model, token audiences, Keychain cache
 
 ## Contributing
 

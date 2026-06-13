@@ -116,6 +116,21 @@ auth.scopedProvider(fabricScopes).token(...)  → Fabric REST token
 
 Passing the wrong scope set to a resource results in a 401 from the server.
 
+## Integration-test authentication
+
+The shipped app authenticates users interactively through MSAL — that is the only auth path end users see.
+
+The integration test suite runs headless in CI, where interactive auth is impossible. OfemKit clients receive tokens through the `TokenProvider` protocol, so the tests inject bearer tokens directly at that seam via a test-only `EnvVarTokenProvider` (in the OfemKit test target). No service-principal or token-injection code is present in the shipped product.
+
+CI mints those tokens using a dedicated Microsoft Entra service principal that authenticates to Azure through GitHub Actions OIDC (workload identity federation — no client secret). The federated credential is scoped to the repo's `integration` environment.
+
+OFEM requires two token audiences (see `docs/onelake-api.md`), so CI mints two tokens with `az account get-access-token`:
+
+- `https://storage.azure.com/` — for the OneLake DFS data plane.
+- `https://analysis.windows.net/powerbi/api` — for Fabric REST discovery.
+
+The service principal is a Contributor member of the test workspace and is used solely for test infrastructure; it plays no role in end-user authentication.
+
 ## Sovereign clouds
 
 OFEM targets the Microsoft public cloud. The authority host is kept configurable per account (`authorityHost: login.microsoftonline.com` default), so adding US Gov / China / Germany is a config change plus an endpoint mapping.
