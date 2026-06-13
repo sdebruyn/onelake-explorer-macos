@@ -89,7 +89,7 @@ test: gen ## Run Swift unit tests (OfemKit + host-app logic)
 # Mint the tokens locally with the Azure CLI (see docs/auth.md); CI provisions
 # them via OIDC in .github/workflows/integration.yml.
 test-integration: ## Run live integration tests (needs OFEM_TOKEN_* + OFEM_TEST_* env)
-	cd Packages/OfemKit && OFEM_INTEGRATION=1 swift test --filter Integration
+	cd Packages/OfemKit && OFEM_INTEGRATION=1 swift test --filter IntegrationTests
 
 # Removes generated/build artefacts AND unregisters the built app from
 # LaunchServices. Local.xcconfig is preserved (per-developer

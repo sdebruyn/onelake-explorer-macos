@@ -5,7 +5,7 @@ on:
   schedule:
     - cron: '0 6 * * 1'
   pull_request:
-    types: [labeled, synchronize]
+    types: [labeled]
 
 permissions:
   id-token: write
@@ -75,6 +75,7 @@ jobs:
 
       - name: Mint bearer tokens
         run: |
+          set -euo pipefail
           FABRIC_TOKEN=$(az account get-access-token --resource https://analysis.windows.net/powerbi/api --query accessToken -o tsv)
           echo "::add-mask::$FABRIC_TOKEN"
           echo "OFEM_TOKEN_FABRIC=$FABRIC_TOKEN" >> "$GITHUB_ENV"
@@ -94,7 +95,8 @@ jobs:
           OFEM_TEST_WH_DATABASE: ${{ vars.OFEM_TEST_WH_DATABASE }}
           OFEM_TEST_WH_TABLE: ${{ vars.OFEM_TEST_WH_TABLE }}
         run: |
-          pip install mssql-python
+          set -euo pipefail
+          pip install 'mssql-python==1.9.0'
           # Retry loop: warehouse SQL endpoint may need time to warm up after capacity resume
           for attempt in 1 2 3 4 5; do
             if python scripts/prep_warehouse.py; then exit 0; fi
