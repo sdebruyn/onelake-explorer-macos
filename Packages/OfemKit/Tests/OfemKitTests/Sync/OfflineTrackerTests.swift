@@ -83,4 +83,58 @@ struct OfflineTrackerTests {
         let err = NSError(domain: "any", code: 0)
         #expect(!OfflineTracker.isOfflineError(err))
     }
+
+    // MARK: - isOfflineError: realistic wrapped shapes (fix/offline-shortcircuit)
+    //
+    // The short-circuit path in HTTPClient throws
+    //   HTTPClientError.transport(URLError(.notConnectedToInternet))
+    // which OneLakeClient then wraps in OneLakeError.from(_:) as
+    //   OneLakeError.httpError(HTTPClientError.transport(...))
+    // OfflineTracker.underlyingURLError must unwrap those layers correctly.
+
+    @Test("OneLakeError.httpError wrapping .transport(.notConnectedToInternet) → true")
+    func oneLakeHttpErrorTransportNotConnected() {
+        let transportErr = HTTPClientError.transport(URLError(.notConnectedToInternet))
+        let wrapped = OneLakeError.httpError(transportErr)
+        #expect(OfflineTracker.isOfflineError(wrapped))
+    }
+
+    @Test("FabricError.httpError wrapping .transport(.networkConnectionLost) → true")
+    func fabricHttpErrorTransportConnectionLost() {
+        let transportErr = HTTPClientError.transport(URLError(.networkConnectionLost))
+        let wrapped = FabricError.httpError(transportErr)
+        #expect(OfflineTracker.isOfflineError(wrapped))
+    }
+
+    @Test("HTTPClientError.retriesExhausted(last: URLError(.notConnectedToInternet)) → true (defensive)")
+    func retriesExhaustedWrappingOfflineURLError() {
+        let urlErr = URLError(.notConnectedToInternet)
+        let exhausted = HTTPClientError.retriesExhausted(attempts: 6, last: urlErr)
+        #expect(OfflineTracker.isOfflineError(exhausted))
+    }
+
+    @Test("A raw URLError(.notConnectedToInternet) → true (bare path still works)")
+    func bareURLErrorNotConnected() {
+        let err = URLError(.notConnectedToInternet)
+        #expect(OfflineTracker.isOfflineError(err))
+    }
+
+    @Test("OneLakeError.httpError wrapping HTTPClientError.serverError(503) → false (paused capacity is not offline)")
+    func oneLakeHttpErrorServerError503IsFalse() {
+        let serverErr = HTTPClientError.serverError(503)
+        let wrapped = OneLakeError.httpError(serverErr)
+        #expect(!OfflineTracker.isOfflineError(wrapped))
+    }
+
+    @Test("OneLakeError.notFound → false (HTTP 404 is not offline)")
+    func oneLakeNotFoundIsFalse() {
+        #expect(!OfflineTracker.isOfflineError(OneLakeError.notFound))
+    }
+
+    @Test("OneLakeError.httpError wrapping .transport(.timedOut) → false (timeout is not offline)")
+    func oneLakeHttpErrorTimedOutIsFalse() {
+        let transportErr = HTTPClientError.transport(URLError(.timedOut))
+        let wrapped = OneLakeError.httpError(transportErr)
+        #expect(!OfflineTracker.isOfflineError(wrapped))
+    }
 }

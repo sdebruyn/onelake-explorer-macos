@@ -152,6 +152,128 @@ struct HTTPClientTransportRetryTests {
     }
 }
 
+// MARK: - HTTPClient hard-offline short-circuit tests (WP-G / fix/offline-shortcircuit)
+
+@Suite("HTTPClient — hard-offline short-circuit (no retry)")
+struct HTTPClientHardOfflineShortCircuitTests {
+
+    private let testURL = URL(string: "https://onelake.dfs.fabric.microsoft.com/ws/item/file.txt")!
+
+    private func makeGate() -> HTTPGateRegistry {
+        let reg = HTTPGateRegistry(
+            defaults: HTTPGateDefaults(maxConcurrent: 8, tokensPerSecond: 100, burst: 100)
+        )
+        Task { [reg] in
+            await reg.register(
+                host: "onelake.dfs.fabric.microsoft.com",
+                maxConcurrent: 8, tokensPerSecond: 100, burst: 100
+            )
+        }
+        return reg
+    }
+
+    private func makeClient(session: MockThrowingURLSession, maxAttempts: Int = 3) -> HTTPClient {
+        HTTPClient(
+            session: session,
+            gateRegistry: makeGate(),
+            retryPolicy: HTTPRetryPolicy(
+                maxAttempts: maxAttempts,
+                initialBackoff: .milliseconds(5),
+                maxBackoff: .milliseconds(20)
+            )
+        )
+    }
+
+    // MARK: notConnectedToInternet
+
+    @Test(".notConnectedToInternet on GET is NOT retried — exactly one request, throws .transport")
+    func notConnectedToInternetShortCircuits() async throws {
+        let offlineError = URLError(.notConnectedToInternet)
+        let session = MockThrowingURLSession(outcomes: [
+            .error(offlineError),
+        ])
+        let client = makeClient(session: session, maxAttempts: 3)
+        var req = URLRequest(url: testURL)
+        req.httpMethod = "GET"
+
+        do {
+            _ = try await client.execute(req, idempotent: true)
+            Issue.record("expected HTTPClientError.transport to be thrown")
+        } catch {
+            // Must have been thrown as .transport — not .retriesExhausted.
+            if case HTTPClientError.transport(let inner) = error {
+                guard let urlErr = inner as? URLError else {
+                    Issue.record("inner error should be URLError, got \(inner)")
+                    return
+                }
+                #expect(urlErr.code == .notConnectedToInternet)
+            } else {
+                Issue.record("expected .transport, got \(error)")
+            }
+        }
+        // Hard-offline must not be retried — exactly one attempt.
+        #expect(session.requestCount == 1)
+    }
+
+    // MARK: networkConnectionLost
+
+    @Test(".networkConnectionLost on HEAD is NOT retried — exactly one request, throws .transport")
+    func networkConnectionLostShortCircuits() async throws {
+        let offlineError = URLError(.networkConnectionLost)
+        let session = MockThrowingURLSession(outcomes: [
+            .error(offlineError),
+        ])
+        let client = makeClient(session: session, maxAttempts: 3)
+        var req = URLRequest(url: testURL)
+        req.httpMethod = "HEAD"
+
+        do {
+            _ = try await client.execute(req, idempotent: true)
+            Issue.record("expected HTTPClientError.transport to be thrown")
+        } catch {
+            if case HTTPClientError.transport(let inner) = error {
+                guard let urlErr = inner as? URLError else {
+                    Issue.record("inner error should be URLError, got \(inner)")
+                    return
+                }
+                #expect(urlErr.code == .networkConnectionLost)
+            } else {
+                Issue.record("expected .transport, got \(error)")
+            }
+        }
+        #expect(session.requestCount == 1)
+    }
+
+    // MARK: cannotFindHost still retries (net-16 contrast)
+
+    @Test(".cannotFindHost (flaky-host) is still retried — requestCount == maxAttempts, throws .retriesExhausted")
+    func cannotFindHostIsStillRetried() async throws {
+        let maxAttempts = 3
+        let session = MockThrowingURLSession(outcomes: [
+            .error(URLError(.cannotFindHost)),
+            .error(URLError(.cannotFindHost)),
+            .error(URLError(.cannotFindHost)),
+        ])
+        let client = makeClient(session: session, maxAttempts: maxAttempts)
+        var req = URLRequest(url: testURL)
+        req.httpMethod = "GET"
+
+        do {
+            _ = try await client.execute(req, idempotent: true)
+            Issue.record("expected retriesExhausted to be thrown")
+        } catch {
+            guard case HTTPClientError.retriesExhausted(let attempts, _) = error else {
+                Issue.record("expected .retriesExhausted, got \(error)")
+                return
+            }
+            #expect(attempts == maxAttempts)
+        }
+        // All attempts must have been made — proving the short-circuit is specific
+        // to hard-offline codes and does not affect flaky-host codes (net-16).
+        #expect(session.requestCount == maxAttempts)
+    }
+}
+
 // MARK: - ParseRetryAfter additional date formats (net-07)
 
 @Suite("parseRetryAfter — RFC 850 and asctime formats")
