@@ -62,6 +62,14 @@ struct OneLakeDataPlaneIntegrationTests {
             )
         }
 
+        @discardableResult
+        func read(_ path: String, destination: FileHandle) async throws -> PathProperties {
+            try await client.read(
+                alias: alias, workspaceGUID: workspace, itemGUID: item,
+                path: path, destination: destination
+            )
+        }
+
         func rm(_ path: String, recursive: Bool = true) async throws {
             try await client.delete(
                 alias: alias, workspaceGUID: workspace, itemGUID: item,
@@ -313,5 +321,168 @@ struct OneLakeDataPlaneIntegrationTests {
         await #expect(throws: (any Error).self) {
             _ = try await lake.list(dir)
         }
+    }
+
+    /// Calls `createDirectory` twice on the same path and verifies that the
+    /// second call succeeds rather than throwing — OneLake returns 201 on the
+    /// repeat (idempotent PUT semantics; there is no 409 Conflict for directories).
+    @Test("createDirectory is idempotent on an existing directory")
+    func createDirectoryIsIdempotent() async throws {
+        let lake = try liveLakehouse()
+        let dir = "Files/ofem-ci/\(UUID().uuidString)"
+
+        do {
+            // First creation — must succeed.
+            try await lake.mkdir(dir)
+
+            // Second creation of the same path — must also succeed (no throw).
+            // OneLake treats the repeat PUT as a no-op and returns 201 again.
+            try await lake.mkdir(dir)
+
+            // Path must still be reported as a directory.
+            let props = try await lake.properties(dir)
+            #expect(props.isDirectory, "the path must report isDirectory == true after a repeated createDirectory")
+        } catch {
+            try? await lake.rm(dir)
+            throw error
+        }
+        try await lake.rm(dir)
+    }
+
+    /// Calls `getProperties` on the lakehouse's top-level `Files` directory and
+    /// asserts the HEAD succeeds and reports `isDirectory == true`.
+    ///
+    /// `Files` is the always-present managed data root of a lakehouse, so this
+    /// exercises a HEAD on a pre-existing top-level directory (distinct from the
+    /// freshly-created sub-directory covered above) against the real DFS endpoint.
+    /// Note: DFS rejects a HEAD on an empty relative path with HTTP 400, so the
+    /// engine always probes a concrete path — `Files` is the cheapest such root.
+    @Test("getProperties on the Files root reports isDirectory == true")
+    func getPropertiesOnFilesRoot() async throws {
+        let lake = try liveLakehouse()
+
+        // The LiveLakehouse.properties helper delegates directly to
+        // OneLakeClient.getProperties, so this exercises the real HEAD request.
+        let props = try await lake.properties("Files")
+        #expect(props.isDirectory, "the Files root must report isDirectory == true")
+    }
+
+    /// Non-recursive delete on an EMPTY directory must succeed, and the path
+    /// must be absent afterward. (Contrast: `deleteRecursive` already proves that
+    /// non-recursive delete on a NON-EMPTY directory fails — this test is the
+    /// complementary happy path.)
+    @Test("delete non-recursive succeeds on an empty directory")
+    func deleteNonRecursiveEmptyDirectory() async throws {
+        let lake = try liveLakehouse()
+        let dir = "Files/ofem-ci/\(UUID().uuidString)"
+
+        // Create the directory, but do NOT write any children into it.
+        try await lake.mkdir(dir)
+
+        // Non-recursive delete on an empty directory must not throw.
+        try await lake.rm(dir, recursive: false)
+
+        // The path is gone — a HEAD request must throw (404 / server error).
+        await #expect(throws: (any Error).self) {
+            _ = try await lake.properties(dir)
+        }
+    }
+
+    /// Writes a file larger than 8 MiB, then requests a byte range whose bounds
+    /// straddle the 4 MiB upload-chunk seam. Verifies that the returned bytes
+    /// equal the exact corresponding slice of the source buffer, detecting any
+    /// stitching or off-by-one bug at the chunk boundary.
+    @Test("ranged read across the 4 MiB chunk seam returns exact bytes")
+    func rangedReadAcrossChunkSeam() async throws {
+        let lake = try liveLakehouse()
+        let dir = "Files/ofem-ci/\(UUID().uuidString)"
+        let filePath = "\(dir)/seam.bin"
+
+        // 9 MiB — guarantees two full 4 MiB chunks and a residual third chunk,
+        // so the seam at 4 MiB lies well inside the uploaded content.
+        let byteCount = 9 * 1024 * 1024
+        var bytes = [UInt8](repeating: 0, count: byteCount)
+        for i in 0..<byteCount {
+            bytes[i] = UInt8(i % 251)
+        }
+        let payload = Data(bytes)
+
+        // The range straddles the 4 MiB boundary: 1000 bytes before and after.
+        let seamOffset: Int64 = 4 * 1024 * 1024
+        let rangeStart: Int64 = seamOffset - 1000
+        let rangeEnd: Int64   = seamOffset + 1000   // inclusive last byte
+        // `read(range:)` takes a half-open `Range<Int64>`; the server receives
+        // `Range: bytes=<rangeStart>-<rangeEnd>` (inclusive), so the returned
+        // slice covers `rangeEnd - rangeStart + 1` bytes.
+        let expectedSlice = payload[Int(rangeStart)...Int(rangeEnd)]
+        let expectedLength = rangeEnd - rangeStart + 1
+
+        do {
+            try await lake.mkdir(dir)
+            try await lake.write(filePath, payload)
+
+            // Half-open range: [rangeStart, rangeEnd + 1).
+            let (sliceData, _) = try await lake.read(filePath, range: rangeStart..<(rangeEnd + 1))
+            #expect(
+                Int64(sliceData.count) == expectedLength,
+                "returned byte count must equal the requested range length (\(expectedLength))"
+            )
+            #expect(
+                sliceData == Data(expectedSlice),
+                "returned bytes must equal the corresponding slice of the source buffer"
+            )
+        } catch {
+            try? await lake.rm(dir)
+            throw error
+        }
+        try await lake.rm(dir)
+    }
+
+    /// Writes a file, then streams the full content into a temp `FileHandle`
+    /// using the `read(destination:)` overload. Asserts that the written temp
+    /// file is byte-for-byte identical to the uploaded content.
+    @Test("streaming read into a FileHandle produces byte-identical output")
+    func streamingReadIntoFileHandle() async throws {
+        let lake = try liveLakehouse()
+        let dir = "Files/ofem-ci/\(UUID().uuidString)"
+        let filePath = "\(dir)/stream.bin"
+
+        // 2 MiB of deterministic content — large enough to verify streaming but
+        // small enough to keep the live test reasonably fast.
+        let byteCount = 2 * 1024 * 1024
+        let payload = Data((0..<byteCount).map { UInt8($0 % 199) })
+
+        // Prepare a temp file that the streaming overload will write into.
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".bin")
+        FileManager.default.createFile(atPath: tempURL.path, contents: nil)
+        // Defer ensures the temp file is removed on every exit path.
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let destHandle = try FileHandle(forWritingTo: tempURL)
+        defer { try? destHandle.close() }
+
+        do {
+            try await lake.mkdir(dir)
+            try await lake.write(filePath, payload)
+
+            // Stream the full file into the destination handle.
+            let props = try await lake.read(filePath, destination: destHandle)
+            try destHandle.synchronize()
+
+            #expect(!props.isDirectory, "a file must not report isDirectory")
+            #expect(
+                props.contentLength == Int64(byteCount),
+                "response properties must report the correct content length"
+            )
+
+            // Read the temp file back and compare byte-for-byte.
+            let written = try Data(contentsOf: tempURL)
+            #expect(written == payload, "streamed bytes must be byte-identical to the uploaded payload")
+        } catch {
+            try? await lake.rm(dir)
+            throw error
+        }
+        try await lake.rm(dir)
     }
 }

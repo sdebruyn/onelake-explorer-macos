@@ -292,6 +292,58 @@ struct OneLakeClientTests {
         }
     }
 
+    // MARK: - write (sourceURL overload)
+
+    @Test("write(sourceURL:): throws shortRead when declared size exceeds actual file length")
+    func writeSourceURLShortRead() async throws {
+        // Write 1 KiB of deterministic data to a temp file, then declare a size
+        // larger than the actual file — the FileHandle reaches EOF before the
+        // declared size is satisfied, which must surface as OneLakeError.shortRead.
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ofem-test-short-read-\(UUID().uuidString).bin")
+        let fileBytes = Data(repeating: 0xAB, count: 1024)
+        try fileBytes.write(to: tmpURL)
+        defer { try? FileManager.default.removeItem(at: tmpURL) }
+
+        let session = MockURLSession(stubs: [
+            stub(status: 201), // create (PUT) — reached
+            stub(status: 202), // append (PATCH) — defensive; not reached: the short
+                               // read is detected on the first chunk before any append
+        ])
+        let client = makeClient(session: session)
+
+        // Declare 4 KiB but only 1 KiB exists on disk.
+        await #expect {
+            try await client.write(
+                alias: "a",
+                workspaceGUID: wsGUID,
+                itemGUID: itemGUID,
+                path: "Files/short.bin",
+                sourceURL: tmpURL,
+                size: 4096
+            )
+        } throws: { error in
+            if case OneLakeError.shortRead = error { return true }
+            return false
+        }
+    }
+
+    // MARK: - 409 Conflict mapping
+
+    @Test("delete: 409 maps to OneLakeError.conflict")
+    func delete409Conflict() async throws {
+        // A non-empty directory deleted without recursive=true returns HTTP 409.
+        // Verify the DFS error mapping surfaces this as OneLakeError.conflict.
+        let session = MockURLSession(stubs: [stub(status: 409)])
+        let client = makeClient(session: session)
+        await #expect {
+            try await client.delete(alias: "a", workspaceGUID: wsGUID, itemGUID: itemGUID, path: "Files/non-empty-dir")
+        } throws: { error in
+            if case OneLakeError.conflict = error { return true }
+            return false
+        }
+    }
+
     // MARK: - x-ms-version header
 
     @Test("requests include x-ms-version: 2021-08-06")

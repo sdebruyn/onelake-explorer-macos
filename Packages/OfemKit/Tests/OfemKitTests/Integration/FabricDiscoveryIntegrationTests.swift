@@ -106,7 +106,29 @@ struct FabricDiscoveryIntegrationTests {
         }
     }
 
-    // MARK: - 6. Single-page listItems is a prefix of listAllItems
+    // MARK: - 6. getItem throws notFound for a non-existent item ID
+
+    @Test("getItem throws notFound for a non-existent item ID")
+    func getItemThrowsNotFoundForBogusItemID() async throws {
+        let c = try IntegrationConfig.fromEnvironment()
+        // The nil-UUID is guaranteed never to exist; the live Fabric API returns
+        // HTTP 404 with body {"errorCode":"ItemNotFound",...}.
+        // doRequest maps HTTPClientError.notFound → FabricError.notFound (see FabricError.from(_:)).
+        // FabricError isn't Equatable, so match the specific case in the `throws:` closure
+        // rather than the value form of #expect(throws:).
+        await #expect {
+            try await fabricClient().getItem(
+                alias: "ci",
+                workspaceID: c.workspaceID,
+                itemID: "00000000-0000-0000-0000-000000000000"
+            )
+        } throws: { error in
+            guard case FabricError.notFound = error else { return false }
+            return true
+        }
+    }
+
+    // MARK: - 7. Single-page listItems is a prefix of listAllItems
 
     @Test("first page of listItems is consistent with listAllItems")
     func singlePageListItemsIsSubsetOfListAllItems() async throws {
