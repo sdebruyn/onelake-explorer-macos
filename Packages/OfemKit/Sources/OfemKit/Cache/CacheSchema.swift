@@ -7,18 +7,18 @@ import GRDB
 ///
 /// ## Schema
 ///
-/// Single `v1` migration — the complete initial schema. Pre-stable product:
-/// the schema starts clean with no upgrade history to maintain, so new tables
-/// and indexes fold into `v1` rather than accreting migration steps.
+/// - `v1` — complete initial schema: `path_metadata`, `workspace_status`,
+///   `deletion_tombstones`, and their associated indexes.
+/// - `v2` — adds `idx_pm_path` to guarantee a B-tree range scan for the
+///   `path LIKE 'prefix/%'` subtree queries in `delete(key:)` / `batchDelete`.
 ///
-/// - `path_metadata` + `workspace_status` + their indexes.
-/// - `deletion_tombstones`: soft-delete log keyed by `(account_alias, identifier_string)`.
-///   `refreshFolder` writes a row here before hard-deleting from `path_metadata`
-///   so `enumerateChanges` can call `didDeleteItems` and Finder reflects removals.
-/// - `idx_pm_synced_at`: composite index on `(account_alias, synced_at_ns)` used
+/// Key indexes:
+/// - `idx_pm_synced_at`: composite on `(account_alias, synced_at_ns)` used
 ///   by `itemsChangedAfter` to avoid full `path_metadata` scans.
-/// - `idx_dt_deleted_at`: composite index on `(account_alias, deleted_at_ns)` used
-///   by `deletionsSince` to avoid full `deletion_tombstones` scans.
+/// - `idx_pm_path`: composite on `(account_alias, workspace_id, item_id, path)`
+///   to serve the `path LIKE 'prefix/%'` prefix scan in subtree deletes.
+/// - `idx_dt_deleted_at`: composite on `(account_alias, deleted_at_ns)` used
+///   by `itemsChangedAfter` to avoid full `deletion_tombstones` scans.
 public enum CacheSchema {
 
     // MARK: - Migrator
@@ -101,7 +101,7 @@ public enum CacheSchema {
                 );
                 """)
 
-            // Index for the tombstone query in `deletionsSince`.
+            // Index for the tombstone query in `itemsChangedAfter`.
             try db.execute(sql: """
                 CREATE INDEX idx_dt_deleted_at
                     ON deletion_tombstones (account_alias, deleted_at_ns);
@@ -111,6 +111,17 @@ public enum CacheSchema {
             try db.execute(sql: """
                 CREATE INDEX idx_pm_synced_at
                     ON path_metadata (account_alias, synced_at_ns);
+                """)
+        }
+
+        // v2: add idx_pm_path to support the `path LIKE 'prefix/%'` prefix scan
+        // used by `delete(key:)` and `batchDelete`.  The PK covers the same columns
+        // on many SQLite builds, but an explicit index makes the planner dependency
+        // documented and guarantees a B-tree range scan on large subtree deletes.
+        m.registerMigration("v2") { db in
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_pm_path
+                    ON path_metadata (account_alias, workspace_id, item_id, path);
                 """)
         }
 

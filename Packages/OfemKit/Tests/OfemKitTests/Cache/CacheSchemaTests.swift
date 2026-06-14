@@ -17,7 +17,7 @@ struct CacheSchemaTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let applied = try await store.appliedMigrations()
-        #expect(applied == ["v1"])
+        #expect(applied == ["v1", "v2"])
     }
 
     @Test("Fresh database creates path_metadata table")
@@ -53,6 +53,8 @@ struct CacheSchemaTests {
         #expect(indexes.contains("idx_pm_children"))
         #expect(indexes.contains("idx_pm_blob_lru"))
         #expect(indexes.contains("idx_pm_last_accessed"))
+        // v2: subtree-delete supporting index.
+        #expect(indexes.contains("idx_pm_path"))
     }
 
     @Test("schema_version table is not created")

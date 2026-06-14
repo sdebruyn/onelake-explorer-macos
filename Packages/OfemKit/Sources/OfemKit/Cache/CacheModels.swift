@@ -173,7 +173,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         path = row[Columns.path]
         parentPath = row[Columns.parentPath]
         name = row[Columns.name]
-        isDir = (row[Columns.isDir] as Int64) != 0
+        isDir = (row[Columns.isDir] as? Int64 ?? 0) != 0
         contentLength = row[Columns.contentLength]
         etag = row[Columns.etag]
         lastModifiedNs = row[Columns.lastModifiedNs]

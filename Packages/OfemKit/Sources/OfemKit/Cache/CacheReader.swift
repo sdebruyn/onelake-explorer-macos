@@ -48,7 +48,7 @@ public final class CacheReader: Sendable {
     ///
     /// Direct children are rows whose `parent_path` equals `key.path` within
     /// the same `(account_alias, workspace_id, item_id)` scope. The root
-    /// row itself is excluded via `path <> parent_path` (matching the Go query).
+    /// row itself is excluded by requiring `path != parent_path`.
     ///
     /// Results are sorted directories-first, then by name ascending.
     public func children(of key: CacheKey) async throws -> [MetadataRecord] {
@@ -59,7 +59,7 @@ public final class CacheReader: Sendable {
                 .filter(MetadataRecord.Columns.workspaceID == key.workspaceID)
                 .filter(MetadataRecord.Columns.itemID == key.itemID)
                 .filter(MetadataRecord.Columns.parentPath == key.path)
-                .filter(sql: "path <> parent_path")
+                .filter(MetadataRecord.Columns.path != MetadataRecord.Columns.parentPath)
                 .order(
                     MetadataRecord.Columns.isDir.desc,
                     MetadataRecord.Columns.name.asc
@@ -181,15 +181,20 @@ public final class CacheReader: Sendable {
     /// reference it — matching the Go implementation's `BlobBytes` semantics.
     public func blobBytes() async throws -> Int64 {
         try await db.read { db in
-            let sql = """
-                SELECT COALESCE(SUM(blob_size), 0)
-                FROM (
-                    SELECT blob_size FROM path_metadata
-                    WHERE blob_sha256 != ''
-                    GROUP BY blob_sha256
-                )
-                """
-            return try Int64.fetchOne(db, sql: sql) ?? 0
+            try Int64.fetchOne(db, sql: Self.deduplicatedBlobBytesSQL) ?? 0
         }
     }
+
+    // MARK: - Shared SQL fragments
+
+    /// SQL that sums blob_size once per distinct SHA-256, used by both
+    /// `blobBytes()` and `wipe()` so the dedup semantics live in one place.
+    static let deduplicatedBlobBytesSQL = """
+        SELECT COALESCE(SUM(blob_size), 0)
+        FROM (
+            SELECT blob_size FROM path_metadata
+            WHERE blob_sha256 != ''
+            GROUP BY blob_sha256
+        )
+        """
 }

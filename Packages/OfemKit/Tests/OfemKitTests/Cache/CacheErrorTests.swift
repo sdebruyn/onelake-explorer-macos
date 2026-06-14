@@ -98,14 +98,32 @@ struct CacheErrorTests {
         #expect(CacheError.missingArgument("a") != CacheError.missingArgument("b"))
     }
 
-    // MARK: - Equatable: blobIOError compares case only
+    // MARK: - Equatable: blobIOError compares wrapped error by NSError domain+code
 
-    @Test("blobIOError equals another blobIOError regardless of wrapped error")
-    func blobIOErrorEqualCaseOnly() {
-        struct ErrA: Error {}
-        struct ErrB: Error {}
-        // Per the Equatable implementation, wrapped errors are not compared.
-        #expect(CacheError.blobIOError(ErrA()) == CacheError.blobIOError(ErrB()))
+    @Test("blobIOError equals another blobIOError with same NSError domain and code")
+    func blobIOErrorEqualSameDomainAndCode() {
+        // Two distinct CocoaError instances with the same code must be equal.
+        let a = CacheError.blobIOError(CocoaError(.fileNoSuchFile))
+        let b = CacheError.blobIOError(CocoaError(.fileNoSuchFile))
+        #expect(a == b)
+    }
+
+    @Test("blobIOError not equal when wrapped NSError codes differ")
+    func blobIOErrorNotEqualDifferentCode() {
+        let a = CacheError.blobIOError(CocoaError(.fileNoSuchFile))
+        let b = CacheError.blobIOError(CocoaError(.fileReadNoPermission))
+        #expect(a != b)
+    }
+
+    @Test("blobIOError not equal when wrapped NSError domains differ")
+    func blobIOErrorNotEqualDifferentDomain() {
+        let a = CacheError.blobIOError(
+            NSError(domain: "com.example.domainA", code: 42)
+        )
+        let b = CacheError.blobIOError(
+            NSError(domain: "com.example.domainB", code: 42)
+        )
+        #expect(a != b)
     }
 
     // MARK: - Equatable: cross-case inequality

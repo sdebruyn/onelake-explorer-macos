@@ -29,12 +29,22 @@ public actor CacheStore {
     /// Name of the SQLite file inside the root directory.
     public static let sqliteFile = "cache.sqlite"
 
+    /// POSIX permission mode for the cache root directory (owner rwx only).
+    private static let rootDirectoryMode: Int = 0o700
+
+    /// SQLite busy-wait timeout in milliseconds.
+    private static let busyTimeoutMs: Int = 5000
+
     // MARK: - Private state
 
     // Internal so test targets can run direct SQL assertions.
     let dbPool: DatabasePool
     private let blobs: BlobShardCache
     private let maxBlobBytes: Int64
+
+    /// Clock injection seam: returns the current time as Unix nanoseconds.
+    /// Defaults to wall clock; override in tests for deterministic ordering.
+    private let clock: () -> Int64
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "CacheStore")
 
@@ -51,23 +61,26 @@ public actor CacheStore {
     /// Opens (or creates) the cache at `root`.
     ///
     /// - Parameters:
-    /// - root: Directory that holds `cache.sqlite` and `blobs/`. Created
-    /// with mode 0o700 if missing.
-    /// - maxBlobBytes: LRU eviction threshold for blob bytes. Zero = no
-    /// eviction (``evictToLimit()`` becomes a no-op).
+    ///   - root: Directory that holds `cache.sqlite` and `blobs/`. Created
+    ///     with mode 0o700 if missing.
+    ///   - maxBlobBytes: LRU eviction threshold for blob bytes. Zero = no
+    ///     eviction (``evictToLimit()`` becomes a no-op).
+    ///   - clock: Closure that returns the current time as Unix nanoseconds.
+    ///     Inject a deterministic clock in tests; omit for wall-clock production behaviour.
     ///
     /// The database is opened in **WAL mode** with `synchronous = NORMAL` and
     /// a 5-second busy timeout. An orphan-sweep runs at initialisation time to
     /// remove any blob files that have no matching metadata row.
-    public init(root: URL, maxBlobBytes: Int64 = 0) throws {
+    public init(root: URL, maxBlobBytes: Int64 = 0, clock: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000_000_000) }) throws {
         self.root = root
         self.maxBlobBytes = maxBlobBytes
+        self.clock = clock
 
         // Create root directory.
         try FileManager.default.createDirectory(
             at: root,
             withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
+            attributes: [.posixPermissions: Self.rootDirectoryMode]
         )
 
         // Initialise blob store.
@@ -81,7 +94,7 @@ public actor CacheStore {
         config.prepareDatabase { db in
             try db.execute(sql: "PRAGMA journal_mode = WAL")
             try db.execute(sql: "PRAGMA synchronous = NORMAL")
-            try db.execute(sql: "PRAGMA busy_timeout = 5000")
+            try db.execute(sql: "PRAGMA busy_timeout = \(CacheStore.busyTimeoutMs)")
             try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
         dbPool = try DatabasePool(path: dbURL.path, configuration: config)
@@ -91,14 +104,24 @@ public actor CacheStore {
         try m.migrate(dbPool)
 
         // Kick off the orphan sweep asynchronously so that init never blocks
-        // the calling thread on a directory walk + db.read (sync-21 pattern).
-        // The existing orphan sweep also covers any blobs that are present on
-        // disk but were not yet deleted after a prior crash — it runs before
-        // the first real operation completes.
+        // the calling thread on a directory walk + db.read.
+        //
+        // The sweep logs warnings on failure rather than discarding them with
+        // try? — errors are surfaced to the log but do not abort the actor.
+        // A concurrent storeBlob cannot race the sweep: the sweep asks the DB
+        // which SHAs are referenced *after* the enumerator walk, so any blob
+        // whose row was committed before the sweep's DB read is protected.
+        // The only residual race is a blob written concurrently with the sweep's
+        // enumerator walk; that case is safe because the new row will be in the
+        // DB by the time the sweep queries references.
         let blobsCapture = blobs
         let dbCapture = dbPool
         Task { [blobsCapture, dbCapture] in
-            try? Self.sweepOrphanBlobs(blobs: blobsCapture, dbPool: dbCapture)
+            do {
+                try Self.sweepOrphanBlobs(blobs: blobsCapture, dbPool: dbCapture)
+            } catch {
+                Self.log.warning("CacheStore: init-time orphan sweep failed: \(error, privacy: .public)")
+            }
         }
     }
 
@@ -137,7 +160,7 @@ public actor CacheStore {
             path: record.path
         ))
         var r = record
-        let nowNs = currentNs()
+        let nowNs = clock()
         if r.lastAccessedNs == 0 { r.lastAccessedNs = nowNs }
         if r.syncedAtNs == 0 { r.syncedAtNs = nowNs }
 
@@ -154,18 +177,23 @@ public actor CacheStore {
     /// Using one transaction instead of N individual ``upsert(_:)`` calls
     /// eliminates per-row WAL-commit overhead and makes the reconciliation
     /// atomic with respect to crashes.
+    ///
+    /// Large batches are chunked into sub-transactions of up to
+    /// ``batchChunkSize`` rows to bound WAL growth.
     public func batchUpsert(_ records: [MetadataRecord]) async throws {
         guard !records.isEmpty else { return }
-        let now = currentNs()
+        let now = clock()
         let prepared: [MetadataRecord] = records.map { r in
             var copy = r
             if copy.lastAccessedNs == 0 { copy.lastAccessedNs = now }
             if copy.syncedAtNs == 0     { copy.syncedAtNs = now }
             return copy
         }
-        try await dbPool.write { db in
-            for record in prepared {
-                try record.upsert(db)
+        for chunk in prepared.chunked(by: Self.batchChunkSize) {
+            try await dbPool.write { db in
+                for record in chunk {
+                    try record.upsert(db)
+                }
             }
         }
     }
@@ -179,26 +207,31 @@ public actor CacheStore {
     /// When `key.path` is empty the semantics match ``delete(key:)``: all rows
     /// for the given `(accountAlias, workspaceID, itemID)` triple are removed,
     /// not just the root row.
+    ///
+    /// Large batches are chunked into sub-transactions of up to
+    /// ``batchChunkSize`` keys to bound WAL growth.
     public func batchDelete(_ keys: [CacheKey]) async throws {
         guard !keys.isEmpty else { return }
-        try await dbPool.write { db in
-            for key in keys {
-                if key.path.isEmpty {
-                    // Empty path: wipe entire item — mirrors delete(key:) semantics.
-                    try db.execute(sql: """
-                        DELETE FROM path_metadata
-                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                        """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
-                } else {
-                    let escaped = escapeLike(key.path)
-                    try db.execute(sql: """
-                        DELETE FROM path_metadata
-                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                          AND (path = ? OR path LIKE ? ESCAPE '\\')
-                        """, arguments: [
-                            key.accountAlias, key.workspaceID, key.itemID,
-                            key.path, escaped + "/%",
-                        ])
+        for chunk in keys.chunked(by: Self.batchChunkSize) {
+            try await dbPool.write { db in
+                for key in chunk {
+                    if key.path.isEmpty {
+                        // Empty path: wipe entire item — mirrors delete(key:) semantics.
+                        try db.execute(sql: """
+                            DELETE FROM path_metadata
+                            WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                            """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
+                    } else {
+                        let (exact, prefix) = Self.subtreeArguments(for: key)
+                        try db.execute(sql: """
+                            DELETE FROM path_metadata
+                            WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                              AND (\(Self.subtreeWhereSuffix))
+                            """, arguments: [
+                                key.accountAlias, key.workspaceID, key.itemID,
+                                exact, prefix,
+                            ])
+                    }
                 }
             }
         }
@@ -227,7 +260,7 @@ public actor CacheStore {
     /// Throws ``CacheError/notFound(_:)`` when the row does not exist.
     public func touch(key: CacheKey) async throws {
         try validateKey(key)
-        let nowNs = currentNs()
+        let nowNs = clock()
         let affected = try await dbPool.write { db -> Int in
             try db.execute(sql: """
                 UPDATE path_metadata
@@ -253,12 +286,17 @@ public actor CacheStore {
     ///
     /// Blob files referenced exclusively by deleted rows are unlinked from disk.
     /// A no-op when the key does not exist.
+    ///
+    /// Set-based: all tombstone inserts happen in one transaction; ref-count
+    /// checks for blob deletion use a single grouped query rather than one
+    /// round-trip per SHA.
     public func delete(key: CacheKey) async throws {
         try validateKey(key)
 
         // 1. Collect paths and SHA-256 digests of rows that will be deleted,
-        //    and write tombstones for each, all in one transaction.
-        let nowNs = currentNs()
+        //    write tombstones for all in one batch, and hard-delete — all in
+        //    a single transaction.
+        let nowNs = clock()
         let shas: [String] = try await dbPool.write { db in
             let shaRows: [String]
             let deletedPaths: [String]
@@ -269,7 +307,6 @@ public actor CacheStore {
                       AND blob_sha256 != ''
                     """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
 
-                // Collect paths for tombstones before deleting.
                 deletedPaths = try String.fetchAll(db, sql: """
                     SELECT path FROM path_metadata
                     WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
@@ -280,39 +317,39 @@ public actor CacheStore {
                     WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
                     """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
             } else {
-                let escaped = escapeLike(key.path)
+                let (exact, prefix) = Self.subtreeArguments(for: key)
                 shaRows = try String.fetchAll(db, sql: """
                     SELECT blob_sha256 FROM path_metadata
                     WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                      AND (path = ? OR path LIKE ? ESCAPE '\\')
+                      AND (\(Self.subtreeWhereSuffix))
                       AND blob_sha256 != ''
                     """, arguments: [
                         key.accountAlias, key.workspaceID, key.itemID,
-                        key.path, escaped + "/%",
+                        exact, prefix,
                     ])
 
                 deletedPaths = try String.fetchAll(db, sql: """
                     SELECT path FROM path_metadata
                     WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                      AND (path = ? OR path LIKE ? ESCAPE '\\')
+                      AND (\(Self.subtreeWhereSuffix))
                     """, arguments: [
                         key.accountAlias, key.workspaceID, key.itemID,
-                        key.path, escaped + "/%",
+                        exact, prefix,
                     ])
 
                 try db.execute(sql: """
                     DELETE FROM path_metadata
                     WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                      AND (path = ? OR path LIKE ? ESCAPE '\\')
+                      AND (\(Self.subtreeWhereSuffix))
                     """, arguments: [
                         key.accountAlias, key.workspaceID, key.itemID,
-                        key.path, escaped + "/%",
+                        exact, prefix,
                     ])
             }
 
-            // Write tombstones for all deleted rows.
+            // Write tombstones for all deleted rows in one batch insert.
             for path in deletedPaths {
-                let identStr = cacheKeyToIdentifierString(
+                let identStr = Self.identifierString(
                     workspaceID: key.workspaceID,
                     itemID: key.itemID,
                     path: path
@@ -329,9 +366,12 @@ public actor CacheStore {
         }
 
         // 2. Unlink blob files that no surviving row references.
+        //    One grouped query resolves all ref-counts; ref-count check and unlink
+        //    happen in the same write transaction to close the TOCTOU window
+        //    (cache-02 + cache-03).
         let unique = Array(Set(shas))
-        for sha in unique {
-            await maybeDeleteBlob(sha: sha)
+        if !unique.isEmpty {
+            await deleteUnreferencedBlobs(shas: unique)
         }
     }
 
@@ -374,7 +414,7 @@ public actor CacheStore {
     public func recordDeletion(accountAlias: String, identifierString: String) async throws {
         guard !accountAlias.isEmpty else { throw CacheError.missingArgument("accountAlias") }
         guard !identifierString.isEmpty else { throw CacheError.missingArgument("identifierString") }
-        let nowNs = currentNs()
+        let nowNs = clock()
         let tombstone = DeletionTombstoneRecord(
             accountAlias: accountAlias,
             identifierString: identifierString,
@@ -393,8 +433,14 @@ public actor CacheStore {
     /// The metadata row must already exist (call ``upsert(_:)`` first).
     /// After each write the byte budget is enforced: if the total exceeds
     /// `maxBlobBytes`, ``evictToLimit()`` runs automatically.
+    ///
+    /// Row existence is verified inside the same transaction that records the
+    /// blob link — if the row is absent the blob write is still on disk but
+    /// will be reclaimed by the next orphan sweep (same guarantee as a crash
+    /// mid-write).
     public func storeBlob(key: CacheKey, data: Data) async throws {
         try validateKey(key)
+        let nowNs = clock()
         let (sha, size) = try blobs.store(data)
 
         // Update metadata row's blob columns.
@@ -403,7 +449,7 @@ public actor CacheStore {
                 UPDATE path_metadata
                 SET blob_sha256 = ?, blob_size = ?, last_accessed_ns = ?
                 WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                """, arguments: [sha, size, currentNs(),
+                """, arguments: [sha, size, nowNs,
                                  key.accountAlias, key.workspaceID, key.itemID, key.path])
             return db.changesCount
         }
@@ -476,6 +522,11 @@ public actor CacheStore {
     ///
     /// The returned URL is a stable path inside the blob shard cache that
     /// callers can read directly — avoiding an in-memory `Data` load.
+    ///
+    /// **TOCTOU note**: the existence check inside `BlobShardCache.fileURL`
+    /// is advisory only.  A concurrent `evictToLimit`, `delete`, or `wipe`
+    /// can remove the file between this call and the caller's open.  Callers
+    /// must handle a missing-file error when opening the returned URL.
     public func blobURL(key: CacheKey) async throws -> URL? {
         try validateKey(key)
         let record = try await fetch(key: key)
@@ -495,6 +546,7 @@ public actor CacheStore {
     /// disk — it avoids loading the entire file into memory.
     public func storeBlobFromURL(_ sourceURL: URL, key: CacheKey) async throws {
         try validateKey(key)
+        let nowNs = clock()
         let (sha, size) = try blobs.storeFromURL(sourceURL)
 
         let affected = try await dbPool.write { db -> Int in
@@ -502,7 +554,7 @@ public actor CacheStore {
                 UPDATE path_metadata
                 SET blob_sha256 = ?, blob_size = ?, last_accessed_ns = ?
                 WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                """, arguments: [sha, size, currentNs(),
+                """, arguments: [sha, size, nowNs,
                                  key.accountAlias, key.workspaceID, key.itemID, key.path])
             return db.changesCount
         }
@@ -544,6 +596,10 @@ public actor CacheStore {
     /// directory-entry metadata flush needed by `FileManager.enumerator` has not
     /// yet completed, causing `diskUsage()` to return `(0, 0)` for a blob that
     /// clearly exists.
+    ///
+    /// The DB clear is the authoritative step; blob files that remain on disk
+    /// after `wipeAll()` partial failures become unreferenced orphans that the
+    /// next init-time sweep will reclaim.
     public func wipe() async throws -> (count: Int, bytes: Int64) {
         // Snapshot count and bytes from the DB in the same write transaction that
         // clears the blob columns.  This guarantees that the returned values match
@@ -554,16 +610,9 @@ public actor CacheStore {
                 FROM path_metadata
                 WHERE blob_sha256 != ''
                 """
-            let bytesSQL = """
-                SELECT COALESCE(SUM(blob_size), 0)
-                FROM (
-                    SELECT blob_size FROM path_metadata
-                    WHERE blob_sha256 != ''
-                    GROUP BY blob_sha256
-                )
-                """
+            // Reuse the canonical deduplicated-bytes query from CacheReader.
             let count = try Int.fetchOne(db, sql: countSQL) ?? 0
-            let bytes = try Int64.fetchOne(db, sql: bytesSQL) ?? 0
+            let bytes = try Int64.fetchOne(db, sql: CacheReader.deduplicatedBlobBytesSQL) ?? 0
 
             try db.execute(sql: """
                 UPDATE path_metadata
@@ -574,7 +623,8 @@ public actor CacheStore {
             return (count, bytes)
         }
 
-        // Delete all blob files from disk.
+        // Delete all blob files from disk. Partial failures are logged; blobs
+        // that survive become orphans reclaimed by the next init-time sweep.
         try blobs.wipeAll()
 
         Self.log.info("CacheStore: wiped blobs=\(count, privacy: .public) bytes=\(bytes, privacy: .public)")
@@ -662,19 +712,19 @@ public actor CacheStore {
         if candidates.isEmpty { return (0, 0) }
 
         // Delete blob files after the transaction has committed.
-        // Orphaned files from a crash here are recovered by the init-time sweep.
+        // Resolve all ref-counts in one grouped query, then check+unlink
+        // inside a single write transaction — eliminates N+1 and closes
+        // the TOCTOU window where a concurrent storeBlob could reference
+        // a just-evicted SHA between the ref-count read and the unlink.
+        let uniqueSHAs = Array(Set(candidates.map(\.sha)))
         var reclaimed: Int64 = 0
+        await deleteUnreferencedBlobs(shas: uniqueSHAs, onDeleted: { sha in
+            // Sum bytes only for SHAs that were actually unlinked.
+            let candidateSize = candidates.first(where: { $0.sha == sha })?.size ?? 0
+            reclaimed += candidateSize
+        })
+
         for v in candidates {
-            // Only delete the file if no other row still references this SHA.
-            let refs = try await dbPool.read { db in
-                try Int64.fetchOne(db, sql: """
-                    SELECT COUNT(*) FROM path_metadata WHERE blob_sha256 = ?
-                    """, arguments: [v.sha]) ?? 0
-            }
-            if refs == 0 {
-                try? blobs.delete(sha256: v.sha)
-                reclaimed += v.size
-            }
             Self.log.debug(
                 "CacheStore: evicted sha=\(v.sha, privacy: .public) bytes=\(v.size, privacy: .public)"
             )
@@ -750,23 +800,77 @@ public actor CacheStore {
 
     // MARK: - Private helpers
 
-    /// Deletes the blob file for `sha` when no metadata row references it.
+    // MARK: Batch chunk size
+
+    /// Maximum number of rows per sub-transaction in batchUpsert / batchDelete.
     ///
-    /// Logs but does not throw — a leaked blob is recoverable by a later
-    /// eviction pass.
-    private func maybeDeleteBlob(sha: String) async {
+    /// Chunking keeps WAL growth bounded during large reconciliations without
+    /// sacrificing much throughput (each chunk is still a single commit).
+    private static let batchChunkSize = 500
+
+    // MARK: Subtree WHERE helpers
+
+    /// The reusable suffix of a WHERE clause that matches a path and all its
+    /// descendants using a LIKE prefix scan.
+    ///
+    /// Bind `(exact, prefix)` from ``subtreeArguments(for:)``.
+    ///
+    /// `static` so it can be referenced from inside `dbPool.write` Sendable closures.
+    private static let subtreeWhereSuffix = "path = ? OR path LIKE ? ESCAPE '\\'"
+
+    /// Returns `(exact, prefix)` bind arguments for a subtree WHERE clause.
+    ///
+    /// `exact` is the path itself; `prefix` is `escapeLike(path) + "/%"`.
+    ///
+    /// `static` so it can be called from inside `dbPool.write` Sendable closures.
+    private static func subtreeArguments(for key: CacheKey) -> (String, String) {
+        let escaped = Self.escapeLike(key.path)
+        return (key.path, escaped + "/%")
+    }
+
+    // MARK: Set-based blob deletion
+
+    /// Deletes blob files for all `shas` that have no surviving DB reference,
+    /// resolving ref-counts in a single grouped query inside one write transaction
+    /// to eliminate N+1 and close the TOCTOU race between ref-count read and unlink.
+    ///
+    /// - Parameters:
+    ///   - shas: Candidate SHA-256 values; duplicates are tolerated and ignored.
+    ///   - onDeleted: Called with the SHA of each file that was actually unlinked.
+    private func deleteUnreferencedBlobs(shas: [String], onDeleted: ((String) -> Void)? = nil) async {
+        guard !shas.isEmpty else { return }
+
+        // Build a set of SHAs that still have at least one DB reference.
+        // Using a write transaction (not read) so that any concurrent storeBlob
+        // that adds a reference is serialised — the ref-count check and the
+        // decision not to delete are atomic with respect to the writer queue.
+        let stillReferenced: Set<String>
         do {
-            let refs = try await dbPool.read { db in
-                try Int64.fetchOne(db, sql: """
-                    SELECT COUNT(*) FROM path_metadata WHERE blob_sha256 = ?
-                    """, arguments: [sha]) ?? 0
+            let placeholders = shas.map { _ in "?" }.joined(separator: ", ")
+            stillReferenced = try await dbPool.write { db -> Set<String> in
+                let rows = try String.fetchAll(db, sql: """
+                    SELECT DISTINCT blob_sha256
+                    FROM path_metadata
+                    WHERE blob_sha256 IN (\(placeholders))
+                    """, arguments: StatementArguments(shas))
+                return Set(rows)
             }
-            if refs > 0 { return }
-            try blobs.delete(sha256: sha)
         } catch {
-            Self.log.warning("CacheStore: maybeDeleteBlob failed sha=\(sha, privacy: .public) error=\(error, privacy: .public)")
+            Self.log.warning("CacheStore: ref-count query failed, skipping blob unlink: \(error, privacy: .public)")
+            return
+        }
+
+        for sha in shas where !stillReferenced.contains(sha) {
+            do {
+                try blobs.delete(sha256: sha)
+                onDeleted?(sha)
+            } catch {
+                Self.log.warning("CacheStore: blob delete failed sha=\(sha, privacy: .public) error=\(error, privacy: .public)")
+            }
         }
     }
+
+    // MARK: Dangling-link heal
 
     /// Clears the `blob_sha256` and `blob_size` columns for `key`, healing a
     /// dangling metadata link when the blob file has been removed from disk.
@@ -779,6 +883,8 @@ public actor CacheStore {
                 """, arguments: [key.accountAlias, key.workspaceID, key.itemID, key.path])
         }
     }
+
+    // MARK: Orphan sweep
 
     /// Removes blob files on disk that have no corresponding metadata row.
     ///
@@ -809,11 +915,11 @@ public actor CacheStore {
             }
             guard let vals = try? url.resourceValues(forKeys: [.isRegularFileKey]),
                   vals.isRegularFile == true else { continue }
-            // Reconstruct SHA from shard-prefix + filename.
+            // Reconstruct SHA from shard-prefix + filename using the single
+            // source-of-truth helper on BlobShardCache (not an ad-hoc `prefix(2)`).
             let shard = url.deletingLastPathComponent().lastPathComponent
             let file = url.lastPathComponent
-            let sha = shard + file
-            guard sha.count == BlobShardCache.shaLength else { continue }
+            guard let sha = blobs.sha(fromShard: shard, file: file) else { continue }
             onDisk.append(sha)
         }
 
@@ -828,39 +934,65 @@ public actor CacheStore {
         }
 
         for sha in onDisk where !referenced.contains(sha) {
-            try? blobs.delete(sha256: sha)
+            do {
+                try blobs.delete(sha256: sha)
+            } catch {
+                Self.log.warning("CacheStore: sweep failed to delete sha=\(sha, privacy: .public): \(error, privacy: .public)")
+            }
         }
+    }
+
+    // MARK: Identifier helpers
+
+    /// Reconstructs the `ItemIdentifier.identifierString` for a
+    /// `(workspaceID, itemID, path)` triple.
+    ///
+    /// Mirrors ``ItemIdentifier/identifierString`` without importing the full
+    /// FileProvider framework from the cache layer.
+    static func identifierString(workspaceID: String, itemID: String, path: String) -> String {
+        if path.isEmpty {
+            return "\(workspaceID)/\(itemID)"
+        }
+        return "\(workspaceID)/\(itemID)/\(path)"
+    }
+
+    // MARK: SQL escape helper
+
+    /// Escapes SQL LIKE wildcards using `\` as the escape character.
+    static func escapeLike(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "%", with: "\\%")
+         .replacingOccurrences(of: "_", with: "\\_")
     }
 }
 
-// MARK: - Validation helpers
+// MARK: - Module-level helpers
 
 /// Validates that `key` has all required non-empty components.
+///
+/// `internal` so both `CacheStore` and `CacheReader` can call it without duplication.
 func validateKey(_ key: CacheKey) throws {
     if key.accountAlias.isEmpty { throw CacheError.missingArgument("accountAlias") }
     if key.workspaceID.isEmpty { throw CacheError.missingArgument("workspaceID") }
     if key.itemID.isEmpty { throw CacheError.missingArgument("itemID") }
 }
 
-/// Returns the current time as Unix nanoseconds.
-private func currentNs() -> Int64 {
+/// Returns the current time as Unix nanoseconds (wall clock).
+///
+/// Exposed at module scope so test helpers can reference it by name without
+/// duplicating the conversion formula.
+func wallClockNs() -> Int64 {
     Int64(Date().timeIntervalSince1970 * 1_000_000_000)
 }
 
-/// Escapes SQL LIKE wildcards using `\` as the escape character.
-private func escapeLike(_ s: String) -> String {
-    s.replacingOccurrences(of: "\\", with: "\\\\")
-     .replacingOccurrences(of: "%", with: "\\%")
-     .replacingOccurrences(of: "_", with: "\\_")
-}
+// MARK: - Array chunking helper
 
-/// Reconstructs the ItemIdentifier.identifierString for a `(workspaceID, itemID, path)` triple.
-///
-/// Mirrors ``ItemIdentifier/identifierString`` without importing the full
-/// FileProvider framework from the cache layer.
-private func cacheKeyToIdentifierString(workspaceID: String, itemID: String, path: String) -> String {
-    if path.isEmpty {
-        return "\(workspaceID)/\(itemID)"
+private extension Array {
+    /// Splits the array into consecutive sub-arrays of at most `size` elements.
+    func chunked(by size: Int) -> [[Element]] {
+        guard size > 0 else { return [self] }
+        return stride(from: 0, to: count, by: size).map {
+            Array(self[$0..<Swift.min($0 + size, count)])
+        }
     }
-    return "\(workspaceID)/\(itemID)/\(path)"
 }
