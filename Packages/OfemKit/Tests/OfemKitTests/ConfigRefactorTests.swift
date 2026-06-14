@@ -212,7 +212,6 @@ struct ConfigRefactorTests {
 
     @Test("config-06: LogConfig valid level is preserved verbatim")
     func logConfigValidLevelPreserved() throws {
-        let paths = makePaths()
         for level in LogConfig.validLevels {
             let p = makePaths()
             let toml = "[log]\nlevel = \"\(level)\"\n"
@@ -223,7 +222,6 @@ struct ConfigRefactorTests {
                 "valid log level '\(level)' must not be altered"
             )
         }
-        _ = paths // suppress unused warning
     }
 
     // MARK: - config-07: config dir + file permission bits

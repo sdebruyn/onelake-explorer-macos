@@ -174,6 +174,9 @@ public final class OfemConfigStore: Sendable {
 
     // MARK: - Private helpers
 
+    // `load` and `save` are `internal` (not `private`) so that `@testable
+    // import OfemKit` test targets can reach them directly. They are not part
+    // of the public API and must not be called outside this type.
     static func load(from paths: OfemPaths) throws -> OfemConfig {
         let data: Data
         do {

@@ -149,7 +149,18 @@ final class ConfigFileLock: @unchecked Sendable {
                 lk.l_start  = 0
                 lk.l_len    = 0 // Lock the whole file.
 
-                if Darwin.fcntl(fd, F_SETLKW, &lk) == 0 {
+                // EINTR-aware acquire loop: F_SETLKW can return -1/EINTR when a
+                // signal is delivered to this thread. Retry transparently, but
+                // check first that the timer hasn't already fired — if it has,
+                // bail out immediately so a late signal can't spin forever.
+                var fcntlResult: Int32
+                repeat {
+                    fcntlResult = Darwin.fcntl(fd, F_SETLKW, &lk)
+                } while fcntlResult != 0
+                    && Darwin.errno == EINTR
+                    && fdState.load() != .closedByTimer
+
+                if fcntlResult == 0 {
                     // F_SETLKW returned success. Claim fd ownership atomically.
                     // If the timer already closed the fd (.closedByTimer), then
                     // fcntl should not have returned 0 — but even if it did in

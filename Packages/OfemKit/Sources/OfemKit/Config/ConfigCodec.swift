@@ -146,6 +146,10 @@ extension Account: Codable {
 
     // Explicit synthesis required because the struct is declared in a
     // different file from this Codable conformance (Swift limitation).
+    //
+    // Field contract: `alias`, `tenantID`, `homeAccountID`, `username`, and
+    // `addedAt` are required — a missing key throws `parseFailed` rather than
+    // defaulting. `tenantName` and `clientID` are optional (`decodeIfPresent`).
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
