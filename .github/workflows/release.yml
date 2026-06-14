@@ -330,11 +330,13 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          # The app is signed with Developer ID and notarized — assess it via
+          # Gatekeeper's primary-signature context.
           spctl --assess --type open --context context:primary-signature --verbose "build/Export/OneLake.app"
-          # A notarized DMG is assessed as "open" (like the app); --type install
-          # is for .pkg installers and reports "no usable signature" on a DMG.
-          # Also confirm the notarization ticket is stapled.
-          spctl --assess --type open --context context:primary-signature --verbose "dist-app/OneLake-$VERSION.dmg"
+          # The DMG is notarized and stapled but NOT code-signed (create-dmg does
+          # not sign it), so any spctl primary-signature assessment reports
+          # "no usable signature". Verify it the right way: confirm the stapled
+          # notarization ticket is present and valid.
           xcrun stapler validate "dist-app/OneLake-$VERSION.dmg"
 
       - name: Compute DMG SHA-256
