@@ -124,8 +124,11 @@ func propertiesFromHeaders(_ headers: [AnyHashable: Any]) -> PathProperties {
 }
 
 /// Parses an HTTP-date string (RFC 1123, RFC 850, or asctime).
+///
+/// Uses `makeHTTPDateFormatters()` (per-call instances) rather than shared
+/// static singletons to avoid concurrent-access hazards (net-15).
 private func parseHTTPDate(_ s: String) -> Date? {
-    for fmt in HTTPRetryDateFormatters.all {
+    for fmt in makeHTTPDateFormatters() {
         if let d = fmt.date(from: s) { return d }
     }
     return nil
