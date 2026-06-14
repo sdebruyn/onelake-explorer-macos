@@ -5,13 +5,16 @@ import Foundation
 /// Both the `OfemLogger` JSON file sink and the telemetry envelope path route
 /// every free-form string through this module before it leaves the process.
 ///
-/// ### Allowlist model
+/// ### Log message contract
 ///
-/// The safe charset for structured fields (not free-form messages) is
-/// `[A-Za-z0-9_.:-]`, the same set used by `TelemetryRedaction`.  Free-form
-/// log messages are never emitted verbatim to the on-disk JSON file: `msg` is
-/// replaced with a SHA-256–derived token that is stable within a run but
-/// cannot be reversed to recover PII.
+/// Log **messages** are developer-authored static or format strings that must
+/// never contain dynamic or PII-bearing data.  `OfemLogger` writes the `msg`
+/// field verbatim to the on-disk JSON file — no hashing or scrubbing is
+/// applied to it.  All dynamic or PII-bearing data (paths, UPNs, workspace
+/// names, aliases) must be passed as **metadata values**, which are scrubbed
+/// via `scrubLogValue(_:)` before the JSON sink writes them.  On the
+/// `os.Logger` side, dynamic interpolations use `.private` so they are
+/// redacted in the system log on non-development builds.
 ///
 /// ### Log metadata redaction
 ///
@@ -44,8 +47,9 @@ public enum Privacy {
 
     // MARK: - GUID validation
 
-    /// Returns `true` when `s` matches the canonical lowercase UUID/GUID
-    /// format `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` (8-4-4-4-12 hex).
+    /// Returns `true` when `s` matches the UUID/GUID format
+    /// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` (8-4-4-4-12 hex digits,
+    /// where each digit is `0-9`, `a-f`, or `A-F`).
     ///
     /// Used to validate tenant IDs before they are written to telemetry
     /// envelopes.

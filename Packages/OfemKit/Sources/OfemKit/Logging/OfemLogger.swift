@@ -156,7 +156,7 @@ public struct OfemLogger: Sendable {
         return fmt
     }()
 
-    static func isoTimestamp() -> String {
+    private static func isoTimestamp() -> String {
         iso8601Formatter.string(from: Date())
     }
 

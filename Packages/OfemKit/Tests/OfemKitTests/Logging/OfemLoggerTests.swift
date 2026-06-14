@@ -268,4 +268,80 @@ struct OfemLoggerTests {
         let content = try String(contentsOf: logFile, encoding: .utf8)
         #expect(content.contains("hello"), "file must be readable after writer deinit")
     }
+
+    // MARK: - End-to-end redaction (logging-09)
+
+    /// Exercises the full path from a public `OfemLogger` call with PII in
+    /// metadata through to the written JSON line, asserting that the PII never
+    /// reaches disk and the `"redacted"` marker does.
+    ///
+    /// The safe charset is `[A-Za-z0-9_.:-]`.  Values that contain characters
+    /// outside this set (UPNs with `@`, paths with `/`, names with spaces)
+    /// are collapsed to `"redacted"`.  Values entirely within the charset
+    /// (e.g. a GUID) pass through unchanged.
+    @Test("OfemLogger end-to-end: PII in metadata is redacted in the on-disk JSON line (logging-09)")
+    func endToEndRedactionIntegration() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "ofem-log-e2e-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let writer = RotatingFileWriter(logDirectory: dir, maxFileSizeBytes: 1024 * 1024, maxBackups: 1)
+        let config = LogConfiguration(level: .info, fileWriter: writer)
+        let logger = OfemLogger(configuration: config)
+
+        // Log via the public API with PII in metadata values.
+        // - "upn" contains '@' → must be redacted
+        // - "workspaceName" contains a space → must be redacted
+        // - "filePath" contains '/' → must be redacted
+        // - "tenantId" is a GUID (all safe chars) → must pass through unchanged
+        // The message itself is a static string (as the contract requires).
+        logger.info("user action completed", metadata: [
+            "upn":           "user@contoso.com",
+            "workspaceName": "Sales Data Warehouse",
+            "filePath":      "/Users/sam/OneLake/Contoso/budget.parquet",
+            "tenantId":      "9064c167-4885-40ef-9f34-1853218aea86",
+        ])
+        writer.close()
+
+        let logFile = dir.appending(path: "ofem.log", directoryHint: .notDirectory)
+        let raw = try String(contentsOf: logFile, encoding: .utf8)
+        let firstLine = raw
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .first
+            .map(String.init) ?? ""
+
+        // Must be valid JSON.
+        let data = try #require(firstLine.data(using: .utf8))
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json != nil, "written line must be valid JSON")
+
+        // The static message must appear verbatim (it carries no PII).
+        #expect(json?["msg"] as? String == "user action completed",
+                "static log message must reach disk verbatim")
+
+        // Strings that contain chars outside [A-Za-z0-9_.:-] must not appear
+        // verbatim in the raw output.
+        let piiTerms = ["user@contoso.com", "Sales Data Warehouse", "/Users/sam", "budget.parquet"]
+        for term in piiTerms {
+            #expect(!raw.contains(term),
+                    "PII term '\(term)' must not appear in the written log line")
+        }
+
+        // Each PII-bearing metadata key must be present but collapsed to "redacted".
+        #expect(json?["upn"] as? String == "redacted",
+                "UPN (contains '@') must be redacted")
+        #expect(json?["workspaceName"] as? String == "redacted",
+                "workspace name (contains space) must be redacted")
+        #expect(json?["filePath"] as? String == "redacted",
+                "file path (contains '/') must be redacted")
+
+        // Safe values must pass through unchanged.
+        #expect(json?["tenantId"] as? String == "9064c167-4885-40ef-9f34-1853218aea86",
+                "GUID tenantId must reach disk verbatim (all chars are in safe charset)")
+
+        // The redaction marker must appear at least 3 times (one per PII key).
+        let redactedCount = (firstLine.components(separatedBy: "\"redacted\"").count - 1)
+        #expect(redactedCount >= 3,
+                "at least 3 'redacted' markers expected; found \(redactedCount)")
+    }
 }
