@@ -2,7 +2,7 @@
 //
 // Read-only integration tests against a Fabric Warehouse item whose table
 // (`ofem_ci_orders`, schema `dbo`) is seeded out-of-band by
-// `scripts/prep_warehouse.py` before this suite runs in CI.
+// `scripts/prep_warehouse.sql` before this suite runs in CI.
 //
 // These tests NEVER write to, nor delete from, the warehouse.
 

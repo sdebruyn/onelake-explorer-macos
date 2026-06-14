@@ -84,11 +84,6 @@ jobs:
           echo "::add-mask::$ONELAKE_TOKEN"
           echo "OFEM_TOKEN_ONELAKE=$ONELAKE_TOKEN" >> "$GITHUB_ENV"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Seed warehouse table
         env:
           OFEM_TEST_WH_SERVER: ${{ vars.OFEM_TEST_WH_SERVER }}
@@ -96,10 +91,17 @@ jobs:
           OFEM_TEST_WH_TABLE: ${{ vars.OFEM_TEST_WH_TABLE }}
         run: |
           set -euo pipefail
-          pip install 'mssql-python==1.9.0'
+          brew install sqlcmd
+          # Reference the kept-version binary directly: a pre-existing mssql-tools
+          # symlink can shadow it in PATH on the runner.
+          SQLCMD="$(brew --prefix sqlcmd)/bin/sqlcmd"
           # Retry loop: warehouse SQL endpoint may need time to warm up after capacity resume
           for attempt in 1 2 3 4 5; do
-            if python scripts/prep_warehouse.py; then exit 0; fi
+            if "$SQLCMD" -S "$OFEM_TEST_WH_SERVER" -d "$OFEM_TEST_WH_DATABASE" \
+                 --authentication-method ActiveDirectoryAzCli \
+                 -v table="$OFEM_TEST_WH_TABLE" -i scripts/prep_warehouse.sql -b; then
+              exit 0
+            fi
             echo "prep attempt $attempt failed, waiting 20s..."; sleep 20
           done
           echo "warehouse prep failed after retries" >&2; exit 1

@@ -12,7 +12,7 @@ import Testing
 let integrationEnabled = ProcessInfo.processInfo.environment["OFEM_INTEGRATION"] == "1"
 
 /// `true` when a prepared warehouse is available (`OFEM_TEST_WAREHOUSE_ID` set).
-/// The warehouse table must be seeded first by `scripts/prep_warehouse.py`.
+/// The warehouse table must be seeded first by `scripts/prep_warehouse.sql`.
 let warehouseConfigured = !(ProcessInfo.processInfo.environment["OFEM_TEST_WAREHOUSE_ID"] ?? "").isEmpty
 
 extension Trait where Self == ConditionTrait {
@@ -28,11 +28,11 @@ extension Trait where Self == ConditionTrait {
 
     /// Skips a suite/test unless integration is enabled AND a prepared warehouse
     /// is configured. The warehouse table is seeded out-of-band by
-    /// `scripts/prep_warehouse.py` (CI runs it before the suite).
+    /// `scripts/prep_warehouse.sql` (CI runs it before the suite).
     static var warehouse: Self {
         .enabled(
             if: integrationEnabled && warehouseConfigured,
-            "set OFEM_INTEGRATION=1 and OFEM_TEST_WAREHOUSE_ID (after scripts/prep_warehouse.py) to run warehouse tests"
+            "set OFEM_INTEGRATION=1 and OFEM_TEST_WAREHOUSE_ID (after scripts/prep_warehouse.sql) to run warehouse tests"
         )
     }
 }
