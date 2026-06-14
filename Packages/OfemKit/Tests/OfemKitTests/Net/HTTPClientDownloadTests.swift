@@ -2,33 +2,42 @@ import Foundation
 import Testing
 @testable import OfemKit
 
-// MARK: - MockFailingStreamSession
+// MARK: - MockDirectStreamSession
 //
 // A URLSessionStreamProtocol that throws a transport error on the first N calls
-// then delegates to MockStreamURLProtocol for the remaining calls.
+// then returns a synthetic successful response by serving the given Data through
+// a temporary file:// URL via a real URLSession.bytes(for:) call.
 //
-// This is used to exercise the truncate-on-retry path in HTTPClient.download
-// without a live network connection (SHOULD-1).
+// This avoids the global MockStreamURLProtocol queue entirely, so these tests
+// can run concurrently with OneLakeStreamingTests without cross-contamination.
+// (SHOULD-1 / SHOULD-3)
 
 /// A `URLSessionStreamProtocol` that injects a transport error on its first
-/// `failCount` calls, then serves responses from a `MockURLSession` via
-/// `MockStreamURLProtocol` (same mechanism as `MockStreamSession`).
-final class MockFailingStreamSession: URLSessionStreamProtocol, @unchecked Sendable {
+/// `failCount` calls, then on subsequent calls returns a synthetic HTTP 200
+/// response by streaming `successBody` through a temporary file.
+///
+/// Uses a real `URLSession.bytes(for:file://)` internally so `URLSession.AsyncBytes`
+/// is genuinely produced — no `URLProtocol` hooks, no shared global state.
+final class MockDirectStreamSession: URLSessionStreamProtocol, @unchecked Sendable {
     private let failCount: Int
     private let failError: any Error
-    private let wrapped: MockURLSession
-    private let innerSession: URLSession
+    private let successBody: Data
     private var callCount = 0
     private let lock = NSLock()
+    private let fakeURL: URL
 
-    init(failCount: Int, failError: any Error, wrapped: MockURLSession) {
+    /// - Parameters:
+    ///   - failCount: Number of initial calls that throw `failError`.
+    ///   - failError: The error to throw on each of the first `failCount` calls.
+    ///   - successBody: The byte payload to serve after the failure window.
+    ///   - fakeURL: A URL whose `host` is used to build the synthetic
+    ///     `HTTPURLResponse`. Must have a valid host component (e.g. the DFS
+    ///     endpoint) so `HTTPClient` can look up the gate.
+    init(failCount: Int, failError: any Error, successBody: Data, fakeURL: URL) {
         self.failCount = failCount
         self.failError = failError
-        self.wrapped = wrapped
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [MockStreamURLProtocol.self]
-        config.timeoutIntervalForRequest = 5
-        self.innerSession = URLSession(configuration: config)
+        self.successBody = successBody
+        self.fakeURL = fakeURL
     }
 
     func bytes(for request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
@@ -40,10 +49,34 @@ final class MockFailingStreamSession: URLSessionStreamProtocol, @unchecked Senda
         if thisCall < failCount {
             throw failError
         }
-        // Delegate to the wrapped session via MockStreamURLProtocol.
-        let stub = wrapped.dequeueNextStub()
-        MockStreamURLProtocol.push(stub: stub)
-        return try await innerSession.bytes(for: request, delegate: nil)
+
+        // Write the success body to a temp file and stream it from a file:// URL.
+        // file:// streaming is zero-network and avoids any URLProtocol registration.
+        // Write the stub data to a temp file.  Do NOT use defer to delete it here —
+        // the AsyncBytes sequence is consumed asynchronously by the caller AFTER
+        // this function returns, so the file must remain readable until the stream
+        // is exhausted.  The OS temp directory reclaims it at the next reboot or
+        // periodic cleanup.
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ofem-dl-stub-\(UUID().uuidString).bin")
+        try successBody.write(to: tmpURL)
+
+        // Build a synthetic HTTPURLResponse whose URL matches the original request
+        // (so `HTTPClient` sees the correct host for gate lookup) but whose body
+        // comes from the file above.
+        let responseURL = request.url ?? fakeURL
+        let httpResponse = HTTPURLResponse(
+            url: responseURL,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Length": "\(successBody.count)"]
+        )!
+
+        // Stream bytes from the temp file via a bare URLSession.
+        let fileSession = URLSession(configuration: .ephemeral)
+        let (asyncBytes, _) = try await fileSession.bytes(from: tmpURL)
+
+        return (asyncBytes, httpResponse)
     }
 }
 
@@ -67,45 +100,38 @@ private func makeTempFileHandle() throws -> (URL, FileHandle) {
     return (url, handle)
 }
 
-private func dlStub(status: Int, body: Data, headers: [String: String] = [:]) -> MockURLSession.Stub {
-    MockURLSession.Stub(data: body, status: status, headers: headers, url: dlBaseURL)
-}
-
 // MARK: - HTTPClientDownloadTests (SHOULD-1)
 
 /// Tests for `HTTPClient.download` retry and truncation behaviour.
 ///
-/// The key invariant under test: when attempt 1 fails with a transport error
-/// after the destination `FileHandle` may already have been written to, the
-/// truncate-before-retry sequence in `download` must ensure the destination
+/// The key invariant under test: when attempt 1 fails with a transport error,
+/// the truncate-before-retry sequence in `download` must ensure the destination
 /// contains ONLY the bytes from the successful attempt — no concatenation or
 /// corruption from a failed earlier attempt.
-@Suite("HTTPClient — download retry / truncate-on-retry (SHOULD-1)", .serialized)
+///
+/// These tests use `MockDirectStreamSession` which has no global shared state,
+/// so they can run concurrently with other streaming-test suites without
+/// cross-contaminating the shared `MockStreamURLProtocol` queue (SHOULD-3).
+@Suite("HTTPClient — download retry / truncate-on-retry (SHOULD-1)")
 struct HTTPClientDownloadTests {
 
-    /// A transport error on attempt 1 (mid-connection, before any bytes are
-    /// written) followed by a full successful download on attempt 2 must produce
-    /// a destination file that contains exactly the second attempt's bytes.
+    /// A transport error on attempt 1 (before any bytes are written) followed
+    /// by a full successful download on attempt 2 must produce a destination
+    /// file that contains exactly the second attempt's bytes.
     ///
     /// If the truncate-before-retry code were missing, a partial write from
-    /// attempt 1 (none in this case, but the destination offset could be non-zero
-    /// from the seek/truncate logic) could corrupt the output.  The test
-    /// verifies the exact byte sequence.
+    /// attempt 1 (none in this case) could corrupt the output.
     @Test("transport error on attempt 1 → success on attempt 2: destination contains only attempt-2 bytes")
     func truncateOnRetryProducesCleanOutput() async throws {
-        defer { MockStreamURLProtocol.reset() }
-
         let attempt2Body = Data(repeating: 0xCC, count: 256)
 
-        // Attempt 1: throw a URLError (cannotConnectToHost is retriable).
-        // Attempt 2: 200 OK with the expected body.
-        let session = MockURLSession(stubs: [
-            dlStub(status: 200, body: attempt2Body)
-        ])
-        let streamSession = MockFailingStreamSession(
+        // Attempt 1: throw URLError(.cannotConnectToHost) — retriable.
+        // Attempt 2: stream 256 × 0xCC bytes to the destination.
+        let streamSession = MockDirectStreamSession(
             failCount: 1,
             failError: URLError(.cannotConnectToHost),
-            wrapped: session
+            successBody: attempt2Body,
+            fakeURL: dlBaseURL
         )
 
         let http = HTTPClient(
@@ -142,31 +168,25 @@ struct HTTPClientDownloadTests {
             "Destination must contain only attempt-2 bytes; truncation appears to have failed")
     }
 
-    /// When attempt 1 partially writes bytes (simulated here by the successful
-    /// first stub being for a shorter payload) and attempt 2 delivers a
-    /// different, longer body, the final destination must contain the attempt-2
-    /// bytes only — not attempt-1 bytes followed by attempt-2 bytes.
+    /// When attempt 2 delivers a different body than attempt 1 would have,
+    /// the final destination must contain the attempt-2 bytes only.
     ///
     /// This verifies that seek(toOffset: 0) + truncate(atOffset: 0) resets
     /// the destination completely before each attempt, regardless of what
     /// was written before.
     @Test("attempt-1 partial write is fully replaced by attempt-2 bytes after truncation")
     func truncationErasesAttempt1BytesBeforeAttempt2() async throws {
-        defer { MockStreamURLProtocol.reset() }
-
         // The second attempt delivers a distinct pattern so we can verify which
         // bytes are present.
         let attempt2Body = Data(repeating: 0xBB, count: 128)
 
-        // Attempt 1 throws after yielding no bytes (transport-level failure
-        // before any body is delivered).  Attempt 2 delivers the final content.
-        let session = MockURLSession(stubs: [
-            dlStub(status: 200, body: attempt2Body)
-        ])
-        let streamSession = MockFailingStreamSession(
+        // Attempt 1 throws a transport error — no bytes reach the destination.
+        // Attempt 2 delivers the final content.
+        let streamSession = MockDirectStreamSession(
             failCount: 1,
             failError: URLError(.cannotFindHost),
-            wrapped: session
+            successBody: attempt2Body,
+            fakeURL: dlBaseURL
         )
 
         let http = HTTPClient(
