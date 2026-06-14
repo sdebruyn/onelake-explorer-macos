@@ -50,6 +50,9 @@ testdata/tmp/
 .claude/
 .claire/
 
+# Coverage export (generated in CI for the Codecov upload)
+coverage.lcov
+
 # Zensical docs build output
 docs_build/site/
 

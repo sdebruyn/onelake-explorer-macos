@@ -1,0 +1,25 @@
+# Codecov configuration.
+#
+# Coverage is reported for information only — it must never block a PR. The
+# required CI checks stay limited to build, tests and commitlint.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        informational: true
+    patch:
+      default:
+        informational: true
+
+# Only comment when coverage actually changes, to keep PRs quiet.
+comment:
+  layout: "reach, diff, flags, files"
+  require_changes: true
+
+# OfemKit is the engine package; its sources are what we measure.
+flags:
+  ofemkit:
+    paths:
+      - Packages/OfemKit/Sources/
+    carryforward: true
