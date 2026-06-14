@@ -93,12 +93,20 @@ final class SharedOfemAuth {
         let webviewParams = MSALWebviewParameters(authPresentationViewController: parentVC)
         webviewParams.webviewType = .default
 
-        let result = try await InteractiveSignIn.acquireToken(
-            clientID: effectiveClientID,
-            tenantHint: tenantHint,
-            webviewParams: webviewParams,
-            cacheStrategy: .msalKeychain
-        )
+        let result: InteractiveSignInResult
+        do {
+            result = try await InteractiveSignIn.acquireToken(
+                clientID: effectiveClientID,
+                tenantHint: tenantHint,
+                webviewParams: webviewParams,
+                cacheStrategy: .msalKeychain
+            )
+        } catch let nsError as NSError where nsError.domain == "MSALErrorDomain" {
+            Self.log.error(
+                "SharedOfemAuth.signIn: MSAL error domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) userInfo=\(nsError.userInfo, privacy: .public)"
+            )
+            throw nsError
+        }
 
         // Assign the optional custom clientID to the account before committing.
         var accountToCommit = result
