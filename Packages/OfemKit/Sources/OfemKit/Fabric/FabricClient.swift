@@ -326,6 +326,15 @@ public final class FabricClient: Sendable {
             all.append(contentsOf: pr.value.compactMap(convert))
 
             // Determine how to advance (token branch or URI branch).
+            //
+            // NIT-4: seenTokens.removeAll() / seenURIs.removeAll() is called
+            // whenever the server switches between the two continuation styles.
+            // This means a mixed-mode server (token T → URI U → token T) would
+            // not be caught by the set guard alone.  That is acceptable: the
+            // hard cap of maxPaginationPages provides a universal upper bound
+            // regardless of the cycle shape, so the invariant "we terminate" is
+            // preserved.  The set guards are an optimisation that short-circuits
+            // obvious same-branch cycles early, not the sole safety net.
             if let tok = pr.continuationToken, !tok.isEmpty {
                 // Guard against a token seen before (detects A→B→A→B cycles).
                 if seenTokens.contains(tok) {
@@ -358,13 +367,5 @@ public final class FabricClient: Sendable {
     }
 }
 
-// MARK: - String extension (fabric-03)
-
-private extension String {
-    /// Percent-encodes a single URL path segment (mirrors the OneLake helper).
-    var percentEncodedPathSegment: String {
-        var allowed = CharacterSet.urlPathAllowed
-        allowed.remove("/")
-        return addingPercentEncoding(withAllowedCharacters: allowed) ?? self
-    }
-}
+// NIT-1: `percentEncodedPathSegment` is defined once in StringExtensions.swift
+// and shared across the Clients domain. No private copy needed here.

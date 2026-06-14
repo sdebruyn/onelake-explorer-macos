@@ -71,7 +71,8 @@ private func stub(status: Int, body: Data = Data(), headers: [String: String] = 
 // PRAGMATIC DECISION: We test the end-to-end `read(destination:)` path
 // using a MockURLSession that returns the expected data, and we verify the
 // destination file contains the correct bytes. The truncate-before-retry
-// logic in HTTPClient.download is unit-tested separately (see HTTPClientDownloadTests).
+// logic in HTTPClient.download is unit-tested separately in
+// Net/HTTPClientDownloadTests.swift (SHOULD-1).
 // For integration, the test below uses a URLProtocol approach.
 
 /// A `URLSessionStreamProtocol` that adapts a `MockURLSession` so that
@@ -152,11 +153,14 @@ final class MockStreamURLProtocol: URLProtocol, @unchecked Sendable {
 
 // MARK: - OneLakeStreamingTests
 
-@Suite("OneLakeClient — streaming read(destination:) (net-19 / onelake-02)")
+// SHOULD-3: serialise tests in this suite and reset MockStreamURLProtocol's
+// global queue in each test so stubs from one test cannot leak into another.
+@Suite("OneLakeClient — streaming read(destination:) (net-19 / onelake-02)", .serialized)
 struct OneLakeStreamingTests {
 
     @Test("read(destination:) writes body bytes to destination file")
     func streamingReadWritesToDisk() async throws {
+        defer { MockStreamURLProtocol.reset() }
         let expected = Data(repeating: 0xAB, count: 512)
         let session = MockURLSession(stubs: [
             stub(status: 200, body: expected, headers: ["Content-Length": "512"])
@@ -185,6 +189,7 @@ struct OneLakeStreamingTests {
 
     @Test("read(destination:) 404 maps to OneLakeError.notFound")
     func streamingRead404() async throws {
+        defer { MockStreamURLProtocol.reset() }
         let session = MockURLSession(stubs: [stub(status: 404)])
 
         let (tmpURL, handle) = try makeTempFile()
@@ -210,6 +215,7 @@ struct OneLakeStreamingTests {
 
     @Test("read(destination:) 416 maps to OneLakeError.rangeNotSatisfiable (onelake-01)")
     func streamingRead416() async throws {
+        defer { MockStreamURLProtocol.reset() }
         let session = MockURLSession(stubs: [stub(status: 416)])
 
         let (tmpURL, handle) = try makeTempFile()

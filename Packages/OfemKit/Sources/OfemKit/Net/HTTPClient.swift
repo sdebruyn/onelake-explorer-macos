@@ -451,6 +451,9 @@ public final class HTTPClient: Sendable {
         if idempotent { policy.idempotent = true }
 
         let gate = await gateRegistry.gate(for: host)
+        // NIT-3: hoist registryDefaults outside the retry loop (immutable after
+        // construction) so the actor hop is paid once per request, not per attempt.
+        let defaults = await gateRegistry.registryDefaults
 
         var wait = policy.initialBackoff
         var lastError: (any Error)?
@@ -511,7 +514,6 @@ public final class HTTPClient: Sendable {
 
             let status = response.statusCode
 
-            let defaults = await gateRegistry.registryDefaults
             if HTTPRetryStatusPolicy.shouldPenaliseGate(status) {
                 let retryAfterDelay = retryAfterDuration(from: response, defaults: defaults)
                 if let delay = retryAfterDelay {

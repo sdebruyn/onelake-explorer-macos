@@ -27,6 +27,15 @@ public enum FabricError: Error, Sendable {
     /// HTTP 404 — the resource does not exist.
     case notFound
 
+    /// HTTP 410 — the resource was permanently removed.
+    case gone
+
+    /// HTTP 413 — the request payload exceeded the server's limit.
+    case payloadTooLarge
+
+    /// HTTP 416 — the `Range` header names a range the server cannot satisfy.
+    case rangeNotSatisfiable
+
     /// HTTP 429 — the server is throttling this client.
     ///
     /// ``HTTPClient`` retries with backoff; this is only surfaced after all
@@ -93,6 +102,12 @@ extension FabricError {
             return .forbidden
         case HTTPClientError.notFound:
             return .notFound
+        case HTTPClientError.gone:           // NIT-2: symmetry with OneLakeError
+            return .gone
+        case HTTPClientError.payloadTooLarge:
+            return .payloadTooLarge
+        case HTTPClientError.rangeNotSatisfiable:
+            return .rangeNotSatisfiable
         case HTTPClientError.throttled:
             return .rateLimited
         case HTTPClientError.cancelled:

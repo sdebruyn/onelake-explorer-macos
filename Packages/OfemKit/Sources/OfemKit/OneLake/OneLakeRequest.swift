@@ -119,16 +119,5 @@ func percentEncodedQueryItem(_ item: URLQueryItem) -> URLQueryItem {
     return URLQueryItem(name: encodedName, value: encodedValue)
 }
 
-// MARK: - String extension
-
-private extension String {
-    /// Percent-encodes a single path segment (all reserved chars except `/`
-    /// are encoded, but `/` itself is excluded from the allowed set so it
-    /// cannot appear inside a segment).
-    var percentEncodedPathSegment: String {
-        // `urlPathAllowed` includes '/', which we don't want inside a segment.
-        var allowed = CharacterSet.urlPathAllowed
-        allowed.remove("/")
-        return addingPercentEncoding(withAllowedCharacters: allowed) ?? self
-    }
-}
+// NIT-1: `percentEncodedPathSegment` is defined once in StringExtensions.swift
+// and shared across the Clients domain. No private copy needed here.

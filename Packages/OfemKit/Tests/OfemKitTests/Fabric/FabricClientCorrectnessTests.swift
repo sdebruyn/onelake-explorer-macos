@@ -181,8 +181,10 @@ struct FabricPercentEncodingTests {
         let page = try await client.listItems(alias: "a", workspaceID: workspaceID)
         // The URL should contain the percent-encoded form in the path.
         let requestURL = session.requests.first?.url?.absoluteString ?? ""
-        #expect(requestURL.contains("ws-id%2Fwith-slash") || requestURL.contains("ws-id/with-slash"),
-            "URL should have the workspaceID; got: \(requestURL)")
+        // SHOULD-2: assert ONLY the correctly percent-encoded form — the unencoded
+        // form must not be accepted as a passing result.
+        #expect(requestURL.contains("ws-id%2Fwith-slash"),
+            "URL path must percent-encode '/' as '%2F'; got: \(requestURL)")
         _ = page
     }
 }

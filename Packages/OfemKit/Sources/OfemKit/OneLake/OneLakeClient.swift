@@ -644,10 +644,17 @@ public final class OneLakeClient: Sendable {
 
     /// Translates a URL-builder closure result into either a URL or an
     /// ``OneLakeError/missingArgument(_:)`` (onelake-03: no force-unwraps).
+    ///
+    /// NIT-5: pattern-match on the associated value of `OneLakeURLError` directly
+    /// so the message is the developer-authored string, not the generic
+    /// `localizedDescription` ("The operation couldn't be completed").
     private func buildURL(_ build: () throws -> URL) throws -> URL {
         do {
             return try build()
         } catch let urlErr as OneLakeURLError {
+            if case .invalidURL(let msg) = urlErr {
+                throw OneLakeError.missingArgument(msg)
+            }
             throw OneLakeError.missingArgument(urlErr.localizedDescription)
         }
     }
