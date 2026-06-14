@@ -10,13 +10,13 @@ import Foundation
 /// expires after `cooldown` with no traffic flowing.
 ///
 /// `OfflineTracker` is a Swift `actor` for safe concurrent mutation.
-public actor OfflineTracker {
+actor OfflineTracker {
 
     // MARK: - Constants
 
     /// Maximum time the engine keeps reporting offline without a successful
     /// round-trip.
-    public static let defaultCooldown: Duration = .seconds(60)
+    static let defaultCooldown: Duration = .seconds(60)
 
     // MARK: - State
 
@@ -25,24 +25,31 @@ public actor OfflineTracker {
 
     // MARK: - Init
 
-    public init(cooldown: Duration = OfflineTracker.defaultCooldown) {
+    init(cooldown: Duration = OfflineTracker.defaultCooldown) {
         self.cooldown = cooldown
     }
 
-    // MARK: - Public API
+    // MARK: - Internal API (sync-26: reduced from public to internal)
 
     /// Records a successful outbound call (clears the offline flag).
-    public func markOnline() {
+    func markOnline() {
         since = nil
     }
 
     /// Records an offline-class failure (sets the offline flag).
-    public func markOffline() {
+    func markOffline() {
         if since == nil { since = Date() }
     }
 
-    /// Returns `true` when the engine is currently considered offline.
-    public var isOffline: Bool {
+    /// Returns `true` when the engine is currently considered offline and
+    /// resets the cooldown clock when it has elapsed (sync-20).
+    ///
+    /// This is an explicit method rather than a computed property so it is
+    /// clear that a call can mutate state (expiring the cooldown resets
+    /// `since`). Two consecutive calls to `currentlyOffline()` can return
+    /// different values with no intervening `observe()` call; using a method
+    /// name makes this self-documenting.
+    func currentlyOffline() -> Bool {
         guard let start = since else { return false }
         let age = Date().timeIntervalSince(start)
         if age > cooldown.seconds {
@@ -53,7 +60,7 @@ public actor OfflineTracker {
     }
 
     /// Feeds the outcome of a single outbound call.
-    public func observe(_ error: (any Error)?) {
+    func observe(_ error: (any Error)?) {
         if error == nil {
             markOnline()
         } else if OfflineTracker.isOfflineError(error!) {
@@ -69,12 +76,7 @@ public actor OfflineTracker {
     ///
     /// Deliberately restrictive: a 503 does NOT promote the engine to offline
     /// (paused capacity must not appear as an offline condition).
-    ///
-    /// The engine never hands a raw `URLError` here — the clients wrap transport
-    /// failures (`OneLakeError.httpError` / `FabricError.httpError` →
-    /// `HTTPClientError.transport`). So unwrap those to reach the underlying
-    /// `URLError` before classifying.
-    public static func isOfflineError(_ error: any Error) -> Bool {
+    static func isOfflineError(_ error: any Error) -> Bool {
         guard let urlError = Self.underlyingURLError(error) else { return false }
         switch urlError.code {
         case .notConnectedToInternet,
@@ -85,23 +87,21 @@ public actor OfflineTracker {
             return true
         case .timedOut:
             // Timeout is NOT treated as offline — it is a server-side issue.
-            // Mirrors the Go check: `!opErr.Timeout()` in `IsOfflineError`.
             return false
         default:
             return false
         }
     }
 
-    /// Unwraps the layers the engine wraps a transport failure in
-    /// (`OneLakeError.httpError` / `FabricError.httpError` /
-    /// `HTTPClientError.transport` / `HTTPClientError.retriesExhausted(last:)`)
-    /// to reach an underlying `URLError`, if any. HTTP/status errors (a wrapped
-    /// `HTTPClientError.apiError` / `.serverError`) are not transport failures
-    /// and resolve to `nil`, so a paused-capacity 503 is never seen as offline.
+    /// Unwraps the layers the engine wraps a transport failure in to reach an
+    /// underlying `URLError`, if any. Bounded to 5 unwrap levels (sync-07:
+    /// the depth limit of 5 is a deliberate policy cap documented here).
+    private static let maxUnwrapDepth = 5
+
     static func underlyingURLError(_ error: any Error) -> URLError? {
         var current: (any Error)? = error
         var depth = 0
-        while let err = current, depth < 5 {
+        while let err = current, depth < maxUnwrapDepth {
             if let urlError = err as? URLError { return urlError }
             if let oneLake = err as? OneLakeError, case let .httpError(inner) = oneLake {
                 current = inner
@@ -119,14 +119,5 @@ public actor OfflineTracker {
             depth += 1
         }
         return nil
-    }
-}
-
-// MARK: - Duration.seconds helper
-
-private extension Duration {
-    var seconds: TimeInterval {
-        let (sec, attosec) = self.components
-        return TimeInterval(sec) + TimeInterval(attosec) / 1e18
     }
 }

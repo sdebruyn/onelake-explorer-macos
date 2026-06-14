@@ -18,12 +18,12 @@ import os.log
 ///
 /// `PauseManager` is a Swift `actor` so all mutable state (the in-flight probe
 /// set) is automatically serialised.
-public actor PauseManager {
+actor PauseManager {
 
     // MARK: - Constants
 
     /// Default minimum gap between two recovery probes for the same workspace.
-    public static let defaultProbeInterval: Duration = .seconds(120)
+    static let defaultProbeInterval: Duration = .seconds(120)
 
     // MARK: - State
 
@@ -36,14 +36,11 @@ public actor PauseManager {
 
     // MARK: - Paused-capacity detection
 
-    /// Regex matching the phrases Fabric returns when a workspace's capacity is
-    /// paused.
-    private static let pausedCapacityPattern = try! NSRegularExpression(
-        pattern: #"(?i)(capacity\s+not\s+active|capacity\s+is\s+not\s+active|fabric\s+capacity\s+is\s+(currently\s+)?paused|capacity\s+is\s+(currently\s+)?paused|capacity\s+suspended|capacity\s+has\s+been\s+paused|capacity\s+\S+\s+is\s+currently\s+not\s+available|capacity\s+is\s+(currently\s+)?not\s+available)"#,
-        options: []
-    )
-
     /// Stable Fabric REST `errorCode` values that signal a paused capacity.
+    ///
+    /// These are the primary signal — reliable, locale-independent, versioned
+    /// in the Fabric API contract. The regex below is a secondary fallback for
+    /// older API versions that do not populate `errorCode` (sync-17).
     private static let pausedErrorCodes: Set<String> = [
         "capacitypaused",
         "capacitysuspended",
@@ -51,6 +48,15 @@ public actor PauseManager {
         "workspacecapacitypaused",
         "capacityassignmentpaused",
     ]
+
+    /// Regex matching the phrases Fabric may return when a workspace's capacity
+    /// is paused. Used only when no `errorCode` field is present in the body
+    /// (sync-17: prose matching is locale- and wording-fragile; the stable
+    /// `errorCode` above is always checked first).
+    private static let pausedCapacityPattern = try! NSRegularExpression(
+        pattern: #"(?i)(capacity\s+not\s+active|capacity\s+is\s+not\s+active|fabric\s+capacity\s+is\s+(currently\s+)?paused|capacity\s+is\s+(currently\s+)?paused|capacity\s+suspended|capacity\s+has\s+been\s+paused|capacity\s+\S+\s+is\s+currently\s+not\s+available|capacity\s+is\s+(currently\s+)?not\s+available)"#,
+        options: []
+    )
 
     // MARK: - Init
 
@@ -61,7 +67,7 @@ public actor PauseManager {
     /// - onelake: The DFS client used to probe workspace reachability.
     /// - probeInterval: Minimum gap between recovery probes for the same
     /// workspace. Default: ``defaultProbeInterval``.
-    public init(
+    init(
         cache: CacheStore,
         onelake: any OneLakeClientProtocol,
         probeInterval: Duration = PauseManager.defaultProbeInterval
@@ -71,13 +77,13 @@ public actor PauseManager {
         self.probeInterval = probeInterval
     }
 
-    // MARK: - Public API
+    // MARK: - Internal API (sync-26: reduced from public to internal)
 
     /// Checks whether `workspaceID` is paused, issuing a recovery probe when
     /// the minimum interval has elapsed. Returns without throwing when the
     /// workspace is reachable; throws ``SyncError/workspacePaused`` when it is
     /// still paused.
-    public func guardPaused(workspaceID: String, alias: String) async throws {
+    func guardPaused(workspaceID: String, alias: String) async throws {
         guard let status = try? await cache.workspaceStatus(
             accountAlias: alias, workspaceID: workspaceID
         ) else {
@@ -99,7 +105,7 @@ public actor PauseManager {
     ///
     /// Returns `true` when the error was a paused-capacity signal (caller
     /// should re-map to ``SyncError/workspacePaused``).
-    public func markPausedIfNeeded(workspaceID: String, alias: String, error: any Error) async -> Bool {
+    func markPausedIfNeeded(workspaceID: String, alias: String, error: any Error) async -> Bool {
         guard isPausedCapacityError(error) else { return false }
 
         let now = Date()
@@ -122,21 +128,22 @@ public actor PauseManager {
     // MARK: - Paused-capacity detection (internal, nonisolated for reuse)
 
     /// Returns `true` when `error` signals a paused / suspended Fabric capacity.
+    ///
+    /// Detection order (sync-17):
+    /// 1. Parse `errorCode` from the JSON body — stable and locale-independent.
+    /// 2. Fall back to regex over the prose body — catches older API versions.
     nonisolated func isPausedCapacityError(_ error: any Error) -> Bool {
-        // Attempt to extract the raw body from an APIError (via OneLake or
-        // Fabric error wrapping).
         let body = extractAPIErrorBody(error)
-        if let body, !body.isEmpty {
-            let range = NSRange(body.startIndex..., in: body)
-            if Self.pausedCapacityPattern.firstMatch(in: body, range: range) != nil {
-                return true
-            }
-            // Parse `errorCode` from JSON body.
-            if let code = extractErrorCode(from: body) {
-                return Self.pausedErrorCodes.contains(code.lowercased())
-            }
+        guard let body, !body.isEmpty else { return false }
+
+        // Primary: stable errorCode check.
+        if let code = extractErrorCode(from: body),
+           Self.pausedErrorCodes.contains(code.lowercased()) {
+            return true
         }
-        return false
+        // Secondary: prose regex fallback for older API responses.
+        let range = NSRange(body.startIndex..., in: body)
+        return Self.pausedCapacityPattern.firstMatch(in: body, range: range) != nil
     }
 
     // MARK: - Private probe logic
@@ -197,15 +204,6 @@ public actor PauseManager {
             try? await cache.setWorkspaceStatus(stillPaused)
             return false
         }
-    }
-}
-
-// MARK: - Duration.seconds helper
-
-private extension Duration {
-    var seconds: TimeInterval {
-        let (sec, attosec) = self.components
-        return TimeInterval(sec) + TimeInterval(attosec) / 1e18
     }
 }
 

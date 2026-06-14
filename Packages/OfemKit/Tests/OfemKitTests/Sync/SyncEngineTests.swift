@@ -66,17 +66,17 @@ struct SyncEngineTests {
         )
 
         // Before discard: should report a partial at offset 10.
-        let (offset, _, hasPartial) = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(offset == 10)
-        #expect(hasPartial)
+        let plan = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(plan.rangeStart == 10)
+        #expect(plan.hasPartial)
 
         // Simulate the 412 discard + state reset in SyncEngine.
         pm.discard(for: key)
-        // After discard: no partial on disk, rangeStart returns (0, nil, false).
-        let (offset2, etag2, hasPartial2) = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(offset2 == 0)
-        #expect(etag2 == nil)
-        #expect(!hasPartial2)
+        // After discard: no partial on disk, rangeStart returns .fullRestart.
+        let plan2 = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(plan2.rangeStart == 0)
+        #expect(plan2.pinnedEtag == nil)
+        #expect(!plan2.hasPartial)
     }
 
     /// Returns a `PartialManager` backed by a unique temp directory.
