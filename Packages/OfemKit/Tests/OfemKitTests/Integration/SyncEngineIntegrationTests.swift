@@ -363,7 +363,154 @@ struct SyncEngineIntegrationTests {
         try await lake.rm(dir)
     }
 
-    // MARK: - Test 7: put uploads a local file and the engine then re-enumerates it
+    // MARK: - Test 7: repeated open() returns a stable, identical cached blob
+
+    @Test("open() returns a stable cached blob across repeated calls")
+    func testRepeatedOpenReturnsStableCachedBlob() async throws {
+        let lake = try liveLakehouse()
+        let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
+        let dir = "Files/ofem-ci/\(UUID().uuidString)"
+
+        defer {
+            try? FileManager.default.removeItem(at: store.root)
+            try? FileManager.default.removeItem(at: scratchBase)
+        }
+
+        // 64 KiB of non-trivial bytes — small enough for a fast round-trip, big
+        // enough that an accidental re-download is observable as a new write.
+        let payload = Data((0..<(64 * 1024)).map { UInt8($0 % 251) })
+
+        do {
+            try await lake.mkdir(dir)
+            try await lake.write("\(dir)/cached.bin", payload)
+
+            // Seed the directory listing so the engine knows the file's etag
+            // before we call open().  open() uses the cached etag to issue a
+            // cheap HEAD (isBlobFresh) rather than a full GET.
+            let dirKey  = cacheKey(lake: lake, path: dir)
+            _ = try await engine.refreshFolder(key: dirKey)
+
+            let fileKey = cacheKey(lake: lake, path: "\(dir)/cached.bin")
+
+            // --- First open: triggers the real GET, stores blob in cache ---
+            let url1 = try await engine.open(key: fileKey)
+
+            // Capture the blob file's modification date immediately after the
+            // first download.  This timestamp is the baseline for the fast-path
+            // check: if the second open() rewrites the blob the mtime changes.
+            let attrs1 = try FileManager.default.attributesOfItem(atPath: url1.path)
+            let mtime1 = try #require(attrs1[.modificationDate] as? Date,
+                "blob file must have a modification date after first open()")
+
+            // --- Second open: returns the cached blob ---
+            //
+            // The engine issues a cheap HEAD (isBlobFresh) confirming the remote
+            // etag is unchanged, then returns the existing content-addressed blob
+            // URL.  NOTE: an unchanged mtime shows the blob file was reused as-is,
+            // but it does NOT by itself prove a single GET — the store is
+            // content-addressed, so even a redundant download dedups to the same
+            // file (BlobShardCache early-returns on a SHA match). The single-GET
+            // fast-path is proven by the mock unit suite (SyncEngineTests,
+            // readCalls.count == 1); here we assert repeated-open stability.
+            let url2 = try await engine.open(key: fileKey)
+
+            let attrs2 = try FileManager.default.attributesOfItem(atPath: url2.path)
+            let mtime2 = try #require(attrs2[.modificationDate] as? Date,
+                "blob file must still have a modification date after second open()")
+
+            // (a) Both calls must point to the same local blob URL.
+            #expect(url1 == url2, "second open() must return the same local blob URL as the first")
+
+            // (b) The blob file must not be rewritten between calls (stable mtime).
+            #expect(mtime1 == mtime2,
+                "the cached blob file was rewritten between open() calls; it should be reused as-is")
+
+            // (c) The bytes must still match the original uploaded content.
+            let downloaded = try Data(contentsOf: url2)
+            #expect(downloaded == payload, "cached blob bytes must match the original uploaded content")
+        } catch {
+            await lake.rmBestEffort(dir)
+            throw error
+        }
+        try await lake.rm(dir)
+    }
+
+    // MARK: - Test 8: open() under concurrent callers exercises the in-flight coalescing path
+
+    /// Issues two concurrent `engine.open(key:)` calls for the same cached file
+    /// and asserts that both succeed with identical results.
+    ///
+    /// ## What this exercises
+    ///
+    /// `SyncEngine.open()` maintains an `inFlightDownloads` dictionary keyed by
+    /// the cache key string.  When a second caller arrives while a download is
+    /// already in flight for the same key, it awaits the first task's result
+    /// rather than issuing a duplicate GET (sync-06 — the coalescing path).
+    ///
+    /// Launching two concurrent `open()` calls gives both tasks the chance to
+    /// race to the coalescing guard.  Under real concurrency one of them will
+    /// start the download and register the in-flight task; the other will find
+    /// the in-flight entry and coalesce onto it.
+    ///
+    /// ## What this does NOT prove
+    ///
+    /// This test asserts correctness-under-concurrency (both calls succeed and
+    /// return identical blob URLs containing the exact original payload) but
+    /// cannot, by itself, prove that exactly one network GET was issued.  That
+    /// single-GET property is already covered by the mock-based unit suite which
+    /// uses a counting HTTP stub to verify the request count precisely.
+    @Test("open() coalesces concurrent callers onto one in-flight download")
+    func testOpenCoalescesConcurrentCallers() async throws {
+        let lake = try liveLakehouse()
+        let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
+        let dir = "Files/ofem-ci/\(UUID().uuidString)"
+
+        defer {
+            try? FileManager.default.removeItem(at: store.root)
+            try? FileManager.default.removeItem(at: scratchBase)
+        }
+
+        // 64 KiB of deterministic content — large enough that the download is
+        // not instantaneous and the two tasks can realistically overlap.
+        let payload = Data((0..<(64 * 1024)).map { UInt8($0 % 251) })
+
+        do {
+            try await lake.mkdir(dir)
+            try await lake.write("\(dir)/coalesced.bin", payload)
+
+            // Seed the directory listing so the engine has the file's etag cached
+            // before we call open().  This mirrors the setup used in
+            // testRepeatedOpenReturnsStableCachedBlob.
+            let dirKey  = cacheKey(lake: lake, path: dir)
+            _ = try await engine.refreshFolder(key: dirKey)
+
+            let fileKey = cacheKey(lake: lake, path: "\(dir)/coalesced.bin")
+
+            // Fire two concurrent open() calls.  Both tasks are created before
+            // either is awaited so they can race on the in-flight guard inside
+            // the actor.  The `async let` form guarantees both tasks start
+            // before the first `await` in the tuple resolution below.
+            async let urlA = engine.open(key: fileKey)
+            async let urlB = engine.open(key: fileKey)
+            let (resolvedA, resolvedB) = try await (urlA, urlB)
+
+            // (a) Both calls must succeed and return the same local blob URL —
+            //     whichever task won the race, the other coalesced onto it.
+            #expect(resolvedA == resolvedB,
+                "both concurrent open() calls must return the same local blob URL")
+
+            // (b) The bytes at that URL must match the uploaded content exactly.
+            let downloaded = try Data(contentsOf: resolvedA)
+            #expect(downloaded == payload,
+                "blob bytes must equal the original uploaded content after concurrent open()")
+        } catch {
+            await lake.rmBestEffort(dir)
+            throw error
+        }
+        try await lake.rm(dir)
+    }
+
+    // MARK: - Test 9: put uploads a local file and the engine then re-enumerates it (was Test 8)
 
     @Test("put uploads a local file and the engine then re-enumerates it")
     func testPutUploadsThenEnumerates() async throws {
