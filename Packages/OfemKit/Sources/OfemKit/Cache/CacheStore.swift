@@ -536,23 +536,49 @@ public actor CacheStore {
     ///
     /// Metadata rows survive — the next access treats them as "not cached" and
     /// re-downloads the blob.
+    ///
+    /// The returned `(count, bytes)` reflects what was recorded in the database
+    /// immediately before clearing — the same source as ``blobBytes()``.  Using
+    /// the DB rather than a filesystem scan avoids a race on APFS where a blob
+    /// written via ``storeBlob(key:data:)`` is visible in the database but the
+    /// directory-entry metadata flush needed by `FileManager.enumerator` has not
+    /// yet completed, causing `diskUsage()` to return `(0, 0)` for a blob that
+    /// clearly exists.
     public func wipe() async throws -> (count: Int, bytes: Int64) {
-        let usage = try blobs.diskUsage()
+        // Snapshot count and bytes from the DB in the same write transaction that
+        // clears the blob columns.  This guarantees that the returned values match
+        // what was removed — no filesystem walk, no APFS timing window.
+        let (count, bytes) = try await dbPool.write { db -> (Int, Int64) in
+            let countSQL = """
+                SELECT COUNT(DISTINCT blob_sha256)
+                FROM path_metadata
+                WHERE blob_sha256 != ''
+                """
+            let bytesSQL = """
+                SELECT COALESCE(SUM(blob_size), 0)
+                FROM (
+                    SELECT blob_size FROM path_metadata
+                    WHERE blob_sha256 != ''
+                    GROUP BY blob_sha256
+                )
+                """
+            let count = try Int.fetchOne(db, sql: countSQL) ?? 0
+            let bytes = try Int64.fetchOne(db, sql: bytesSQL) ?? 0
 
-        // Clear blob columns in one transaction.
-        try await dbPool.write { db in
             try db.execute(sql: """
                 UPDATE path_metadata
                 SET blob_sha256 = '', blob_size = 0
                 WHERE blob_sha256 != ''
                 """)
+
+            return (count, bytes)
         }
 
         // Delete all blob files from disk.
         try blobs.wipeAll()
 
-        Self.log.info("CacheStore: wiped blobs=\(usage.count, privacy: .public) bytes=\(usage.bytes, privacy: .public)")
-        return usage
+        Self.log.info("CacheStore: wiped blobs=\(count, privacy: .public) bytes=\(bytes, privacy: .public)")
+        return (count, bytes)
     }
 
     // MARK: - LRU eviction
