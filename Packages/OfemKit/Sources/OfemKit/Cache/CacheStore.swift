@@ -71,6 +71,10 @@ public actor CacheStore {
     /// The database is opened in **WAL mode** with `synchronous = NORMAL` and
     /// a 5-second busy timeout. An orphan-sweep runs at initialisation time to
     /// remove any blob files that have no matching metadata row.
+    // Note: the default clock closure duplicates the wallClockNs formula rather than
+    // referencing it directly because wallClockNs is internal and this init is public;
+    // Swift requires default argument expressions to be at least as visible as the
+    // declaration they appear in.
     public init(root: URL, maxBlobBytes: Int64 = 0, clock: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000_000_000) }) throws {
         self.root = root
         self.maxBlobBytes = maxBlobBytes
@@ -625,7 +629,7 @@ public actor CacheStore {
 
         // Delete all blob files from disk. Partial failures are logged; blobs
         // that survive become orphans reclaimed by the next init-time sweep.
-        try blobs.wipeAll()
+        blobs.wipeAll()
 
         Self.log.info("CacheStore: wiped blobs=\(count, privacy: .public) bytes=\(bytes, privacy: .public)")
         return (count, bytes)
@@ -841,9 +845,12 @@ public actor CacheStore {
         guard !shas.isEmpty else { return }
 
         // Build a set of SHAs that still have at least one DB reference.
-        // Using a write transaction (not read) so that any concurrent storeBlob
-        // that adds a reference is serialised — the ref-count check and the
-        // decision not to delete are atomic with respect to the writer queue.
+        // Using a write transaction (not read) so that concurrent storeBlob calls
+        // on this actor instance are serialised — the ref-count check and the
+        // decision not to delete are atomic with respect to same-instance writers.
+        // A second CacheStore instance on the same cacheDir (arch-04) may race
+        // the unlink step, but loadBlob self-heals that race as a cache miss with
+        // no data loss (see CacheStore.swift loadBlob self-heal path).
         let stillReferenced: Set<String>
         do {
             let placeholders = shas.map { _ in "?" }.joined(separator: ", ")

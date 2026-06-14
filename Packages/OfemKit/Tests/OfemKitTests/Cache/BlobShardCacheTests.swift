@@ -436,7 +436,7 @@ struct BlobShardCacheTests {
         let (countBefore, _) = try cache.diskUsage()
         #expect(countBefore == 2)
 
-        try cache.wipeAll()
+        cache.wipeAll()
 
         let (countAfter, bytesAfter) = try cache.diskUsage()
         #expect(countAfter == 0)

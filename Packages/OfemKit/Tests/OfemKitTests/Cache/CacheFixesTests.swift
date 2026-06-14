@@ -101,7 +101,7 @@ struct CacheFixesTests {
 
     // MARK: - cache-02/03: Set-based eviction — no TOCTOU
 
-    @Test("evictToLimit resolves ref-counts in one write transaction (no N+1)")
+    @Test("evictToLimit does not delete a blob still referenced by a surviving row")
     func evictResolvesBlobRefCountsInOneTransaction() async throws {
         // Two rows referencing the same SHA (identical data).
         // After evicting one row the blob file must survive because the other row still references it.

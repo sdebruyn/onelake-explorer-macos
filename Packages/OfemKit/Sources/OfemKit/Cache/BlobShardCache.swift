@@ -181,9 +181,10 @@ public struct BlobShardCache: Sendable {
         } catch let err as NSError
             where err.domain == NSCocoaErrorDomain
                 && (err.code == NSFileWriteVolumeReadOnlyError
-                    || err.code == NSFileWriteOutOfSpaceError
                     || (err.underlyingErrors.first as? NSError).map({ $0.code == EXDEV }) == true) {
-            // Cross-volume move (EXDEV / read-only source): fall back to copy + rename.
+            // Cross-volume move (EXDEV) or read-only source: fall back to copy + rename.
+            // NSFileWriteOutOfSpaceError is intentionally excluded — a disk-full
+            // destination would cause the copy fallback to fail too, wasting I/O.
             let tmpURL = blobRoot.appendingPathComponent("blob-\(UUID().uuidString).tmp")
             defer { try? FileManager.default.removeItem(at: tmpURL) }
             try FileManager.default.copyItem(at: sourceURL, to: tmpURL)
@@ -263,11 +264,20 @@ public struct BlobShardCache: Sendable {
     // MARK: - Wipe
 
     /// Removes all blob shard directories under `blobRoot`.
-    public func wipeAll() throws {
-        let entries = try FileManager.default.contentsOfDirectory(
-            at: blobRoot,
-            includingPropertiesForKeys: nil
-        )
+    /// Per-entry errors are logged and silenced; the function always returns normally.
+    public func wipeAll() {
+        let entries: [URL]
+        do {
+            entries = try FileManager.default.contentsOfDirectory(
+                at: blobRoot,
+                includingPropertiesForKeys: nil
+            )
+        } catch {
+            Self.log.warning(
+                "BlobShardCache: wipeAll failed to list blobRoot error=\(error, privacy: .public)"
+            )
+            return
+        }
         for entry in entries {
             do {
                 try FileManager.default.removeItem(at: entry)
