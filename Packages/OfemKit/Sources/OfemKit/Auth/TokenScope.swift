@@ -60,9 +60,9 @@ public enum TokenScope: Sendable {
 /// Microsoft Entra App Registration client ID embedded into OFEM builds.
 ///
 /// This is the project's multi-tenant public-client registration
-/// ("OneLake Explorer for macOS") with `http://localhost` as the redirect
-/// URI and "Allow public client flows" enabled. The delegated API permission
-/// is Azure Storage / user_impersonation.
+/// ("OneLake Explorer for macOS") with `msauth.dev.debruyn.ofem://auth` as the
+/// redirect URI and "Allow public client flows" enabled. The delegated API
+/// permission is Azure Storage / user_impersonation.
 public let ofemEntraClientID = "939b4a06-cc18-49eb-9674-a1fc041489f6"
 
 /// The public-cloud Microsoft Entra authority host.
