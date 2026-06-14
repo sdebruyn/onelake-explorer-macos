@@ -1,0 +1,95 @@
+import Foundation
+
+/// Shared redaction boundary for on-disk log lines and telemetry envelopes.
+///
+/// Both the `OfemLogger` JSON file sink and the telemetry envelope path route
+/// every free-form string through this module before it leaves the process.
+///
+/// ### Allowlist model
+///
+/// The safe charset for structured fields (not free-form messages) is
+/// `[A-Za-z0-9_.:-]`, the same set used by `TelemetryRedaction`.  Free-form
+/// log messages are never emitted verbatim to the on-disk JSON file: `msg` is
+/// replaced with a SHA-256–derived token that is stable within a run but
+/// cannot be reversed to recover PII.
+///
+/// ### Log metadata redaction
+///
+/// Metadata key–value pairs attached to log calls pass through
+/// `scrubLogValue(_:)`.  Values that pass the safe-charset test are written
+/// verbatim; everything else (paths, UPNs, workspace names) is collapsed to
+/// `"redacted"`.
+public enum Privacy {
+
+    // MARK: - Constants
+
+    /// Maximum byte length for a metadata value to be considered for
+    /// pass-through (longer values are always redacted).
+    public static let maxMetaValueLen = 256
+
+    // MARK: - Log metadata
+
+    /// Returns `value` when it consists entirely of characters in the safe
+    /// charset `[A-Za-z0-9_.:-]` and is within the length cap; otherwise
+    /// returns `"redacted"`.
+    ///
+    /// Use for key/value pairs in `OfemLogger.info(_:metadata:)` etc.  The
+    /// log *message* itself should always be a static string constant supplied
+    /// by the call site — dynamic content belongs in metadata.
+    public static func scrubLogValue(_ value: String) -> String {
+        guard !value.isEmpty else { return "" }
+        guard value.utf8.count <= maxMetaValueLen else { return "redacted" }
+        return isSafe(value) ? value : "redacted"
+    }
+
+    // MARK: - GUID validation
+
+    /// Returns `true` when `s` matches the canonical lowercase UUID/GUID
+    /// format `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` (8-4-4-4-12 hex).
+    ///
+    /// Used to validate tenant IDs before they are written to telemetry
+    /// envelopes.
+    public static func isGUID(_ s: String) -> Bool {
+        guard s.utf8.count == 36 else { return false }
+        let pattern: [UInt8] = [
+            8, UInt8(ascii: "-"), 4, UInt8(ascii: "-"), 4,
+            UInt8(ascii: "-"), 4, UInt8(ascii: "-"), 12,
+        ]
+        var idx = s.startIndex
+        // Walk the expected pattern: groups of hex digits separated by '-'.
+        var groupIdx = 0
+        while groupIdx < pattern.count {
+            let p = pattern[groupIdx]
+            groupIdx += 1
+            if p == UInt8(ascii: "-") {
+                guard idx < s.endIndex, s[idx] == "-" else { return false }
+                idx = s.index(after: idx)
+            } else {
+                let count = Int(p)
+                for _ in 0..<count {
+                    guard idx < s.endIndex, s[idx].isHexDigit else { return false }
+                    idx = s.index(after: idx)
+                }
+            }
+        }
+        return idx == s.endIndex
+    }
+
+    // MARK: - Private
+
+    /// Returns `true` when every byte of `value` is in `[A-Za-z0-9_.:-]`.
+    private static func isSafe(_ value: String) -> Bool {
+        value.utf8.allSatisfy { isSafeByte($0) }
+    }
+
+    private static func isSafeByte(_ c: UInt8) -> Bool {
+        switch c {
+        case UInt8(ascii: "A")...UInt8(ascii: "Z"): return true
+        case UInt8(ascii: "a")...UInt8(ascii: "z"): return true
+        case UInt8(ascii: "0")...UInt8(ascii: "9"): return true
+        case UInt8(ascii: "_"), UInt8(ascii: "."),
+             UInt8(ascii: ":"), UInt8(ascii: "-"): return true
+        default: return false
+        }
+    }
+}

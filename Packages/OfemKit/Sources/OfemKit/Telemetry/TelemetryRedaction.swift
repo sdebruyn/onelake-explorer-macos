@@ -2,12 +2,12 @@ import CryptoKit
 import Foundation
 
 /// Privacy-safe field filtering for OFEM telemetry.
-/// functions here are the **structural** privacy boundary: every property
-/// value that flows to the App Insights sink passes through `scrubProperty`
-/// (and error codes through `safeErrorCode`) inside `AppInsightsEnvelope`,
-/// so a careless or future call site that stuffs a workspace name, file path,
-/// or UPN into an event field cannot leak it — the value collapses to
-/// `"redacted"` before it leaves the device.
+///
+/// Every property value that flows to the App Insights sink passes through
+/// `scrubProperty` (and error codes through `safeErrorCode`) inside
+/// `AppInsightsEnvelope`, so a careless or future call site that stuffs a
+/// workspace name, file path, or UPN into an event field cannot leak it —
+/// the value collapses to `"redacted"` before it leaves the device.
 ///
 /// ### Allowed character set
 ///
@@ -24,10 +24,17 @@ import Foundation
 /// - `"true"` / `"false"`
 /// - CalVer strings (`"2026.05.1"`)
 /// - Constant error codes (`"AADSTS50079"`)
+///
+/// ### Tenant-ID validation
+///
+/// `isSafeTenantID(_:)` additionally enforces the canonical GUID format
+/// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` (8-4-4-4-12 hex digits).
+/// Strings that pass the charset test but do not match that structure
+/// (e.g. a free-form alias or a truncated hash) are rejected.
 public enum TelemetryRedaction {
     // MARK: - Constants
 
-    /// Maximum length of a safe error code (mirrors `safeErrorCodeMaxLen`).
+    /// Maximum length of a safe error code.
     public static let safeErrorCodeMaxLen = 32
 
     /// Maximum length of any telemetry property value.
@@ -37,9 +44,8 @@ public enum TelemetryRedaction {
 
     /// Returns the first 8 hex characters of `SHA256(alias)`.
     ///
-    ///
-    /// string maps to the empty string so callers can pass through a missing
-    /// alias without branching.
+    /// An empty string maps to the empty string so callers can pass through a
+    /// missing alias without branching.
     public static func hashAlias(_ alias: String) -> String {
         guard !alias.isEmpty else { return "" }
         let digest = SHA256.hash(data: Data(alias.utf8))
@@ -47,24 +53,36 @@ public enum TelemetryRedaction {
         return String(hex.prefix(8))
     }
 
-    /// Returns `errorCode` unchanged when it is short and drawn only from
-    /// the safe charset; collapses everything else to `"redacted"`.
-    ///
-    ///
+    /// Returns `errorCode` unchanged when it is short and drawn only from the
+    /// safe charset; collapses everything else to `"redacted"`.
     public static func safeErrorCode(_ errorCode: String) -> String {
         guard !errorCode.isEmpty else { return "" }
         guard errorCode.utf8.count <= safeErrorCodeMaxLen else { return "redacted" }
         return isSafePropertyValue(errorCode) ? errorCode : "redacted"
     }
 
-    /// Returns `value` unchanged when it passes the charset and length
-    /// check; collapses to `"redacted"` otherwise.
-    ///
-    ///
+    /// Returns `value` unchanged when it passes the charset and length check;
+    /// collapses to `"redacted"` otherwise.
     public static func scrubProperty(_ value: String) -> String {
         guard !value.isEmpty else { return "" }
         guard value.utf8.count <= maxPropertyLen else { return "redacted" }
         return isSafePropertyValue(value) ? value : "redacted"
+    }
+
+    /// Returns `tenantID` when it is a valid lowercase-hex GUID in
+    /// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` format; returns `"redacted"`
+    /// for any other string.
+    ///
+    /// Tenant IDs in OFEM telemetry are always Entra GUIDs.  Enforcing the
+    /// GUID format here ensures that a caller cannot accidentally leak a
+    /// free-form string (workspace name, alias, or path) in the `tenantId`
+    /// field by passing it without prior validation.
+    public static func safeTenantID(_ tenantID: String) -> String {
+        guard !tenantID.isEmpty else { return "" }
+        guard Privacy.isGUID(tenantID) else { return "redacted" }
+        // Also apply the charset check (GUID chars are all in the safe set,
+        // but be defensive).
+        return isSafePropertyValue(tenantID) ? tenantID : "redacted"
     }
 
     // MARK: - Private

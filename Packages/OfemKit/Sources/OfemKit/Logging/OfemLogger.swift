@@ -10,10 +10,21 @@ import os.log
 /// `OfemLogger` is `Sendable` because all mutable state (the file writer's
 /// file handle) is protected by `NSLock` inside `RotatingFileWriter`.
 ///
+/// ### Privacy model
+///
+/// os.Logger messages: static format strings and level/category are
+/// `.public`; every dynamically interpolated value is `.private` so it
+/// is redacted in the system log on non-development builds.
+///
+/// On-disk JSON file: all metadata values are passed through
+/// `Privacy.scrubLogValue(_:)` before being written.  The `msg` field is
+/// written verbatim because call-site log messages must be static string
+/// constants that never carry PII — callers must place dynamic data in
+/// `metadata`, where the redaction boundary applies.
+///
 /// ### Usage
 ///
 /// ```swift
-/// let logger = OfemLogger(configuration:.init(level:.debug))
 /// logger.info("workspace listed", metadata: ["tenantId": "9064c167-…"])
 /// ```
 public struct OfemLogger: Sendable {
@@ -61,24 +72,26 @@ public struct OfemLogger: Sendable {
         guard level >= configuration.level else { return }
 
         // os.Logger — visible in Console.app, `log stream`, and Instruments.
-        // store-16: map warn→.error and error→.error (not .fault); .fault is
-        // reserved for programmer faults and is always persisted to disk.
-        let osMessage = metadata.isEmpty
-            ? message
-            : "\(message) \(formatMeta(metadata))"
-
+        //
+        // Static format strings and the level label use .public; dynamic
+        // values (call-site messages, metadata) use .private so they are
+        // redacted in the system log on non-development builds.
+        //
+        // Mapping: warn → .error, error → .error.  .fault is reserved for
+        // programmer faults and is always persisted to disk unconditionally.
+        let levelLabel = Self.levelLabel(level)
         switch level {
         case .debug:
-            osLogger.debug("\(osMessage, privacy: .public)")
+            osLogger.debug("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
         case .info:
-            osLogger.info("\(osMessage, privacy: .public)")
+            osLogger.info("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
         case .warn:
-            osLogger.error("\(osMessage, privacy: .public)")
+            osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
         case .error:
-            osLogger.error("\(osMessage, privacy: .public)")
+            osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
         }
 
-        // Rotating file — JSON-structured.
+        // Rotating file — JSON-structured, redacted at the Privacy boundary.
         if let writer = configuration.fileWriter {
             let line = jsonLine(level: level, message: message, metadata: metadata)
             writer.write(line)
@@ -87,32 +100,26 @@ public struct OfemLogger: Sendable {
 
     // MARK: - Formatting
 
-    private func formatMeta(_ meta: [String: String]) -> String {
-        meta.sorted(by: { $0.key < $1.key })
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: " ")
-    }
-
-    /// Emits a single JSON line with `time`, `level`, `msg`, and any
-    /// caller-supplied metadata keys.
+    /// Builds a single JSON log line.
     ///
-    /// Reserved keys (`time`, `level`, `msg`) always win — a caller metadata
-    /// key with the same name is silently dropped. (store-17)
+    /// Reserved keys (`time`, `level`, `msg`) always win over same-named
+    /// metadata keys.  All metadata values are routed through
+    /// `Privacy.scrubLogValue(_:)` before being written to disk so that
+    /// paths, UPNs, and workspace names cannot appear verbatim.
     ///
     /// Example:
     /// ```json
-    /// {"time":"2026-06-07T14:03:12.000Z","level":"INFO","msg":"workspace listed","tenantId":"9064c167"}
+    /// {"level":"INFO","msg":"workspace listed","tenantId":"9064c167","time":"2026-06-07T14:03:12.000Z"}
     /// ```
     private func jsonLine(level: LogLevel, message: String, metadata: [String: String]) -> String {
-        // store-17: build caller metadata first, then overwrite with reserved
-        // keys so reserved keys always win.
+        // Build the dictionary with caller metadata first (redacted), then
+        // overwrite with reserved keys so reserved keys always win.
         var dict: [String: Any] = [:]
         for (k, v) in metadata {
-            dict[k] = v
+            dict[k] = Privacy.scrubLogValue(v)
         }
-        // Reserved keys overwrite any same-named metadata key.
         dict["time"] = Self.isoTimestamp()
-        dict["level"] = levelLabel(level)
+        dict["level"] = Self.levelLabel(level)
         dict["msg"] = message
 
         guard
@@ -122,12 +129,23 @@ public struct OfemLogger: Sendable {
             ),
             let str = String(data: data, encoding: .utf8)
         else {
-            return "{\"time\":\"\(Self.isoTimestamp())\",\"level\":\"\(levelLabel(level))\",\"msg\":\"\(message)\"}"
+            // Fallback: emit a minimal valid JSON object using only the
+            // known-safe reserved fields; skip metadata to avoid invalid JSON.
+            // JSONSerialization only fails when the object graph is not
+            // JSON-serializable, which cannot happen here given our types.
+            let safeTime = Self.isoTimestamp()
+                .replacingOccurrences(of: "\"", with: "")
+            let safeLevel = Self.levelLabel(level)
+                .replacingOccurrences(of: "\"", with: "")
+            let safeMsg = message
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return "{\"time\":\"\(safeTime)\",\"level\":\"\(safeLevel)\",\"msg\":\"\(safeMsg)\"}"
         }
         return str
     }
 
-    // MARK: - Shared ISO 8601 formatter (store-15)
+    // MARK: - Shared ISO 8601 formatter
 
     /// Thread-safe shared formatter. `ISO8601DateFormatter` is documented as
     /// thread-safe after its format options are set; `nonisolated(unsafe)` tells
@@ -142,7 +160,7 @@ public struct OfemLogger: Sendable {
         iso8601Formatter.string(from: Date())
     }
 
-    private func levelLabel(_ level: LogLevel) -> String {
+    private static func levelLabel(_ level: LogLevel) -> String {
         switch level {
         case .debug: return "DEBUG"
         case .info:  return "INFO"

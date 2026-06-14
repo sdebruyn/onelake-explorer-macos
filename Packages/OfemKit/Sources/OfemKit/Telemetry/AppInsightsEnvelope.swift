@@ -2,15 +2,14 @@ import Foundation
 
 /// Wire-format types for the Application Insights v2/track HTTP endpoint.
 ///
-/// The JSON key names are snake_case / camelCase as required by the App
-/// Insights ingestion API — they must not be changed without bumping the
-/// API version.
+/// The JSON key names are camelCase as required by the App Insights ingestion
+/// API — they must not be changed without bumping the API version.
 ///
 /// Every property value that enters these structs has already been routed
-/// through `TelemetryRedaction.scrubProperty` / `safeErrorCode` in
-/// `splitFields(_:)`, making the privacy guarantee structural. The `tags`
-/// dictionary is constructed inside `from(event:…)` after that boundary
-/// (store-22), so the invariant is total.
+/// through `TelemetryRedaction.scrubProperty` / `safeErrorCode` /
+/// `safeTenantID` in `splitFields(_:)`, making the privacy guarantee
+/// structural.  The `tags` and `iKey` fields are also constructed inside
+/// `from(event:…)` after that boundary, so the invariant is total.
 
 // MARK: - Envelope (top-level)
 
@@ -49,9 +48,10 @@ extension AppInsightsEnvelope {
     /// the sink-level metadata (instrumentation key, role, install ID, SDK tag).
     ///
     /// All string property values are passed through `scrubProperty` /
-    /// `safeErrorCode` at this boundary — the single place where an event
-    /// becomes outbound data. The `tags` dictionary is constructed here
-    /// (inside the boundary) so the privacy invariant is total. (store-22)
+    /// `safeErrorCode` / `safeTenantID` at this boundary — the single place
+    /// where an event becomes outbound data.  The `tags` dictionary and the
+    /// `iKey` field are constructed here (inside the boundary) so the privacy
+    /// invariant is total.
     static func from(
         event: TelemetryEvent,
         iKey: String,
@@ -62,9 +62,8 @@ extension AppInsightsEnvelope {
         let ts = event.time ?? Date()
         let (props, meas) = splitFields(event)
 
-        // store-22: construct tags inside the redaction boundary so any
-        // corrupted or user-supplied installID value is scrubbed before it
-        // leaves the device.
+        // Construct tags inside the redaction boundary so any corrupted or
+        // user-supplied installID value is scrubbed before it leaves the device.
         var tags: [String: String] = [
             "ai.cloud.role": TelemetryRedaction.scrubProperty(role),
             "ai.internal.sdkVersion": TelemetryRedaction.scrubProperty(sdkTag),
@@ -73,10 +72,14 @@ extension AppInsightsEnvelope {
             tags["ai.cloud.roleInstance"] = TelemetryRedaction.scrubProperty(installID)
         }
 
+        // Scrub the instrumentation key: it should be a GUID, but defence-in-
+        // depth avoids leaking it verbatim if it somehow contains PII.
+        let safeIKey = TelemetryRedaction.scrubProperty(iKey)
+
         return AppInsightsEnvelope(
             name: "Microsoft.ApplicationInsights.Event",
             time: SharedFormatter.isoTimestamp(ts),
-            iKey: iKey,
+            iKey: safeIKey,
             tags: tags,
             data: EnvelopeData(
                 baseType: "EventData",
@@ -91,7 +94,7 @@ extension AppInsightsEnvelope {
     }
 }
 
-// MARK: - Shared ISO 8601 formatter (store-15)
+// MARK: - Shared ISO 8601 formatter
 
 /// A single static `ISO8601DateFormatter` shared across all telemetry
 /// envelope timestamps. `ISO8601DateFormatter` is thread-safe once its
@@ -114,19 +117,18 @@ enum SharedFormatter {
     }
 }
 
-// MARK: - Field split (mirrors splitFields in fields.go)
+// MARK: - Field split
 
 /// Converts a `TelemetryEvent` into the App Insights `properties` +
 /// `measurements` split, applying redaction at the boundary.
 ///
-///
-/// **only** producer of the property map the sink sends, so privacy
-/// guarantees are structural — even a PII value smuggled into CommonProps
-/// is collapsed to `"redacted"` here.
+/// This is the **only** producer of the property map the sink sends, so
+/// privacy guarantees are structural — even a PII value smuggled into
+/// commonProps is collapsed to `"redacted"` here.
 func splitFields(_ event: TelemetryEvent) -> (props: [String: String], meas: [String: Double]) {
     var props: [String: String] = [:]
 
-    // Merge CommonProps under the allowlist. Unknown keys are dropped so
+    // Merge commonProps under the allowlist. Unknown keys are dropped so
     // no caller can smuggle a workspace name, path, or UPN as a prop key.
     for (k, v) in event.commonProps where allowedCommonPropKeys.contains(k) {
         let scrubbed = TelemetryRedaction.scrubProperty(v)
@@ -136,7 +138,8 @@ func splitFields(_ event: TelemetryEvent) -> (props: [String: String], meas: [St
     props["event"] = TelemetryRedaction.scrubProperty(event.name)
 
     if !event.tenantID.isEmpty {
-        props["tenantId"] = TelemetryRedaction.scrubProperty(event.tenantID)
+        // Validate as a GUID before writing; free-form strings are redacted.
+        props["tenantId"] = TelemetryRedaction.safeTenantID(event.tenantID)
     }
     if !event.accountAliasHash.isEmpty {
         props["accountAliasHash"] = TelemetryRedaction.scrubProperty(event.accountAliasHash)
@@ -165,7 +168,6 @@ func splitFields(_ event: TelemetryEvent) -> (props: [String: String], meas: [St
 // MARK: - Allowlist
 
 /// The exhaustive set of keys permitted in `TelemetryEvent.commonProps`.
-///
 ///
 /// Any key not in this set is silently dropped at the `splitFields` step.
 let allowedCommonPropKeys: Set<String> = [

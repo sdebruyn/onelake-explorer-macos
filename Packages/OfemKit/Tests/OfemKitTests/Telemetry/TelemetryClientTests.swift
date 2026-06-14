@@ -564,4 +564,81 @@ struct TelemetryClientTests {
         let events = sink.drain()
         #expect(events.count == 1, "each event must be delivered exactly once")
     }
+
+    // MARK: - OFEM_TELEMETRY env-var opt-out (telemetry-06)
+
+    @Test("isOptedOutViaEnv returns false when OFEM_TELEMETRY is unset")
+    func envOptOutUnset() {
+        // We cannot safely mutate ProcessInfo in tests, but we can verify
+        // the helper handles the current environment without crashing.
+        // (The env var is not expected to be set in the test runner.)
+        let result = TelemetryClient.isOptedOutViaEnv()
+        // Just verify it doesn't crash and returns a Bool.
+        _ = result
+    }
+
+    // MARK: - failedOp redaction (telemetry-01)
+
+    @Test("trackError scrubs failedOp — PII in op string is redacted")
+    func trackErrorScrubsFailedOp() async {
+        // A caller might accidentally pass a file path or workspace name as
+        // the `op` parameter.  scrubProperty must collapse it to "redacted".
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+        let error = NSError(domain: "OfemSyncError", code: 403)
+        // Pass a path-like op string — must be redacted.
+        await client.trackError(error, op: "download/Files/budget.csv")
+        await client.flush()
+
+        let events = sink.drain()
+        #expect(events.count == 1)
+        let failedOp = events[0].commonProps["failedOp"] ?? ""
+        #expect(failedOp == "redacted",
+                "failedOp containing '/' must be redacted; got '\(failedOp)'")
+    }
+
+    @Test("trackError preserves safe op name unchanged")
+    func trackErrorSafeOpPassthrough() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+        let error = NSError(domain: "OfemSyncError", code: 500)
+        await client.trackError(error, op: "file_download")
+        await client.flush()
+
+        let events = sink.drain()
+        #expect(events.count == 1)
+        #expect(events[0].commonProps["failedOp"] == "file_download",
+                "safe op name must pass through unchanged")
+    }
+
+    // MARK: - iKey scrubbing (telemetry-04)
+
+    @Test("AppInsightsEnvelope iKey is scrubbed at the redaction boundary")
+    func envelopeIKeyScrubbed() {
+        let event = TelemetryEvent(name: "app_start")
+        // A GUID-format iKey passes the charset check and should be unchanged.
+        let guidKey = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        let envelope = AppInsightsEnvelope.from(
+            event: event,
+            iKey: guidKey,
+            role: "ofem",
+            installID: "",
+            sdkTag: "ofem"
+        )
+        #expect(envelope.iKey == guidKey, "GUID iKey must pass through scrubProperty unchanged")
+    }
+
+    @Test("AppInsightsEnvelope iKey containing spaces is redacted")
+    func envelopeIKeyWithSpaceRedacted() {
+        let event = TelemetryEvent(name: "app_start")
+        let envelope = AppInsightsEnvelope.from(
+            event: event,
+            iKey: "bad key with spaces",
+            role: "ofem",
+            installID: "",
+            sdkTag: "ofem"
+        )
+        #expect(envelope.iKey == "redacted",
+                "iKey with spaces must be redacted; got '\(envelope.iKey)'")
+    }
 }

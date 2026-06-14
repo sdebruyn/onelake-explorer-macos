@@ -107,4 +107,165 @@ struct OfemLoggerTests {
         #expect(json?["tenantId"] as? String == "abc123")
         #expect(json?["time"] != nil)
     }
+
+    // MARK: - Privacy redaction on the file sink (logging-01)
+
+    @Test("OfemLogger redacts metadata values containing path separators in file sink")
+    func fileWriterRedactsPathInMetadata() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "ofem-log-redact-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let writer = RotatingFileWriter(logDirectory: dir)
+        let config = LogConfiguration(level: .debug, fileWriter: writer)
+        let logger = OfemLogger(configuration: config)
+
+        logger.info("sync complete", metadata: [
+            "filePath": "/Users/sam/Files/budget.csv",
+            "tenantId": "9064c167-4885-40ef-9f34-1853218aea86",
+        ])
+        writer.close()
+
+        let logFile = dir.appending(path: "ofem.log", directoryHint: .notDirectory)
+        let content = try String(contentsOf: logFile, encoding: .utf8)
+        let firstLine = content.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
+        let data = try #require(firstLine.data(using: .utf8))
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        // File path must be redacted; GUID must pass through.
+        #expect(json?["filePath"] as? String == "redacted",
+                "path containing '/' must be redacted in the file sink")
+        #expect(json?["tenantId"] as? String == "9064c167-4885-40ef-9f34-1853218aea86",
+                "GUID must pass through the file sink unchanged")
+    }
+
+    @Test("OfemLogger redacts metadata values containing UPN in file sink")
+    func fileWriterRedactsUPNInMetadata() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "ofem-log-upn-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let writer = RotatingFileWriter(logDirectory: dir)
+        let config = LogConfiguration(level: .debug, fileWriter: writer)
+        let logger = OfemLogger(configuration: config)
+
+        logger.warn("auth event", metadata: ["user": "sam@debruyn.dev"])
+        writer.close()
+
+        let logFile = dir.appending(path: "ofem.log", directoryHint: .notDirectory)
+        let content = try String(contentsOf: logFile, encoding: .utf8)
+        let firstLine = content.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
+        let data = try #require(firstLine.data(using: .utf8))
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        #expect(json?["user"] as? String == "redacted",
+                "UPN in metadata must be redacted in the file sink")
+    }
+
+    @Test("OfemLogger writes valid JSON even when metadata value contains quotes (logging-02)")
+    func fileWriterEscapesSpecialCharsInFallback() throws {
+        // The primary path uses JSONSerialization which handles escaping.
+        // Verify that a value that would break hand-concatenated JSON is
+        // safely handled — it will be redacted via Privacy.scrubLogValue
+        // because it contains characters outside the safe charset.
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "ofem-log-escape-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let writer = RotatingFileWriter(logDirectory: dir)
+        let config = LogConfiguration(level: .debug, fileWriter: writer)
+        let logger = OfemLogger(configuration: config)
+
+        // A value with a double-quote would break naive string concat.
+        logger.info("special chars", metadata: ["val": "a\"b\\c"])
+        writer.close()
+
+        let logFile = dir.appending(path: "ofem.log", directoryHint: .notDirectory)
+        let content = try String(contentsOf: logFile, encoding: .utf8)
+        let firstLine = content.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
+        // Must be parseable JSON — not a crash or broken line.
+        let data = try #require(firstLine.data(using: .utf8))
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json != nil, "line must be valid JSON")
+        // The value with quotes is not in the safe charset → redacted.
+        #expect(json?["val"] as? String == "redacted")
+    }
+
+    // MARK: - Named constants (logging-07)
+
+    @Test("RotatingFileWriter default constants are named and accessible")
+    func rotatingFileWriterNamedConstants() {
+        #expect(RotatingFileWriter.defaultMaxFileSizeBytes == 10 * 1024 * 1024)
+        #expect(RotatingFileWriter.defaultMaxBackups == 5)
+    }
+
+    // MARK: - Rotation atomicity (logging-03 / logging-04)
+
+    @Test("concurrent writes with small threshold do not corrupt lines (logging-03/04)")
+    func rotationAtomicityUnderConcurrency() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "ofem-log-atomic-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Each line is ~55 bytes.  With threshold=1024 and maxBackups=10
+        // we can hold up to ~11 × 18 = ~198 lines without losing any to
+        // backup overflow, giving a clean "all lines survive" assertion.
+        let lineSize = 55
+        let lineCount = 100
+        let threshold = lineSize * 8          // ~440 bytes → ~12 rotations
+        let maxBackups = 20                   // retain 20 backups (enough for 100 lines)
+        let writer = RotatingFileWriter(
+            logDirectory: dir,
+            maxFileSizeBytes: threshold,
+            maxBackups: maxBackups
+        )
+
+        await withTaskGroup(of: Void.self) { group in
+            for i in 0..<lineCount {
+                group.addTask {
+                    writer.write("concurrent-\(String(format: "%04d", i))-padding-padding!!!")
+                }
+            }
+        }
+        writer.close()
+
+        // Collect all lines from the active file and every retained backup.
+        let fm = FileManager.default
+        var allLines: Set<String> = []
+        let activeURL = dir.appending(path: "ofem.log", directoryHint: .notDirectory)
+        if let text = try? String(contentsOf: activeURL, encoding: .utf8) {
+            allLines.formUnion(text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init))
+        }
+        for i in 1...maxBackups {
+            let backupURL = dir.appending(path: "ofem.log.\(i)", directoryHint: .notDirectory)
+            if fm.fileExists(atPath: backupURL.path),
+               let text = try? String(contentsOf: backupURL, encoding: .utf8) {
+                allLines.formUnion(text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init))
+            }
+        }
+
+        // Every line must be present exactly once (no corruption, no loss).
+        #expect(allLines.count == lineCount,
+                "all \(lineCount) lines must survive concurrent writes without corruption; found \(allLines.count)")
+    }
+
+    // MARK: - deinit closes file handle (logging-08)
+
+    @Test("RotatingFileWriter closes file handle on deinit (no fd leak)")
+    func rotatingFileWriterDeinit() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "ofem-log-deinit-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        do {
+            let writer = RotatingFileWriter(logDirectory: dir)
+            writer.write("hello")
+            // writer goes out of scope here — deinit must close the fd.
+        }
+
+        // After deinit the log file must be fully written and readable.
+        let logFile = dir.appending(path: "ofem.log", directoryHint: .notDirectory)
+        let content = try String(contentsOf: logFile, encoding: .utf8)
+        #expect(content.contains("hello"), "file must be readable after writer deinit")
+    }
 }
