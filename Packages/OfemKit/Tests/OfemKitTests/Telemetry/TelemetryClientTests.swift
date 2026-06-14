@@ -564,4 +564,177 @@ struct TelemetryClientTests {
         let events = sink.drain()
         #expect(events.count == 1, "each event must be delivered exactly once")
     }
+
+    // MARK: - OFEM_TELEMETRY env-var opt-out (telemetry-06)
+    //
+    // setenv/unsetenv are process-global, so all env-var mutation tests run
+    // in a dedicated .serialized suite below (EnvOptOutTests) to prevent
+    // races with other tests that run in parallel.
+
+    // MARK: - failedOp redaction (telemetry-01)
+
+    @Test("trackError scrubs failedOp — PII in op string is redacted")
+    func trackErrorScrubsFailedOp() async {
+        // A caller might accidentally pass a file path or workspace name as
+        // the `op` parameter.  scrubProperty must collapse it to "redacted".
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+        let error = NSError(domain: "OfemSyncError", code: 403)
+        // Pass a path-like op string — must be redacted.
+        await client.trackError(error, op: "download/Files/budget.csv")
+        await client.flush()
+
+        let events = sink.drain()
+        #expect(events.count == 1)
+        let failedOp = events[0].commonProps["failedOp"] ?? ""
+        #expect(failedOp == "redacted",
+                "failedOp containing '/' must be redacted; got '\(failedOp)'")
+    }
+
+    @Test("trackError preserves safe op name unchanged")
+    func trackErrorSafeOpPassthrough() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+        let error = NSError(domain: "OfemSyncError", code: 500)
+        await client.trackError(error, op: "file_download")
+        await client.flush()
+
+        let events = sink.drain()
+        #expect(events.count == 1)
+        #expect(events[0].commonProps["failedOp"] == "file_download",
+                "safe op name must pass through unchanged")
+    }
+
+    // MARK: - iKey scrubbing (telemetry-04)
+
+    @Test("AppInsightsEnvelope iKey is scrubbed at the redaction boundary")
+    func envelopeIKeyScrubbed() {
+        let event = TelemetryEvent(name: "app_start")
+        // A GUID-format iKey passes the charset check and should be unchanged.
+        let guidKey = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        let envelope = AppInsightsEnvelope.from(
+            event: event,
+            iKey: guidKey,
+            role: "ofem",
+            installID: "",
+            sdkTag: "ofem"
+        )
+        #expect(envelope.iKey == guidKey, "GUID iKey must pass through scrubProperty unchanged")
+    }
+
+    @Test("AppInsightsEnvelope iKey containing spaces is redacted")
+    func envelopeIKeyWithSpaceRedacted() {
+        let event = TelemetryEvent(name: "app_start")
+        let envelope = AppInsightsEnvelope.from(
+            event: event,
+            iKey: "bad key with spaces",
+            role: "ofem",
+            installID: "",
+            sdkTag: "ofem"
+        )
+        #expect(envelope.iKey == "redacted",
+                "iKey with spaces must be redacted; got '\(envelope.iKey)'")
+    }
+}
+
+// MARK: - Env-var opt-out tests (serialized to avoid process-global setenv races)
+
+/// Tests that mutate `OFEM_TELEMETRY` via `setenv`/`unsetenv`.
+///
+/// `setenv`/`unsetenv` are process-global and Swift Testing runs tests in
+/// parallel by default, so this suite is marked `.serialized` to prevent
+/// races with other tests that read the environment.  Each test saves and
+/// restores the original value so the env var is always left in its
+/// pre-test state regardless of test ordering.
+@Suite("TelemetryClient — OFEM_TELEMETRY env-var opt-out (telemetry-06)", .serialized)
+struct EnvOptOutTests {
+    private static let envKey = "OFEM_TELEMETRY"
+
+    /// Temporarily sets (or clears) `OFEM_TELEMETRY`, runs `body`, restores
+    /// the original value, and returns the result of `body`.
+    @discardableResult
+    private func withEnv<T>(_ value: String?, body: () throws -> T) rethrows -> T {
+        let original = ProcessInfo.processInfo.environment[Self.envKey]
+        if let value {
+            setenv(Self.envKey, value, 1)
+        } else {
+            unsetenv(Self.envKey)
+        }
+        defer {
+            if let original {
+                setenv(Self.envKey, original, 1)
+            } else {
+                unsetenv(Self.envKey)
+            }
+        }
+        return try body()
+    }
+
+    @Test("isOptedOutViaEnv returns false when OFEM_TELEMETRY is unset")
+    func envOptOutUnset() {
+        withEnv(nil) {
+            #expect(TelemetryClient.isOptedOutViaEnv() == false,
+                    "unset OFEM_TELEMETRY must not opt out")
+        }
+    }
+
+    @Test("isOptedOutViaEnv returns true for '0'")
+    func envOptOutZero() {
+        withEnv("0") {
+            #expect(TelemetryClient.isOptedOutViaEnv() == true,
+                    "OFEM_TELEMETRY=0 must opt out")
+        }
+    }
+
+    @Test("isOptedOutViaEnv returns true for 'false'")
+    func envOptOutFalse() {
+        withEnv("false") {
+            #expect(TelemetryClient.isOptedOutViaEnv() == true,
+                    "OFEM_TELEMETRY=false must opt out")
+        }
+    }
+
+    @Test("isOptedOutViaEnv returns true for 'FALSE' (case-insensitive)")
+    func envOptOutFalseUppercase() {
+        withEnv("FALSE") {
+            #expect(TelemetryClient.isOptedOutViaEnv() == true,
+                    "OFEM_TELEMETRY=FALSE must opt out (case-insensitive)")
+        }
+    }
+
+    @Test("isOptedOutViaEnv returns false for '1' (opt-in)")
+    func envOptInOne() {
+        withEnv("1") {
+            #expect(TelemetryClient.isOptedOutViaEnv() == false,
+                    "OFEM_TELEMETRY=1 must not opt out")
+        }
+    }
+
+    @Test("isOptedOutViaEnv returns false for 'true' (opt-in)")
+    func envOptInTrue() {
+        withEnv("true") {
+            #expect(TelemetryClient.isOptedOutViaEnv() == false,
+                    "OFEM_TELEMETRY=true must not opt out")
+        }
+    }
+
+    @Test("TelemetryClient with OFEM_TELEMETRY=0 suppresses emission to real sink")
+    func clientSuppressesEmissionWhenEnvOptOut() async {
+        let sink = MemoryTelemetrySink()
+        // Build the client while the env var is set — TelemetryClient reads
+        // OFEM_TELEMETRY at init time and swaps in NoopTelemetrySink.
+        let client: TelemetryClient = withEnv("0") {
+            TelemetryClient(
+                sink: sink,
+                appVersion: "2026.06.1",
+                installID: "x",
+                configuration: TelemetryConfiguration(osVersion: "14.5.1")
+            )
+        }
+        // The env var has been restored by withEnv before these lines run.
+        await client.track(TelemetryEvent(name: "purchase"))
+        await client.flush()
+        #expect(sink.count == 0,
+                "OFEM_TELEMETRY=0 must suppress emission; sink received \(sink.count) events")
+    }
 }

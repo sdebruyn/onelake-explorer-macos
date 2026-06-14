@@ -5,9 +5,8 @@ import os.log
 
 /// Transport that ships a batch of events somewhere.
 ///
-///
-/// `AppInsightsSink` (production), `NoopTelemetrySink` (disabled state),
-/// and `MemoryTelemetrySink` (tests).
+/// Conforming types: `AppInsightsSink` (production), `NoopTelemetrySink`
+/// (disabled state), and `MemoryTelemetrySink` (tests).
 public protocol TelemetrySink: Sendable {
     /// Delivers `events` to the backend. Throws if the backend rejects the batch.
     func send(_ events: [TelemetryEvent]) async throws
@@ -27,12 +26,14 @@ public struct NoopTelemetrySink: TelemetrySink {
 // MARK: - TelemetryConfiguration
 
 /// Configuration for `TelemetryClient`.
-///
-///
 public struct TelemetryConfiguration: Sendable {
     /// When `true` the client uses `NoopTelemetrySink` regardless of the
-    /// provided sink. Set this from the user's opt-out preference or the
-    /// `OFEM_TELEMETRY=0` environment variable.
+    /// provided sink. Set this from the user's opt-out preference.
+    ///
+    /// The `OFEM_TELEMETRY=0` (or `OFEM_TELEMETRY=false`) environment variable
+    /// is also honoured: `TelemetryClient.init` reads it and forces `optOut`
+    /// when the variable is set to a falsy value.  Set the variable to `1` or
+    /// `true` (or leave it unset) to keep telemetry enabled.
     public let optOut: Bool
 
     /// Maximum in-memory event count. When the buffer reaches this size, the
@@ -42,8 +43,8 @@ public struct TelemetryConfiguration: Sendable {
     /// Background flush interval. Default: 10 seconds.
     public let flushInterval: Duration
 
-    /// macOS version string for the common properties. If empty the client
-    /// reads `kern.osproductversion` via `ProcessInfo`.
+    /// macOS version string for the common properties. When empty the client
+    /// reads `ProcessInfo.processInfo.operatingSystemVersion`.
     public let osVersion: String
 
     /// Platform override (default: `"darwin"`).
@@ -76,13 +77,22 @@ public struct TelemetryConfiguration: Sendable {
 /// `track(_:)` enqueues events; a Swift Concurrency `Task` drives periodic
 /// flushes to the configured `TelemetrySink`.
 /// - Non-blocking enqueue with oldest-event-drop on overflow.
-/// - Background flush on a timer or on buffer-full signal. (store-18)
+/// - Background flush on a timer or on buffer-full signal.
 /// - `flush()` is synchronous from the caller's perspective but performed
-/// via the actor's executor.
+///   via the actor's executor.
 /// - `shutdown()` cancels the timer and performs a final flush.
 ///
 /// `TelemetryClient` is an `actor` so all mutable state is automatically
 /// serialised without explicit locking.
+///
+/// ### Opt-out
+///
+/// Telemetry is disabled when:
+/// - `TelemetryConfiguration.optOut == true`, **or**
+/// - The environment variable `OFEM_TELEMETRY` is set to `0` or `false`.
+///
+/// When disabled the client uses `NoopTelemetrySink`, which silently discards
+/// every event.  The background flush timer is not started.
 public actor TelemetryClient {
     // MARK: - State
 
@@ -101,17 +111,23 @@ public actor TelemetryClient {
     /// Creates a `TelemetryClient`.
     ///
     /// - Parameters:
-    /// - sink: The transport. Required.
-    /// - appVersion: OFEM release version (typically `BuildInfo.version`).
-    /// - installID: Per-install UUID string.
-    /// - configuration: Tuning knobs. Defaults to sensible values.
+    ///   - sink:          The transport. Required.
+    ///   - appVersion:    OFEM release version (typically `BuildInfo.version`).
+    ///   - installID:     Per-install UUID string.
+    ///   - configuration: Tuning knobs. Defaults to sensible values.
     public init(
         sink: any TelemetrySink,
         appVersion: String,
         installID: String,
         configuration: TelemetryConfiguration = TelemetryConfiguration()
     ) {
-        let effectiveSink: any TelemetrySink = configuration.optOut
+        // Honour the OFEM_TELEMETRY env-var opt-out in addition to the config
+        // flag.  Any value other than "1" / "true" (case-insensitive) disables
+        // telemetry when the variable is set.
+        let envOptOut = Self.isOptedOutViaEnv()
+        let effectiveOptOut = configuration.optOut || envOptOut
+
+        let effectiveSink: any TelemetrySink = effectiveOptOut
             ? NoopTelemetrySink()
             : sink
 
@@ -144,11 +160,15 @@ public actor TelemetryClient {
         guard flushTask == nil, !isClosed else { return }
 
         let interval = configuration.flushInterval
-        flushTask = Task { [weak self] in
+        // Capture `self` strongly inside the task — the actor guarantees that
+        // `self` stays alive as long as any task holds a reference to it, so
+        // `weak self` here would cause the task to silently stop flushing when
+        // the caller no longer holds an external reference.
+        flushTask = Task { [self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: interval)
                 guard !Task.isCancelled else { break }
-                await self?.flush()
+                await flush()
             }
         }
     }
@@ -175,7 +195,7 @@ public actor TelemetryClient {
         var ev = event
         if ev.time == nil { ev.time = Date() }
 
-        // Apply common-prop allowlist + merge, matching Track in client.go.
+        // Apply common-prop allowlist + merge.
         var merged: [String: String] = [:]
         for (k, v) in ev.commonProps where allowedCommonPropKeys.contains(k) {
             merged[k] = v
@@ -185,7 +205,7 @@ public actor TelemetryClient {
         }
         ev.commonProps = merged
 
-        // store-18: honor the buffer-full signal — trigger an immediate flush
+        // Honor the buffer-full signal — trigger an immediate flush
         // so callers do not silently lose events when the buffer fills.
         let bufferFull = await batch.enqueue(ev)
         if bufferFull {
@@ -193,19 +213,23 @@ public actor TelemetryClient {
         }
     }
 
-    /// Convenience shorthand for emitting the `"error"` event.
+    /// Emits the `"error"` event with a PII-safe error code.
     ///
-    /// store-19: emit `<domain>:<code>` (taxonomy safe) instead of passing
-    /// `localizedDescription` through `safeErrorCode`, which redacts every
-    /// human sentence to `"redacted"`. Domain + numeric code satisfies the
-    /// PII constraint (no UPN, workspace, or file name).
+    /// Formats the code as `<domain>:<code>` (taxonomy-safe) so the sync
+    /// engine's error vocabulary (e.g. `NSURLErrorDomain:-1001`) survives
+    /// redaction without passing `localizedDescription` (which may contain
+    /// workspace names or file paths).
+    ///
+    /// `failedOp` is passed through `TelemetryRedaction.scrubProperty` so
+    /// only operation names drawn from the safe charset reach the sink.
     public func trackError(_ error: Error, op: String) async {
         let ns = error as NSError
         let errorCode = TelemetryRedaction.safeErrorCode("\(ns.domain):\(ns.code)")
+        let safeOp = TelemetryRedaction.scrubProperty(op)
         await track(TelemetryEvent(
             name: "error",
             errorCode: errorCode,
-            commonProps: ["failedOp": op]
+            commonProps: ["failedOp": safeOp]
         ))
     }
 
@@ -215,15 +239,13 @@ public actor TelemetryClient {
     ///
     /// On a partial rejection (`AppInsightsSinkError.partialReject`) only the
     /// retriable rejected events are re-queued; already-accepted events are
-    /// discarded. (store-20)
+    /// discarded.
     public func flush() async {
         let events = await batch.drain()
         guard !events.isEmpty else { return }
         do {
             try await sink.send(events)
         } catch AppInsightsSinkError.partialReject(_, _, let retriable) {
-            // store-20: re-queue only the retriable rejected events, not the
-            // whole batch.
             if !retriable.isEmpty {
                 await batch.requeue(retriable)
             }
@@ -233,16 +255,36 @@ public actor TelemetryClient {
         } catch {
             // Other errors: re-queue the entire batch.
             await batch.requeue(events)
-            log.warning("telemetry flush failed: \(error.localizedDescription, privacy: .public)")
+            // Log only the error category (domain:code), never the localised
+            // description which may contain PII from the underlying transport.
+            let ns = error as NSError
+            log.warning(
+                "telemetry flush failed: \(ns.domain, privacy: .public):\(ns.code, privacy: .public)"
+            )
         }
+    }
+
+    // MARK: - Env-var opt-out
+
+    /// Returns `true` when the `OFEM_TELEMETRY` environment variable is set
+    /// to a falsy value (`"0"` or `"false"`, case-insensitive).
+    ///
+    /// Setting the variable to `"1"`, `"true"`, or leaving it unset keeps
+    /// telemetry enabled.
+    static func isOptedOutViaEnv() -> Bool {
+        guard let raw = ProcessInfo.processInfo.environment["OFEM_TELEMETRY"] else {
+            return false
+        }
+        let lower = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        return lower == "0" || lower == "false"
     }
 
     // MARK: - OS version
 
     private static func resolveOSVersion() -> String {
-        // `ProcessInfo.operatingSystemVersionString` returns a localised
-        // string like "Version 14.5.1 (Build 23F79)"; extract just the
-        // numeric version with a regex-free split.
+        // `ProcessInfo.processInfo.operatingSystemVersion` returns the numeric
+        // version components directly without the localised prefix and build
+        // number that `operatingSystemVersionString` includes.
         let info = ProcessInfo.processInfo.operatingSystemVersion
         return "\(info.majorVersion).\(info.minorVersion).\(info.patchVersion)"
     }
