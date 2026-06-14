@@ -22,6 +22,15 @@ final class MockURLSession: URLSessionProtocol, @unchecked Sendable {
         self.stubs = stubs
     }
 
+    /// Dequeues the next stub synchronously (without recording a request).
+    /// Used by `MockStreamSession` to pre-populate `MockStreamURLProtocol`.
+    func dequeueNextStub() -> Stub {
+        lock.withLock {
+            precondition(!stubs.isEmpty, "MockURLSession: stubs exhausted")
+            return stubs.removeFirst()
+        }
+    }
+
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         lock.withLock { requests.append(request) }
         let stub = lock.withLock { () -> Stub in

@@ -5,6 +5,13 @@ import Foundation
 /// Default Fabric REST API endpoint.
 public let fabricDefaultBaseURL = URL(string: "https://api.fabric.microsoft.com")!
 
+// MARK: - Fabric URL builder errors
+
+/// Thrown when Fabric URL construction fails (onelake-03 pattern).
+enum FabricURLError: Error, Sendable {
+    case invalidURL(String)
+}
+
 // MARK: - URL builders
 
 /// Builds a URL for a Fabric REST collection endpoint.
@@ -13,14 +20,22 @@ public let fabricDefaultBaseURL = URL(string: "https://api.fabric.microsoft.com"
 /// is percent-encoded via ``percentEncodedQueryItem(_:)`` so that `+` in the
 /// token value is not silently decoded as a space by the server (net-05).
 ///
+/// Path segments (workspace/item IDs) in `path` must already be
+/// percent-encoded by the caller when necessary (fabric-03).
+///
 /// - Parameters:
 /// - base: The Fabric REST base URL (e.g. `https://api.fabric.microsoft.com`).
 /// - path: Absolute path such as `"/v1/workspaces"`.
 /// - continuationToken: When non-nil, added as `?continuationToken=<value>`.
 /// - Returns: A fully formed URL.
-func fabricListURL(base: URL, path: String, continuationToken: String? = nil) -> URL {
-    var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
-    components.path = path
+/// - Throws: ``FabricURLError/invalidURL(_:)`` when URL composition fails.
+func fabricListURL(base: URL, path: String, continuationToken: String? = nil) throws -> URL {
+    guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+        throw FabricURLError.invalidURL("Cannot decompose base URL: \(base.absoluteString)")
+    }
+    // fabric-03: use percentEncodedPath so callers that have already applied
+    // percentEncodedPathSegment encoding are not double-encoded by URLComponents.
+    components.percentEncodedPath = path
     if let tok = continuationToken, !tok.isEmpty {
         // net-05: percent-encode the token so '+' is not decoded as a space.
         let item = URLQueryItem(name: "continuationToken", value: tok)
@@ -28,7 +43,10 @@ func fabricListURL(base: URL, path: String, continuationToken: String? = nil) ->
     } else {
         components.queryItems = nil
     }
-    return components.url!
+    guard let url = components.url else {
+        throw FabricURLError.invalidURL("Cannot form list URL for path: \(path)")
+    }
+    return url
 }
 
 /// Builds a URL for a Fabric REST item endpoint (single resource).
@@ -37,11 +55,17 @@ func fabricListURL(base: URL, path: String, continuationToken: String? = nil) ->
 /// - base: The Fabric REST base URL.
 /// - path: Absolute path such as `"/v1/workspaces/ws1/items/it1"`.
 /// - Returns: A fully formed URL.
-func fabricItemURL(base: URL, path: String) -> URL {
-    var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
-    components.path = path
+/// - Throws: ``FabricURLError/invalidURL(_:)`` when URL composition fails.
+func fabricItemURL(base: URL, path: String) throws -> URL {
+    guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+        throw FabricURLError.invalidURL("Cannot decompose base URL: \(base.absoluteString)")
+    }
+    components.percentEncodedPath = path
     components.queryItems = nil
-    return components.url!
+    guard let url = components.url else {
+        throw FabricURLError.invalidURL("Cannot form item URL for path: \(path)")
+    }
+    return url
 }
 
 // MARK: - continuationUri resolver
@@ -82,6 +106,23 @@ func resolveContinuationURI(_ raw: String, base: URL) throws -> URL {
         if scheme != "https" {
             throw FabricError.continuationURIHostMismatch(
                 "continuationUri scheme \"\(scheme)\" is not https"
+            )
+        }
+        // fabric-07: pin the port — an unexpected port on the same host is not
+        // the configured endpoint (e.g. port 8080 vs default 443).
+        let uriPort = parsed.port
+        let basePort = base.port
+        if uriPort != basePort {
+            throw FabricError.continuationURIHostMismatch(
+                "continuationUri port \(uriPort.map(String.init) ?? "default") does not match base port \(basePort.map(String.init) ?? "default")"
+            )
+        }
+        // fabric-07: reject userinfo (user:password@) — embedded credentials in
+        // a continuation URI are a security hazard.
+        if let components = URLComponents(url: parsed, resolvingAgainstBaseURL: false),
+           let user = components.user, !user.isEmpty {
+            throw FabricError.continuationURIHostMismatch(
+                "continuationUri must not contain userinfo credentials"
             )
         }
         // Absolute URL with matching host — use as-is.

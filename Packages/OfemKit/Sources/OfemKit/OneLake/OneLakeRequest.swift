@@ -9,6 +9,14 @@ import Foundation
 /// helper (net-17) has been removed; the constant lives here.
 let oneLakeDFSAPIVersion = "2021-08-06"
 
+// MARK: - URL builder errors
+
+/// Thrown when URL construction fails (onelake-03: replaces force-unwraps).
+enum OneLakeURLError: Error, Sendable {
+    /// The base URL is malformed or cannot be composed with the given segments.
+    case invalidURL(String)
+}
+
 // MARK: - URL builders
 
 /// Builds a DFS path URL for an item-relative path.
@@ -22,14 +30,19 @@ let oneLakeDFSAPIVersion = "2021-08-06"
 /// Query values go through ``percentEncodedQueryItem(_:)`` so that `+` (and
 /// other RFC 3986 sub-delimiters) in continuation tokens and directory names
 /// are properly escaped (net-05).
+///
+/// - Throws: ``OneLakeURLError/invalidURL(_:)`` when the composed URL is nil
+///   (onelake-03: no more force-unwraps in URL construction).
 func oneLakePathURL(
     base: URL,
     workspaceGUID: String,
     itemGUID: String,
     relPath: String,
     query: [URLQueryItem]? = nil
-) -> URL {
-    var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+) throws -> URL {
+    guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+        throw OneLakeURLError.invalidURL("Cannot decompose base URL: \(base.absoluteString)")
+    }
 
     // Build percent-encoded path segments.
     var segments = [workspaceGUID.percentEncodedPathSegment, itemGUID.percentEncodedPathSegment]
@@ -48,7 +61,10 @@ func oneLakePathURL(
         components.queryItems = nil
     }
 
-    return components.url!
+    guard let url = components.url else {
+        throw OneLakeURLError.invalidURL("Cannot form URL from components for path: \(relPath)")
+    }
+    return url
 }
 
 /// Builds a DFS filesystem (workspace-level) URL for list operations.
@@ -57,15 +73,23 @@ func oneLakePathURL(
 ///
 /// Query values are percent-encoded via ``percentEncodedQueryItem(_:)``
 /// to handle `+` in continuation tokens (net-05).
+///
+/// - Throws: ``OneLakeURLError/invalidURL(_:)`` when the composed URL is nil
+///   (onelake-03: no more force-unwraps in URL construction).
 func oneLakeListURL(
     base: URL,
     workspaceGUID: String,
     query: [URLQueryItem]
-) -> URL {
-    var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+) throws -> URL {
+    guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+        throw OneLakeURLError.invalidURL("Cannot decompose base URL: \(base.absoluteString)")
+    }
     components.percentEncodedPath = "/" + workspaceGUID.percentEncodedPathSegment
     components.percentEncodedQueryItems = query.map { percentEncodedQueryItem($0) }
-    return components.url!
+    guard let url = components.url else {
+        throw OneLakeURLError.invalidURL("Cannot form list URL for workspace: \(workspaceGUID)")
+    }
+    return url
 }
 
 // MARK: - Query-item percent-encoding

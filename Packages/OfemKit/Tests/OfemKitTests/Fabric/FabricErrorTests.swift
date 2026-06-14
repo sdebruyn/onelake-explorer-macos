@@ -301,12 +301,13 @@ struct FabricErrorTests {
         else { Issue.record("expected .httpError for URLError, got \(result)") }
     }
 
-    @Test("from(CancellationError) → .httpError (not the HTTPClientError.cancelled path)")
+    @Test("from(CancellationError) → .cancelled (fabric-02: bare Swift cancellation maps to .cancelled)")
     func fromCancellationError() {
-        // Swift's CancellationError is NOT HTTPClientError.cancelled.
-        // The switch default branch catches it as .httpError.
+        // fabric-02: a bare CancellationError from Swift Concurrency (thrown
+        // between http.execute boundaries) must map to .cancelled, not .httpError,
+        // so SyncEngine can silently discard user-initiated cancellation.
         let result = FabricError.from(CancellationError())
-        if case .httpError = result { /* correct */ }
-        else { Issue.record("expected .httpError for CancellationError, got \(result)") }
+        if case .cancelled = result { /* correct */ }
+        else { Issue.record("expected .cancelled for CancellationError (fabric-02), got \(result)") }
     }
 }

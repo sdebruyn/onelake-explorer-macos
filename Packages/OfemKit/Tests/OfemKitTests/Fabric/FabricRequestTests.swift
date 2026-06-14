@@ -11,8 +11,8 @@ struct FabricRequestTests {
     // MARK: - fabricListURL
 
     @Test("fabricListURL: produces correct path without token")
-    func listURLNoToken() {
-        let url = fabricListURL(base: base, path: "/v1/workspaces")
+    func listURLNoToken() throws {
+        let url = try fabricListURL(base: base, path: "/v1/workspaces")
         #expect(url.scheme == "https")
         #expect(url.host == "api.fabric.microsoft.com")
         #expect(url.path == "/v1/workspaces")
@@ -20,40 +20,40 @@ struct FabricRequestTests {
     }
 
     @Test("fabricListURL: appends continuationToken as query param")
-    func listURLWithToken() {
-        let url = fabricListURL(base: base, path: "/v1/workspaces", continuationToken: "tok-abc")
+    func listURLWithToken() throws {
+        let url = try fabricListURL(base: base, path: "/v1/workspaces", continuationToken: "tok-abc")
         #expect(url.query == "continuationToken=tok-abc")
     }
 
     @Test("fabricListURL: nil continuationToken produces no query string")
-    func listURLNilToken() {
-        let url = fabricListURL(base: base, path: "/v1/workspaces", continuationToken: nil)
+    func listURLNilToken() throws {
+        let url = try fabricListURL(base: base, path: "/v1/workspaces", continuationToken: nil)
         #expect(url.query == nil)
     }
 
     @Test("fabricListURL: empty continuationToken produces no query string")
-    func listURLEmptyToken() {
-        let url = fabricListURL(base: base, path: "/v1/workspaces", continuationToken: "")
+    func listURLEmptyToken() throws {
+        let url = try fabricListURL(base: base, path: "/v1/workspaces", continuationToken: "")
         #expect(url.query == nil)
     }
 
     @Test("fabricListURL: items endpoint includes workspaceID in path")
-    func listURLItemsPath() {
-        let url = fabricListURL(base: base, path: "/v1/workspaces/ws-123/items")
+    func listURLItemsPath() throws {
+        let url = try fabricListURL(base: base, path: "/v1/workspaces/ws-123/items")
         #expect(url.path == "/v1/workspaces/ws-123/items")
     }
 
     @Test("fabricListURL: folders endpoint includes workspaceID in path")
-    func listURLFoldersPath() {
-        let url = fabricListURL(base: base, path: "/v1/workspaces/ws-456/folders")
+    func listURLFoldersPath() throws {
+        let url = try fabricListURL(base: base, path: "/v1/workspaces/ws-456/folders")
         #expect(url.path == "/v1/workspaces/ws-456/folders")
     }
 
     // MARK: - fabricItemURL
 
     @Test("fabricItemURL: produces correct path with no query")
-    func itemURLNoQuery() {
-        let url = fabricItemURL(base: base, path: "/v1/workspaces/ws1/items/it1")
+    func itemURLNoQuery() throws {
+        let url = try fabricItemURL(base: base, path: "/v1/workspaces/ws1/items/it1")
         #expect(url.path == "/v1/workspaces/ws1/items/it1")
         #expect(url.query == nil)
     }
@@ -130,22 +130,22 @@ struct FabricRequestTests {
     // MARK: - fabricRequest
 
     @Test("fabricRequest: sets correct HTTP method")
-    func requestMethod() {
-        let url = fabricListURL(base: URL(string: "https://api.fabric.microsoft.com")!, path: "/v1/workspaces")
+    func requestMethod() throws {
+        let url = try fabricListURL(base: URL(string: "https://api.fabric.microsoft.com")!, path: "/v1/workspaces")
         let req = fabricRequest(method: "GET", url: url)
         #expect(req.httpMethod == "GET")
     }
 
     @Test("fabricRequest: sets Accept: application/json")
-    func requestAcceptHeader() {
-        let url = fabricListURL(base: URL(string: "https://api.fabric.microsoft.com")!, path: "/v1/workspaces")
+    func requestAcceptHeader() throws {
+        let url = try fabricListURL(base: URL(string: "https://api.fabric.microsoft.com")!, path: "/v1/workspaces")
         let req = fabricRequest(method: "GET", url: url)
         #expect(req.value(forHTTPHeaderField: "Accept") == "application/json")
     }
 
     @Test("fabricRequest: correct URL is set")
-    func requestURL() {
-        let url = fabricItemURL(base: URL(string: "https://api.fabric.microsoft.com")!, path: "/v1/workspaces/ws1/items/it1")
+    func requestURL() throws {
+        let url = try fabricItemURL(base: URL(string: "https://api.fabric.microsoft.com")!, path: "/v1/workspaces/ws1/items/it1")
         let req = fabricRequest(method: "GET", url: url)
         #expect(req.url?.path == "/v1/workspaces/ws1/items/it1")
     }

@@ -13,35 +13,35 @@ struct OneLakeRequestTests {
     // MARK: - oneLakePathURL
 
     @Test("path URL includes workspace and item GUIDs")
-    func pathURLContainsGUIDs() {
-        let url = oneLakePathURL(base: base, workspaceGUID: ws, itemGUID: item, relPath: "")
+    func pathURLContainsGUIDs() throws {
+        let url = try oneLakePathURL(base: base, workspaceGUID: ws, itemGUID: item, relPath: "")
         let path = url.path
         #expect(path.contains(ws))
         #expect(path.contains(item))
     }
 
     @Test("path URL includes relative path segments")
-    func pathURLIncludesRelPath() {
-        let url = oneLakePathURL(base: base, workspaceGUID: ws, itemGUID: item, relPath: "Files/data.csv")
+    func pathURLIncludesRelPath() throws {
+        let url = try oneLakePathURL(base: base, workspaceGUID: ws, itemGUID: item, relPath: "Files/data.csv")
         #expect(url.path.hasSuffix("/Files/data.csv"))
     }
 
     @Test("path URL strips leading slashes from relPath")
-    func pathURLStripsLeadingSlash() {
-        let url1 = oneLakePathURL(base: base, workspaceGUID: ws, itemGUID: item, relPath: "/Files/a")
-        let url2 = oneLakePathURL(base: base, workspaceGUID: ws, itemGUID: item, relPath: "Files/a")
+    func pathURLStripsLeadingSlash() throws {
+        let url1 = try oneLakePathURL(base: base, workspaceGUID: ws, itemGUID: item, relPath: "/Files/a")
+        let url2 = try oneLakePathURL(base: base, workspaceGUID: ws, itemGUID: item, relPath: "Files/a")
         #expect(url1.path == url2.path)
     }
 
     @Test("path URL percent-encodes spaces in path segments")
-    func pathURLEncodesSpaces() {
-        let url = oneLakePathURL(base: base, workspaceGUID: ws, itemGUID: item, relPath: "Files/my file.csv")
+    func pathURLEncodesSpaces() throws {
+        let url = try oneLakePathURL(base: base, workspaceGUID: ws, itemGUID: item, relPath: "Files/my file.csv")
         #expect(url.absoluteString.contains("my%20file.csv"))
     }
 
     @Test("path URL includes query items")
-    func pathURLQueryItems() {
-        let url = oneLakePathURL(
+    func pathURLQueryItems() throws {
+        let url = try oneLakePathURL(
             base: base,
             workspaceGUID: ws,
             itemGUID: item,
@@ -52,16 +52,16 @@ struct OneLakeRequestTests {
     }
 
     @Test("path URL with no query has no query string")
-    func pathURLNoQuery() {
-        let url = oneLakePathURL(base: base, workspaceGUID: ws, itemGUID: item, relPath: "Files/a")
+    func pathURLNoQuery() throws {
+        let url = try oneLakePathURL(base: base, workspaceGUID: ws, itemGUID: item, relPath: "Files/a")
         #expect(url.query == nil)
     }
 
     // MARK: - oneLakeListURL
 
     @Test("list URL uses workspace as filesystem root")
-    func listURLRoot() {
-        let url = oneLakeListURL(
+    func listURLRoot() throws {
+        let url = try oneLakeListURL(
             base: base,
             workspaceGUID: ws,
             query: [URLQueryItem(name: "resource", value: "filesystem")]
@@ -72,8 +72,8 @@ struct OneLakeRequestTests {
     }
 
     @Test("list URL includes continuation token")
-    func listURLContinuation() {
-        let url = oneLakeListURL(
+    func listURLContinuation() throws {
+        let url = try oneLakeListURL(
             base: base,
             workspaceGUID: ws,
             query: [
@@ -87,8 +87,8 @@ struct OneLakeRequestTests {
     // MARK: - Round-trip path encoding
 
     @Test("special characters in path are encoded and host is preserved")
-    func specialCharactersEncoded() {
-        let url = oneLakePathURL(
+    func specialCharactersEncoded() throws {
+        let url = try oneLakePathURL(
             base: base,
             workspaceGUID: ws,
             itemGUID: item,

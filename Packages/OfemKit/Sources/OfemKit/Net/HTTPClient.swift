@@ -46,6 +46,30 @@ public protocol URLSessionProtocol: Sendable {
 
 extension URLSession: URLSessionProtocol {}
 
+// MARK: - URLSessionStreamProtocol
+
+/// Abstraction over `URLSession.bytes(for:)` for streaming download injection.
+///
+/// Kept separate from ``URLSessionProtocol`` so existing mock sessions don't
+/// need to implement bytes-streaming (net-19).
+///
+/// `URLSession` conforms via the extension below; test code injects a
+/// `MockURLSessionStream` that returns pre-built byte sequences without a
+/// live network connection.
+public protocol URLSessionStreamProtocol: Sendable {
+    /// Streams the response body for `request` as an async byte sequence.
+    ///
+    /// - Returns: `(AsyncBytes, URLResponse)` where `AsyncBytes` vends bytes
+    ///   one at a time.
+    func bytes(for request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse)
+}
+
+extension URLSession: URLSessionStreamProtocol {
+    public func bytes(for request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        try await self.bytes(for: request, delegate: nil)
+    }
+}
+
 // MARK: - ResponseSizeLimit
 
 /// Maximum number of bytes `HTTPClient` will buffer from a single response body.
@@ -78,6 +102,8 @@ public final class HTTPClient: Sendable {
     // MARK: - Properties
 
     private let session: any URLSessionProtocol
+    /// Session used for streaming downloads (``download(to:)``).
+    private let streamSession: any URLSessionStreamProtocol
     private let gateRegistry: HTTPGateRegistry
     private let retryPolicy: HTTPRetryPolicy
     private let userAgent: String
@@ -92,9 +118,12 @@ public final class HTTPClient: Sendable {
     /// Creates an `HTTPClient`.
     ///
     /// - Parameters:
-    /// - session: The underlying `URLSession`. Default: a session with a
-    ///   60-second request timeout and no response-body timeout (so large
-    ///   downloads are not killed mid-stream).
+    /// - session: The underlying `URLSession` for buffered requests. Default:
+    ///   a session with a 60-second connection timeout and no response-body
+    ///   timeout so large downloads are not killed mid-stream.
+    /// - streamSession: The session used for streaming downloads via
+    ///   ``download(to:)`` (`session.bytes(for:)`). Defaults to the same
+    ///   `URLSession.ofemDefault` instance as `session`.
     /// - gateRegistry: The per-host rate-limit / concurrency registry.
     ///   Default: ``HTTPGateRegistry/makeDefault()``.
     /// - retryPolicy: Retry parameters. Default: ``HTTPRetryPolicy()``.
@@ -103,12 +132,22 @@ public final class HTTPClient: Sendable {
     ///   responses. Default: ``httpClientDefaultResponseSizeLimit`` (unlimited).
     public init(
         session: any URLSessionProtocol = URLSession.ofemDefault,
+        streamSession: (any URLSessionStreamProtocol)? = nil,
         gateRegistry: HTTPGateRegistry = HTTPGateRegistry.makeDefault(),
         retryPolicy: HTTPRetryPolicy = HTTPRetryPolicy(),
         userAgent: String = "OFEM/1.0",
         responseSizeLimit: Int = httpClientDefaultResponseSizeLimit
     ) {
         self.session = session
+        // When no separate stream session is provided, fall back to the
+        // buffered session if it also conforms, otherwise use the default.
+        if let ss = streamSession {
+            self.streamSession = ss
+        } else if let ss = session as? any URLSessionStreamProtocol {
+            self.streamSession = ss
+        } else {
+            self.streamSession = URLSession.ofemDefault
+        }
         self.gateRegistry = gateRegistry
         self.retryPolicy = retryPolicy
         self.userAgent = userAgent
@@ -343,6 +382,201 @@ public final class HTTPClient: Sendable {
         throw HTTPClientError.retriesExhausted(attempts: policy.maxAttempts, last: finalError)
     }
 
+    // MARK: - Streaming download
+
+    /// Downloads `request` by streaming the response body directly into
+    /// `destination` without buffering the whole file in memory (net-19 /
+    /// onelake-02 true streaming fix).
+    ///
+    /// Unlike ``execute(_:tokenProvider:alias:scope:idempotent:)`` which calls
+    /// `session.data(for:)` and loads the entire body into a `Data`, this
+    /// method uses `streamSession.bytes(for:)` and writes each chunk to
+    /// `destination` as it arrives, keeping memory use constant regardless of
+    /// file size.
+    ///
+    /// **Retry behaviour:** GET / HEAD / PUT / DELETE are always retried on
+    /// transport errors; other methods respect the `idempotent` flag. On each
+    /// retry the destination is truncated to zero (via `FileHandle.truncate`)
+    /// and restarted from the beginning — a partial write is never left on
+    /// disk. The caller is responsible for opening the `FileHandle` and closing
+    /// it after this method returns.
+    ///
+    /// **Cancellation:** `Task.checkCancellation()` is called before every
+    /// attempt, and the async `for … in bytes` loop cooperates with structured
+    /// concurrency so cancellation mid-stream is prompt.
+    ///
+    /// - Parameters:
+    /// - request: The HTTP request. GET is typical; the `Authorization` header
+    ///   is overwritten by `tokenProvider` / `alias` if supplied.
+    /// - destination: An open, writable `FileHandle` positioned at the offset
+    ///   where writing should begin (usually 0 for a fresh download).
+    /// - tokenProvider: Supplies a bearer token. Behaves identically to
+    ///   ``execute(_:tokenProvider:alias:scope:idempotent:)``.
+    /// - alias: Account alias forwarded to `tokenProvider`.
+    /// - scope: OAuth scope forwarded to `tokenProvider`.
+    /// - idempotent: When `true`, transport errors are retried even for
+    ///   non-safe HTTP methods.
+    /// - Returns: The `HTTPURLResponse` (headers accessible to the caller).
+    /// - Throws: ``HTTPClientError`` on failure.
+    public func download(
+        _ request: URLRequest,
+        to destination: FileHandle,
+        tokenProvider: (any TokenProvider)? = nil,
+        alias: String = "",
+        scope: TokenScope = .oneLake,
+        idempotent: Bool = false
+    ) async throws -> HTTPURLResponse {
+        if tokenProvider != nil, alias.isEmpty {
+            throw HTTPClientError.tokenAcquisitionFailed(
+                URLError(.userAuthenticationRequired,
+                         userInfo: [NSLocalizedDescriptionKey: "TokenProvider supplied but alias is empty"])
+            )
+        }
+
+        guard let url = request.url, let host = url.host else {
+            throw HTTPClientError.transport(
+                URLError(.badURL, userInfo: [NSURLErrorFailingURLStringErrorKey: request.url?.absoluteString ?? "nil"])
+            )
+        }
+
+        if tokenProvider != nil, url.scheme?.lowercased() != "https" {
+            throw HTTPClientError.tokenAcquisitionFailed(
+                URLError(.secureConnectionFailed,
+                         userInfo: [NSLocalizedDescriptionKey:
+                             "Bearer token refused on non-https URL (scheme: \(url.scheme ?? "nil"))"])
+            )
+        }
+
+        var policy = retryPolicy
+        if idempotent { policy.idempotent = true }
+
+        let gate = await gateRegistry.gate(for: host)
+
+        var wait = policy.initialBackoff
+        var lastError: (any Error)?
+        var didRefreshFor401 = false
+        var cachedToken: String? = try await acquireToken(
+            provider: tokenProvider, alias: alias, scope: scope
+        )
+
+        for attempt in 1...policy.maxAttempts {
+            try Task.checkCancellation()
+
+            // Truncate the destination file before each attempt so a partial
+            // write from a previous attempt does not corrupt the final content.
+            try destination.truncate(atOffset: 0)
+            try destination.seek(toOffset: 0)
+
+            try await gate.acquire()
+            let (httpResponse, attemptError): (HTTPURLResponse?, (any Error)?) =
+                await withGateSlot(gate) {
+                    await self.runOneStreamAttempt(
+                        request: request,
+                        token: cachedToken,
+                        host: host,
+                        destination: destination
+                    )
+                }
+
+            if let err = attemptError {
+                if let clientErr = err as? HTTPClientError {
+                    throw clientErr
+                }
+                if err is CancellationError {
+                    throw HTTPClientError.cancelled
+                }
+                let rootError = (err as NSError).userInfo[NSUnderlyingErrorKey] as? any Error ?? err
+                let hardOffline = isHardOfflineURLError(err) || isHardOfflineURLError(rootError)
+                if !hardOffline,
+                   isRetriableURLError(err) || isRetriableURLError(rootError),
+                   policy.canRetryTransportError(method: request.httpMethod ?? "GET") {
+                    lastError = err
+                    let urlErrCode = (err as? URLError)?.code.rawValue ?? -1
+                    Self.log.warning(
+                        "HTTPClient.download: transport error attempt \(attempt, privacy: .public)/\(policy.maxAttempts, privacy: .public) code=\(urlErrCode, privacy: .public)"
+                    )
+                    if attempt < policy.maxAttempts {
+                        let j = jitter(wait)
+                        try await Task.sleep(for: j)
+                        wait = nextBackoff(wait, max: policy.maxBackoff)
+                    }
+                    continue
+                }
+                throw HTTPClientError.transport(err)
+            }
+
+            guard let response = httpResponse else {
+                throw HTTPClientError.transport(URLError(.badServerResponse))
+            }
+
+            let status = response.statusCode
+
+            let defaults = await gateRegistry.registryDefaults
+            if HTTPRetryStatusPolicy.shouldPenaliseGate(status) {
+                let retryAfterDelay = retryAfterDuration(from: response, defaults: defaults)
+                if let delay = retryAfterDelay {
+                    let cappedDelay = min(delay, httpGateMaxPenaltyDuration)
+                    let deadline = ContinuousClock.now + cappedDelay
+                    await gate.penalty(until: deadline)
+                }
+            }
+
+            if status >= 200, status < 300 {
+                return response
+            }
+
+            if status < 400 {
+                let ae = APIError(statusCode: status, status: response.httpStatus,
+                                  body: Data(), attempts: attempt)
+                throw HTTPClientError.apiError(ae)
+            }
+
+            if status == 401, !didRefreshFor401, let tp = tokenProvider,
+               attempt < policy.maxAttempts {
+                didRefreshFor401 = true
+                do {
+                    cachedToken = try await tp.refreshedToken(alias: alias, scope: scope)
+                } catch {
+                    throw HTTPClientError.tokenAcquisitionFailed(error)
+                }
+                lastError = HTTPClientError.unauthorized
+                continue
+            }
+
+            if !HTTPClientError.isRetriableStatus(status) {
+                let ae = APIError(statusCode: status, status: response.httpStatus,
+                                  body: Data(), attempts: attempt)
+                if let sentinel = ae.sentinel {
+                    throw sentinel
+                }
+                throw HTTPClientError.apiError(ae)
+            }
+
+            let retryDelay = parseRetryAfter(response.value(forHTTPHeaderField: "Retry-After") ?? "")
+            let ae = APIError(statusCode: status, status: response.httpStatus,
+                              body: Data(), retryAfter: retryDelay ?? .zero, attempts: attempt)
+            lastError = HTTPClientError.apiError(ae)
+
+            if attempt == policy.maxAttempts { break }
+
+            let sleepDuration: Duration
+            if let override = retryDelay {
+                let capped = min(override, policy.maxBackoff)
+                sleepDuration = jitter(capped)
+            } else {
+                sleepDuration = jitter(wait)
+                wait = nextBackoff(wait, max: policy.maxBackoff)
+            }
+            Self.log.warning(
+                "HTTPClient.download: retriable \(status, privacy: .public) attempt \(attempt, privacy: .public)/\(policy.maxAttempts, privacy: .public)"
+            )
+            try await Task.sleep(for: sleepDuration)
+        }
+
+        let finalError = lastError ?? HTTPClientError.serverError(0)
+        throw HTTPClientError.retriesExhausted(attempts: policy.maxAttempts, last: finalError)
+    }
+
     // MARK: - Private helpers
 
     /// Acquires a token from `provider` if supplied. Returns `nil` when no
@@ -415,6 +649,74 @@ public final class HTTPClient: Sendable {
         }
 
         return (data, httpResponse, nil)
+    }
+
+    /// Executes a single streaming HTTP round-trip, writing the response body
+    /// to `destination` as bytes arrive.
+    ///
+    /// Returns `(response, nil)` on a completed transfer, or `(nil, error)` on
+    /// any failure. The status code is NOT examined here — the caller decides
+    /// whether to retry based on it.
+    ///
+    /// For non-2xx responses the body is discarded rather than written to the
+    /// destination; the `(response, nil)` tuple is still returned so the caller
+    /// can inspect the status and apply retry / error logic.
+    private func runOneStreamAttempt(
+        request: URLRequest,
+        token: String?,
+        host: String,
+        destination: FileHandle
+    ) async -> (HTTPURLResponse?, (any Error)?) {
+        var authorised = request
+        authorised.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        if let tok = token {
+            authorised.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
+        }
+
+        let bytes: URLSession.AsyncBytes
+        let urlResponse: URLResponse
+        do {
+            (bytes, urlResponse) = try await streamSession.bytes(for: authorised)
+        } catch {
+            return (nil, error)
+        }
+
+        guard let httpResponse = urlResponse as? HTTPURLResponse else {
+            return (nil, URLError(.badServerResponse))
+        }
+
+        let status = httpResponse.statusCode
+        // Only stream the body to disk for 2xx responses.
+        // For error responses discard the body; the status-code path handles them.
+        guard status >= 200, status < 300 else {
+            // Drain the stream so the connection is released cleanly.
+            // Ignore drain errors — the non-2xx status is the real signal.
+            do {
+                for try await _ in bytes { }
+            } catch { /* drain errors discarded intentionally */ }
+            return (httpResponse, nil)
+        }
+
+        // Write bytes to the destination as they arrive, honouring cancellation
+        // implicitly via the async for-in loop.
+        var buffer = Data()
+        buffer.reserveCapacity(65536)
+        do {
+            for try await byte in bytes {
+                buffer.append(byte)
+                if buffer.count >= 65536 {
+                    try destination.write(contentsOf: buffer)
+                    buffer.removeAll(keepingCapacity: true)
+                }
+            }
+            if !buffer.isEmpty {
+                try destination.write(contentsOf: buffer)
+            }
+        } catch {
+            return (nil, error)
+        }
+
+        return (httpResponse, nil)
     }
 
     /// Extracts a Retry-After delay from the response, falling back to the

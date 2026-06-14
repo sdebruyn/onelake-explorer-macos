@@ -4,7 +4,9 @@ import Foundation
 
 /// One row of a DFS directory listing.
 public struct PathEntry: Sendable, Equatable {
-    /// Workspace-rooted name, e.g. `"<itemGUID>/Files/data.csv"`.
+    /// Item-relative path, e.g. `"Files/data.csv"` (onelake-12: the raw
+    /// wire value `"<itemGUID>/Files/data.csv"` has the `<itemGUID>/` prefix
+    /// stripped by ``convertRawEntry(_:itemGUID:)``).
     public let name: String
     /// `true` when this entry is a directory.
     public let isDirectory: Bool
@@ -83,7 +85,10 @@ struct RawListBody: Decodable {
 // MARK: - Conversion helpers
 
 /// Converts a ``RawPathEntry`` (DFS string-typed) to a ``PathEntry``.
-func convertRawEntry(_ raw: RawPathEntry) -> PathEntry {
+///
+/// The `itemGUID` parameter is used to strip the workspace-rooted prefix
+/// (onelake-12: `"<itemGUID>/Files/data.csv"` → `"Files/data.csv"`).
+func convertRawEntry(_ raw: RawPathEntry, itemGUID: String) -> PathEntry {
     let isDir = raw.isDirectory == "true"
     let size = raw.contentLength.flatMap { Int64($0) } ?? 0
     let etag = raw.etag ?? ""
@@ -93,7 +98,19 @@ func convertRawEntry(_ raw: RawPathEntry) -> PathEntry {
     } else {
         modified = .distantPast
     }
-    return PathEntry(name: raw.name, isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified)
+    // onelake-12: strip the "<itemGUID>/" prefix that the DFS API prepends to
+    // every name so consumers receive an item-relative path without needing to
+    // know or re-strip the prefix themselves.
+    let prefix = "\(itemGUID)/"
+    let itemRelativeName: String
+    if raw.name.hasPrefix(prefix) {
+        itemRelativeName = String(raw.name.dropFirst(prefix.count))
+    } else {
+        // Fallback: return the raw name unchanged (e.g. if the server changes
+        // the format or itemGUID is not present as a leading segment).
+        itemRelativeName = raw.name
+    }
+    return PathEntry(name: itemRelativeName, isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified)
 }
 
 /// Extracts ``PathProperties`` from the response headers of a HEAD or GET.

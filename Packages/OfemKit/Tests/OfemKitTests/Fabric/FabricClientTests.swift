@@ -590,20 +590,18 @@ struct FabricClientTests {
         }
     }
 
-    @Test("listAllItems: missing required workspaceId field still decodes (wire type uses optional mapping)")
+    @Test("listAllItems: row with missing workspaceId is silently skipped (fabric-06)")
     func listAllItemsMissingWorkspaceIdField() async throws {
-        // The wire struct maps workspaceId as non-optional — missing it causes decodeFailed.
+        // fabric-06: WireItem.workspaceId is now optional. A row missing workspaceId
+        // is silently dropped via compactMap rather than aborting the whole page.
         let body = """
         {"value":[{"id":"it1","displayName":"X"}]}
         """
         let session = MockURLSession(stubs: [stub(status: 200, body: body)])
         let client = makeClient(session: session)
-        do {
-            _ = try await client.listAllItems(alias: "a", workspaceID: "ws1")
-            Issue.record("expected decodeFailed due to missing workspaceId")
-        } catch FabricError.decodeFailed {
-            // expected — workspaceId is required in WireItem
-        }
+        let items = try await client.listAllItems(alias: "a", workspaceID: "ws1")
+        // The row is dropped (no workspaceId), so we get an empty result — no throw.
+        #expect(items.isEmpty, "Expected empty list: row without workspaceId should be silently dropped (fabric-06)")
     }
 
     @Test("listAllWorkspaces: empty body throws decodeFailed")

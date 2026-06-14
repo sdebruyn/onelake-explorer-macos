@@ -36,11 +36,26 @@ public enum OneLakeError: Error, Sendable {
     /// HTTP 412 — an ETag `If-Match` precondition failed.
     case preconditionFailed
 
+    /// HTTP 410 — the resource was permanently removed.
+    case gone
+
+    /// HTTP 413 — the request payload exceeded the server's limit.
+    case payloadTooLarge
+
+    /// HTTP 416 — the `Range` header names a range the server cannot satisfy.
+    ///
+    /// Returned from ``OneLakeClient/read(alias:workspaceGUID:itemGUID:path:range:ifMatch:destination:)``
+    /// when the requested byte range lies beyond the end of the file.
+    case rangeNotSatisfiable
+
     /// HTTP 429 — the server is throttling this client.
     ///
     /// ``HTTPClient`` retries with backoff; this is only surfaced after all
     /// retry attempts are exhausted.
     case rateLimited
+
+    /// Any 5xx response after retries are exhausted.
+    case serverError(Int)
 
     /// Retries were exhausted. `attempts` is the total attempt count.
     case retriesExhausted(attempts: Int)
@@ -82,10 +97,15 @@ extension OneLakeError {
         case HTTPClientError.forbidden:           return .forbidden
         case HTTPClientError.notFound:            return .notFound
         case HTTPClientError.conflict:            return .conflict
+        case HTTPClientError.gone:                return .gone
         case HTTPClientError.preconditionFailed:  return .preconditionFailed
+        case HTTPClientError.payloadTooLarge:     return .payloadTooLarge
+        case HTTPClientError.rangeNotSatisfiable: return .rangeNotSatisfiable
         case HTTPClientError.throttled:           return .rateLimited
         case HTTPClientError.cancelled:           return .cancelled
         case is CancellationError:                return .cancelled
+        case let HTTPClientError.serverError(code):
+            return .serverError(code)
         case let HTTPClientError.retriesExhausted(attempts, _):
             return .retriesExhausted(attempts: attempts)
         default:

@@ -66,10 +66,27 @@ public enum FabricError: Error, Sendable {
 
 extension FabricError {
     /// Converts an ``HTTPClientError`` (or any error from the Net layer) to
-    /// a ``FabricError``. `.cancelled` handles Swift Concurrency task
-    /// cancellation explicitly.
+    /// a ``FabricError``.
+    ///
+    /// - First unwraps one level of ``HTTPClientError/apiError(_:)`` to reach
+    ///   the inner sentinel, mirroring `OneLakeError.from` (fabric-01).
+    /// - Maps bare ``CancellationError`` (Swift Concurrency cancellation) to
+    ///   `.cancelled` (fabric-02).
     static func from(_ error: any Error) -> FabricError {
-        switch error {
+        // fabric-01: unwrap apiError wrapper to reach the sentinel first,
+        // mirroring OneLakeError.from — without this, a retriesExhausted(last:
+        // apiError(…)) never matches any typed sentinel case and degrades to
+        // httpError.
+        let resolved: any Error
+        if let httpErr = error as? HTTPClientError,
+           case let HTTPClientError.apiError(ae) = httpErr,
+           let sentinel = ae.sentinel {
+            resolved = sentinel
+        } else {
+            resolved = error
+        }
+
+        switch resolved {
         case HTTPClientError.unauthorized:
             return .unauthorized
         case HTTPClientError.forbidden:
@@ -80,12 +97,14 @@ extension FabricError {
             return .rateLimited
         case HTTPClientError.cancelled:
             return .cancelled
+        case is CancellationError:           // fabric-02: bare Swift cancellation
+            return .cancelled
         case let HTTPClientError.serverError(code):
             return .serverError(code)
         case let HTTPClientError.retriesExhausted(attempts, _):
             return .retriesExhausted(attempts: attempts)
         default:
-            return .httpError(error)
+            return .httpError(resolved)
         }
     }
 }
