@@ -4,6 +4,10 @@
 
 <h3 align="center">OneLake Explorer for macOS</h3>
 
+<p align="center">
+  <a href="https://codecov.io/gh/sdebruyn/onelake-explorer-macos"><img src="https://codecov.io/gh/sdebruyn/onelake-explorer-macos/graph/badge.svg" alt="Code coverage" /></a>
+</p>
+
 **Browse Microsoft Fabric OneLake from Finder.** Like OneDrive or Google Drive — but for your data lake. Multiple accounts in multiple tenants, side by side, with a single Homebrew install.
 
 > Pre-release, under active development.

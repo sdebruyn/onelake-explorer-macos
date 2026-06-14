@@ -73,8 +73,38 @@ jobs:
       - name: Run OfemKit tests
         # The engine package owns all sync/auth/cache logic. No xcodegen
         # is needed — `swift test` resolves from Package.resolved directly.
+        # --enable-code-coverage emits LLVM profiles for the Codecov upload below.
         working-directory: Packages/OfemKit
-        run: swift test
+        run: swift test --enable-code-coverage
+
+      - name: Export coverage to lcov
+        working-directory: Packages/OfemKit
+        run: |
+          set -euo pipefail
+          bin=$(swift build --show-bin-path)
+          profdata="$bin/codecov/default.profdata"
+          # The test bundle's executable lives inside the .xctest on macOS.
+          xctest=$(find "$bin" -path '*.xctest/Contents/MacOS/*' -type f -name 'OfemKitPackageTests' | head -1)
+          test -n "$xctest" || { echo "OfemKit test bundle not found under $bin" >&2; exit 1; }
+          xcrun llvm-cov export -format=lcov \
+            -instr-profile "$profdata" "$xctest" \
+            -ignore-filename-regex='(/Tests/|/\.build/)' > coverage.lcov
+          # llvm-cov emits absolute compile paths; strip the workspace prefix so
+          # the SF: paths are repo-relative (e.g. Packages/OfemKit/Sources/...),
+          # which is what Codecov needs to map coverage onto the tree.
+          sed "s|${GITHUB_WORKSPACE}/||g" coverage.lcov > coverage.lcov.tmp
+          mv coverage.lcov.tmp coverage.lcov
+          echo "wrote coverage.lcov ($(wc -l < coverage.lcov) lines)"
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: Packages/OfemKit/coverage.lcov
+          flags: ofemkit
+          disable_search: true
+          # Never fail the build on a Codecov hiccup or a fork PR with no token.
+          fail_ci_if_error: false
 
   commitlint:
     name: Commitlint
