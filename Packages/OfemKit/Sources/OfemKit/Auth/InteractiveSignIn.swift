@@ -88,9 +88,10 @@ public enum InteractiveSignIn {
             scopes: TokenScope.loginScopes,
             webviewParameters: webviewParams
         )
-        // The redirect URI is set on the config, not on the token parameters.
-        // MSAL intercepts the `http://localhost` redirect via
-        // ASWebAuthenticationSession; no localhost server is required.
+        // The redirect URI (msauth.<bundleid>://auth) is set on the config,
+        // not on the token parameters. ASWebAuthenticationSession presents
+        // the Microsoft sign-in page and captures the callback to the
+        // app's custom scheme; no local web server is involved.
         params.promptType = .selectAccount
 
         let msalResult = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MSALResult, Error>) in

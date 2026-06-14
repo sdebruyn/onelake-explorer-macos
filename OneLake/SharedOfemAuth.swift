@@ -93,12 +93,27 @@ final class SharedOfemAuth {
         let webviewParams = MSALWebviewParameters(authPresentationViewController: parentVC)
         webviewParams.webviewType = .default
 
-        let result = try await InteractiveSignIn.acquireToken(
-            clientID: effectiveClientID,
-            tenantHint: tenantHint,
-            webviewParams: webviewParams,
-            cacheStrategy: .msalKeychain
-        )
+        let result: InteractiveSignInResult
+        do {
+            result = try await InteractiveSignIn.acquireToken(
+                clientID: effectiveClientID,
+                tenantHint: tenantHint,
+                webviewParams: webviewParams,
+                cacheStrategy: .msalKeychain
+            )
+        } catch let nsError as NSError where nsError.domain == "MSALErrorDomain" {
+            // Log only non-PII diagnostic fields. MSAL's userInfo also carries
+            // MSALDisplayableUserIdKey (the user's UPN) and MSALHomeAccountIdKey,
+            // which must never reach the log — see docs/auth.md "No token printing".
+            let description = nsError.userInfo[MSALErrorDescriptionKey] as? String ?? "(none)"
+            let internalCode = (nsError.userInfo[MSALInternalErrorCodeKey] as? NSNumber)?.stringValue ?? "(none)"
+            let oauthError = nsError.userInfo[MSALOAuthErrorKey] as? String ?? "(none)"
+            let correlationID = nsError.userInfo[MSALCorrelationIDKey] as? String ?? "(none)"
+            Self.log.error(
+                "SharedOfemAuth.signIn: MSAL error code=\(nsError.code, privacy: .public) internalCode=\(internalCode, privacy: .public) oauthError=\(oauthError, privacy: .public) correlationID=\(correlationID, privacy: .public) description=\(description, privacy: .public)"
+            )
+            throw nsError
+        }
 
         // Assign the optional custom clientID to the account before committing.
         var accountToCommit = result

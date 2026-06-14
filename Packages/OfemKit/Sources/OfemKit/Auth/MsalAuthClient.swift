@@ -190,9 +190,15 @@ enum MsalApplicationConfig {
     ) throws -> MSALPublicClientApplicationConfig {
         let authorityURL = try EntraAuthorityResolver.authority(tenantID: tenantID)
         let authority = try MSALAADAuthority(url: authorityURL)
+        // The redirect URI must use the msauth custom scheme so that
+        // ASWebAuthenticationSession can capture the callback. MSAL for
+        // Apple Platforms derives the AS callback scheme from this URI;
+        // http/https schemes are rejected by ASWebAuthenticationSession
+        // as invalid custom callback schemes. The Entra App Registration
+        // must list this URI under "Mobile and desktop applications".
         let config = MSALPublicClientApplicationConfig(
             clientId: clientID,
-            redirectUri: "http://localhost",
+            redirectUri: "msauth.\(OfemPaths.bundleID)://auth",
             authority: authority
         )
 

@@ -33,5 +33,16 @@
 	<string>Copyright © Debruyn Consultancy BV. MIT licensed.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.debruyn.ofem</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>msauth.dev.debruyn.ofem</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

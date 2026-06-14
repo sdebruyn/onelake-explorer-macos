@@ -20,9 +20,11 @@ In your own tenant (the one whose data you want to access), create a new App Reg
 |---|---|
 | **Name** | Anything you like, e.g. `OneLake Explorer (mac)` |
 | **Supported account types** | *Accounts in this organizational directory only* (single-tenant) is fine. Multi-tenant also works. |
-| **Redirect URI** | Platform **Mobile and desktop applications**, URI `http://localhost` |
+| **Redirect URI** | Platform **Mobile and desktop applications**, URI `msauth.dev.debruyn.ofem://auth` |
 | **Allow public client flows** | **Yes** (Authentication tab → Advanced settings) |
 | **API permissions** | Delegated permissions, admin-consented: <br>• `https://storage.azure.com/user_impersonation` (Azure Storage) <br>• `Workspace.Read.All` (Power BI Service) <br>• `Item.Read.All` (Power BI Service) |
+
+The redirect URI is always `msauth.dev.debruyn.ofem://auth` — even with your own Client ID. MSAL derives it from the OFEM app's bundle identifier (`dev.debruyn.ofem`), not from the registration, so the value is the same for everyone.
 
 Once those permissions are added, click **Grant admin consent** so users in your tenant do not get a consent prompt at every sign-in.
 
@@ -40,10 +42,10 @@ If you have [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)
 # Sign in to the right tenant.
 az login --tenant <your-tenant-id-or-domain>
 
-# 1. Register the app with a loopback redirect + public client flows on.
+# 1. Register the app with the OFEM custom-scheme redirect + public client flows on.
 APP_ID=$(az ad app create \
   --display-name "OneLake Explorer (mac)" \
-  --public-client-redirect-uris http://localhost \
+  --public-client-redirect-uris msauth.dev.debruyn.ofem://auth \
   --is-fallback-public-client true \
   --query appId -o tsv)
 echo "Client ID: $APP_ID"
@@ -86,7 +88,7 @@ You can enter either the tenant GUID or a verified domain (e.g. `contoso.onmicro
 If the sign-in fails after you paste a Client ID, the most common causes are:
 
 - Public client flows are not enabled. Authentication → Advanced settings → **Allow public client flows: Yes**.
-- Redirect URI is missing. Authentication → Platform configurations → **Mobile and desktop applications → http://localhost**.
+- Redirect URI is missing. Authentication → Platform configurations → **Mobile and desktop applications → msauth.dev.debruyn.ofem://auth**.
 - Admin consent has not been granted for the three delegated permissions. API permissions → **Grant admin consent for &lt;tenant&gt;**.
 
 Fix any of those and re-run *Add Account*; OFEM does not cache failed registrations, so the next attempt starts clean.
