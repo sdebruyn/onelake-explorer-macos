@@ -50,13 +50,17 @@ extension URLSession: URLSessionProtocol {}
 
 /// Maximum number of bytes `HTTPClient` will buffer from a single response body.
 ///
-/// Responses larger than this limit are rejected with
-/// ``HTTPClientError/responseTooLarge(bytesReceived:limit:)`` so a misbehaving
-/// server cannot cause an OOM crash in the memory-constrained FPE (net-19).
+/// When set to `Int.max` (the default), no limit is enforced — all response
+/// sizes are accepted. This is the correct default because `HTTPClient` is the
+/// only download path for OneLake file content, and files routinely exceed any
+/// reasonable hard cap.
 ///
-/// The default (32 MiB) covers all Fabric REST/metadata payloads; callers that
-/// need larger transfers must use a dedicated streaming path.
-public let httpClientDefaultResponseSizeLimit: Int = 32 * 1_024 * 1_024
+/// Callers that handle only small control-plane JSON payloads (e.g. a future
+/// `FabricClient`) may pass a lower value at construction time to get OOM
+/// protection for their specific use-case. The true fix for large file
+/// downloads (streaming via `session.bytes(for:)` instead of buffering) is
+/// tracked as net-19 and deferred to the WP-Clients work package.
+public let httpClientDefaultResponseSizeLimit: Int = Int.max
 
 // MARK: - HTTPClient
 
@@ -95,8 +99,8 @@ public final class HTTPClient: Sendable {
     ///   Default: ``HTTPGateRegistry/makeDefault()``.
     /// - retryPolicy: Retry parameters. Default: ``HTTPRetryPolicy()``.
     /// - userAgent: The `User-Agent` header appended to every request.
-    /// - responseSizeLimit: Maximum response body bytes to buffer. Default:
-    ///   ``httpClientDefaultResponseSizeLimit`` (32 MiB).
+    /// - responseSizeLimit: Maximum response body bytes to buffer for 2xx
+    ///   responses. Default: ``httpClientDefaultResponseSizeLimit`` (unlimited).
     public init(
         session: any URLSessionProtocol = URLSession.ofemDefault,
         gateRegistry: HTTPGateRegistry = HTTPGateRegistry.makeDefault(),
@@ -202,9 +206,10 @@ public final class HTTPClient: Sendable {
                 }
 
             if let err = slotError {
-                // If `runOneAttempt` returned an HTTPClientError (e.g.
-                // responseTooLarge), rethrow it directly without wrapping in
-                // .transport so callers can pattern-match on it precisely.
+                // Gate slot already released by withGateSlot above.
+                // Classify the error — transport errors go through the retry
+                // path; HTTPClientError (e.g. responseTooLarge on a 2xx body)
+                // surfaces immediately without wrapping.
                 if let clientErr = err as? HTTPClientError {
                     throw clientErr
                 }
@@ -226,6 +231,8 @@ public final class HTTPClient: Sendable {
                     )
                     if attempt < policy.maxAttempts {
                         let j = jitter(wait)
+                        // Gate slot already released; this sleep is outside
+                        // the gate slot so cancellation here does not leak.
                         try await Task.sleep(for: j)
                         wait = nextBackoff(wait, max: policy.maxBackoff)
                     }
@@ -324,6 +331,8 @@ public final class HTTPClient: Sendable {
             Self.log.warning(
                 "HTTPClient: retriable \(status, privacy: .public) attempt \(attempt, privacy: .public)/\(policy.maxAttempts, privacy: .public) waiting \(sleepDuration, privacy: .public)"
             )
+            // Gate slot already released; this sleep is outside the gate slot
+            // so cancellation here does not leak a concurrency slot.
             try await Task.sleep(for: sleepDuration)
         }
 
@@ -354,7 +363,14 @@ public final class HTTPClient: Sendable {
     /// Executes a single HTTP round-trip and returns the raw result.
     ///
     /// Returns `(data, response, nil)` on success or `(nil, nil, error)` on
-    /// transport failure. Enforces the response-size limit (net-19).
+    /// transport failure.
+    ///
+    /// The response-size limit (net-19) is applied **only to 2xx responses**
+    /// where the body is the content the caller asked for. Error-response
+    /// bodies (4xx/5xx) are returned as-is; the execute() loop classifies them
+    /// by status code and decides whether to retry — the body is usually a
+    /// small diagnostic string and discarding it would hide information from
+    /// the retry-exhausted error path.
     private func runOneAttempt(
         request: URLRequest,
         token: String?,
@@ -379,9 +395,15 @@ public final class HTTPClient: Sendable {
             return (nil, nil, URLError(.badServerResponse))
         }
 
-        // net-19: enforce response size limit — session.data(for:) buffers the
-        // full body in memory, so a large response risks OOM in the FPE.
-        if data.count > responseSizeLimit {
+        // net-19: enforce the response-size limit only for successful (2xx)
+        // responses — those are the bodies the caller actually wants to keep.
+        // For error responses the body is discarded by the status-code path
+        // anyway; enforcing the limit here would turn a retriable 503 with a
+        // large diagnostic body into a terminal responseTooLarge error, which
+        // is wrong (the BLOCKER the reviewer called out).
+        let status = httpResponse.statusCode
+        if status >= 200, status < 300, responseSizeLimit != Int.max,
+           data.count > responseSizeLimit {
             let limit = self.responseSizeLimit
             Self.log.error(
                 "HTTPClient[\(host, privacy: .public)]: response body \(data.count, privacy: .public) bytes exceeds limit \(limit, privacy: .public)"
