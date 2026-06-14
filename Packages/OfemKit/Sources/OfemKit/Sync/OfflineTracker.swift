@@ -69,8 +69,13 @@ public actor OfflineTracker {
     ///
     /// Deliberately restrictive: a 503 does NOT promote the engine to offline
     /// (paused capacity must not appear as an offline condition).
+    ///
+    /// The engine never hands a raw `URLError` here — the clients wrap transport
+    /// failures (`OneLakeError.httpError` / `FabricError.httpError` →
+    /// `HTTPClientError.transport`). So unwrap those to reach the underlying
+    /// `URLError` before classifying.
     public static func isOfflineError(_ error: any Error) -> Bool {
-        guard let urlError = error as? URLError else { return false }
+        guard let urlError = Self.underlyingURLError(error) else { return false }
         switch urlError.code {
         case .notConnectedToInternet,
              .networkConnectionLost,
@@ -85,6 +90,35 @@ public actor OfflineTracker {
         default:
             return false
         }
+    }
+
+    /// Unwraps the layers the engine wraps a transport failure in
+    /// (`OneLakeError.httpError` / `FabricError.httpError` /
+    /// `HTTPClientError.transport` / `HTTPClientError.retriesExhausted(last:)`)
+    /// to reach an underlying `URLError`, if any. HTTP/status errors (a wrapped
+    /// `HTTPClientError.apiError` / `.serverError`) are not transport failures
+    /// and resolve to `nil`, so a paused-capacity 503 is never seen as offline.
+    static func underlyingURLError(_ error: any Error) -> URLError? {
+        var current: (any Error)? = error
+        var depth = 0
+        while let err = current, depth < 5 {
+            if let urlError = err as? URLError { return urlError }
+            if let oneLake = err as? OneLakeError, case let .httpError(inner) = oneLake {
+                current = inner
+            } else if let fabric = err as? FabricError, case let .httpError(inner) = fabric {
+                current = inner
+            } else if let http = err as? HTTPClientError {
+                switch http {
+                case .transport(let inner): current = inner
+                case .retriesExhausted(_, let last): current = last
+                default: return nil
+                }
+            } else {
+                return nil
+            }
+            depth += 1
+        }
+        return nil
     }
 }
 

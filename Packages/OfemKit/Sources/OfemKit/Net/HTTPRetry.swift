@@ -188,3 +188,19 @@ func isRetriableURLError(_ error: any Error) -> Bool {
     }
     return false
 }
+
+/// Returns `true` for the "hard offline" transport codes — the host is
+/// definitively unreachable (no internet, or an established connection dropped),
+/// so retrying is pointless. The engine surfaces these immediately and falls
+/// back to cached content. Distinct from the flaky-host codes
+/// (`.cannotFindHost` / `.cannotConnectToHost` / `.dnsLookupFailed`), which can
+/// be transient on Apple platforms and stay retriable (net-16).
+func isHardOfflineURLError(_ error: any Error) -> Bool {
+    guard let urlError = error as? URLError else { return false }
+    switch urlError.code {
+    case .notConnectedToInternet, .networkConnectionLost:
+        return true
+    default:
+        return false
+    }
+}
