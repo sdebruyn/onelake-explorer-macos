@@ -1302,6 +1302,74 @@ struct SyncEngineTests {
         #expect(ol.deleteCalls[0].recursive == false)
     }
 
+    // MARK: - fix/offline-shortcircuit: open() offline fallback + isOffline via refreshFolder
+
+    /// When the freshness HEAD fails with the realistic wrapped offline shape that
+    /// the short-circuit path produces:
+    ///   OneLakeError.httpError(HTTPClientError.transport(URLError(.notConnectedToInternet)))
+    /// the engine must serve the stale cached blob and NOT touch the network again.
+    @Test("open() serves stale cached blob when freshness HEAD fails with wrapped offline error")
+    func testOpenServesStaleBlob_whenHeadFailsOffline() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+
+        // First open: prime the blob cache with a successful download.
+        let body = Data(repeating: 0xDE, count: 40)
+        let props = PathProperties.make(contentLength: 40, eTag: "v1")
+        ol.readResults.append(.success((body, props)))
+        _ = try await engine.open(key: key)
+        #expect(ol.readCalls.count == 1)
+
+        // Second open: HEAD fails with the exact wrapped shape the short-circuit
+        // path produces — NOT a bare OneLakeError.httpError(URLError(...)), but
+        // OneLakeError.httpError(HTTPClientError.transport(URLError(...))).
+        let offlineTransport = HTTPClientError.transport(URLError(.notConnectedToInternet))
+        let wrappedOffline = OneLakeError.httpError(offlineTransport)
+        ol.getPropertiesResults.append(.failure(wrappedOffline))
+
+        let blobURL = try await engine.open(key: key)
+        let data = try Data(contentsOf: blobURL)
+        #expect(data.count == 40)
+        #expect(data == body)
+        // No second network read — blob was served from the offline fallback path.
+        #expect(ol.readCalls.count == 1)
+    }
+
+    /// After a `refreshFolder` failure with the wrapped offline shape, `isOffline`
+    /// must flip to true because `offlineTracker.observe(_:)` was fed the error.
+    @Test("isOffline becomes true after refreshFolder fails with wrapped offline error via listPath")
+    func testIsOffline_trueAfterRefreshFolderFailsOffline() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Guard: starts online.
+        #expect(await engine.isOffline == false)
+
+        // Inject the realistic offline error that SyncEngine sees from OneLakeClient
+        // after the short-circuit path: transport-wrapped, then OneLake-wrapped.
+        let offlineTransport = HTTPClientError.transport(URLError(.notConnectedToInternet))
+        let wrappedOffline = OneLakeError.httpError(offlineTransport)
+        ol.listPathResults.append(.failure(wrappedOffline))
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
+        do {
+            _ = try await engine.refreshFolder(key: key)
+            Issue.record("Expected refreshFolder to throw")
+        } catch {
+            // The error is not a workspacePaused (503) so it should propagate as-is.
+            if case SyncError.workspacePaused = error {
+                Issue.record("Should not remap offline transport error to workspacePaused")
+            }
+        }
+
+        // OfflineTracker must now be in the offline state.
+        #expect(await engine.isOffline == true)
+    }
+
     @Test("delete() uses recursive=true when no cache row exists (unknown type)")
     func testDeleteUnknownTypeUsesRecursiveTrue() async throws {
         let ol = MockOneLakeClient()

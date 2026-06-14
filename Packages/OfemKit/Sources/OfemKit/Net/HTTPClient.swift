@@ -166,7 +166,15 @@ public final class HTTPClient: Sendable {
                 }
                 // Unwrap nested errors before classifying (net-09: wrapped errors).
                 let rootError = (error as NSError).userInfo[NSUnderlyingErrorKey] as? any Error ?? error
-                if isRetriableURLError(error) || isRetriableURLError(rootError),
+                // Hard-offline errors (no internet / connection dropped) are not
+                // worth retrying — the host is definitively unreachable. Surface
+                // them immediately as .transport so the engine detects offline and
+                // falls back to cached content instead of waiting out the backoff.
+                // Flaky-host codes (cannotFindHost/cannotConnectToHost) stay
+                // retriable per net-16.
+                let hardOffline = isHardOfflineURLError(error) || isHardOfflineURLError(rootError)
+                if !hardOffline,
+                   isRetriableURLError(error) || isRetriableURLError(rootError),
                    policy.canRetryTransportError(method: request.httpMethod ?? "GET") {
                     lastError = error
                     Self.log.warning("HTTPClient: transport error attempt \(attempt)/\(policy.maxAttempts, privacy: .public): \(error.localizedDescription, privacy: .public)")
