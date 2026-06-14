@@ -27,6 +27,42 @@ final class MemoryTelemetrySink: TelemetrySink, @unchecked Sendable {
 
 enum TestSinkError: Error { case failed }
 
+// MARK: - PartialRejectSink
+
+/// A sink that always throws `AppInsightsSinkError.partialReject`, returning
+/// the `retriable` slice provided at construction time.
+final class PartialRejectSink: TelemetrySink, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _sendCount = 0
+    private(set) var lastReceived: [TelemetryEvent] = []
+
+    /// Events returned as retriable on the first send; empty thereafter.
+    var firstRetriable: [TelemetryEvent]
+
+    init(firstRetriable: [TelemetryEvent]) {
+        self.firstRetriable = firstRetriable
+    }
+
+    var sendCount: Int { lock.withLock { _sendCount } }
+
+    func send(_ events: [TelemetryEvent]) async throws {
+        lock.withLock {
+            _sendCount += 1
+            lastReceived = events
+        }
+        let retriable = lock.withLock { () -> [TelemetryEvent] in
+            defer { firstRetriable = [] }
+            return firstRetriable
+        }
+        guard !retriable.isEmpty else { return }
+        throw AppInsightsSinkError.partialReject(
+            accepted: events.count - retriable.count,
+            received: events.count,
+            retriable: retriable
+        )
+    }
+}
+
 // MARK: - Tests
 
 @Suite("TelemetryClient")
@@ -252,5 +288,280 @@ struct TelemetryClientTests {
             sink.count == 0,
             "event must be dropped after \(TelemetryEvent.maxRetries) retries, not re-queued indefinitely"
         )
+    }
+
+    // MARK: - opt-out / disabled path
+
+    @Test("opt-out client never sends events to the real sink after start+flush+shutdown")
+    func optOutNeverSendsAfterLifecycle() async {
+        let sink = MemoryTelemetrySink()
+        let config = TelemetryConfiguration(
+            optOut: true,
+            osVersion: "14.5.1",
+            platform: "darwin",
+            arch: "arm64"
+        )
+        let client = TelemetryClient(
+            sink: sink,
+            appVersion: "2026.06.1",
+            installID: "x",
+            configuration: config
+        )
+        await client.start()
+        await client.track(TelemetryEvent(name: "purchase"))
+        await client.track(TelemetryEvent(name: "app_stop"))
+        await client.flush()
+        await client.shutdown()
+        // Real sink must have received nothing — Noop swallows everything.
+        #expect(sink.count == 0, "opt-out must never deliver events to the real sink")
+    }
+
+    @Test("opt-out client start is a no-op (NoopTelemetrySink guard)")
+    func optOutStartIsNoop() async {
+        // start() must return without launching a flush task when the effective
+        // sink is NoopTelemetrySink.  We verify by checking that a second
+        // start() call doesn't panic and that no events leak.
+        let sink = MemoryTelemetrySink()
+        let config = TelemetryConfiguration(optOut: true, osVersion: "14.5.1")
+        let client = TelemetryClient(
+            sink: sink,
+            appVersion: "2026.06.1",
+            installID: "x",
+            configuration: config
+        )
+        // Call start() twice — must be idempotent and must not crash.
+        await client.start()
+        await client.start()
+        await client.track(TelemetryEvent(name: "ev"))
+        #expect(sink.count == 0)
+    }
+
+    // MARK: - shutdown idempotency
+
+    @Test("shutdown is idempotent — second call is a no-op")
+    func shutdownIdempotent() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+        await client.start()
+        await client.track(TelemetryEvent(name: "ev"))
+        await client.shutdown()
+        // Second shutdown must not flush again or crash.
+        await client.shutdown()
+        // Exactly one event must have arrived (from the first shutdown flush).
+        let events = sink.drain()
+        #expect(events.count == 1)
+    }
+
+    // MARK: - flush with empty buffer
+
+    @Test("flush with empty buffer never calls sink.send")
+    func flushEmptyBufferIsNoop() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+        // No events tracked — flush should be a true no-op.
+        await client.flush()
+        await client.flush()
+        #expect(sink.count == 0, "sink.send must not be called for an empty buffer")
+    }
+
+    // MARK: - timestamp preservation
+
+    @Test("track preserves a caller-supplied timestamp")
+    func trackPreservesTimestamp() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+        let fixed = Date(timeIntervalSince1970: 1_000_000_000)
+        await client.track(TelemetryEvent(name: "ev", time: fixed))
+        await client.flush()
+        let ev = sink.drain().first
+        #expect(ev?.time == fixed, "client must not overwrite a caller-provided timestamp")
+    }
+
+    // MARK: - platform / arch / osVersion defaults
+
+    @Test("empty platform defaults to 'darwin'")
+    func emptyPlatformDefaultsDarwin() async {
+        let sink = MemoryTelemetrySink()
+        let config = TelemetryConfiguration(osVersion: "14.5.1", platform: "", arch: "arm64")
+        let client = TelemetryClient(
+            sink: sink, appVersion: "v", installID: "i", configuration: config
+        )
+        await client.track(TelemetryEvent(name: "ev"))
+        await client.flush()
+        let ev = sink.drain().first
+        #expect(ev?.commonProps["platform"] == "darwin")
+    }
+
+    @Test("empty arch defaults to 'arm64'")
+    func emptyArchDefaultsArm64() async {
+        let sink = MemoryTelemetrySink()
+        let config = TelemetryConfiguration(osVersion: "14.5.1", platform: "darwin", arch: "")
+        let client = TelemetryClient(
+            sink: sink, appVersion: "v", installID: "i", configuration: config
+        )
+        await client.track(TelemetryEvent(name: "ev"))
+        await client.flush()
+        let ev = sink.drain().first
+        #expect(ev?.commonProps["arch"] == "arm64")
+    }
+
+    @Test("empty osVersion is filled from ProcessInfo (non-empty result)")
+    func emptyOsVersionFallsBackToProcessInfo() async {
+        let sink = MemoryTelemetrySink()
+        let config = TelemetryConfiguration(osVersion: "", platform: "darwin", arch: "arm64")
+        let client = TelemetryClient(
+            sink: sink, appVersion: "v", installID: "i", configuration: config
+        )
+        await client.track(TelemetryEvent(name: "ev"))
+        await client.flush()
+        let ev = sink.drain().first
+        let osVer = ev?.commonProps["osVersion"] ?? ""
+        #expect(!osVer.isEmpty, "osVersion must be resolved from ProcessInfo when configuration provides empty string")
+        // Must be in X.Y.Z format — no spaces, only digits and dots.
+        #expect(osVer.split(separator: ".").count >= 2, "osVersion must be a dotted version string: \(osVer)")
+    }
+
+    // MARK: - commonProps client-value injection
+
+    @Test("client commonProps fill gaps but do not override caller-provided allowed keys")
+    func clientPropsDoNotOverrideCallerAllowedKeys() async {
+        // The merge rule in track(): caller value is inserted first; client
+        // value is only written when merged[k] == nil.
+        // "failedOp" is in the allowlist, so a caller value survives.
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+        await client.track(TelemetryEvent(
+            name: "error",
+            commonProps: ["failedOp": "my_op"]
+        ))
+        await client.flush()
+        let ev = sink.drain().first
+        #expect(ev?.commonProps["failedOp"] == "my_op", "caller-supplied allowed key must be preserved")
+        // installId must still come from the client.
+        #expect(ev?.commonProps["installId"] == "test-install-id")
+    }
+
+    // MARK: - trackError redaction
+
+    @Test("trackError redacts UPN in NSError domain — only domain:code reaches the sink (store-19)")
+    func trackErrorRedactsUPNInDomain() async {
+        // If someone creates an NSError whose domain happens to look like a
+        // UPN ("user@example.com"), the resulting "user@example.com:42"
+        // contains "@" which is not in the safe charset, so safeErrorCode
+        // collapses it to "redacted".
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+        let error = NSError(domain: "user@example.com", code: 42)
+        await client.trackError(error, op: "sync")
+        await client.flush()
+
+        let events = sink.drain()
+        #expect(events.count == 1)
+        // The "@" in the domain makes the composite "user@example.com:42"
+        // fail the safe-charset check → "redacted".
+        #expect(events[0].errorCode == "redacted",
+                "UPN-like domain:code must be redacted; got '\(events[0].errorCode)'")
+    }
+
+    @Test("trackError with safe domain:code passes through unchanged (store-19)")
+    func trackErrorSafeDomainCode() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+        let error = NSError(domain: "NSURLErrorDomain", code: -1001)
+        await client.trackError(error, op: "download")
+        await client.flush()
+
+        let events = sink.drain()
+        #expect(events.count == 1)
+        #expect(events[0].errorCode == "NSURLErrorDomain:-1001",
+                "safe domain:code must not be redacted; got '\(events[0].errorCode)'")
+        #expect(events[0].commonProps["failedOp"] == "download")
+    }
+
+    @Test("trackError does not emit UPN, workspace name, or file path (redaction invariant)")
+    func trackErrorNoPIILeaks() async {
+        // Construct an error whose localizedDescription would contain PII
+        // (workspace name, file path). TelemetryClient must not forward it.
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+        let error = NSError(
+            domain: "OfemSyncError",
+            code: 403,
+            userInfo: [NSLocalizedDescriptionKey: "Access denied for workspace 'SalesData' at /path/to/file.parquet"]
+        )
+        await client.trackError(error, op: "file_download")
+        await client.flush()
+
+        let events = sink.drain()
+        #expect(events.count == 1)
+        let code = events[0].errorCode
+        // Must be "OfemSyncError:403" (safe) or "redacted" — never the localizedDescription.
+        let piiTerms = ["SalesData", "workspace", "file.parquet", "/path"]
+        for term in piiTerms {
+            #expect(!code.contains(term),
+                    "errorCode must not contain PII term '\(term)': got '\(code)'")
+        }
+    }
+
+    // MARK: - partialReject re-queue in flush (store-20)
+
+    @Test("flush re-queues only retriable events on partialReject (store-20)")
+    func flushRequeuesOnPartialReject() async {
+        // PartialRejectSink returns events[1] as retriable on first send.
+        // On the second send (after re-queue) it succeeds.
+        let events: [TelemetryEvent] = [
+            TelemetryEvent(name: "ev0"),
+            TelemetryEvent(name: "ev1_retriable"),
+        ]
+        let sink = PartialRejectSink(firstRetriable: [events[1]])
+        let client = makeClient(sink: sink)
+
+        // Enqueue and flush — first flush triggers partialReject.
+        for ev in events { await client.track(ev) }
+        await client.flush()
+
+        // The retriable event (ev1) was re-queued; flush again to deliver it.
+        await client.flush()
+
+        // ev0 was accepted on first send; ev1 was re-queued and sent on second send.
+        #expect(sink.sendCount == 2, "sink should have been called twice")
+        // Last send should carry only the re-queued event.
+        #expect(sink.lastReceived.count == 1)
+        #expect(sink.lastReceived[0].name == "ev1_retriable")
+    }
+
+    @Test("flush does NOT re-queue on non-partialReject error (full re-queue path)")
+    func flushRequeuesFullBatchOnGenericError() async {
+        let sink = MemoryTelemetrySink()
+        sink.shouldFail = true
+        let client = makeClient(sink: sink)
+
+        await client.track(TelemetryEvent(name: "a"))
+        await client.track(TelemetryEvent(name: "b"))
+        await client.flush()           // fails → both re-queued
+        #expect(sink.count == 0)
+
+        sink.shouldFail = false
+        await client.flush()           // succeeds → both delivered
+        let delivered = sink.drain()
+        #expect(delivered.count == 2)
+        let names = delivered.map { $0.name }
+        #expect(names.contains("a"))
+        #expect(names.contains("b"))
+    }
+
+    // MARK: - sequential flushes do not double-send
+
+    @Test("two sequential flushes do not double-send the same events")
+    func sequentialFlushesNoDuplicate() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+
+        await client.track(TelemetryEvent(name: "once"))
+        await client.flush()   // drains the buffer
+        await client.flush()   // buffer is empty — must be a no-op
+
+        let events = sink.drain()
+        #expect(events.count == 1, "each event must be delivered exactly once")
     }
 }

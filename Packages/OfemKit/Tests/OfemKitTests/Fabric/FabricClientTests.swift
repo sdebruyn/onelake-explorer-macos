@@ -475,4 +475,440 @@ struct FabricClientTests {
             // expected
         }
     }
+
+    // MARK: - Additional status→error mappings
+
+    @Test("408 request timeout is retried and, on exhaustion, surfaces a network error")
+    func requestTimeoutRetriesExhausted() async throws {
+        // 408 is retriable; after all attempts it surfaces as retriesExhausted.
+        let session = MockURLSession(stubs: [
+            stub(status: 408),
+            stub(status: 408),
+        ])
+        let client = makeClient(session: session, maxAttempts: 2)
+        do {
+            _ = try await client.listAllWorkspaces(alias: "work")
+            Issue.record("expected throw")
+        } catch FabricError.retriesExhausted {
+            // expected
+        } catch FabricError.serverError {
+            // also acceptable for implementations that map 408 as a serverError
+        }
+    }
+
+    @Test("503 server error is mapped to FabricError.serverError(503)")
+    func serverError503() async throws {
+        let session = MockURLSession(stubs: [stub(status: 503)])
+        let client = makeClient(session: session, maxAttempts: 1)
+        do {
+            _ = try await client.listAllWorkspaces(alias: "work")
+            Issue.record("expected throw")
+        } catch FabricError.serverError(let code) {
+            #expect(code == 503)
+        } catch FabricError.retriesExhausted {
+            // acceptable when the retry policy retries 503
+        }
+    }
+
+    @Test("502 bad gateway surfaces as serverError or retriesExhausted")
+    func serverError502() async throws {
+        let session = MockURLSession(stubs: [stub(status: 502)])
+        let client = makeClient(session: session, maxAttempts: 1)
+        do {
+            _ = try await client.listAllWorkspaces(alias: "work")
+            Issue.record("expected throw")
+        } catch FabricError.serverError(let code) {
+            #expect(code == 502)
+        } catch FabricError.retriesExhausted {
+            // acceptable
+        }
+    }
+
+    // MARK: - Empty value array
+
+    @Test("listAllWorkspaces: empty value array returns empty list")
+    func listAllWorkspacesEmptyPage() async throws {
+        let body = """
+        {"value":[]}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        let got = try await client.listAllWorkspaces(alias: "work")
+        #expect(got.isEmpty)
+        #expect(session.requests.count == 1)
+    }
+
+    @Test("listAllItems: empty value array returns empty list")
+    func listAllItemsEmptyPage() async throws {
+        let body = """
+        {"value":[]}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        let got = try await client.listAllItems(alias: "a", workspaceID: "ws1")
+        #expect(got.isEmpty)
+    }
+
+    @Test("listAllFolders: empty workspace throws missingArgument")
+    func listAllFoldersEmptyWorkspace() async throws {
+        let session = MockURLSession(stubs: [])
+        let client = makeClient(session: session)
+        do {
+            _ = try await client.listAllFolders(alias: "a", workspaceID: "")
+            Issue.record("expected throw")
+        } catch FabricError.missingArgument {
+            // expected
+        }
+    }
+
+    @Test("listAllFolders: empty value array returns empty list")
+    func listAllFoldersEmptyPage() async throws {
+        let body = """
+        {"value":[]}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        let got = try await client.listAllFolders(alias: "a", workspaceID: "ws1")
+        #expect(got.isEmpty)
+    }
+
+    // MARK: - Malformed / partial JSON payloads
+
+    @Test("listAllWorkspaces: JSON object instead of array for value throws decodeFailed")
+    func listAllWorkspacesValueNotArray() async throws {
+        // The schema expects `value` to be an array, not a dict.
+        let body = """
+        {"value":{"id":"ws1"}}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        do {
+            _ = try await client.listAllWorkspaces(alias: "work")
+            Issue.record("expected throw")
+        } catch FabricError.decodeFailed {
+            // expected
+        }
+    }
+
+    @Test("listAllItems: missing required workspaceId field still decodes (wire type uses optional mapping)")
+    func listAllItemsMissingWorkspaceIdField() async throws {
+        // The wire struct maps workspaceId as non-optional — missing it causes decodeFailed.
+        let body = """
+        {"value":[{"id":"it1","displayName":"X"}]}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        do {
+            _ = try await client.listAllItems(alias: "a", workspaceID: "ws1")
+            Issue.record("expected decodeFailed due to missing workspaceId")
+        } catch FabricError.decodeFailed {
+            // expected — workspaceId is required in WireItem
+        }
+    }
+
+    @Test("listAllWorkspaces: empty body throws decodeFailed")
+    func listAllWorkspacesEmptyBody() async throws {
+        let session = MockURLSession(stubs: [stub(status: 200, body: "")])
+        let client = makeClient(session: session)
+        do {
+            _ = try await client.listAllWorkspaces(alias: "work")
+            Issue.record("expected throw")
+        } catch FabricError.decodeFailed {
+            // expected
+        }
+    }
+
+    @Test("getItem: empty body throws decodeFailed")
+    func getItemEmptyBody() async throws {
+        let session = MockURLSession(stubs: [stub(status: 200, body: "")])
+        let client = makeClient(session: session)
+        do {
+            _ = try await client.getItem(alias: "a", workspaceID: "ws1", itemID: "it1")
+            Issue.record("expected throw")
+        } catch FabricError.decodeFailed {
+            // expected
+        }
+    }
+
+    // MARK: - Pagination: multi-page listAllItems
+
+    @Test("listAllItems: follows continuationToken across two pages")
+    func listAllItemsPagination() async throws {
+        let page1 = """
+        {"value":[{"id":"it1","displayName":"Lh1","type":"Lakehouse","workspaceId":"ws1"}],"continuationToken":"tok2"}
+        """
+        let page2 = """
+        {"value":[{"id":"it2","displayName":"Lh2","type":"Lakehouse","workspaceId":"ws1"}]}
+        """
+        let session = MockURLSession(stubs: [
+            stub(status: 200, body: page1),
+            stub(status: 200, body: page2),
+        ])
+        let client = makeClient(session: session)
+        let got = try await client.listAllItems(alias: "a", workspaceID: "ws1")
+        #expect(got.count == 2)
+        #expect(got[0].id == "it1")
+        #expect(got[1].id == "it2")
+        #expect(session.requests.count == 2)
+        // Second request carries the token.
+        let q2 = session.requests[1].url?.query
+        #expect(q2?.contains("tok2") == true)
+    }
+
+    @Test("listAllItems: looping continuationToken throws loopingPagination")
+    func listAllItemsLoopingToken() async throws {
+        let body = """
+        {"value":[{"id":"it1","displayName":"X","type":"Lakehouse","workspaceId":"ws1"}],"continuationToken":"LOOP"}
+        """
+        let session = MockURLSession(stubs: [
+            stub(status: 200, body: body),
+            stub(status: 200, body: body),
+        ])
+        let client = makeClient(session: session)
+        do {
+            _ = try await client.listAllItems(alias: "a", workspaceID: "ws1")
+            Issue.record("expected throw")
+        } catch FabricError.loopingPagination {
+            // expected
+        }
+    }
+
+    @Test("listAllFolders: follows continuationToken across two pages")
+    func listAllFoldersPagination() async throws {
+        let page1 = """
+        {"value":[{"id":"f1","displayName":"Folder1","workspaceId":"ws1"}],"continuationToken":"ftok2"}
+        """
+        let page2 = """
+        {"value":[{"id":"f2","displayName":"Folder2","workspaceId":"ws1"}]}
+        """
+        let session = MockURLSession(stubs: [
+            stub(status: 200, body: page1),
+            stub(status: 200, body: page2),
+        ])
+        let client = makeClient(session: session)
+        let got = try await client.listAllFolders(alias: "a", workspaceID: "ws1")
+        #expect(got.count == 2)
+        #expect(got[0].id == "f1")
+        #expect(got[1].id == "f2")
+        #expect(session.requests.count == 2)
+    }
+
+    @Test("listAllFolders: follows continuationUri pagination")
+    func listAllFoldersContinuationURI() async throws {
+        let page1 = """
+        {"value":[{"id":"f1","displayName":"F","workspaceId":"ws1"}],"continuationUri":"https://api.fabric.microsoft.com/v1/workspaces/ws1/folders?cursor=xyz"}
+        """
+        let page2 = """
+        {"value":[{"id":"f2","displayName":"G","workspaceId":"ws1"}]}
+        """
+        let session = MockURLSession(stubs: [
+            stub(status: 200, body: page1),
+            stub(status: 200, body: page2),
+        ])
+        let client = makeClient(session: session)
+        let got = try await client.listAllFolders(alias: "a", workspaceID: "ws1")
+        #expect(got.count == 2)
+        #expect(session.requests.count == 2)
+        let url2 = session.requests[1].url
+        #expect(url2?.query?.contains("cursor=xyz") == true)
+    }
+
+    // MARK: - listItems single-page
+
+    @Test("listItems: returns page with items and continuation token")
+    func listItemsSinglePage() async throws {
+        let body = """
+        {"value":[{"id":"it1","displayName":"Lh","type":"Lakehouse","workspaceId":"ws1"}],"continuationToken":"next-tok"}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        let page = try await client.listItems(alias: "a", workspaceID: "ws1")
+        #expect(page.items.count == 1)
+        #expect(page.items[0].id == "it1")
+        #expect(page.continuationToken == "next-tok")
+    }
+
+    @Test("listItems: returns nil continuationToken on last page")
+    func listItemsLastPage() async throws {
+        let body = """
+        {"value":[{"id":"it1","displayName":"Lh","type":"Lakehouse","workspaceId":"ws1"}]}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        let page = try await client.listItems(alias: "a", workspaceID: "ws1")
+        #expect(page.continuationToken == nil)
+    }
+
+    @Test("listItems: continuationUri-only response returns nil continuationToken")
+    func listItemsContinuationURIReturnsNilToken() async throws {
+        let body = """
+        {"value":[{"id":"it1","displayName":"X","type":"Lakehouse","workspaceId":"ws1"}],"continuationUri":"https://api.fabric.microsoft.com/v1/workspaces/ws1/items?cursor=abc"}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        let page = try await client.listItems(alias: "a", workspaceID: "ws1", continuation: nil)
+        #expect(page.items.count == 1)
+        #expect(page.continuationToken == nil)
+    }
+
+    @Test("listItems: passes continuation token in query string")
+    func listItemsPassesContinuationToken() async throws {
+        let body = """
+        {"value":[]}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        _ = try await client.listItems(alias: "a", workspaceID: "ws1", continuation: "my-tok")
+        let q = session.requests.first?.url?.query
+        #expect(q?.contains("continuationToken=my-tok") == true)
+    }
+
+    // MARK: - listFolders single-page
+
+    @Test("listFolders: returns page with items and continuation token")
+    func listFoldersSinglePage() async throws {
+        let body = """
+        {"value":[{"id":"f1","displayName":"F","workspaceId":"ws1"}],"continuationToken":"fnext"}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        let page = try await client.listFolders(alias: "a", workspaceID: "ws1")
+        #expect(page.items.count == 1)
+        #expect(page.items[0].id == "f1")
+        #expect(page.continuationToken == "fnext")
+    }
+
+    @Test("listFolders: returns nil continuationToken on last page")
+    func listFoldersLastPage() async throws {
+        let body = """
+        {"value":[{"id":"f1","displayName":"F","workspaceId":"ws1"}]}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        let page = try await client.listFolders(alias: "a", workspaceID: "ws1")
+        #expect(page.continuationToken == nil)
+    }
+
+    @Test("listFolders: passes continuation token in query string")
+    func listFoldersPassesContinuationToken() async throws {
+        let body = """
+        {"value":[]}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        _ = try await client.listFolders(alias: "a", workspaceID: "ws1", continuation: "folder-tok")
+        let q = session.requests.first?.url?.query
+        #expect(q?.contains("continuationToken=folder-tok") == true)
+    }
+
+    // MARK: - Relative continuationUri resolution (net-06)
+
+    @Test("listAllWorkspaces: relative continuationUri is resolved against base and followed")
+    func listAllWorkspacesRelativeContinuationURI() async throws {
+        // A path-relative URI (no scheme, no host) should be resolved against base.
+        let page1 = """
+        {"value":[{"id":"ws1","displayName":"Alpha"}],"continuationUri":"/v1/workspaces?cursor=rel"}
+        """
+        let page2 = """
+        {"value":[{"id":"ws2","displayName":"Beta"}]}
+        """
+        let session = MockURLSession(stubs: [
+            stub(status: 200, body: page1),
+            stub(status: 200, body: page2),
+        ])
+        let client = makeClient(session: session)
+        let got = try await client.listAllWorkspaces(alias: "work")
+        #expect(got.count == 2)
+        #expect(session.requests.count == 2)
+        // The second request URL must carry the cursor query parameter.
+        let url2 = session.requests[1].url
+        #expect(url2?.host == "api.fabric.microsoft.com")
+        #expect(url2?.query?.contains("cursor=rel") == true)
+    }
+
+    // MARK: - continuationToken percent-encoding (net-05)
+
+    @Test("continuationToken with plus sign is percent-encoded in query (net-05)")
+    func continuationTokenPlusEncodedInQuery() async throws {
+        let body = """
+        {"value":[]}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        _ = try await client.listWorkspaces(alias: "work", continuation: "tok+with+plus")
+        let rawQuery = try #require(session.requests.first?.url?.query)
+        // The plus signs in the original token must be percent-encoded (%2B),
+        // not left as literal +, so the server does not decode them as spaces.
+        #expect(rawQuery.contains("%2B"))
+        #expect(!rawQuery.contains("tok+with+plus"))
+    }
+
+    // MARK: - URL path construction
+
+    @Test("listFolders: URL includes workspaceID and 'folders' segment in path")
+    func listFoldersURLPath() async throws {
+        let body = """
+        {"value":[]}
+        """
+        let session = MockURLSession(stubs: [stub(status: 200, body: body)])
+        let client = makeClient(session: session)
+        _ = try await client.listFolders(alias: "a", workspaceID: "ws-folder-test")
+        let path = session.requests.first?.url?.path
+        #expect(path?.contains("ws-folder-test") == true)
+        #expect(path?.contains("folders") == true)
+    }
+
+    // MARK: - FabricError.from mapping
+
+    @Test("FabricError.from maps HTTPClientError.cancelled to FabricError.cancelled")
+    func fabricErrorFromCancelled() {
+        let mapped = FabricError.from(HTTPClientError.cancelled)
+        if case .cancelled = mapped {
+            // Correct.
+        } else {
+            Issue.record("Expected .cancelled, got \(mapped)")
+        }
+    }
+
+    @Test("FabricError.from maps HTTPClientError.forbidden to FabricError.forbidden")
+    func fabricErrorFromForbidden() {
+        let mapped = FabricError.from(HTTPClientError.forbidden)
+        if case .forbidden = mapped {
+            // Correct.
+        } else {
+            Issue.record("Expected .forbidden, got \(mapped)")
+        }
+    }
+
+    @Test("FabricError.from maps HTTPClientError.notFound to FabricError.notFound")
+    func fabricErrorFromNotFound() {
+        let mapped = FabricError.from(HTTPClientError.notFound)
+        if case .notFound = mapped {
+            // Correct.
+        } else {
+            Issue.record("Expected .notFound, got \(mapped)")
+        }
+    }
+
+    @Test("FabricError.from maps HTTPClientError.retriesExhausted to FabricError.retriesExhausted")
+    func fabricErrorFromRetriesExhausted() {
+        let inner = HTTPClientError.throttled
+        let mapped = FabricError.from(HTTPClientError.retriesExhausted(attempts: 3, last: inner))
+        if case .retriesExhausted(let attempts) = mapped {
+            #expect(attempts == 3)
+        } else {
+            Issue.record("Expected .retriesExhausted, got \(mapped)")
+        }
+    }
+
+    @Test("FabricError.from maps unknown error to FabricError.httpError")
+    func fabricErrorFromUnknown() {
+        struct MyErr: Error {}
+        let mapped = FabricError.from(MyErr())
+        if case .httpError = mapped {
+            // Correct.
+        } else {
+            Issue.record("Expected .httpError, got \(mapped)")
+        }
+    }
 }

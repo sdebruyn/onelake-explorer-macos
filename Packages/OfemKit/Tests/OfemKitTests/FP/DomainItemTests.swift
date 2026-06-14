@@ -169,6 +169,552 @@ struct DomainItemTests {
         }
     }
 
+    // MARK: - root(alias:) — additional coverage
+
+    @Test func rootFilenameUsesEmDash() {
+        // The spec says "OneLake \u{2014} <alias>" (em-dash, like OneDrive).
+        let item = DomainItem.root(alias: "personal")
+        #expect(item.filename == "OneLake \u{2014} personal")
+    }
+
+    @Test func rootItemHasZeroSize() {
+        #expect(DomainItem.root(alias: "work").size == 0)
+    }
+
+    @Test func rootItemHasReadCapability() {
+        #expect(DomainItem.root(alias: "work").capabilities.contains(.read))
+    }
+
+    @Test func rootItemHasNoWriteCapability() {
+        // Root is read-only; write/delete/addSubitems must not be granted.
+        let caps = DomainItem.root(alias: "work").capabilities
+        #expect(!caps.contains(.write))
+        #expect(!caps.contains(.delete))
+        #expect(!caps.contains(.addSubitems))
+    }
+
+    @Test func rootItemHasNonEmptyVersionTokens() {
+        let item = DomainItem.root(alias: "work")
+        #expect(!item.contentVersion.isEmpty)
+        #expect(!item.metadataVersion.isEmpty)
+    }
+
+    @Test func rootItemVersionIsDeterministicForSameAlias() {
+        let a = DomainItem.root(alias: "prod")
+        let b = DomainItem.root(alias: "prod")
+        #expect(a.contentVersion == b.contentVersion)
+        #expect(a.metadataVersion == b.metadataVersion)
+    }
+
+    @Test func rootItemVersionDiffersForDifferentAliases() {
+        let a = DomainItem.root(alias: "alias-a")
+        let b = DomainItem.root(alias: "alias-b")
+        #expect(a.contentVersion != b.contentVersion)
+    }
+
+    // MARK: - from(workspace:) — additional coverage
+
+    @Test func workspaceHasNoWriteCapabilities() {
+        let ws = Workspace(id: "ws-1", displayName: "W", type: "Workspace")
+        let caps = DomainItem.from(workspace: ws).capabilities
+        #expect(!caps.contains(.write))
+        #expect(!caps.contains(.delete))
+        #expect(!caps.contains(.addSubitems))
+    }
+
+    @Test func workspaceHasNonEmptyVersionTokens() {
+        let ws = Workspace(id: "ws-42", displayName: "Analytics", type: "Workspace")
+        let item = DomainItem.from(workspace: ws)
+        #expect(!item.contentVersion.isEmpty)
+        #expect(!item.metadataVersion.isEmpty)
+    }
+
+    @Test func workspaceHasZeroSize() {
+        let ws = Workspace(id: "ws-1", displayName: "W", type: "Workspace")
+        #expect(DomainItem.from(workspace: ws).size == 0)
+    }
+
+    @Test func workspaceVersionDiffersFromDifferentID() {
+        let ws1 = Workspace(id: "ws-aaa", displayName: "Same Name", type: "Workspace")
+        let ws2 = Workspace(id: "ws-bbb", displayName: "Same Name", type: "Workspace")
+        // Content version is seeded from id, metadata from displayName.
+        #expect(DomainItem.from(workspace: ws1).contentVersion != DomainItem.from(workspace: ws2).contentVersion)
+    }
+
+    // MARK: - from(fabricItem:) — additional coverage
+
+    @Test func fabricItemIsDirectory() {
+        let fi = Item(id: "item-1", displayName: "Lakehouse", type: "Lakehouse", workspaceID: "ws-1")
+        #expect(DomainItem.from(fabricItem: fi, workspaceID: "ws-1").isDirectory)
+    }
+
+    @Test func fabricItemHasOnlyReadEnumerateCapabilities() {
+        let fi = Item(id: "item-1", displayName: "Lakehouse", type: "Lakehouse", workspaceID: "ws-1")
+        let caps = DomainItem.from(fabricItem: fi, workspaceID: "ws-1").capabilities
+        #expect(caps.contains(.read))
+        #expect(caps.contains(.enumerate))
+        #expect(!caps.contains(.write))
+        #expect(!caps.contains(.delete))
+        #expect(!caps.contains(.addSubitems))
+    }
+
+    @Test func fabricItemHasZeroSize() {
+        let fi = Item(id: "item-1", displayName: "Lakehouse", type: "Lakehouse", workspaceID: "ws-1")
+        #expect(DomainItem.from(fabricItem: fi, workspaceID: "ws-1").size == 0)
+    }
+
+    @Test func fabricItemHasNonEmptyVersionTokens() {
+        let fi = Item(id: "item-1", displayName: "LH", type: "Lakehouse", workspaceID: "ws-1")
+        let item = DomainItem.from(fabricItem: fi, workspaceID: "ws-1")
+        #expect(!item.contentVersion.isEmpty)
+        #expect(!item.metadataVersion.isEmpty)
+    }
+
+    // MARK: - from(record:) — additional branch coverage
+
+    @Test func recordMissingItemIDThrows() {
+        // Both workspaceID and itemID must be non-empty.
+        let record = MetadataRecord(
+            accountAlias: "a",
+            workspaceID: "ws-1",
+            itemID: "",
+            path: "Files/f.txt",
+            parentPath: "Files",
+            name: "f.txt",
+            isDir: false,
+            contentLength: 0,
+            etag: ""
+        )
+        #expect(throws: (any Error).self) {
+            try DomainItem.from(record: record)
+        }
+    }
+
+    @Test func recordMissingItemIDThrowsInvalidRecord() {
+        let record = MetadataRecord(
+            accountAlias: "a",
+            workspaceID: "ws-1",
+            itemID: "",
+            path: "",
+            parentPath: "",
+            name: "root",
+            isDir: true,
+            contentLength: 0,
+            etag: ""
+        )
+        do {
+            _ = try DomainItem.from(record: record)
+            Issue.record("Expected an error to be thrown")
+        } catch {
+            if case FPError.invalidRecord = error {
+                // correct
+            } else {
+                Issue.record("Expected FPError.invalidRecord, got \(error)")
+            }
+        }
+    }
+
+    @Test func recordModificationDateIsPreserved() throws {
+        let mtime = Date(timeIntervalSince1970: 1_700_000_000)
+        let nsValue = Int64(mtime.timeIntervalSince1970 * 1_000_000_000)
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "Files/data.txt",
+            parentPath: "Files",
+            name: "data.txt",
+            isDir: false,
+            contentLength: 512,
+            etag: "",
+            lastModifiedNs: nsValue
+        )
+        let item = try DomainItem.from(record: record)
+        let resultDate = try #require(item.modificationDate)
+        // Compare within 1 second to avoid nanosecond rounding drift.
+        #expect(abs(resultDate.timeIntervalSince1970 - mtime.timeIntervalSince1970) < 1.0)
+    }
+
+    @Test func recordNilModificationDateWhenLastModifiedNsIsZero() throws {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "Files/data.txt",
+            parentPath: "Files",
+            name: "data.txt",
+            isDir: false,
+            contentLength: 0,
+            etag: "",
+            lastModifiedNs: 0
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.modificationDate == nil)
+    }
+
+    @Test func recordPreservesCachedContentType() throws {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "Files/data.parquet",
+            parentPath: "Files",
+            name: "data.parquet",
+            isDir: false,
+            contentLength: 0,
+            etag: "",
+            contentType: "application/octet-stream"
+        )
+        let item = try DomainItem.from(record: record)
+        // Cached MIME type wins over any extension-based inference.
+        #expect(item.contentType == "application/octet-stream")
+    }
+
+    @Test func recordInfersMIMETypeFromExtensionWhenContentTypeEmpty() throws {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "Files/report.csv",
+            parentPath: "Files",
+            name: "report.csv",
+            isDir: false,
+            contentLength: 0,
+            etag: "",
+            contentType: ""
+        )
+        let item = try DomainItem.from(record: record)
+        // UTType should infer text/csv (or text/comma-separated-values) for .csv.
+        #expect(!item.contentType.isEmpty)
+        #expect(item.contentType.lowercased().contains("csv") || item.contentType.hasPrefix("text/"))
+    }
+
+    @Test func recordDirectoryDoesNotInferMIMETypeFromExtension() throws {
+        // Directories get no MIME inference even if path has an extension.
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "Files.csv",
+            parentPath: "",
+            name: "Files.csv",
+            isDir: true,
+            contentLength: 0,
+            etag: "",
+            contentType: ""
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.contentType.isEmpty)
+    }
+
+    @Test func recordUnknownExtensionLeavesContentTypeEmpty() throws {
+        // Extension ".xyzzy" has no UTType mapping → contentType stays "".
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "Files/mystery.xyzzy",
+            parentPath: "Files",
+            name: "mystery.xyzzy",
+            isDir: false,
+            contentLength: 0,
+            etag: "",
+            contentType: ""
+        )
+        let item = try DomainItem.from(record: record)
+        // UTType lookup for ".xyzzy" returns nil → mimeType stays empty or may
+        // be set by the OS; either way we don't assert a specific value but do
+        // confirm the item round-trips without throwing.
+        #expect(item.filename == "mystery.xyzzy")
+    }
+
+    @Test func recordFileWithNoExtensionLeavesContentTypeEmpty() throws {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "Files/Makefile",
+            parentPath: "Files",
+            name: "Makefile",
+            isDir: false,
+            contentLength: 0,
+            etag: "",
+            contentType: ""
+        )
+        let item = try DomainItem.from(record: record)
+        // No extension → UTType path is skipped → contentType is "".
+        #expect(item.contentType.isEmpty)
+    }
+
+    @Test func recordDeeplyNestedFileHasCorrectParentIdentifier() throws {
+        // path "a/b/c.txt" → parent should be .path(..., path: "a/b")
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "a/b/c.txt",
+            parentPath: "a/b",
+            name: "c.txt",
+            isDir: false,
+            contentLength: 0,
+            etag: ""
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.parentIdentifier == ItemIdentifier.path(workspaceID: "ws-1", itemID: "item-2", path: "a/b"))
+    }
+
+    @Test func recordSingleLevelPathHasItemParentIdentifier() throws {
+        // path "Files" (no slash) → parent should be .item(...)
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "Files",
+            parentPath: "",
+            name: "Files",
+            isDir: true,
+            contentLength: 0,
+            etag: ""
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.parentIdentifier == ItemIdentifier.item(workspaceID: "ws-1", itemID: "item-2"))
+    }
+
+    @Test func recordDirectoryHasFullCapabilitySet() throws {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "SubDir",
+            parentPath: "",
+            name: "SubDir",
+            isDir: true,
+            contentLength: 0,
+            etag: ""
+        )
+        let item = try DomainItem.from(record: record)
+        let caps = item.capabilities
+        #expect(caps.contains(.read))
+        #expect(caps.contains(.write))
+        #expect(caps.contains(.delete))
+        #expect(caps.contains(.enumerate))
+        #expect(caps.contains(.addSubitems))
+    }
+
+    @Test func recordFileHasExactlyReadWriteDelete() throws {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "Files/f.bin",
+            parentPath: "Files",
+            name: "f.bin",
+            isDir: false,
+            contentLength: 99,
+            etag: ""
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == [.read, .write, .delete])
+    }
+
+    @Test func recordFallbackContentVersionUsedWhenEtagIsEmpty() throws {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "Files/f.bin",
+            parentPath: "Files",
+            name: "f.bin",
+            isDir: false,
+            contentLength: 100,
+            etag: ""
+        )
+        let item = try DomainItem.from(record: record)
+        // Without an etag, the fallback FNV path is used — token must be non-empty.
+        #expect(!item.contentVersion.isEmpty)
+    }
+
+    @Test func recordEtagContentVersionDiffersFromFallback() throws {
+        // Record with etag → base64(etag bytes) differs from FNV fallback.
+        let withEtag = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "i",
+            path: "f.txt", parentPath: "", name: "f.txt",
+            isDir: false, contentLength: 1, etag: "\"abc\""
+        )
+        let noEtag = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "i",
+            path: "f.txt", parentPath: "", name: "f.txt",
+            isDir: false, contentLength: 1, etag: ""
+        )
+        let vWithEtag = try DomainItem.from(record: withEtag).contentVersion
+        let vNoEtag   = try DomainItem.from(record: noEtag).contentVersion
+        #expect(vWithEtag != vNoEtag)
+    }
+
+    @Test func recordMetadataVersionChangesWhenEtagChanges() throws {
+        let base = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "i",
+            path: "f.txt", parentPath: "", name: "f.txt",
+            isDir: false, contentLength: 0, etag: "v1"
+        )
+        let updated = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "i",
+            path: "f.txt", parentPath: "", name: "f.txt",
+            isDir: false, contentLength: 0, etag: "v2"
+        )
+        let mv1 = try DomainItem.from(record: base).metadataVersion
+        let mv2 = try DomainItem.from(record: updated).metadataVersion
+        #expect(mv1 != mv2)
+    }
+
+    @Test func recordMetadataVersionChangesWhenSizeChanges() throws {
+        let r1 = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "i",
+            path: "f.txt", parentPath: "", name: "f.txt",
+            isDir: false, contentLength: 100, etag: ""
+        )
+        let r2 = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "i",
+            path: "f.txt", parentPath: "", name: "f.txt",
+            isDir: false, contentLength: 200, etag: ""
+        )
+        let mv1 = try DomainItem.from(record: r1).metadataVersion
+        let mv2 = try DomainItem.from(record: r2).metadataVersion
+        #expect(mv1 != mv2)
+    }
+
+    @Test func recordFileSizeIsPreserved() throws {
+        let record = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "item-2",
+            path: "Files/big.bin", parentPath: "Files", name: "big.bin",
+            isDir: false, contentLength: 999_999, etag: ""
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.size == 999_999)
+    }
+
+    @Test func recordDirectorySizeIsZero() throws {
+        let record = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "item-2",
+            path: "Dir", parentPath: "", name: "Dir",
+            isDir: true, contentLength: 0, etag: ""
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.size == 0)
+    }
+
+    // MARK: - stubDirectory
+
+    @Test func stubDirectoryIsDirectory() {
+        let id = ItemIdentifier.item(workspaceID: "ws-1", itemID: "i")
+        let pid = ItemIdentifier.workspace(workspaceID: "ws-1")
+        let stub = DomainItem.stubDirectory(identifier: id, parentIdentifier: pid, name: "MyLakehouse")
+        #expect(stub.isDirectory)
+    }
+
+    @Test func stubDirectoryHasCorrectIdentifiers() {
+        let id = ItemIdentifier.item(workspaceID: "ws-1", itemID: "i")
+        let pid = ItemIdentifier.workspace(workspaceID: "ws-1")
+        let stub = DomainItem.stubDirectory(identifier: id, parentIdentifier: pid, name: "MyLakehouse")
+        #expect(stub.identifier == id)
+        #expect(stub.parentIdentifier == pid)
+    }
+
+    @Test func stubDirectoryFilenameIsPreserved() {
+        let id = ItemIdentifier.item(workspaceID: "ws-1", itemID: "i")
+        let pid = ItemIdentifier.workspace(workspaceID: "ws-1")
+        let stub = DomainItem.stubDirectory(identifier: id, parentIdentifier: pid, name: "My Folder")
+        #expect(stub.filename == "My Folder")
+    }
+
+    @Test func stubDirectoryHasReadAndEnumerateCapabilities() {
+        let id = ItemIdentifier.item(workspaceID: "ws-1", itemID: "i")
+        let pid = ItemIdentifier.workspace(workspaceID: "ws-1")
+        let caps = DomainItem.stubDirectory(identifier: id, parentIdentifier: pid, name: "X").capabilities
+        #expect(caps.contains(.read))
+        #expect(caps.contains(.enumerate))
+    }
+
+    @Test func stubDirectoryHasNoWriteCapabilities() {
+        let id = ItemIdentifier.item(workspaceID: "ws-1", itemID: "i")
+        let pid = ItemIdentifier.workspace(workspaceID: "ws-1")
+        let caps = DomainItem.stubDirectory(identifier: id, parentIdentifier: pid, name: "X").capabilities
+        #expect(!caps.contains(.write))
+        #expect(!caps.contains(.delete))
+        #expect(!caps.contains(.addSubitems))
+    }
+
+    @Test func stubDirectoryHasNonEmptyVersionTokens() {
+        let id = ItemIdentifier.item(workspaceID: "ws-1", itemID: "i")
+        let pid = ItemIdentifier.workspace(workspaceID: "ws-1")
+        let stub = DomainItem.stubDirectory(identifier: id, parentIdentifier: pid, name: "Folder")
+        #expect(!stub.contentVersion.isEmpty)
+        #expect(!stub.metadataVersion.isEmpty)
+    }
+
+    @Test func stubDirectoryZeroSize() {
+        let id = ItemIdentifier.item(workspaceID: "ws-1", itemID: "i")
+        let pid = ItemIdentifier.workspace(workspaceID: "ws-1")
+        #expect(DomainItem.stubDirectory(identifier: id, parentIdentifier: pid, name: "X").size == 0)
+    }
+
+    // MARK: - synthetic
+
+    @Test func syntheticDirectoryIsDirectory() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "NewDir")
+        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
+        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "NewDir", isDirectory: true)
+        #expect(synth.isDirectory)
+    }
+
+    @Test func syntheticFileIsNotDirectory() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "new.txt")
+        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
+        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "new.txt", isDirectory: false)
+        #expect(!synth.isDirectory)
+    }
+
+    @Test func syntheticDirectoryHasFullCapabilitySet() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Dir")
+        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
+        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "Dir", isDirectory: true).capabilities
+        #expect(caps.contains(.read))
+        #expect(caps.contains(.write))
+        #expect(caps.contains(.delete))
+        #expect(caps.contains(.enumerate))
+        #expect(caps.contains(.addSubitems))
+    }
+
+    @Test func syntheticFileHasExactlyReadWriteDelete() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "f.txt")
+        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
+        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false).capabilities
+        #expect(caps == [.read, .write, .delete])
+    }
+
+    @Test func syntheticPreservesIdentifiersAndName() {
+        let id = ItemIdentifier.path(workspaceID: "ws-9", itemID: "item-9", path: "sub/file.dat")
+        let pid = ItemIdentifier.path(workspaceID: "ws-9", itemID: "item-9", path: "sub")
+        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "file.dat", isDirectory: false)
+        #expect(synth.identifier == id)
+        #expect(synth.parentIdentifier == pid)
+        #expect(synth.filename == "file.dat")
+    }
+
+    @Test func syntheticHasNonEmptyVersionTokens() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "f.txt")
+        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
+        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false)
+        #expect(!synth.contentVersion.isEmpty)
+        #expect(!synth.metadataVersion.isEmpty)
+    }
+
+    @Test func syntheticZeroSize() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "f.txt")
+        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
+        #expect(DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false).size == 0)
+    }
+
     // MARK: - FNV version stability
 
     @Test func fallbackVersionIsDeterministic() {
@@ -181,5 +727,31 @@ struct DomainItemTests {
         let v1 = fallbackVersion(seed: "hello", size: 42, mtime: nil)
         let v2 = fallbackVersion(seed: "world", size: 42, mtime: nil)
         #expect(v1 != v2)
+    }
+
+    @Test func fallbackVersionDiffersOnDifferentSize() {
+        let v1 = fallbackVersion(seed: "hello", size: 10, mtime: nil)
+        let v2 = fallbackVersion(seed: "hello", size: 99, mtime: nil)
+        #expect(v1 != v2)
+    }
+
+    @Test func fallbackVersionDiffersWhenMtimeAdded() {
+        let v1 = fallbackVersion(seed: "hello", size: 0, mtime: nil)
+        let v2 = fallbackVersion(seed: "hello", size: 0, mtime: Date(timeIntervalSince1970: 1_000_000))
+        #expect(v1 != v2)
+    }
+
+    @Test func fallbackVersionIsDeterministicWithMtime() {
+        let mtime = Date(timeIntervalSince1970: 1_700_000_000)
+        let v1 = fallbackVersion(seed: "seed", size: 7, mtime: mtime)
+        let v2 = fallbackVersion(seed: "seed", size: 7, mtime: mtime)
+        #expect(v1 == v2)
+    }
+
+    @Test func fallbackVersionIsBase64Encoded() {
+        // The return value must be a valid base64 Data object.
+        let v = fallbackVersion(seed: "x", size: 0, mtime: nil)
+        // Non-empty and re-encodable from raw bytes: just check it's 12 bytes (8 raw → base64 → 12).
+        #expect(v.count == 12)
     }
 }

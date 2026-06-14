@@ -123,4 +123,136 @@ struct OfemPathsTests {
             )
         }
     }
+
+    // MARK: - Path segment names
+
+    @Test("configFile path segment is exactly 'config.toml'")
+    func configFileSegment() {
+        let root = URL(filePath: "/tmp/test-root")
+        let paths = OfemPaths(root: root)
+        #expect(paths.configFile.lastPathComponent == "config.toml")
+    }
+
+    @Test("cacheDir last path component is 'cache'")
+    func cacheDirSegment() {
+        let root = URL(filePath: "/tmp/test-root")
+        let paths = OfemPaths(root: root)
+        #expect(paths.cacheDir.lastPathComponent == "cache")
+    }
+
+    @Test("logDir last path component is 'log'")
+    func logDirSegment() {
+        let root = URL(filePath: "/tmp/test-root")
+        let paths = OfemPaths(root: root)
+        #expect(paths.logDir.lastPathComponent == "log")
+    }
+
+    @Test("tokensDir last path component is 'tokens'")
+    func tokensDirSegment() {
+        let root = URL(filePath: "/tmp/test-root")
+        let paths = OfemPaths(root: root)
+        #expect(paths.tokensDir.lastPathComponent == "tokens")
+    }
+
+    // MARK: - Path uniqueness
+
+    @Test("all resolved paths are distinct")
+    func allPathsAreDistinct() {
+        let root = URL(filePath: "/tmp/test-root")
+        let paths = OfemPaths(root: root)
+        let all = [
+            paths.configDir,
+            paths.configFile,
+            paths.cacheDir,
+            paths.logDir,
+            paths.tokensDir,
+        ]
+        // Every URL must be unique within the set.
+        #expect(Set(all).count == all.count)
+    }
+
+    // MARK: - Parent directory relationships
+
+    @Test("cacheDir parent is configDir")
+    func cacheDirParentIsConfigDir() {
+        let root = URL(filePath: "/tmp/test-root")
+        let paths = OfemPaths(root: root)
+        // Compare path components (trailing-slash insensitive: directory URLs
+        // carry a trailing slash, configDir does not).
+        #expect(paths.cacheDir.deletingLastPathComponent().pathComponents == paths.configDir.pathComponents)
+    }
+
+    @Test("logDir parent is configDir")
+    func logDirParentIsConfigDir() {
+        let root = URL(filePath: "/tmp/test-root")
+        let paths = OfemPaths(root: root)
+        #expect(paths.logDir.deletingLastPathComponent().pathComponents == paths.configDir.pathComponents)
+    }
+
+    @Test("tokensDir parent is configDir")
+    func tokensDirParentIsConfigDir() {
+        let root = URL(filePath: "/tmp/test-root")
+        let paths = OfemPaths(root: root)
+        #expect(paths.tokensDir.deletingLastPathComponent().pathComponents == paths.configDir.pathComponents)
+    }
+
+    @Test("configFile parent is configDir")
+    func configFileParentIsConfigDir() {
+        let root = URL(filePath: "/tmp/test-root")
+        let paths = OfemPaths(root: root)
+        #expect(paths.configFile.deletingLastPathComponent().pathComponents == paths.configDir.pathComponents)
+    }
+
+    // MARK: - Different roots produce independent path sets
+
+    @Test("two instances with different roots have no overlapping paths")
+    func differentRootsProduceIndependentPaths() {
+        let root1 = URL(filePath: "/tmp/ofem-root-a")
+        let root2 = URL(filePath: "/tmp/ofem-root-b")
+        let p1 = OfemPaths(root: root1)
+        let p2 = OfemPaths(root: root2)
+
+        #expect(p1.configDir    != p2.configDir)
+        #expect(p1.configFile   != p2.configFile)
+        #expect(p1.cacheDir     != p2.cacheDir)
+        #expect(p1.logDir       != p2.logDir)
+        #expect(p1.tokensDir    != p2.tokensDir)
+    }
+
+    // MARK: - Exotic root paths
+
+    @Test("paths with spaces in root are handled correctly")
+    func rootWithSpaces() {
+        let root = URL(filePath: "/tmp/my test root")
+        let paths = OfemPaths(root: root)
+        let configFilePath = paths.configFile.path(percentEncoded: false)
+        #expect(configFilePath.contains("my test root"))
+        #expect(configFilePath.hasSuffix("/config.toml"))
+    }
+
+    @Test("paths with Unicode characters in root are handled correctly")
+    func rootWithUnicodeCharacters() {
+        let root = URL(filePath: "/tmp/öfem-tëst")
+        let paths = OfemPaths(root: root)
+        let cachePath = paths.cacheDir.path(percentEncoded: false)
+        #expect(cachePath.contains("öfem-tëst"))
+        #expect(paths.cacheDir.pathComponents.last == "cache")
+    }
+
+    // MARK: - Default init structure
+
+    @Test("default init: configFile sits directly under configDir")
+    func defaultInitConfigFileUnderConfigDir() {
+        let paths = OfemPaths()
+        #expect(paths.configFile.deletingLastPathComponent().pathComponents == paths.configDir.pathComponents)
+        #expect(paths.configFile.lastPathComponent == "config.toml")
+    }
+
+    @Test("default init: cacheDir, logDir, tokensDir are all under configDir")
+    func defaultInitSubdirsUnderConfigDir() {
+        let paths = OfemPaths()
+        #expect(paths.cacheDir.deletingLastPathComponent().pathComponents == paths.configDir.pathComponents)
+        #expect(paths.logDir.deletingLastPathComponent().pathComponents == paths.configDir.pathComponents)
+        #expect(paths.tokensDir.deletingLastPathComponent().pathComponents == paths.configDir.pathComponents)
+    }
 }

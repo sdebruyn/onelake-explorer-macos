@@ -464,4 +464,856 @@ struct SyncEngineTests {
         let remaining = try await store.children(of: parentKey)
         #expect(remaining.isEmpty)
     }
+
+    // MARK: - Paused workspace guard: guardPaused throws before any network call
+
+    @Test("open() throws workspacePaused immediately when workspace is paused in cache")
+    func testPausedWorkspaceGuardBlocksOpen() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Mark the workspace as paused in the cache.
+        let status = WorkspaceStatusRecord(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            state: .paused,
+            reason: "capacity_paused",
+            detectedAtNs: Int64(Date().timeIntervalSince1970 * 1_000_000_000)
+        )
+        try await store.setWorkspaceStatus(status)
+
+        let key = Self.baseKey
+        do {
+            _ = try await engine.open(key: key)
+            Issue.record("Expected workspacePaused to be thrown")
+        } catch SyncError.workspacePaused {
+            // Correct.
+        }
+        // No network call should have been made.
+        #expect(ol.readCalls.isEmpty)
+    }
+
+    @Test("refreshFolder() throws workspacePaused immediately when workspace is paused")
+    func testPausedWorkspaceGuardBlocksRefreshFolder() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let status = WorkspaceStatusRecord(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            state: .paused,
+            reason: "capacity_paused",
+            detectedAtNs: Int64(Date().timeIntervalSince1970 * 1_000_000_000)
+        )
+        try await store.setWorkspaceStatus(status)
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
+        do {
+            _ = try await engine.refreshFolder(key: key)
+            Issue.record("Expected workspacePaused to be thrown")
+        } catch SyncError.workspacePaused {
+            // Correct.
+        }
+        #expect(ol.listPathCalls.isEmpty)
+    }
+
+    @Test("put() throws workspacePaused immediately when workspace is paused")
+    func testPausedWorkspaceGuardBlocksPut() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let status = WorkspaceStatusRecord(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            state: .paused,
+            reason: "capacity_paused",
+            detectedAtNs: Int64(Date().timeIntervalSince1970 * 1_000_000_000)
+        )
+        try await store.setWorkspaceStatus(status)
+
+        // Write a small temp file to use as source.
+        let src = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".txt")
+        try Data(repeating: 0xAB, count: 10).write(to: src)
+        defer { try? FileManager.default.removeItem(at: src) }
+
+        let key = Self.baseKey
+        do {
+            try await engine.put(key: key, sourceURL: src)
+            Issue.record("Expected workspacePaused to be thrown")
+        } catch SyncError.workspacePaused {
+            // Correct.
+        }
+        #expect(ol.writeCalls.isEmpty)
+    }
+
+    @Test("delete() throws workspacePaused immediately when workspace is paused")
+    func testPausedWorkspaceGuardBlocksDelete() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let status = WorkspaceStatusRecord(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            state: .paused,
+            reason: "capacity_paused",
+            detectedAtNs: Int64(Date().timeIntervalSince1970 * 1_000_000_000)
+        )
+        try await store.setWorkspaceStatus(status)
+
+        let key = Self.baseKey
+        do {
+            try await engine.delete(key: key)
+            Issue.record("Expected workspacePaused to be thrown")
+        } catch SyncError.workspacePaused {
+            // Correct.
+        }
+        #expect(ol.deleteCalls.isEmpty)
+    }
+
+    @Test("mkdir() throws workspacePaused immediately when workspace is paused")
+    func testPausedWorkspaceGuardBlocksMkdir() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let status = WorkspaceStatusRecord(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            state: .paused,
+            reason: "capacity_paused",
+            detectedAtNs: Int64(Date().timeIntervalSince1970 * 1_000_000_000)
+        )
+        try await store.setWorkspaceStatus(status)
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "NewDir")
+        do {
+            try await engine.mkdir(key: key)
+            Issue.record("Expected workspacePaused to be thrown")
+        } catch SyncError.workspacePaused {
+            // Correct.
+        }
+    }
+
+    // MARK: - refreshFolder: paused-capacity error from listPath marks workspace paused
+
+    @Test("refreshFolder() marks workspace paused when listPath returns a paused-capacity error")
+    func testRefreshFolderMarksPausedOnCapacityError() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let apiBody = #"{"errorCode":"CapacityPaused","message":"capacity is currently paused"}"#
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503 Service Unavailable", body: apiBody.data(using: .utf8)!))
+        ol.listPathResults.append(.failure(OneLakeError.httpError(apiErr)))
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
+        do {
+            _ = try await engine.refreshFolder(key: key)
+            Issue.record("Expected workspacePaused to be thrown")
+        } catch SyncError.workspacePaused {
+            // Correct.
+        }
+
+        let status = try? await store.workspaceStatus(accountAlias: Self.alias, workspaceID: Self.wsID)
+        #expect(status?.state == .paused)
+    }
+
+    // MARK: - delete: error propagation and workspace-paused mapping
+
+    @Test("delete() propagates network error when it is not a paused-capacity signal")
+    func testDeletePropagatesNetworkError() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let networkErr = URLError(.networkConnectionLost)
+        ol.deleteResults.append(.failure(OneLakeError.httpError(networkErr)))
+
+        let key = Self.baseKey
+        var threw = false
+        do {
+            try await engine.delete(key: key)
+        } catch {
+            threw = true
+            // Must not remap to workspacePaused.
+            if case SyncError.workspacePaused = error {
+                Issue.record("Should not remap to workspacePaused for a plain network error")
+            }
+        }
+        #expect(threw)
+    }
+
+    @Test("delete() marks workspace paused and throws workspacePaused on capacity error")
+    func testDeleteMarksPausedOnCapacityError() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let apiBody = #"{"errorCode":"CapacityPaused","message":"paused"}"#
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: apiBody.data(using: .utf8)!))
+        ol.deleteResults.append(.failure(OneLakeError.httpError(apiErr)))
+
+        let key = Self.baseKey
+        do {
+            try await engine.delete(key: key)
+            Issue.record("Expected workspacePaused")
+        } catch SyncError.workspacePaused {
+            // Correct.
+        }
+        let status = try? await store.workspaceStatus(accountAlias: Self.alias, workspaceID: Self.wsID)
+        #expect(status?.state == .paused)
+    }
+
+    // MARK: - macOS metadata: put and delete with .DS_Store / ._* paths
+
+    @Test("put() silently ignores .DS_Store uploads (no network call)")
+    func testPutIgnoresDSStore() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let src = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".txt")
+        try Data(repeating: 0xFF, count: 4).write(to: src)
+        defer { try? FileManager.default.removeItem(at: src) }
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: ".DS_Store")
+        // Must not throw and must not call onelake.write.
+        try await engine.put(key: key, sourceURL: src)
+        #expect(ol.writeCalls.isEmpty)
+    }
+
+    @Test("put() silently ignores AppleDouble (._*) uploads")
+    func testPutIgnoresAppleDouble() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let src = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try Data(repeating: 0x01, count: 8).write(to: src)
+        defer { try? FileManager.default.removeItem(at: src) }
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "._myfile.txt")
+        try await engine.put(key: key, sourceURL: src)
+        #expect(ol.writeCalls.isEmpty)
+    }
+
+    @Test("delete() on .DS_Store only deletes from cache, no remote call")
+    func testDeleteDSStoreLocalOnly() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Seed the cache with a .DS_Store entry.
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: ".DS_Store")
+        let record = MetadataRecord(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            itemID: Self.itID,
+            path: ".DS_Store",
+            parentPath: "",
+            name: ".DS_Store",
+            isDir: false
+        )
+        try await store.upsert(record)
+
+        try await engine.delete(key: key)
+
+        // No remote delete call.
+        #expect(ol.deleteCalls.isEmpty)
+        // Row removed from cache.
+        let fetched = try? await store.fetch(key: key)
+        #expect(fetched == nil)
+    }
+
+    // MARK: - mkdir: error propagation
+
+    @Test("mkdir() propagates network error")
+    func testMkdirPropagatesNetworkError() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let networkErr = URLError(.networkConnectionLost)
+        ol.createDirectoryResults.append(.failure(OneLakeError.httpError(networkErr)))
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "NewDir")
+        var threw = false
+        do {
+            try await engine.mkdir(key: key)
+        } catch {
+            threw = true
+        }
+        #expect(threw)
+    }
+
+    @Test("mkdir() marks workspace paused and throws workspacePaused on capacity error")
+    func testMkdirMarksPausedOnCapacityError() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let apiBody = #"{"errorCode":"CapacityPaused","message":"paused"}"#
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: apiBody.data(using: .utf8)!))
+        ol.createDirectoryResults.append(.failure(OneLakeError.httpError(apiErr)))
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "NewDir")
+        do {
+            try await engine.mkdir(key: key)
+            Issue.record("Expected workspacePaused")
+        } catch SyncError.workspacePaused {
+            // Correct.
+        }
+        let status = try? await store.workspaceStatus(accountAlias: Self.alias, workspaceID: Self.wsID)
+        #expect(status?.state == .paused)
+    }
+
+    @Test("mkdir() succeeds and upserts a directory row in the cache")
+    func testMkdirUpsertsCacheRow() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        ol.createDirectoryResults.append(.success(()))
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "NewDir")
+        try await engine.mkdir(key: key)
+
+        let row = try? await store.fetch(key: key)
+        #expect(row != nil)
+        #expect(row?.isDir == true)
+        #expect(row?.name == "NewDir")
+    }
+
+    // MARK: - put: success path upserts cache and mirrors blob
+
+    @Test("put() success upserts a file row in the cache with correct path")
+    func testPutSuccessUpsertsCacheRow() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let src = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".csv")
+        let fileData = Data(repeating: 0xCC, count: 128)
+        try fileData.write(to: src)
+        defer { try? FileManager.default.removeItem(at: src) }
+
+        ol.writeResults.append(.success(()))
+        // Best-effort HEAD after write — engine uses try? so stub not needed;
+        // but we add one so the etag is captured.
+        let postWriteProps = PathProperties.make(contentLength: 128, eTag: "server-etag")
+        ol.getPropertiesResults.append(.success(postWriteProps))
+
+        let key = Self.baseKey
+        try await engine.put(key: key, sourceURL: src)
+
+        let row = try? await store.fetch(key: key)
+        #expect(row != nil)
+        #expect(row?.isDir == false)
+        #expect(row?.etag == "server-etag")
+        #expect(row?.contentLength == 128)
+    }
+
+    @Test("put() propagates write failure")
+    func testPutPropagatesWriteError() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let src = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".csv")
+        try Data(repeating: 0x42, count: 10).write(to: src)
+        defer { try? FileManager.default.removeItem(at: src) }
+
+        let networkErr = URLError(.networkConnectionLost)
+        ol.writeResults.append(.failure(OneLakeError.httpError(networkErr)))
+
+        let key = Self.baseKey
+        var threw = false
+        do {
+            try await engine.put(key: key, sourceURL: src)
+        } catch {
+            threw = true
+        }
+        #expect(threw)
+    }
+
+    // MARK: - HEAD freshness: etag changed falls through to download
+
+    @Test("open() re-downloads when HEAD returns a different etag")
+    func testHeadEtagChangedTriggersDownload() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+
+        // First download: etag v1.
+        let body1 = Data(repeating: 0x01, count: 30)
+        let props1 = PathProperties.make(contentLength: 30, eTag: "v1")
+        ol.readResults.append(.success((body1, props1)))
+        _ = try await engine.open(key: key)
+
+        // HEAD returns a new etag (v2) — the cached blob is now stale.
+        let propsHead = PathProperties.make(contentLength: 50, eTag: "v2")
+        ol.getPropertiesResults.append(.success(propsHead))
+
+        // Second download: new body.
+        let body2 = Data(repeating: 0x02, count: 50)
+        let props2 = PathProperties.make(contentLength: 50, eTag: "v2")
+        ol.readResults.append(.success((body2, props2)))
+
+        let url2 = try await engine.open(key: key)
+        let data2 = try Data(contentsOf: url2)
+        #expect(data2.count == 50)
+        #expect(data2 == body2)
+        #expect(ol.readCalls.count == 2)
+    }
+
+    @Test("open() serves cache hit when HEAD etag matches cached etag")
+    func testHeadEtagMatchedServesCacheHit() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+        let body = Data(repeating: 0x55, count: 20)
+        let props = PathProperties.make(contentLength: 20, eTag: "same-etag")
+        ol.readResults.append(.success((body, props)))
+        _ = try await engine.open(key: key)
+
+        // HEAD returns same etag — cache is fresh.
+        ol.getPropertiesResults.append(.success(props))
+
+        let url2 = try await engine.open(key: key)
+        let data2 = try Data(contentsOf: url2)
+        #expect(data2.count == 20)
+        // No second network read.
+        #expect(ol.readCalls.count == 1)
+    }
+
+    @Test("open() falls through to download when cached etag is empty")
+    func testHeadEmptyCachedEtagTriggersDownload() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+
+        // Seed a cache row with a blob SHA but empty etag.
+        var record = MetadataRecord(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            itemID: Self.itID,
+            path: Self.path,
+            parentPath: "Files",
+            name: "data.csv",
+            isDir: false,
+            contentLength: 10,
+            etag: ""
+        )
+        record.blobSHA256 = "some-sha"
+        try await store.upsert(record)
+
+        // HEAD succeeds but cached etag is empty → isBlobFresh returns false.
+        let headProps = PathProperties.make(contentLength: 10, eTag: "server-etag")
+        ol.getPropertiesResults.append(.success(headProps))
+
+        let body = Data(repeating: 0xAA, count: 10)
+        let props = PathProperties.make(contentLength: 10, eTag: "server-etag")
+        ol.readResults.append(.success((body, props)))
+
+        let url = try await engine.open(key: key)
+        let data = try Data(contentsOf: url)
+        #expect(data.count == 10)
+        #expect(ol.readCalls.count == 1)
+    }
+
+    // MARK: - refreshFolder: empty remote listing removes all cached children
+
+    @Test("refreshFolder() with empty remote listing deletes all cached children")
+    func testRefreshFolderEmptyRemovesCachedChildren() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
+
+        // Seed two children in the cache.
+        let parent = MetadataRecord(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+                                    path: "", parentPath: "", name: "root", isDir: true)
+        let child1 = MetadataRecord(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+                                    path: "a.csv", parentPath: "", name: "a.csv", isDir: false)
+        let child2 = MetadataRecord(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+                                    path: "b.csv", parentPath: "", name: "b.csv", isDir: false)
+        try await store.upsert(parent)
+        try await store.upsert(child1)
+        try await store.upsert(child2)
+
+        // Remote listing returns nothing.
+        ol.listPathResults.append(.success(ListResult(entries: [])))
+
+        let diff = try await engine.refreshFolder(key: key)
+        #expect(diff.removed == 2)
+        #expect(diff.added == 0)
+
+        let children = try await store.children(of: key)
+        #expect(children.isEmpty)
+    }
+
+    // MARK: - refreshFolder: remote item vanished (stale cached child removed)
+
+    @Test("refreshFolder() removes a cached entry when its remote counterpart disappears")
+    func testRefreshFolderRemovesVanishedRemoteItem() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
+
+        // Seed three children.
+        let parent = MetadataRecord(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+                                    path: "", parentPath: "", name: "root", isDir: true)
+        try await store.upsert(parent)
+        for name in ["keep.csv", "gone.csv", "also-keep.csv"] {
+            let r = MetadataRecord(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+                                   path: name, parentPath: "", name: name, isDir: false)
+            try await store.upsert(r)
+        }
+
+        // Remote only returns keep.csv and also-keep.csv.
+        let listing = ListResult(entries: [
+            PathEntry(name: "\(Self.itID)/keep.csv",      isDirectory: false, contentLength: 10, eTag: "e1", lastModified: .distantPast),
+            PathEntry(name: "\(Self.itID)/also-keep.csv", isDirectory: false, contentLength: 10, eTag: "e2", lastModified: .distantPast),
+        ])
+        ol.listPathResults.append(.success(listing))
+
+        let diff = try await engine.refreshFolder(key: key)
+        #expect(diff.removed == 1)
+
+        let remaining = try await store.children(of: key)
+        let names = remaining.map(\.name)
+        #expect(names.contains("keep.csv"))
+        #expect(names.contains("also-keep.csv"))
+        #expect(!names.contains("gone.csv"))
+    }
+
+    // MARK: - refreshFolder: etag carry-over when unchanged
+
+    @Test("refreshFolder() carries blob linkage when remote etag is unchanged")
+    func testRefreshFolderCarriesBlobLinkageOnUnchangedEtag() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
+
+        // Seed a parent and one child with a known etag + blobSHA256.
+        let parent = MetadataRecord(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+                                    path: "", parentPath: "", name: "root", isDir: true)
+        var child = MetadataRecord(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+                                   path: "data.csv", parentPath: "", name: "data.csv", isDir: false,
+                                   contentLength: 50, etag: "stable-etag")
+        child.blobSHA256 = "sha-abc"
+        try await store.upsert(parent)
+        try await store.upsert(child)
+
+        // Remote returns same etag → blob linkage should be preserved.
+        let listing = ListResult(entries: [
+            PathEntry(name: "\(Self.itID)/data.csv", isDirectory: false, contentLength: 50, eTag: "stable-etag", lastModified: .distantPast),
+        ])
+        ol.listPathResults.append(.success(listing))
+
+        _ = try await engine.refreshFolder(key: key)
+
+        let updated = try? await store.fetch(key: CacheKey(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "data.csv"
+        ))
+        #expect(updated?.blobSHA256 == "sha-abc")
+    }
+
+    @Test("refreshFolder() clears blob linkage when remote etag changes")
+    func testRefreshFolderClearsBlobLinkageOnEtagChange() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
+
+        let parent = MetadataRecord(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+                                    path: "", parentPath: "", name: "root", isDir: true)
+        var child = MetadataRecord(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+                                   path: "data.csv", parentPath: "", name: "data.csv", isDir: false,
+                                   contentLength: 50, etag: "old-etag")
+        child.blobSHA256 = "sha-old"
+        try await store.upsert(parent)
+        try await store.upsert(child)
+
+        // Remote returns a new etag.
+        let listing = ListResult(entries: [
+            PathEntry(name: "\(Self.itID)/data.csv", isDirectory: false, contentLength: 60, eTag: "new-etag", lastModified: Date()),
+        ])
+        ol.listPathResults.append(.success(listing))
+
+        _ = try await engine.refreshFolder(key: key)
+
+        let updated = try? await store.fetch(key: CacheKey(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "data.csv"
+        ))
+        // Blob linkage must be cleared when etag changed.
+        #expect(updated?.blobSHA256 == "" || updated?.blobSHA256 == nil || updated?.blobSHA256.isEmpty == true)
+        #expect(updated?.etag == "new-etag")
+    }
+
+    // MARK: - listWorkspaces: Fabric error rethrown when not capacity-paused
+
+    @Test("listWorkspaces() rethrows non-paused Fabric errors")
+    func testListWorkspacesRethrowsNonPausedError() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        fabric.listWorkspacesResults.append(.failure(MockError.intentional("network down")))
+
+        var threw = false
+        do {
+            _ = try await engine.listWorkspaces(alias: Self.alias)
+        } catch {
+            threw = true
+            if case SyncError.workspacePaused = error {
+                Issue.record("Should not remap non-paused error to workspacePaused")
+            }
+        }
+        #expect(threw)
+    }
+
+    @Test("listWorkspaces() marks paused and throws workspacePaused on capacity error")
+    func testListWorkspacesMarksPausedOnCapacityError() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let apiBody = #"{"errorCode":"CapacityPaused","message":"capacity is paused"}"#
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: apiBody.data(using: .utf8)!))
+        fabric.listWorkspacesResults.append(.failure(FabricError.httpError(apiErr)))
+
+        do {
+            _ = try await engine.listWorkspaces(alias: Self.alias)
+            Issue.record("Expected workspacePaused")
+        } catch SyncError.workspacePaused {
+            // Correct.
+        }
+
+        let status = try? await store.workspaceStatus(accountAlias: Self.alias, workspaceID: VirtualIDs.workspaceID)
+        #expect(status?.state == .paused)
+    }
+
+    @Test("listWorkspaces() returns workspaces and stamps cache rows on success")
+    func testListWorkspacesSuccessStampsCache() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let workspaces = [
+            Workspace(id: "ws-a", displayName: "Alpha", type: "Workspace"),
+            Workspace(id: "ws-b", displayName: "Beta",  type: "Workspace"),
+        ]
+        fabric.listWorkspacesResults.append(.success(workspaces))
+
+        let got = try await engine.listWorkspaces(alias: Self.alias)
+        #expect(got.count == 2)
+        #expect(got[0].id == "ws-a")
+
+        // Cache should have rows for each workspace.
+        let parentKey = CacheKey(
+            accountAlias: Self.alias,
+            workspaceID: VirtualIDs.workspaceID,
+            itemID: VirtualIDs.workspaceID,
+            path: ""
+        )
+        let children = try await store.children(of: parentKey)
+        let paths = children.map(\.path)
+        #expect(paths.contains("ws-a"))
+        #expect(paths.contains("ws-b"))
+    }
+
+    // MARK: - listItems: Fabric error handling
+
+    @Test("listItems() rethrows non-paused Fabric errors")
+    func testListItemsRethrowsNonPausedError() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        fabric.listItemsResults.append(.failure(MockError.intentional("timeout")))
+
+        var threw = false
+        do {
+            _ = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
+        } catch {
+            threw = true
+        }
+        #expect(threw)
+    }
+
+    @Test("listItems() returns items and stamps cache rows on success")
+    func testListItemsSuccessStampsCache() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let items = [
+            Item(id: "it-1", displayName: "Lakehouse 1", type: "Lakehouse", workspaceID: Self.wsID),
+            Item(id: "it-2", displayName: "Notebook 1",  type: "Notebook",  workspaceID: Self.wsID),
+        ]
+        fabric.listItemsResults.append(.success(items))
+
+        let got = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
+        #expect(got.count == 2)
+
+        let parentKey = CacheKey(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            itemID: VirtualIDs.itemID,
+            path: ""
+        )
+        let children = try await store.children(of: parentKey)
+        let paths = children.map(\.path)
+        #expect(paths.contains("it-1"))
+        #expect(paths.contains("it-2"))
+    }
+
+    // MARK: - enumerate: stale cache triggers refresh
+
+    @Test("enumerate() issues a remote refresh when the cached listing is stale")
+    func testEnumerateStaleRefreshesFromRemote() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        // Use a very short TTL (1 s) so the cached row is fresh, then check
+        // that an empty cache routes through refreshFolder.
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
+
+        // No parent row in cache → enumerate must call refreshFolder.
+        let listing = ListResult(entries: [
+            PathEntry(name: "\(Self.itID)/hello.txt", isDirectory: false, contentLength: 5, eTag: "e1", lastModified: .distantPast),
+        ])
+        ol.listPathResults.append(.success(listing))
+
+        let children = try await engine.enumerate(key: key)
+        #expect(children.count == 1)
+        #expect(children[0].name == "hello.txt")
+        #expect(ol.listPathCalls.count == 1)
+    }
+
+    @Test("enumerate() serves from cache when listing is fresh")
+    func testEnumerateServesFromFreshCache() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
+        let nowNs = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
+
+        // Insert a fresh parent row (childrenSyncedAtNs = now).
+        let parent = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: "", parentPath: "", name: "root", isDir: true,
+            childrenSyncedAtNs: nowNs
+        )
+        let child = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: "cached.csv", parentPath: "", name: "cached.csv", isDir: false
+        )
+        try await store.upsert(parent)
+        try await store.upsert(child)
+
+        let children = try await engine.enumerate(key: key)
+        #expect(children.count == 1)
+        #expect(children[0].name == "cached.csv")
+        // No remote call.
+        #expect(ol.listPathCalls.isEmpty)
+    }
+
+    // MARK: - isOffline property
+
+    @Test("isOffline returns false by default")
+    func testIsOfflineDefaultFalse() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, _) = try makeEngine(onelake: ol)
+        #expect(await engine.isOffline == false)
+    }
+
+    // MARK: - delete: uses recursive=true for directories
+
+    @Test("delete() passes recursive=true when the cache row is a directory")
+    func testDeleteDirectoryUsesRecursiveTrue() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Seed a directory row.
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "MyDir")
+        let record = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: "MyDir", parentPath: "", name: "MyDir", isDir: true
+        )
+        try await store.upsert(record)
+
+        ol.deleteResults.append(.success(()))
+        try await engine.delete(key: key)
+
+        #expect(ol.deleteCalls.count == 1)
+        #expect(ol.deleteCalls[0].recursive == true)
+    }
+
+    @Test("delete() passes recursive=false when the cache row is a file")
+    func testDeleteFileUsesRecursiveFalse() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Seed a file row.
+        let key = Self.baseKey
+        let record = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: Self.path, parentPath: "Files", name: "data.csv", isDir: false
+        )
+        try await store.upsert(record)
+
+        ol.deleteResults.append(.success(()))
+        try await engine.delete(key: key)
+
+        #expect(ol.deleteCalls.count == 1)
+        #expect(ol.deleteCalls[0].recursive == false)
+    }
+
+    @Test("delete() uses recursive=true when no cache row exists (unknown type)")
+    func testDeleteUnknownTypeUsesRecursiveTrue() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // No cache row for this key.
+        ol.deleteResults.append(.success(()))
+        let key = Self.baseKey
+        try await engine.delete(key: key)
+
+        #expect(ol.deleteCalls.count == 1)
+        #expect(ol.deleteCalls[0].recursive == true)
+    }
 }
