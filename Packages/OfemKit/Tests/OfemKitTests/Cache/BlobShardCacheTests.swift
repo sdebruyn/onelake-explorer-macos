@@ -310,6 +310,257 @@ struct BlobShardCacheTests {
         #expect(size2 == 256, "dedup store must return the actual size, not 0 (blocker-4)")
     }
 
+    // MARK: - fileURL
+
+    @Test("fileURL returns the on-disk URL for a stored blob")
+    func fileURLReturnsURLForStoredBlob() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let data = Data("file url test".utf8)
+        let (sha, _) = try cache.store(data)
+        let url = cache.fileURL(sha256: sha)
+        #expect(url != nil)
+        #expect(FileManager.default.fileExists(atPath: url!.path))
+    }
+
+    @Test("fileURL returns nil when blob is not present")
+    func fileURLReturnsNilForMissingBlob() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let fakeSHA = String(repeating: "c", count: 64)
+        #expect(cache.fileURL(sha256: fakeSHA) == nil)
+    }
+
+    @Test("fileURL returns nil for a SHA with incorrect length")
+    func fileURLReturnsNilForBadLength() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        #expect(cache.fileURL(sha256: "tooshort") == nil)
+    }
+
+    // MARK: - storeFromURL (first-time move path)
+
+    @Test("storeFromURL moves source file into the blob store on first store")
+    func storeFromURLFirstStore() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let content = Data("storeFromURL content".utf8)
+        let srcURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try content.write(to: srcURL)
+        // Source is in the same temp volume; moveItem should succeed.
+
+        let (sha, size) = try cache.storeFromURL(srcURL)
+        #expect(sha.count == 64)
+        #expect(size == Int64(content.count))
+
+        // Blob must be loadable.
+        let loaded = try cache.load(sha256: sha)
+        #expect(loaded == content)
+    }
+
+    @Test("storeFromURL dedup path: second store of same content returns correct sha and size")
+    func storeFromURLDedup() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let content = Data(repeating: 0x99, count: 128)
+        let src1 = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let src2 = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try content.write(to: src1)
+        try content.write(to: src2)
+
+        let (sha1, size1) = try cache.storeFromURL(src1)
+        let (sha2, size2) = try cache.storeFromURL(src2)
+
+        #expect(sha1 == sha2)
+        #expect(size1 == 128)
+        #expect(size2 == 128)
+    }
+
+    @Test("storeFromURL preserves blob content identically")
+    func storeFromURLPreservesContent() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let content = Data((0..<512).map { UInt8($0 & 0xFF) })
+        let srcURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try content.write(to: srcURL)
+
+        let (sha, _) = try cache.storeFromURL(srcURL)
+        let loaded = try cache.load(sha256: sha)
+        #expect(loaded == content)
+    }
+
+    // MARK: - diskUsage when blobRoot is gone
+
+    @Test("diskUsage returns (0, 0) when blobRoot does not exist")
+    func diskUsageWhenRootMissing() throws {
+        let (cache, tmp) = try makeBlobCache()
+        // Manually remove the root to simulate missing directory.
+        try FileManager.default.removeItem(at: tmp)
+
+        let (count, bytes) = try cache.diskUsage()
+        #expect(count == 0)
+        #expect(bytes == 0)
+    }
+
+    @Test("diskUsage excludes .tmp files")
+    func diskUsageExcludesTmpFiles() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let data = Data("real blob".utf8)
+        _ = try cache.store(data)
+
+        // Plant a stray .tmp file directly under blobRoot.
+        let strayTmp = tmp.appendingPathComponent("leftover.tmp")
+        try Data("garbage".utf8).write(to: strayTmp)
+
+        let (count, bytes) = try cache.diskUsage()
+        #expect(count == 1)
+        #expect(bytes == Int64(data.count))
+    }
+
+    // MARK: - wipeAll (BlobShardCache struct, not CacheStore)
+
+    @Test("wipeAll removes all shard directories")
+    func wipeAllRemovesShards() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        _ = try cache.store(Data("a".utf8))
+        _ = try cache.store(Data("b".utf8))
+
+        let (countBefore, _) = try cache.diskUsage()
+        #expect(countBefore == 2)
+
+        try cache.wipeAll()
+
+        let (countAfter, bytesAfter) = try cache.diskUsage()
+        #expect(countAfter == 0)
+        #expect(bytesAfter == 0)
+    }
+
+    // MARK: - SHA validation in delete
+
+    @Test("delete throws invalidSHA for a too-short SHA")
+    func deleteThrowsInvalidSHAForBadLength() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        #expect(throws: CacheError.invalidSHA("bad")) {
+            try cache.delete(sha256: "bad")
+        }
+    }
+
+    @Test("delete throws invalidSHA for non-hex characters")
+    func deleteThrowsInvalidSHAForNonHex() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        // 64 chars, but contains 'g' which is not valid hex.
+        let badSHA = String(repeating: "g", count: 64)
+        #expect(throws: CacheError.invalidSHA(badSHA)) {
+            try cache.delete(sha256: badSHA)
+        }
+    }
+
+    // MARK: - shardPath layout
+
+    @Test("shardPath splits SHA into 2-char prefix and 62-char suffix")
+    func shardPathLayout() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let sha = String(repeating: "a", count: 64)
+        let (dir, file) = cache.shardPath(for: sha)
+        #expect(dir.lastPathComponent == "aa")
+        #expect(file.lastPathComponent == String(repeating: "a", count: 62))
+        #expect(file.deletingLastPathComponent() == dir)
+    }
+
+    // MARK: - validateSHA
+
+    @Test("validateSHA accepts a valid 64-char lowercase hex string")
+    func validateSHAAcceptsValid() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        // All hex digits 0-9 and a-f are valid.
+        let valid = "0123456789abcdef" + String(repeating: "a", count: 48)
+        // Should not throw.
+        try cache.validateSHA(valid)
+    }
+
+    @Test("validateSHA rejects SHA with uppercase letters")
+    func validateSHARejectsUppercase() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let upper = String(repeating: "A", count: 64)
+        do {
+            try cache.validateSHA(upper)
+            Issue.record("Expected invalidSHA")
+        } catch CacheError.invalidSHA(let sha) {
+            #expect(sha == upper)
+        }
+    }
+
+    @Test("validateSHA rejects SHA with 63 characters (one short)")
+    func validateSHARejectsTooShort() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let short = String(repeating: "a", count: 63)
+        do {
+            try cache.validateSHA(short)
+            Issue.record("Expected invalidSHA")
+        } catch CacheError.invalidSHA(let sha) {
+            #expect(sha == short)
+        }
+    }
+
+    // MARK: - load throws blobIOError for non-missing filesystem errors
+
+    @Test("load throws notFound for a SHA that points to a missing file")
+    func loadThrowsNotFoundForMissingFile() throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let sha = String(repeating: "d", count: 64)
+        do {
+            _ = try cache.load(sha256: sha)
+            Issue.record("Expected notFound")
+        } catch CacheError.notFound(let desc) {
+            #expect(desc.contains(sha))
+        }
+    }
+
+    // MARK: - Concurrent store of the same SHA
+
+    @Test("Concurrent stores of the same content produce identical SHA and are idempotent")
+    func concurrentStoresSameContent() async throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let content = Data(repeating: 0x42, count: 1024)
+        let expectedSHA = sha256Hex(content)
+
+        // Launch multiple concurrent stores of the same data.
+        try await withThrowingTaskGroup(of: (String, Int64).self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    try cache.store(content)
+                }
+            }
+            for try await (sha, size) in group {
+                #expect(sha == expectedSHA)
+                #expect(size == Int64(content.count))
+            }
+        }
+
+        // Exactly one blob file must exist.
+        let (count, bytes) = try cache.diskUsage()
+        #expect(count == 1)
+        #expect(bytes == Int64(content.count))
+    }
+
     // MARK: - Wipe
 
     @Test("Wipe clears all blobs and metadata links")

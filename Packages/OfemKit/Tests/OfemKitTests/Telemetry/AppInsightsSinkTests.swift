@@ -2,6 +2,24 @@ import Testing
 @testable import OfemKit
 import Foundation
 
+/// Reads a request's body. Inside a `URLProtocol` handler the body always
+/// arrives as `httpBodyStream` (URLSession converts `httpBody` to a stream
+/// before handing the request to the protocol), so drain the stream.
+private func requestBody(_ request: URLRequest) -> Data? {
+    if let body = request.httpBody { return body }
+    guard let stream = request.httpBodyStream else { return nil }
+    stream.open()
+    defer { stream.close() }
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while stream.hasBytesAvailable {
+        let read = stream.read(&buffer, maxLength: buffer.count)
+        if read <= 0 { break }
+        data.append(buffer, count: read)
+    }
+    return data
+}
+
 // MARK: - Stub URL protocol
 
 /// A `URLProtocol` subclass that returns a pre-configured stub response
@@ -13,7 +31,7 @@ import Foundation
 /// test's handler is active at a time.
 final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var currentHandler: ((URLRequest) -> (Data, HTTPURLResponse))?
-    private static let lock = NSLock()
+    static let lock = NSLock()
 
     override class func canInit(with _: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -410,6 +428,230 @@ struct AppInsightsSinkHTTPTests {
             let names = retriable.map { $0.name }
             #expect(!names.contains(events[0].name))
             #expect(!names.contains(events[2].name))
+        }
+    }
+
+    @Test("empty events array is a no-op — no HTTP request is made")
+    func emptyBatchIsNoop() async throws {
+        // Set the handler to nil so any actual POST would trigger a transport
+        // error via the "no handler" path in StubURLProtocol.startLoading().
+        StubURLProtocol.lock.withLock { StubURLProtocol.currentHandler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let sink = try makeSink(session: session)
+        // Must complete without throwing even though no stub is installed.
+        try await sink.send([])
+    }
+
+    @Test("transport error wraps the underlying error in AppInsightsSinkError.transport")
+    func transportErrorWrapped() async throws {
+        // Nil handler → StubURLProtocol fires URLError(.unknown), which must
+        // be caught and rethrown as .transport(_).
+        StubURLProtocol.lock.withLock { StubURLProtocol.currentHandler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let sink = try makeSink(session: session)
+        do {
+            try await sink.send(makeEvents(1))
+            Issue.record("Expected transport error")
+        } catch {
+            if case AppInsightsSinkError.transport = error {
+                // Correct — underlying URLError is wrapped.
+            } else {
+                Issue.record("Expected .transport, got \(error)")
+            }
+        }
+    }
+
+    @Test("404 client error throws ingestion error (non-retriable 4xx)")
+    func status404() async throws {
+        let session = StubURLProtocol.makeSession(statusCode: 404, body: "Not Found")
+        let sink = try makeSink(session: session)
+        do {
+            try await sink.send(makeEvents(1))
+            Issue.record("Expected ingestion error")
+        } catch AppInsightsSinkError.ingestion(let code, let body) {
+            #expect(code == 404)
+            #expect(body == "Not Found")
+        }
+    }
+
+    @Test("503 server error throws ingestion error with body")
+    func status503() async throws {
+        let session = StubURLProtocol.makeSession(statusCode: 503, body: "Service Unavailable")
+        let sink = try makeSink(session: session)
+        do {
+            try await sink.send(makeEvents(1))
+            Issue.record("Expected ingestion error")
+        } catch AppInsightsSinkError.ingestion(let code, let body) {
+            #expect(code == 503)
+            #expect(body == "Service Unavailable")
+        }
+    }
+
+    @Test("3xx response throws ingestion error (not a 2xx)")
+    func status302() async throws {
+        let session = StubURLProtocol.makeSession(statusCode: 302, body: "")
+        let sink = try makeSink(session: session)
+        do {
+            try await sink.send(makeEvents(1))
+            Issue.record("Expected ingestion error")
+        } catch AppInsightsSinkError.ingestion(let code, _) {
+            #expect(code == 302)
+        }
+    }
+
+    @Test("POST request carries correct headers and JSON body")
+    func postRequestShape() async throws {
+        var capturedRequest: URLRequest?
+        var capturedBody: Data?
+        StubURLProtocol.lock.withLock {
+            StubURLProtocol.currentHandler = { request in
+                capturedRequest = request
+                capturedBody = requestBody(request)
+                let resp = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                return (Data(), resp)
+            }
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let sink = try makeSink(session: session)
+        try await sink.send(makeEvents(2))
+
+        let req = try #require(capturedRequest, "No request was captured")
+        #expect(req.httpMethod == "POST")
+        #expect(req.value(forHTTPHeaderField: "Content-Type") == "application/json; charset=utf-8")
+        #expect(req.value(forHTTPHeaderField: "Accept") == "application/json")
+        #expect(req.url?.absoluteString == "https://eastus.in.applicationinsights.azure.com/v2/track")
+
+        // Body must be a JSON array of 2 envelopes.
+        let body = try #require(capturedBody, "Request body must not be nil")
+        let json = try JSONSerialization.jsonObject(with: body) as! [[String: Any]]
+        #expect(json.count == 2)
+        #expect(json[0]["iKey"] as? String == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        #expect(json[0]["name"] as? String == "Microsoft.ApplicationInsights.Event")
+    }
+
+    @Test("iKey in envelope matches the instrumentation key from the connection string")
+    func iKeyInEnvelope() async throws {
+        var capturedBody: Data?
+        StubURLProtocol.lock.withLock {
+            StubURLProtocol.currentHandler = { request in
+                capturedBody = requestBody(request)
+                let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data(), resp)
+            }
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let sink = try AppInsightsSink(
+            connectionString:
+                "InstrumentationKey=12345678-1234-1234-1234-123456789abc;" +
+                "IngestionEndpoint=https://westeurope.in.applicationinsights.azure.com/",
+            installID: "inst",
+            appVersion: "2026.06.1",
+            session: session
+        )
+        try await sink.send(makeEvents(1))
+
+        let body = try #require(capturedBody)
+        let json = try JSONSerialization.jsonObject(with: body) as! [[String: Any]]
+        #expect(json[0]["iKey"] as? String == "12345678-1234-1234-1234-123456789abc")
+    }
+
+    @Test("sdkTag is 'ofem' when appVersion is empty")
+    func sdkTagEmptyVersion() throws {
+        let sink = try AppInsightsSink(
+            connectionString: validConnectionString,
+            installID: "",
+            appVersion: "",
+            session: StubURLProtocol.makeSession(statusCode: 200)
+        )
+        #expect(sink.sdkTag == "ofem")
+    }
+
+    @Test("sdkTag is 'ofem:<version>' when appVersion is provided")
+    func sdkTagWithVersion() throws {
+        let sink = try makeSink()
+        #expect(sink.sdkTag == "ofem:2026.06.1")
+    }
+
+    @Test("206 with malformed JSON body does not throw (graceful decode failure)")
+    func status206MalformedBody() async throws {
+        // If the 206 body cannot be decoded as TrackResponse the sink should
+        // not throw — it falls through the guard-let without a partialReject.
+        let session = StubURLProtocol.makeSession(statusCode: 206, body: "not-json{{{")
+        let sink = try makeSink(session: session)
+        try await sink.send(makeEvents(2))  // Must not throw.
+    }
+
+    @Test("206 with out-of-bounds error index is filtered out")
+    func status206OutOfBoundsIndex() async throws {
+        // Index 99 is beyond the 2-event batch; should produce no retriable items.
+        let body = """
+        {
+          "itemsReceived": 2,
+          "itemsAccepted": 1,
+          "errors": [{"index": 99, "statusCode": 503, "message": "Unavailable"}]
+        }
+        """
+        let session = StubURLProtocol.makeSession(statusCode: 206, body: body)
+        let sink = try makeSink(session: session)
+        // No retriable items → should not throw.
+        try await sink.send(makeEvents(2))
+    }
+
+    @Test("206 with only 408 retriable error code re-queues correctly")
+    func status206Retriable408() async throws {
+        let body = """
+        {
+          "itemsReceived": 1,
+          "itemsAccepted": 0,
+          "errors": [{"index": 0, "statusCode": 408, "message": "Timeout"}]
+        }
+        """
+        let session = StubURLProtocol.makeSession(statusCode: 206, body: body)
+        let events = makeEvents(1)
+        let sink = try makeSink(session: session)
+        do {
+            try await sink.send(events)
+            Issue.record("Expected partialReject for 408")
+        } catch AppInsightsSinkError.partialReject(let accepted, let received, let retriable) {
+            #expect(accepted == 0)
+            #expect(received == 1)
+            #expect(retriable.count == 1)
+        }
+    }
+
+    @Test("206 with only 429 retriable error code re-queues correctly")
+    func status206Retriable429() async throws {
+        let body = """
+        {
+          "itemsReceived": 2,
+          "itemsAccepted": 0,
+          "errors": [
+            {"index": 0, "statusCode": 429, "message": "Too Many Requests"},
+            {"index": 1, "statusCode": 429, "message": "Too Many Requests"}
+          ]
+        }
+        """
+        let session = StubURLProtocol.makeSession(statusCode: 206, body: body)
+        let events = makeEvents(2)
+        let sink = try makeSink(session: session)
+        do {
+            try await sink.send(events)
+            Issue.record("Expected partialReject for 429")
+        } catch AppInsightsSinkError.partialReject(_, _, let retriable) {
+            #expect(retriable.count == 2)
         }
     }
 }
