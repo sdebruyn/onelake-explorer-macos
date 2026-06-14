@@ -579,8 +579,8 @@ struct FabricRequestHelperTests {
     private let fabricBase = URL(string: "https://api.fabric.microsoft.com")!
 
     @Test("fabricListURL encodes '+' in continuationToken as '%2B' (net-05)")
-    func plusInContinuationToken() {
-        let url = fabricListURL(base: fabricBase, path: "/v1/workspaces", continuationToken: "ab+cd==")
+    func plusInContinuationToken() throws {
+        let url = try fabricListURL(base: fabricBase, path: "/v1/workspaces", continuationToken: "ab+cd==")
         let urlStr = url.absoluteString
         #expect(urlStr.contains("%2B"))
         #expect(!urlStr.contains("ab+cd=="))

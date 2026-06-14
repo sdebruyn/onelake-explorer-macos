@@ -93,7 +93,8 @@ struct OneLakeClientTests {
         let result = try await client.listPath(alias: "a", workspaceGUID: wsGUID, itemGUID: itemGUID, directory: "Files", recursive: false)
         #expect(result.entries.count == 1)
         let entry = result.entries[0]
-        #expect(entry.name == "item-guid-test/Files/data.csv")
+        // onelake-12: itemGUID prefix ("item-guid-test/") is stripped from the name.
+        #expect(entry.name == "Files/data.csv")
         #expect(!entry.isDirectory)
         #expect(entry.contentLength == 1024)
     }

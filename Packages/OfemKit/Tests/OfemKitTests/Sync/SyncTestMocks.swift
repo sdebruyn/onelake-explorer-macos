@@ -226,6 +226,7 @@ final class MockFabricClient: FabricClientProtocol, @unchecked Sendable {
 
     var listWorkspacesResults: [Result<[Workspace], any Error>] = []
     var listItemsResults: [Result<[Item], any Error>] = []
+    var listFoldersResults: [Result<[Folder], any Error>] = []
 
     func listAllWorkspaces(alias: String) async throws -> [Workspace] {
         guard !listWorkspacesResults.isEmpty else { throw MockError.stubsExhausted("listAllWorkspaces") }
@@ -235,6 +236,11 @@ final class MockFabricClient: FabricClientProtocol, @unchecked Sendable {
     func listAllItems(alias: String, workspaceID: String) async throws -> [Item] {
         guard !listItemsResults.isEmpty else { throw MockError.stubsExhausted("listAllItems") }
         return try listItemsResults.removeFirst().get()
+    }
+
+    func listAllFolders(alias: String, workspaceID: String) async throws -> [Folder] {
+        guard !listFoldersResults.isEmpty else { throw MockError.stubsExhausted("listAllFolders") }
+        return try listFoldersResults.removeFirst().get()
     }
 }
 

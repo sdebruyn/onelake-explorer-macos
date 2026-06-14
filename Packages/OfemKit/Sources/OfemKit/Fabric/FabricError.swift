@@ -27,6 +27,15 @@ public enum FabricError: Error, Sendable {
     /// HTTP 404 — the resource does not exist.
     case notFound
 
+    /// HTTP 410 — the resource was permanently removed.
+    case gone
+
+    /// HTTP 413 — the request payload exceeded the server's limit.
+    case payloadTooLarge
+
+    /// HTTP 416 — the `Range` header names a range the server cannot satisfy.
+    case rangeNotSatisfiable
+
     /// HTTP 429 — the server is throttling this client.
     ///
     /// ``HTTPClient`` retries with backoff; this is only surfaced after all
@@ -66,26 +75,51 @@ public enum FabricError: Error, Sendable {
 
 extension FabricError {
     /// Converts an ``HTTPClientError`` (or any error from the Net layer) to
-    /// a ``FabricError``. `.cancelled` handles Swift Concurrency task
-    /// cancellation explicitly.
+    /// a ``FabricError``.
+    ///
+    /// - First unwraps one level of ``HTTPClientError/apiError(_:)`` to reach
+    ///   the inner sentinel, mirroring `OneLakeError.from` (fabric-01).
+    /// - Maps bare ``CancellationError`` (Swift Concurrency cancellation) to
+    ///   `.cancelled` (fabric-02).
     static func from(_ error: any Error) -> FabricError {
-        switch error {
+        // fabric-01: unwrap apiError wrapper to reach the sentinel first,
+        // mirroring OneLakeError.from — without this, a retriesExhausted(last:
+        // apiError(…)) never matches any typed sentinel case and degrades to
+        // httpError.
+        let resolved: any Error
+        if let httpErr = error as? HTTPClientError,
+           case let HTTPClientError.apiError(ae) = httpErr,
+           let sentinel = ae.sentinel {
+            resolved = sentinel
+        } else {
+            resolved = error
+        }
+
+        switch resolved {
         case HTTPClientError.unauthorized:
             return .unauthorized
         case HTTPClientError.forbidden:
             return .forbidden
         case HTTPClientError.notFound:
             return .notFound
+        case HTTPClientError.gone:           // NIT-2: symmetry with OneLakeError
+            return .gone
+        case HTTPClientError.payloadTooLarge:
+            return .payloadTooLarge
+        case HTTPClientError.rangeNotSatisfiable:
+            return .rangeNotSatisfiable
         case HTTPClientError.throttled:
             return .rateLimited
         case HTTPClientError.cancelled:
+            return .cancelled
+        case is CancellationError:           // fabric-02: bare Swift cancellation
             return .cancelled
         case let HTTPClientError.serverError(code):
             return .serverError(code)
         case let HTTPClientError.retriesExhausted(attempts, _):
             return .retriesExhausted(attempts: attempts)
         default:
-            return .httpError(error)
+            return .httpError(resolved)
         }
     }
 }

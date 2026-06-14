@@ -277,11 +277,25 @@ struct FabricErrorTests {
         else { Issue.record("expected .httpError for .conflict, got \(result)") }
     }
 
-    @Test("from(.gone) falls through to .httpError")
-    func fromGoneFallsThrough() {
+    @Test("from(.gone) → .gone (NIT-2: symmetry with OneLakeError)")
+    func fromGone() {
         let result = FabricError.from(HTTPClientError.gone)
-        if case .httpError = result { /* correct */ }
-        else { Issue.record("expected .httpError for .gone, got \(result)") }
+        if case .gone = result { /* correct */ }
+        else { Issue.record("expected .gone, got \(result)") }
+    }
+
+    @Test("from(.payloadTooLarge) → .payloadTooLarge (NIT-2: symmetry with OneLakeError)")
+    func fromPayloadTooLarge() {
+        let result = FabricError.from(HTTPClientError.payloadTooLarge)
+        if case .payloadTooLarge = result { /* correct */ }
+        else { Issue.record("expected .payloadTooLarge, got \(result)") }
+    }
+
+    @Test("from(.rangeNotSatisfiable) → .rangeNotSatisfiable (NIT-2: symmetry with OneLakeError)")
+    func fromRangeNotSatisfiable() {
+        let result = FabricError.from(HTTPClientError.rangeNotSatisfiable)
+        if case .rangeNotSatisfiable = result { /* correct */ }
+        else { Issue.record("expected .rangeNotSatisfiable, got \(result)") }
     }
 
     @Test("from(.preconditionFailed) falls through to .httpError")
@@ -301,12 +315,13 @@ struct FabricErrorTests {
         else { Issue.record("expected .httpError for URLError, got \(result)") }
     }
 
-    @Test("from(CancellationError) → .httpError (not the HTTPClientError.cancelled path)")
+    @Test("from(CancellationError) → .cancelled (fabric-02: bare Swift cancellation maps to .cancelled)")
     func fromCancellationError() {
-        // Swift's CancellationError is NOT HTTPClientError.cancelled.
-        // The switch default branch catches it as .httpError.
+        // fabric-02: a bare CancellationError from Swift Concurrency (thrown
+        // between http.execute boundaries) must map to .cancelled, not .httpError,
+        // so SyncEngine can silently discard user-initiated cancellation.
         let result = FabricError.from(CancellationError())
-        if case .httpError = result { /* correct */ }
-        else { Issue.record("expected .httpError for CancellationError, got \(result)") }
+        if case .cancelled = result { /* correct */ }
+        else { Issue.record("expected .cancelled for CancellationError (fabric-02), got \(result)") }
     }
 }

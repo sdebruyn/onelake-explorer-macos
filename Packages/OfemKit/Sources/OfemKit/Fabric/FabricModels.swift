@@ -102,41 +102,66 @@ public struct Folder: Sendable, Equatable {
 /// Use ``FabricClient/listWorkspaces(alias:continuation:)`` to fetch pages one
 /// at a time, or ``FabricClient/listAllWorkspaces(alias:)`` to follow
 /// pagination to completion automatically.
+///
+/// **fabric-04:** when `continuationToken` is `nil` but `hasContinuation` is
+/// `true`, the server returned a `continuationUri`-only response. The next-page
+/// URI cannot be represented as an opaque token. Use
+/// ``FabricClient/listAllWorkspaces(alias:)`` to follow pagination exhaustively
+/// via either continuation form.
 public struct WorkspacePage: Sendable {
     /// The workspaces on this page.
     public let items: [Workspace]
-    /// Opaque token to retrieve the next page; `nil` when this is the last page.
+    /// Opaque token to retrieve the next page; `nil` when this is the last page
+    /// **or** when the server returned only a `continuationUri` (see `hasContinuation`).
     public let continuationToken: String?
+    /// `true` when more pages exist (either via `continuationToken` or
+    /// `continuationUri`). Use the exhaust-all variants to follow both forms.
+    public let hasContinuation: Bool
 
-    public init(items: [Workspace], continuationToken: String?) {
+    public init(items: [Workspace], continuationToken: String?, hasContinuation: Bool = false) {
         self.items = items
         self.continuationToken = continuationToken
+        self.hasContinuation = hasContinuation
     }
 }
 
 /// A single page of items returned by the Fabric REST API.
+///
+/// **fabric-04:** see `hasContinuation` — a `nil` token does not always mean
+/// last page.
 public struct ItemPage: Sendable {
     /// The items on this page.
     public let items: [Item]
-    /// Opaque token to retrieve the next page; `nil` when this is the last page.
+    /// Opaque token to retrieve the next page; `nil` when last page or when
+    /// only a `continuationUri` is available.
     public let continuationToken: String?
+    /// `true` when more pages exist (either via token or URI).
+    public let hasContinuation: Bool
 
-    public init(items: [Item], continuationToken: String?) {
+    public init(items: [Item], continuationToken: String?, hasContinuation: Bool = false) {
         self.items = items
         self.continuationToken = continuationToken
+        self.hasContinuation = hasContinuation
     }
 }
 
 /// A single page of folders returned by the Fabric REST API.
+///
+/// **fabric-04:** see `hasContinuation` — a `nil` token does not always mean
+/// last page.
 public struct FolderPage: Sendable {
     /// The folders on this page.
     public let items: [Folder]
-    /// Opaque token to retrieve the next page; `nil` when this is the last page.
+    /// Opaque token to retrieve the next page; `nil` when last page or when
+    /// only a `continuationUri` is available.
     public let continuationToken: String?
+    /// `true` when more pages exist (either via token or URI).
+    public let hasContinuation: Bool
 
-    public init(items: [Folder], continuationToken: String?) {
+    public init(items: [Folder], continuationToken: String?, hasContinuation: Bool = false) {
         self.items = items
         self.continuationToken = continuationToken
+        self.hasContinuation = hasContinuation
     }
 }
 
@@ -150,18 +175,24 @@ struct FabricPageResponse<T: Decodable>: Decodable {
 }
 
 /// Wire representation of a ``Workspace`` as returned by the Fabric REST API.
+///
+/// **fabric-06:** `id` and `displayName` are made optional so that a single
+/// workspace row with a missing or null field does not abort the entire page
+/// decode. Rows lacking an `id` are silently dropped in `toWorkspace()?`.
 struct WireWorkspace: Decodable {
-    let id: String
-    let displayName: String
+    let id: String?
+    let displayName: String?
     let type: String?
     let description: String?
     let capacityId: String?
     let domainId: String?
 
-    func toWorkspace() -> Workspace {
-        Workspace(
+    /// Returns a `Workspace` or `nil` when required fields are absent.
+    func toWorkspace() -> Workspace? {
+        guard let id = id, !id.isEmpty else { return nil }
+        return Workspace(
             id: id,
-            displayName: displayName,
+            displayName: displayName ?? "",
             type: type ?? "",
             description: description ?? "",
             capacityID: capacityId ?? "",
@@ -171,18 +202,23 @@ struct WireWorkspace: Decodable {
 }
 
 /// Wire representation of an ``Item`` as returned by the Fabric REST API.
+///
+/// **fabric-06:** optional `id` and `displayName` for per-element resilience.
 struct WireItem: Decodable {
-    let id: String
-    let displayName: String
+    let id: String?
+    let displayName: String?
     let type: String?
     let description: String?
-    let workspaceId: String
+    let workspaceId: String?
     let folderId: String?
 
-    func toItem() -> Item {
-        Item(
+    /// Returns an `Item` or `nil` when required fields are absent.
+    func toItem() -> Item? {
+        guard let id = id, !id.isEmpty,
+              let workspaceId = workspaceId, !workspaceId.isEmpty else { return nil }
+        return Item(
             id: id,
-            displayName: displayName,
+            displayName: displayName ?? "",
             type: type ?? "",
             description: description ?? "",
             workspaceID: workspaceId,
@@ -192,16 +228,22 @@ struct WireItem: Decodable {
 }
 
 /// Wire representation of a ``Folder`` as returned by the Fabric REST API.
+///
+/// **fabric-06:** optional `id`, `displayName`, `workspaceId` for per-element
+/// resilience.
 struct WireFolder: Decodable {
-    let id: String
-    let displayName: String
-    let workspaceId: String
+    let id: String?
+    let displayName: String?
+    let workspaceId: String?
     let parentFolderId: String?
 
-    func toFolder() -> Folder {
-        Folder(
+    /// Returns a `Folder` or `nil` when required fields are absent.
+    func toFolder() -> Folder? {
+        guard let id = id, !id.isEmpty,
+              let workspaceId = workspaceId, !workspaceId.isEmpty else { return nil }
+        return Folder(
             id: id,
-            displayName: displayName,
+            displayName: displayName ?? "",
             workspaceID: workspaceId,
             parentFolderID: parentFolderId ?? ""
         )
