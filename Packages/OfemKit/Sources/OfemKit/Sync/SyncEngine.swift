@@ -556,7 +556,9 @@ public actor SyncEngine {
             defer {
                 // Remove the map entry after the task value is delivered so
                 // late-arriving joiners always find a live entry (sync-24 fix).
-                Task { self.cleanupInflight(keyString: keyString, generation: gen) }
+                // Called directly (not wrapped in a new Task) so cleanup runs
+                // in the same actor turn as task completion — no ordering gap.
+                self.cleanupInflight(keyString: keyString, generation: gen)
             }
             return try await self.performDownload(key: key, start: start, cached: cached)
         }
@@ -771,8 +773,12 @@ public actor SyncEngine {
 
     // MARK: - Offline status
 
-    /// Returns `true` when the engine recently observed an offline-class error.
-    public var isOffline: Bool {
+    /// Returns `true` when the engine is currently considered offline (recently
+    /// observed an offline-class error and the cooldown has not yet expired).
+    ///
+    /// Matches `OfflineTracker.currentlyOffline()` naming: two consecutive calls
+    /// may return different values (the cooldown can expire between them).
+    public var currentlyOffline: Bool {
         get async { await offlineTracker.currentlyOffline() }
     }
 
@@ -942,26 +948,11 @@ public actor SyncEngine {
         plan: ResumePlan,
         start: Date
     ) async throws -> PathProperties {
-        // Open (or create) the spill file and seek to the resume offset.
-        // Runs off-actor to avoid blocking on FileHandle (sync-14).
-        let seekResult: Result<Void, any Error> = await Task.detached(priority: .userInitiated) {
-            do {
-                let handle = try FileHandle(forUpdating: spillURL)
-                defer { try? handle.close() }
-                try handle.seek(toOffset: UInt64(plan.rangeStart))
-                return .success(())
-            } catch {
-                return .failure(SyncError.spillFileError(error))
-            }
-        }.value
-        switch seekResult {
-        case .failure(let err): throw err
-        case .success: break
-        }
-
-        // Open a fresh FileHandle for the read call. The handle must be open
-        // during the streaming read but the seek above already positioned it;
-        // we need a separate open for the read overload.
+        // Open the spill file, seek to the resume offset, and hold the handle
+        // open for the streaming read. Single FD open per attempt — the handle
+        // is passed directly to onelake.read() and closed exactly once on all
+        // paths below (success, error, cancellation). Runs off-actor to avoid
+        // blocking on FileHandle (sync-14).
         let readHandleResult: Result<FileHandle, any Error> = await Task.detached(priority: .userInitiated) {
             do {
                 let h = try FileHandle(forUpdating: spillURL)
@@ -1163,6 +1154,13 @@ public actor SyncEngine {
         let event: TelemetryEvent
         switch outcome {
         case .success(let bytes):
+            // `bytesTransferred` defaults to 0 when `bytes` is nil, which means
+            // "not applicable" (e.g. a cache-hit path that does no I/O). The field
+            // is omitted from the AppInsights measurement map when it is 0, so a
+            // nil result is correctly distinguishable from a genuine 0-byte transfer
+            // at the analytics level (both emit no measurement, which is the desired
+            // behaviour — a 0-byte file is a legitimate edge case but not worth
+            // special-casing in the wire format).
             event = TelemetryEvent(
                 name: eventName,
                 accountAliasHash: aliasHash,
