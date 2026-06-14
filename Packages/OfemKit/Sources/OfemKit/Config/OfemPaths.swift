@@ -65,6 +65,28 @@ public struct OfemPaths: Sendable {
         tokensDir = root.appending(path: "tokens", directoryHint: .isDirectory)
     }
 
+    // MARK: - Directory creation
+
+    /// Creates all OFEM state directories with consistent permission bits.
+    ///
+    /// Call once at startup (or lazily before first use) to ensure every
+    /// directory exists. This centralises creation and permission policy so
+    /// individual consumers (`OfemConfigStore`, `RotatingFileWriter`,
+    /// `FileTokenStore`) do not each carry their own `createDirectory` calls
+    /// with potentially inconsistent `posixPermissions` attributes.
+    ///
+    /// All directories are created with mode `0700` (owner read/write/execute
+    /// only) to protect on-disk secrets (tokens, config with UPN).
+    ///
+    /// - Throws: `CocoaError` if any directory cannot be created.
+    public func ensureDirectories() throws {
+        let fm = FileManager.default
+        let attrs: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
+        for dir in [configDir, cacheDir, logDir, tokensDir] {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: attrs)
+        }
+    }
+
     // MARK: - Private helpers
 
     /// Resolves the App Group container root.
