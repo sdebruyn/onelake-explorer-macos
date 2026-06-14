@@ -19,6 +19,9 @@ import os.log
 /// - Network-heavy methods (`open`, `put`) release the actor while the network
 /// call is in flight so other tasks are not blocked (Swift structured
 /// concurrency: `async` automatically suspends the caller).
+/// - Blocking filesystem I/O (spill-file create/seek/hash) is dispatched via
+/// `Task.detached` to a background executor and never runs on the actor's
+/// thread (sync-14).
 /// - Concurrency caps are enforced per account alias via `AsyncSemaphore`.
 /// - Last-write-wins semantics: `put` and `delete` never use `If-Match` for
 /// writes. This matches the agreed conflict policy in `docs/auth.md`.
@@ -35,11 +38,23 @@ public actor SyncEngine {
     /// Default per-account cap on concurrent uploads.
     public static let defaultMaxConcurrentUploads = 4
 
-    // MARK: - Dependencies (nonisolated for injection without crossing actor boundary)
+    /// Default minimum gap between workspace-recovery probes (mirrors
+    /// `PauseManager.defaultProbeInterval` so `SyncEngine.init` can expose it
+    /// in a public default-argument without leaking the internal `PauseManager`
+    /// type into the public API).
+    public static let defaultPauseProbeInterval: Duration = .seconds(120)
 
-    nonisolated let cache: CacheStore
-    nonisolated let onelake: any OneLakeClientProtocol
-    nonisolated let fabric: any FabricClientProtocol
+    // MARK: - Dependencies (private — callers must go through SyncEngine API)
+    //
+    // sync-19: these were `nonisolated let` with default (internal) access,
+    // letting any OfemKit code bypass the actor's pause/semaphore/telemetry
+    // invariants by calling the clients directly. Made `private` now;
+    // `nonisolated` is still required for wiring in init (which runs before
+    // the actor is fully initialised).
+
+    private nonisolated let cache: CacheStore
+    private nonisolated let onelake: any OneLakeClientProtocol
+    private nonisolated let fabric: any FabricClientProtocol
 
     private let logger: OfemLogger
     private let telemetry: TelemetryClient?
@@ -52,17 +67,24 @@ public actor SyncEngine {
     private let partials: PartialManager
 
     /// Per-account semaphores for downloads and uploads.
+    ///
+    /// Entries are allocated lazily on first use per alias. Growth is bounded
+    /// by the number of distinct account aliases active in this process
+    /// (typically 1-3) so the unbounded-map concern is negligible in practice.
+    /// A future `forgetAccount(alias:)` hook can prune entries on sign-out
+    /// (sync-16).
     private var downloadSlots: [String: AsyncSemaphore] = [:]
     private var uploadSlots:   [String: AsyncSemaphore] = [:]
     private let maxDownloads: Int
     private let maxUploads:   Int
 
-    /// In-flight download tasks keyed by CacheKey string representation.
-    /// A second `open()` for the same key awaits the first's result rather than
-    /// racing on the spill file (sync-06).
+    /// In-flight download tasks keyed by ``CacheKey/stableKeyString``.
     ///
-    /// The task resolves to a file URL pointing to the committed blob in the
-    /// blob cache (or a spill file when cache storage failed).
+    /// A second `open()` for the same key awaits the first's task rather than
+    /// spawning a duplicate download. The map entry is removed when the task
+    /// VALUE is delivered (not when the spawning frame unwinds) so a second
+    /// caller that arrives while the task is still running always finds the
+    /// entry (sync-24 fix).
     private var inFlightDownloads: [String: Task<URL, any Error>] = [:]
 
     /// Generation counter per key — incremented each time a new download task is
@@ -98,7 +120,7 @@ public actor SyncEngine {
         maxConcurrentDownloads: Int = SyncEngine.defaultMaxConcurrentDownloads,
         maxConcurrentUploads: Int = SyncEngine.defaultMaxConcurrentUploads,
         scratchBase: URL? = nil,
-        pauseProbeInterval: Duration = PauseManager.defaultProbeInterval
+        pauseProbeInterval: Duration = SyncEngine.defaultPauseProbeInterval
     ) {
         self.cache = cache
         self.onelake = onelake
@@ -123,7 +145,7 @@ public actor SyncEngine {
 
         // Defer the stale-partial reap to a background task so SyncEngine.init
         // (called from OfemEngine's @MainActor init) never performs synchronous
-        // FileManager traversal or kill(2) probes on the main thread (sync-21).
+        // FileManager traversal or kill(2) probes on the main thread.
         Task.detached(priority: .utility) {
             PartialManager.reapStalePartialDirs(under: base)
         }
@@ -142,34 +164,18 @@ public actor SyncEngine {
             ws = try await fabric.listAllWorkspaces(alias: alias)
         } catch {
             await offlineTracker.observe(error)
-            // Route Fabric errors through markPausedIfNeeded so that a paused-
-            // capacity response here also marks the workspace paused (sync-11).
             if await pauseManager.markPausedIfNeeded(
                 workspaceID: VirtualIDs.workspaceID, alias: alias, error: error
             ) {
-                await track(TelemetryEvent(
-                    name: "workspace_list",
-                    accountAliasHash: TelemetryRedaction.hashAlias(alias),
-                    durationMs: elapsedMs(since: start),
-                    success: false,
-                    errorCode: "capacity_paused"
-                ))
+                await track(eventName: "workspace_list", alias: alias, start: start, outcome: .paused)
                 throw SyncError.workspacePaused
             }
-            await track(TelemetryEvent(
-                name: "workspace_list",
-                accountAliasHash: TelemetryRedaction.hashAlias(alias),
-                durationMs: elapsedMs(since: start),
-                success: false,
-                errorCode: "list_failed"
-            ))
+            await track(eventName: "workspace_list", alias: alias, start: start, outcome: .failed("list_failed"))
             throw error
         }
         await offlineTracker.observe(nil)
 
-        // Stamp virtual parent + one row per workspace.
-        let now = Date()
-        let nowNs = dateToNs(now)!
+        let nowNs = currentNowNs()
         let parentKey = CacheKey(
             accountAlias: alias,
             workspaceID: VirtualIDs.workspaceID,
@@ -187,13 +193,13 @@ public actor SyncEngine {
             lastAccessedNs: nowNs,
             syncedAtNs: nowNs
         )
-        await loggedTry({ try await self.cache.upsert(root) }, "listWorkspaces: upsert root")
+        do { try await cache.upsert(root) } catch {
+            Self.log.warning("listWorkspaces: upsert root failed err=\(error, privacy: .public)")
+        }
 
-        var seen: Set<String> = []
-        var rows: [MetadataRecord] = []
-        for w in ws {
-            seen.insert(w.id)
-            rows.append(MetadataRecord(
+        let seen = Set(ws.map(\.id))
+        let rows = ws.map { w in
+            MetadataRecord(
                 accountAlias: alias,
                 workspaceID: VirtualIDs.workspaceID,
                 itemID: VirtualIDs.workspaceID,
@@ -203,17 +209,12 @@ public actor SyncEngine {
                 isDir: true,
                 lastAccessedNs: nowNs,
                 syncedAtNs: nowNs
-            ))
+            )
         }
         await batchUpsert(rows, context: "listWorkspaces")
-        await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias, now: now)
+        await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
 
-        await track(TelemetryEvent(
-            name: "workspace_list",
-            accountAliasHash: TelemetryRedaction.hashAlias(alias),
-            durationMs: elapsedMs(since: start),
-            success: true
-        ))
+        await track(eventName: "workspace_list", alias: alias, start: start, outcome: .success())
         return ws
     }
 
@@ -225,32 +226,18 @@ public actor SyncEngine {
             items = try await fabric.listAllItems(alias: alias, workspaceID: workspaceID)
         } catch {
             await offlineTracker.observe(error)
-            // Route Fabric errors through markPausedIfNeeded (sync-11).
             if await pauseManager.markPausedIfNeeded(
                 workspaceID: workspaceID, alias: alias, error: error
             ) {
-                await track(TelemetryEvent(
-                    name: "item_list",
-                    accountAliasHash: TelemetryRedaction.hashAlias(alias),
-                    durationMs: elapsedMs(since: start),
-                    success: false,
-                    errorCode: "capacity_paused"
-                ))
+                await track(eventName: "item_list", alias: alias, start: start, outcome: .paused)
                 throw SyncError.workspacePaused
             }
-            await track(TelemetryEvent(
-                name: "item_list",
-                accountAliasHash: TelemetryRedaction.hashAlias(alias),
-                durationMs: elapsedMs(since: start),
-                success: false,
-                errorCode: "list_failed"
-            ))
+            await track(eventName: "item_list", alias: alias, start: start, outcome: .failed("list_failed"))
             throw error
         }
         await offlineTracker.observe(nil)
 
-        let now = Date()
-        let nowNs = dateToNs(now)!
+        let nowNs = currentNowNs()
         let parentKey = CacheKey(
             accountAlias: alias,
             workspaceID: workspaceID,
@@ -268,13 +255,13 @@ public actor SyncEngine {
             lastAccessedNs: nowNs,
             syncedAtNs: nowNs
         )
-        await loggedTry({ try await self.cache.upsert(root) }, "listItems: upsert root")
+        do { try await cache.upsert(root) } catch {
+            Self.log.warning("listItems: upsert root failed err=\(error, privacy: .public)")
+        }
 
-        var seen: Set<String> = []
-        var rows: [MetadataRecord] = []
-        for it in items {
-            seen.insert(it.id)
-            rows.append(MetadataRecord(
+        let seen = Set(items.map(\.id))
+        let rows = items.map { it in
+            MetadataRecord(
                 accountAlias: alias,
                 workspaceID: workspaceID,
                 itemID: VirtualIDs.itemID,
@@ -284,17 +271,12 @@ public actor SyncEngine {
                 isDir: true,
                 lastAccessedNs: nowNs,
                 syncedAtNs: nowNs
-            ))
+            )
         }
         await batchUpsert(rows, context: "listItems")
-        await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias, now: now)
+        await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
 
-        await track(TelemetryEvent(
-            name: "item_list",
-            accountAliasHash: TelemetryRedaction.hashAlias(alias),
-            durationMs: elapsedMs(since: start),
-            success: true
-        ))
+        await track(eventName: "item_list", alias: alias, start: start, outcome: .success())
         return items
     }
 
@@ -307,21 +289,16 @@ public actor SyncEngine {
     ///
     /// Throws ``FPError/wrongItemKind(_:)`` when `key` refers to a file, not a
     /// directory. The error propagates rather than falling through to a remote
-    /// refresh (sync-22).
+    /// refresh.
     public func enumerate(key: CacheKey) async throws -> [MetadataRecord] {
         let start = Date()
 
         // Fast path: serve from cache when fresh.
         // `enumerateFromCache` throws `FPError.wrongItemKind` for files —
-        // propagate that error directly instead of swallowing it (sync-22).
+        // propagate that error directly instead of swallowing it.
         let fastPathResult = try await enumerateFromCache(key: key)
         if let (fresh, cached) = fastPathResult, fresh {
-            await track(TelemetryEvent(
-                name: "folder_list",
-                accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-                durationMs: elapsedMs(since: start),
-                success: true
-            ))
+            await track(eventName: "folder_list", alias: key.accountAlias, start: start, outcome: .success())
             return cached
         }
 
@@ -329,22 +306,11 @@ public actor SyncEngine {
         do {
             _ = try await refreshFolder(key: key)
         } catch {
-            await track(TelemetryEvent(
-                name: "folder_list",
-                accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-                durationMs: elapsedMs(since: start),
-                success: false,
-                errorCode: "list_failed"
-            ))
+            await track(eventName: "folder_list", alias: key.accountAlias, start: start, outcome: .failed("list_failed"))
             throw error
         }
         let entries = try await cache.children(of: key)
-        await track(TelemetryEvent(
-            name: "folder_list",
-            accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-            durationMs: elapsedMs(since: start),
-            success: true
-        ))
+        await track(eventName: "folder_list", alias: key.accountAlias, start: start, outcome: .success())
         return entries
     }
 
@@ -373,12 +339,12 @@ public actor SyncEngine {
         }
         await offlineTracker.observe(nil)
 
+        let nowNs = currentNowNs()
         let now = Date()
-        let nowNs = dateToNs(now)!
 
         // Build remote children set, filtering macOS metadata artefacts at emit
         // time so that remote .DS_Store / ._* files never appear in listings and
-        // cannot resurrect after a local-only delete (sync-14).
+        // cannot resurrect after a local-only delete.
         var remoteChildren: [String: PathEntry] = [:]
         for entry in result.entries {
             guard let rel = Enumerator.stripItemPrefix(name: entry.name, itemGUID: key.itemID),
@@ -389,8 +355,10 @@ public actor SyncEngine {
             remoteChildren[rel] = entry
         }
 
-        // Load existing cached children.
-        let cachedChildren = (try? await cache.children(of: key)) ?? []
+        // Load existing cached children (sync-05: surface the error — a failed
+        // children read could lead to deleting all cached rows on the next
+        // reconcile, which is worse than throwing here).
+        let cachedChildren = try await cache.children(of: key)
         var cachedByPath: [String: MetadataRecord] = [:]
         for c in cachedChildren { cachedByPath[c.path] = c }
 
@@ -433,7 +401,7 @@ public actor SyncEngine {
         }
         await batchUpsert(upsertBatch, context: "refreshFolder upsert")
 
-        // Delete cached children that disappeared remotely in one batch (sync-15).
+        // Delete cached children that disappeared remotely in one batch.
         var deleteBatch: [CacheKey] = []
         for (relPath, _) in cachedByPath {
             guard remoteChildren[relPath] == nil else { continue }
@@ -461,7 +429,9 @@ public actor SyncEngine {
             syncedAtNs: nowNs,
             childrenSyncedAtNs: nowNs
         )
-        await loggedTry({ try await self.cache.upsert(parent) }, "refreshFolder: upsert parent")
+        do { try await cache.upsert(parent) } catch {
+            Self.log.warning("refreshFolder: upsert parent failed err=\(error, privacy: .public)")
+        }
 
         if diff.total > 0 {
             await track(TelemetryEvent(
@@ -479,6 +449,7 @@ public actor SyncEngine {
                 "added": "\(diff.added)",
                 "updated": "\(diff.updated)",
                 "removed": "\(diff.removed)",
+                "elapsed_ms": "\(elapsedMs(since: now))",
             ]
         )
         return diff
@@ -489,15 +460,16 @@ public actor SyncEngine {
     /// Downloads a file, serving from the local blob cache when fresh.
     ///
     /// Returns a file URL rather than in-memory `Data` so the FPE can write
-    /// directly to its staging destination without buffering the entire file
-    /// (arch-07/sync-02: streaming contract).
+    /// directly to its staging destination without buffering the entire file.
     ///
     /// Concurrent calls for the same key are coalesced: the second caller
     /// awaits the first's in-flight task rather than issuing a duplicate
-    /// download (sync-06).
+    /// download. The in-flight entry is removed when the task VALUE is delivered,
+    /// not when the spawning frame unwinds, so late-joining callers always
+    /// find a live entry (sync-24 fix).
     ///
     /// The blob cache is checked BEFORE acquiring a download semaphore slot, so
-    /// cache hits never consume a slot (sync-19).
+    /// cache hits never consume a slot.
     public func open(key: CacheKey) async throws -> URL {
         let start = Date()
         try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)
@@ -507,64 +479,55 @@ public actor SyncEngine {
 
         if let c = cached, !c.blobSHA256.isEmpty {
             // Attempt to serve from blob cache — done BEFORE acquiring a slot
-            // so cache hits do not consume download bandwidth (sync-19).
+            // so cache hits do not consume download bandwidth.
             do {
                 let (fresh, _) = try await isBlobFresh(key: key, cached: c)
                 if fresh {
                     await offlineTracker.observe(nil)
                     if let blobURL = try? await cache.blobURL(key: key) {
-                        await loggedTry({ try await self.cache.touch(key: key) }, "open: touch")
-                        await track(TelemetryEvent(
-                            name: "file_download",
-                            accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-                            durationMs: elapsedMs(since: start),
-                            success: true
-                        ))
+                        do { try await cache.touch(key: key) } catch {
+                            Self.log.warning("open: touch failed err=\(error, privacy: .public)")
+                        }
+                        await track(eventName: "file_download", alias: key.accountAlias, start: start, outcome: .success())
                         return blobURL
                     }
                 }
                 // Remote moved on — fall through to download.
             } catch {
                 await offlineTracker.observe(error)
-                // HEAD path through markPausedIfNeeded (sync-11): a paused
-                // capacity signal on the freshness check must mark the workspace
-                // paused and throw workspacePaused, not a raw error.
+                // HEAD path through markPausedIfNeeded: a paused capacity signal
+                // on the freshness check must mark the workspace paused.
                 if await pauseManager.markPausedIfNeeded(
                     workspaceID: key.workspaceID, alias: key.accountAlias, error: error
                 ) {
-                    await track(TelemetryEvent(
-                        name: "file_download",
-                        accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-                        durationMs: elapsedMs(since: start),
-                        success: false,
-                        errorCode: "capacity_paused"
-                    ))
+                    await track(eventName: "file_download", alias: key.accountAlias, start: start, outcome: .paused)
                     throw SyncError.workspacePaused
                 }
                 // Offline fallback: serve stale blob when the HEAD failed offline.
-                if await offlineTracker.isOffline, let blobURL = try? await cache.blobURL(key: key) {
+                if await offlineTracker.currentlyOffline(), let blobURL = try? await cache.blobURL(key: key) {
                     logger.debug("offline; serving stale cached blob", metadata: ["path": key.path])
-                    await track(TelemetryEvent(
-                        name: "file_download",
-                        accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-                        durationMs: elapsedMs(since: start),
-                        success: true,
-                        errorCode: "served_stale_offline"
-                    ))
+                    await track(eventName: "file_download", alias: key.accountAlias, start: start,
+                                outcome: .successWithCode("served_stale_offline"))
                     return blobURL
                 }
                 throw error
             }
         }
 
-        // Coalesce concurrent opens for the same key (sync-06).
+        // Coalesce concurrent opens for the same key.
         //
-        // Livelock guard: if the first task was cancelled, `existing.value`
-        // throws `CancellationError`. We remove the dead map entry and spawn a
-        // fresh download for this caller so the key is not permanently poisoned.
-        // A generation token ensures the stale task's cleanup does not remove an
-        // entry that belongs to the new task we are about to register.
-        let keyString = "\(key.accountAlias)\0\(key.workspaceID)\0\(key.itemID)\0\(key.path)"
+        // The coalescing entry is inserted BEFORE any await that could allow a
+        // sibling call to reach this point concurrently. The entry is removed
+        // after `task.value` resolves (inside the task itself, not in a defer on
+        // the spawning frame) so late-arriving joiners always find a live entry
+        // while the download is running (sync-04/sync-24 fix).
+        //
+        // Livelock guard: if the existing task was cancelled, `existing.value`
+        // throws `CancellationError`. We remove the dead map entry and fall
+        // through to spawn a fresh download (sync-03: the control-flow is now
+        // explicit — only CancellationError continues, other errors would
+        // rethrow from the `do` below and not reach the spawn path).
+        let keyString = key.stableKeyString
         if let existing = inFlightDownloads[keyString] {
             do {
                 return try await existing.value
@@ -576,10 +539,8 @@ public actor SyncEngine {
                 try Task.checkCancellation()
                 // Fall through to spawn a fresh download below.
             }
-            // For any other error the entry was already cleaned up by the
-            // spawning task's defer; re-throw directly.
-            // (Swift does not reach here — the only non-CancellationError path
-            // re-throws from the `do` block above.)
+            // For any other error the entry was already cleaned up by the task
+            // itself; we reach here only via the CancellationError branch above.
         }
 
         let myGeneration: UInt64 = {
@@ -588,29 +549,24 @@ public actor SyncEngine {
             return next
         }()
 
+        // Snapshot mutable state needed inside the unstructured task so it
+        // doesn't capture `self` via actor isolation.
+        let gen = myGeneration
         let task = Task<URL, any Error> { [self] in
-            try await self.performDownload(key: key, start: start, cached: cached)
+            defer {
+                // Remove the map entry after the task value is delivered so
+                // late-arriving joiners always find a live entry (sync-24 fix).
+                // Called directly (not wrapped in a new Task) so cleanup runs
+                // in the same actor turn as task completion — no ordering gap.
+                self.cleanupInflight(keyString: keyString, generation: gen)
+            }
+            return try await self.performDownload(key: key, start: start, cached: cached)
         }
         inFlightDownloads[keyString] = task
 
-        defer {
-            // Only remove the entry when it still belongs to this generation,
-            // so a stale cleanup from a cancelled task does not evict a newer
-            // task registered for the same key.
-            if downloadGenerations[keyString] == myGeneration {
-                inFlightDownloads.removeValue(forKey: keyString)
-                downloadGenerations.removeValue(forKey: keyString)
-            }
-        }
         // Propagate cancellation to the unstructured download task so that if
-        // the caller is cancelled while we are awaiting the result, the inner
-        // task (which may be blocked inside onelake.read()) also gets cancelled
-        // and eventually completes — preventing a permanently hung inFlightDownloads
-        // entry and an unresolved CheckedContinuation inside the network mock /
-        // production network layer. Without this, a cancelled caller leaves the
-        // inner task running indefinitely (it is unstructured and would otherwise
-        // outlive its logical owner), blocking the test or next open() for the
-        // same key on the semaphore slot the orphaned task holds.
+        // the caller is cancelled while awaiting the result, the inner task
+        // (which may be blocked inside onelake.read()) also gets cancelled.
         return try await withTaskCancellationHandler {
             try await task.value
         } onCancel: {
@@ -622,11 +578,6 @@ public actor SyncEngine {
 
     /// Uploads the file at `sourceURL` to OneLake and mirrors it in the blob
     /// cache.
-    ///
-    /// Streams the content in bounded chunks from `sourceURL` so the entire
-    /// file is never resident in memory (arch-07/sync-02). The source file is
-    /// also stored in the blob cache via ``CacheStore/storeBlobFromURL(_:key:)``
-    /// which moves/copies the file without reading it into RAM.
     ///
     /// macOS metadata files are silently swallowed (no telemetry, no upload).
     public func put(key: CacheKey, sourceURL: URL) async throws {
@@ -640,16 +591,12 @@ public actor SyncEngine {
         defer { releaseUploadSlot(alias: key.accountAlias) }
 
         let start = Date()
-        // Determine size from the file on disk.
-        // FileAttributeKey.size is typed as NSNumber on Apple platforms; use
-        // int64Value to avoid the direct Int64 cast silently returning nil.
-        let fileSize: Int64
-        do {
+        // Determine size from the file on disk. Run off-actor to avoid blocking
+        // the actor thread with synchronous FileManager calls (sync-14).
+        let fileSize: Int64 = try await Task.detached(priority: .userInitiated) {
             let attrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
-            fileSize = (attrs[.size] as? NSNumber)?.int64Value ?? 0
-        } catch {
-            throw SyncError.spillFileError(error)
-        }
+            return (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        }.value
 
         do {
             try await onelake.write(
@@ -669,8 +616,9 @@ public actor SyncEngine {
         await offlineTracker.observe(nil)
 
         // Best-effort HEAD to capture the server-assigned etag/lastmod.
-        let now = Date()
-        let nowNs = dateToNs(now)!
+        // Log a warning on failure so the missing etag is visible rather than
+        // silently leaving the row with etag="" (sync-12).
+        let nowNs = currentNowNs()
         var row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -683,26 +631,37 @@ public actor SyncEngine {
             lastAccessedNs: nowNs,
             syncedAtNs: nowNs
         )
-        if let props = try? await onelake.getProperties(
-            alias: key.accountAlias,
-            workspaceGUID: key.workspaceID,
-            itemGUID: key.itemID,
-            path: key.path
-        ) {
+        do {
+            let props = try await onelake.getProperties(
+                alias: key.accountAlias,
+                workspaceGUID: key.workspaceID,
+                itemGUID: key.itemID,
+                path: key.path
+            )
             row.etag = props.eTag
             if props.contentLength != 0 { row.contentLength = props.contentLength }
             row.lastModifiedNs = dateToNs(props.lastModified) ?? 0
             row.contentType = props.contentType
+        } catch {
+            // sync-12: log HEAD failure so the empty-etag outcome is detectable.
+            logger.warn("put: post-upload HEAD failed; row will have empty etag",
+                        metadata: ["path": key.path, "error": "\(error)"])
         }
+
+        // sync-29: treat the metadata upsert and blob store as a logical unit.
+        // Both must succeed for the cache to be consistent. Surface any error
+        // from either step rather than swallowing it independently.
         let rowCopy = row
-        await loggedTry({ try await self.cache.upsert(rowCopy) }, "put: upsert")
-        // Mirror locally (best-effort: upload already succeeded).
-        // Note: storeBlobFromURL prefers an atomic moveItem (same-volume, zero-copy),
-        // which removes sourceURL from its original location. On FPE retry the
-        // source URL supplied by the framework may be absent, but deduplication in
-        // BlobShardCache means the blob is already stored and the loggedTry silently
-        // ignores the missing-source error without impacting cache correctness.
-        await loggedTry({ try await self.cache.storeBlobFromURL(sourceURL, key: key) }, "put: storeBlobFromURL")
+        try await cache.upsert(rowCopy)
+        // Mirror locally (best-effort after upsert: upload already succeeded).
+        // storeBlobFromURL prefers an atomic moveItem (same-volume, zero-copy).
+        // On FPE retry the source URL may be absent; log but don't fail.
+        do {
+            try await cache.storeBlobFromURL(sourceURL, key: key)
+        } catch {
+            logger.warn("put: storeBlobFromURL failed (blob cache inconsistent)",
+                        metadata: ["path": key.path, "error": "\(error)"])
+        }
 
         await track(TelemetryEvent(
             name: "file_upload",
@@ -722,12 +681,23 @@ public actor SyncEngine {
     public func delete(key: CacheKey) async throws {
         let start = Date()
 
-        let cached = try? await cache.fetch(key: key)
+        // sync-05: surface cache read error — treating a DB failure as
+        // `isDir = false` risks choosing non-recursive delete on a populated
+        // directory, causing a 409. Log but continue with the safe assumption.
+        let cached: MetadataRecord?
+        do {
+            cached = try await cache.fetch(key: key)
+        } catch {
+            Self.log.warning("delete: cache read failed, assuming isDir=false err=\(error, privacy: .public)")
+            cached = nil
+        }
         let isDir = cached?.isDir ?? false
         let eventName = isDir ? "folder_delete" : "file_delete"
 
         if isMacOSMetadata(key.path) {
-            await loggedTry({ try await self.cache.delete(key: key) }, "delete: macOS metadata cache delete")
+            do { try await cache.delete(key: key) } catch {
+                Self.log.warning("delete: macOS metadata cache delete failed err=\(error, privacy: .public)")
+            }
             return
         }
 
@@ -753,14 +723,11 @@ public actor SyncEngine {
         }
         await offlineTracker.observe(nil)
 
-        await loggedTry({ try await self.cache.delete(key: key) }, "delete: cache delete")
+        do { try await cache.delete(key: key) } catch {
+            Self.log.warning("delete: cache delete failed err=\(error, privacy: .public)")
+        }
 
-        await track(TelemetryEvent(
-            name: eventName,
-            accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-            durationMs: elapsedMs(since: start),
-            success: true
-        ))
+        await track(eventName: eventName, alias: key.accountAlias, start: start, outcome: .success())
     }
 
     // MARK: - Mkdir
@@ -785,8 +752,7 @@ public actor SyncEngine {
         }
         await offlineTracker.observe(nil)
 
-        let now = Date()
-        let nowNs = dateToNs(now)!
+        let nowNs = currentNowNs()
         let row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -798,21 +764,34 @@ public actor SyncEngine {
             lastAccessedNs: nowNs,
             syncedAtNs: nowNs
         )
-        await loggedTry({ try await self.cache.upsert(row) }, "mkdir: upsert")
+        do { try await cache.upsert(row) } catch {
+            Self.log.warning("mkdir: upsert failed err=\(error, privacy: .public)")
+        }
 
-        await track(TelemetryEvent(
-            name: "folder_create",
-            accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-            durationMs: elapsedMs(since: start),
-            success: true
-        ))
+        await track(eventName: "folder_create", alias: key.accountAlias, start: start, outcome: .success())
     }
 
     // MARK: - Offline status
 
-    /// Returns `true` when the engine recently observed an offline-class error.
-    public var isOffline: Bool {
-        get async { await offlineTracker.isOffline }
+    /// Returns `true` when the engine is currently considered offline (recently
+    /// observed an offline-class error and the cooldown has not yet expired).
+    ///
+    /// Matches `OfflineTracker.currentlyOffline()` naming: two consecutive calls
+    /// may return different values (the cooldown can expire between them).
+    public var currentlyOffline: Bool {
+        get async { await offlineTracker.currentlyOffline() }
+    }
+
+    // MARK: - Private: in-flight cleanup (sync-24)
+
+    /// Removes the coalescing map entry for `keyString` if it still belongs to
+    /// `generation`. Called from within the download task after it produces its
+    /// value so late-arriving joiners always find a live entry.
+    private func cleanupInflight(keyString: String, generation: UInt64) {
+        if downloadGenerations[keyString] == generation {
+            inFlightDownloads.removeValue(forKey: keyString)
+            downloadGenerations.removeValue(forKey: keyString)
+        }
     }
 
     // MARK: - Private: download implementation
@@ -820,159 +799,89 @@ public actor SyncEngine {
     /// Executes the actual network download for `open()`.
     ///
     /// Acquires a semaphore slot, handles the 412-resume-discard-retry path
-    /// with correct state reset (sync-01), and returns a file URL rather than
-    /// in-memory `Data` (arch-07/sync-02: streaming contract).
-    ///
-    /// The download streams into the spill file via the FileHandle-based
-    /// ``OneLakeClientProtocol/read(alias:workspaceGUID:itemGUID:path:range:ifMatch:destination:)``
-    /// overload — the response body is never resident in memory as a whole.
+    /// (using ``ResumePlan`` for clean state representation), and returns a
+    /// file URL. All blocking filesystem I/O runs off the actor via
+    /// `Task.detached` (sync-14).
     private func performDownload(key: CacheKey, start: Date, cached: MetadataRecord?) async throws -> URL {
         try await acquireDownloadSlot(alias: key.accountAlias)
         defer { releaseDownloadSlot(alias: key.accountAlias) }
 
-        // Decide resume offset from the spill file / etag sidecar.
-        var (rangeStart, pinnedEtag, hasPartial) = partials.rangeStart(
-            for: key, cachedRecord: cached ?? MetadataRecord(
-                accountAlias: key.accountAlias, workspaceID: key.workspaceID,
-                itemID: key.itemID, path: key.path, parentPath: "",
-                name: Enumerator.baseName(key.path), isDir: false
-            )
+        // Decide resume offset from the spill file / etag sidecar (sync-09:
+        // ResumePlan captures all three correlated values atomically).
+        let emptyRecord = MetadataRecord(
+            accountAlias: key.accountAlias, workspaceID: key.workspaceID,
+            itemID: key.itemID, path: key.path, parentPath: "",
+            name: Enumerator.baseName(key.path), isDir: false
         )
+        let plan = partials.rangeStart(for: key, cachedRecord: cached ?? emptyRecord)
 
-        let range: Range<Int64>? = hasPartial ? rangeStart..<Int64.max : nil
-        let ifMatch = pinnedEtag ?? ""
-
-        // Open (or create) the spill file at the write offset so the streaming
-        // read writes directly to disk without a full in-memory buffer.
+        // Run all blocking spill-file I/O off the actor (sync-14).
         let spillURL = partials.partialURL(for: key)
-        try FileManager.default.createDirectory(
-            at: spillURL.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
-        if !FileManager.default.fileExists(atPath: spillURL.path) {
-            FileManager.default.createFile(atPath: spillURL.path, contents: nil)
-        }
-        let spillHandle: FileHandle
-        do {
-            spillHandle = try FileHandle(forUpdating: spillURL)
-        } catch {
-            throw SyncError.spillFileError(error)
-        }
-        defer { try? spillHandle.close() }
-        // Seek to the resume offset so appended bytes land in the right place.
-        try spillHandle.seek(toOffset: UInt64(rangeStart))
-
-        // Sentinel initializer: withRemoteOperationError is Never-returning, so the
-        // compiler already considers both catch branches exhaustive. The explicit
-        // initializer guards against a future refactor that weakens that guarantee
-        // and would otherwise leave `props` read uninitialised (blocker-2).
-        var props = PathProperties(
-            isDirectory: false, contentLength: 0, eTag: "", lastModified: .distantPast, contentType: ""
-        )
-        do {
-            props = try await onelake.read(
-                alias: key.accountAlias,
-                workspaceGUID: key.workspaceID,
-                itemGUID: key.itemID,
-                path: key.path,
-                range: range,
-                ifMatch: ifMatch,
-                destination: spillHandle
+        try await Task.detached(priority: .userInitiated) {
+            try FileManager.default.createDirectory(
+                at: spillURL.deletingLastPathComponent(), withIntermediateDirectories: true
             )
-        } catch {
-            // 412 on resume: reset ALL resume state so the full-file retry
-            // starts from offset 0 with no stale rangeStart (sync-01).
-            if hasPartial, case OneLakeError.preconditionFailed = error {
-                logger.info("resume etag changed; discarding partial and restarting", metadata: ["path": key.path])
-                partials.discard(for: key)
-                rangeStart = 0
-                hasPartial = false
-                pinnedEtag = nil
-                // Re-create the spill file from scratch.
-                try? spillHandle.close()
-                try? FileManager.default.removeItem(at: spillURL)
+            if !FileManager.default.fileExists(atPath: spillURL.path) {
                 FileManager.default.createFile(atPath: spillURL.path, contents: nil)
-                let freshHandle: FileHandle
-                do {
-                    freshHandle = try FileHandle(forUpdating: spillURL)
-                } catch {
-                    throw SyncError.spillFileError(error)
-                }
-                defer { try? freshHandle.close() }
-                do {
-                    props = try await onelake.read(
-                        alias: key.accountAlias,
-                        workspaceGUID: key.workspaceID,
-                        itemGUID: key.itemID,
-                        path: key.path,
-                        range: nil,
-                        ifMatch: "",
-                        destination: freshHandle
-                    )
-                } catch {
-                    // C3: discard spill before rethrowing so the next open()
-                    // starts from scratch rather than resuming into a new remote
-                    // file at a stale offset (blocker-1).
-                    partials.discard(for: key)
-                    try await withRemoteOperationError(
-                        error: error, key: key, eventName: "file_download",
-                        failCode: "read_failed", start: start
-                    )
-                }
-            } else {
-                // Non-412 failure: discard any spill + etag sidecar before
-                // rethrowing so the next open() re-downloads from scratch
-                // instead of resuming at a stale offset (blocker-1).
-                partials.discard(for: key)
-                try await withRemoteOperationError(
-                    error: error, key: key, eventName: "file_download",
-                    failCode: "read_failed", start: start
-                )
             }
-        }
+        }.value
+
+        // Perform the download, handling 412 on the resume path.
+        let props = try await performNetworkRead(
+            key: key, spillURL: spillURL, plan: plan, start: start
+        )
         await offlineTracker.observe(nil)
 
-        // Pin the partial etag.
-        if !hasPartial && !props.eTag.isEmpty {
+        // Cancellation checkpoint after the (potentially long) network read.
+        try Task.checkCancellation()
+
+        // Pin the partial etag when starting fresh (no existing partial).
+        if !plan.hasPartial && !props.eTag.isEmpty {
             let etagToStore = props.eTag
-            await loggedTry({ try self.partials.storeEtag(etagToStore, for: key) }, "open: storeEtag")
+            do { try partials.storeEtag(etagToStore, for: key) } catch {
+                Self.log.warning("open: storeEtag failed err=\(error, privacy: .public)")
+            }
         }
 
         // Compute total expected.
         var expectedTotal = cached?.contentLength ?? 0
         if props.contentLength > 0 {
-            expectedTotal = hasPartial ? rangeStart + props.contentLength : props.contentLength
+            expectedTotal = plan.hasPartial
+                ? plan.rangeStart + props.contentLength
+                : props.contentLength
         }
 
-        // Determine how many bytes were written to the spill file.
-        // FileAttributeKey.size is typed as NSNumber on Apple platforms; use
-        // int64Value to avoid the direct Int64 cast silently returning nil.
-        let spillSize: Int64
-        do {
+        // Determine spill file size and verify (off actor — sync-14).
+        let spillSize: Int64 = try await Task.detached(priority: .userInitiated) {
             let attrs = try FileManager.default.attributesOfItem(atPath: spillURL.path)
-            spillSize = (attrs[.size] as? NSNumber)?.int64Value ?? 0
-        } catch {
-            throw SyncError.spillFileError(error)
-        }
+            return (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        }.value
 
         if expectedTotal > 0, spillSize != expectedTotal {
             if spillSize > expectedTotal { partials.discard(for: key) }
             throw SyncError.shortDownload(expected: expectedTotal, got: spillSize)
         }
 
-        // SHA verification when an expected hash is known (sync-02: streaming
-        // hash — read file once rather than loading all bytes into memory).
-        let expectedSHA = hasPartial ? cached?.blobSHA256 : nil
+        // Cancellation checkpoint before the expensive SHA pass.
+        try Task.checkCancellation()
+
+        // SHA verification when an expected hash is known. Run off actor (sync-14).
+        let expectedSHA = plan.hasPartial ? cached?.blobSHA256 : nil
         if let expected = expectedSHA, !expected.isEmpty {
-            let got = try partials.hashSpillFile(spillURL)
+            let got = try await Task.detached(priority: .userInitiated) {
+                try self.partials.hashSpillFile(spillURL)
+            }.value
             if got != expected {
                 partials.discard(for: key)
                 throw SyncError.blobSHAMismatch(got: got, expected: expected)
             }
         }
 
-        // Upsert metadata row first (needed before storeBlobFromURL links the SHA).
-        let now = Date()
-        let nowNs = dateToNs(now)!
+        // Cancellation checkpoint before cache writes.
+        try Task.checkCancellation()
+
+        // Upsert metadata row and blob store as a logical pair (sync-29).
+        let nowNs = currentNowNs()
         var row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -989,54 +898,149 @@ public actor SyncEngine {
             syncedAtNs: nowNs
         )
         if row.name.isEmpty { row.name = Enumerator.baseName(key.path) }
-        let downloadRow = row
-        await loggedTry({ try await self.cache.upsert(downloadRow) }, "open: upsert")
 
-        // Move/copy spill file into the blob cache — no in-memory read needed.
-        await loggedTry(
-            { try await self.cache.storeBlobFromURL(spillURL, key: key) },
-            "open: storeBlobFromURL"
-        )
+        // sync-29: surface paired-write errors. If the upsert fails, don't
+        // proceed to storeBlobFromURL — a blob with no linking row is an orphan.
+        let downloadRow = row
+        do {
+            try await cache.upsert(downloadRow)
+        } catch {
+            Self.log.warning("open: upsert failed err=\(error, privacy: .public)")
+            // Blob store skipped — row not present to link SHA.
+            // Fall back to the spill file so the caller gets content even though
+            // the cache is inconsistent.
+            await track(eventName: "file_download", alias: key.accountAlias, start: start,
+                        outcome: .success(bytes: spillSize))
+            return spillURL
+        }
+
+        // Move/copy spill file into the blob cache.
+        do {
+            try await cache.storeBlobFromURL(spillURL, key: key)
+        } catch {
+            Self.log.warning("open: storeBlobFromURL failed (blob cache inconsistent) err=\(error, privacy: .public)")
+        }
 
         // Return the blob URL when available; fall back to the spill file when
-        // the cache store failed (sync-07 analogue: cache failure must not
-        // discard a successful download).
+        // the cache store failed.
         if let blobURL = try? await cache.blobURL(key: key) {
-            await track(TelemetryEvent(
-                name: "file_download",
-                accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-                durationMs: elapsedMs(since: start),
-                success: true,
-                bytesTransferred: spillSize
-            ))
+            await track(eventName: "file_download", alias: key.accountAlias, start: start,
+                        outcome: .success(bytes: spillSize))
             return blobURL
         } else {
             logger.warn("open: blob cache unavailable; returning spill file URL",
                         metadata: ["path": key.path])
-            await track(TelemetryEvent(
-                name: "file_download",
-                accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-                durationMs: elapsedMs(since: start),
-                success: true,
-                bytesTransferred: spillSize
-            ))
+            await track(eventName: "file_download", alias: key.accountAlias, start: start,
+                        outcome: .success(bytes: spillSize))
             return spillURL
+        }
+    }
+
+    /// Issues the network read for a single download attempt. Handles the 412
+    /// precondition-failed path by resetting to a full restart and retrying
+    /// once (sync-02/sync-09/sync-23).
+    ///
+    /// All blocking FileHandle operations run off the actor via `Task.detached`
+    /// (sync-14).
+    private func performNetworkRead(
+        key: CacheKey,
+        spillURL: URL,
+        plan: ResumePlan,
+        start: Date
+    ) async throws -> PathProperties {
+        // Open the spill file, seek to the resume offset, and hold the handle
+        // open for the streaming read. Single FD open per attempt — the handle
+        // is passed directly to onelake.read() and closed exactly once on all
+        // paths below (success, error, cancellation). Runs off-actor to avoid
+        // blocking on FileHandle (sync-14).
+        let readHandleResult: Result<FileHandle, any Error> = await Task.detached(priority: .userInitiated) {
+            do {
+                let h = try FileHandle(forUpdating: spillURL)
+                try h.seek(toOffset: UInt64(plan.rangeStart))
+                return .success(h)
+            } catch {
+                return .failure(SyncError.spillFileError(error))
+            }
+        }.value
+        let spillHandle: FileHandle
+        switch readHandleResult {
+        case .failure(let err): throw err
+        case .success(let h): spillHandle = h
+        }
+
+        do {
+            let props = try await onelake.read(
+                alias: key.accountAlias,
+                workspaceGUID: key.workspaceID,
+                itemGUID: key.itemID,
+                path: key.path,
+                range: plan.range,
+                ifMatch: plan.ifMatch,
+                destination: spillHandle
+            )
+            try? spillHandle.close()
+            return props
+        } catch {
+            try? spillHandle.close()
+            // 412 on resume: discard the stale partial and retry with a full
+            // download (sync-09/23: ResumePlan.fullRestart captures the reset).
+            if plan.hasPartial, case OneLakeError.preconditionFailed = error {
+                logger.info("resume etag changed; discarding partial and restarting",
+                            metadata: ["path": key.path])
+                partials.discard(for: key)
+                // Re-create the spill file from scratch (off actor).
+                await Task.detached(priority: .userInitiated) {
+                    try? FileManager.default.removeItem(at: spillURL)
+                    FileManager.default.createFile(atPath: spillURL.path, contents: nil)
+                }.value
+                let freshHandleResult: Result<FileHandle, any Error> = await Task.detached(priority: .userInitiated) {
+                    do {
+                        return .success(try FileHandle(forUpdating: spillURL))
+                    } catch {
+                        return .failure(SyncError.spillFileError(error))
+                    }
+                }.value
+                let freshHandle: FileHandle
+                switch freshHandleResult {
+                case .failure(let e): throw e
+                case .success(let h): freshHandle = h
+                }
+                do {
+                    let props = try await onelake.read(
+                        alias: key.accountAlias,
+                        workspaceGUID: key.workspaceID,
+                        itemGUID: key.itemID,
+                        path: key.path,
+                        range: nil,
+                        ifMatch: "",
+                        destination: freshHandle
+                    )
+                    try? freshHandle.close()
+                    return props
+                } catch {
+                    try? freshHandle.close()
+                    // Discard spill before rethrowing so the next open() starts fresh.
+                    partials.discard(for: key)
+                    try await withRemoteOperationError(
+                        error: error, key: key, eventName: "file_download",
+                        failCode: "read_failed", start: start
+                    )
+                }
+            } else {
+                // Non-412 failure: discard any spill + etag sidecar before
+                // rethrowing so the next open() re-downloads from scratch.
+                partials.discard(for: key)
+                try await withRemoteOperationError(
+                    error: error, key: key, eventName: "file_download",
+                    failCode: "read_failed", start: start
+                )
+            }
         }
     }
 
     // MARK: - Private helpers
 
     /// Returns `(isFresh, children)` from the metadata cache.
-    ///
-    /// - `(true, children)` — parent row exists, is a directory, and is within
-    ///   the `recentFolderTTL` freshness window. `children` contains the cached
-    ///   child rows.
-    /// - `(false, [])` — parent row is missing or stale. Caller should issue a
-    ///   remote refresh.
-    ///
-    /// Throws `FPError.wrongItemKind` when `key` refers to a file, not a
-    /// directory, so the caller can surface the typed error without attempting
-    /// a remote listing.
     private func enumerateFromCache(key: CacheKey) async throws -> (Bool, [MetadataRecord])? {
         guard let parent = try? await cache.fetch(key: key) else { return (false, []) }
         guard parent.isDir else {
@@ -1061,29 +1065,32 @@ public actor SyncEngine {
         return (false, props)
     }
 
-    private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String, now: Date) async {
+    /// Deletes discovery rows for `parent` that are absent from `seen`.
+    ///
+    /// Uses the authoritative `seen` set from the current listing: any row
+    /// not in `seen` was not returned by the remote and should be expired,
+    /// regardless of its `syncedAt` timestamp (sync-25 fix: removes the
+    /// time-window guard that coupled folder-content TTL with discovery expiry).
+    private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String) async {
         guard let kids = try? await cache.children(of: parent) else { return }
-        var deleteBatch: [CacheKey] = []
-        for k in kids {
-            guard !seen.contains(k.path) else { continue }
-            if let syncedAt = k.syncedAt, now.timeIntervalSince(syncedAt) < recentFolderTTL { continue }
-            deleteBatch.append(CacheKey(
-                accountAlias: alias,
-                workspaceID: k.workspaceID,
-                itemID: k.itemID,
-                path: k.path
-            ))
-        }
+        let deleteBatch = kids
+            .filter { !seen.contains($0.path) }
+            .map { k in
+                CacheKey(
+                    accountAlias: alias,
+                    workspaceID: k.workspaceID,
+                    itemID: k.itemID,
+                    path: k.path
+                )
+            }
         await batchDelete(deleteBatch, context: "expireDiscoveryRows")
     }
 
-    // MARK: - Shared remote-operation error handler (sync-09)
+    // MARK: - Shared remote-operation error handler
 
     /// Handles the common error path for remote operations: observes offline
     /// state, marks workspace paused when appropriate, emits a failure telemetry
     /// event, and always rethrows.
-    ///
-    /// This collapses the five formerly copy-pasted catch/telemetry/pause blocks.
     private func withRemoteOperationError(
         error: any Error,
         key: CacheKey,
@@ -1095,29 +1102,16 @@ public actor SyncEngine {
         if await pauseManager.markPausedIfNeeded(
             workspaceID: key.workspaceID, alias: key.accountAlias, error: error
         ) {
-            await track(TelemetryEvent(
-                name: eventName,
-                accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-                durationMs: elapsedMs(since: start),
-                success: false,
-                errorCode: "capacity_paused"
-            ))
+            await track(eventName: eventName, alias: key.accountAlias, start: start, outcome: .paused)
             throw SyncError.workspacePaused
         }
-        await track(TelemetryEvent(
-            name: eventName,
-            accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-            durationMs: elapsedMs(since: start),
-            success: false,
-            errorCode: failCode
-        ))
+        await track(eventName: eventName, alias: key.accountAlias, start: start, outcome: .failed(failCode))
         throw error
     }
 
-    // MARK: - Batch cache helpers (sync-15)
+    // MARK: - Batch cache helpers
 
-    /// Upserts all records in one GRDB transaction to avoid N individual
-    /// write transactions (sync-15).
+    /// Upserts all records in one GRDB transaction.
     private func batchUpsert(_ records: [MetadataRecord], context: String) async {
         guard !records.isEmpty else { return }
         do {
@@ -1127,8 +1121,7 @@ public actor SyncEngine {
         }
     }
 
-    /// Deletes all keys in one GRDB transaction to avoid N individual
-    /// write transactions (sync-15).
+    /// Deletes all keys in one GRDB transaction.
     private func batchDelete(_ keys: [CacheKey], context: String) async {
         guard !keys.isEmpty else { return }
         do {
@@ -1138,17 +1131,73 @@ public actor SyncEngine {
         }
     }
 
-    // MARK: - Logged try helper (sync-16)
+    // MARK: - Telemetry helpers (sync-06)
 
-    /// Runs `body`, logging a warning on failure. Silent retry is the
-    /// documented policy for network errors; local persistence failures are
-    /// a different class and belong in the log (sync-16).
-    private func loggedTry(_ body: @Sendable () async throws -> Void, _ context: String) async {
-        do {
-            try await body()
-        } catch {
-            Self.log.warning("SyncEngine: \(context, privacy: .public) failed err=\(error, privacy: .public)")
+    /// Outcome descriptor for telemetry emission.
+    private enum TrackOutcome {
+        case success(bytes: Int64? = nil)
+        case successWithCode(_ code: String)
+        case failed(_ code: String)
+        case paused
+    }
+
+    /// Emits a telemetry event with common fields pre-filled (sync-06: single
+    /// helper replaces 15+ near-identical construction sites).
+    private func track(
+        eventName: String,
+        alias: String,
+        start: Date,
+        outcome: TrackOutcome
+    ) async {
+        let aliasHash = TelemetryRedaction.hashAlias(alias)
+        let ms = elapsedMs(since: start)
+        let event: TelemetryEvent
+        switch outcome {
+        case .success(let bytes):
+            // `bytesTransferred` defaults to 0 when `bytes` is nil, which means
+            // "not applicable" (e.g. a cache-hit path that does no I/O). The field
+            // is omitted from the AppInsights measurement map when it is 0, so a
+            // nil result is correctly distinguishable from a genuine 0-byte transfer
+            // at the analytics level (both emit no measurement, which is the desired
+            // behaviour — a 0-byte file is a legitimate edge case but not worth
+            // special-casing in the wire format).
+            event = TelemetryEvent(
+                name: eventName,
+                accountAliasHash: aliasHash,
+                durationMs: ms,
+                success: true,
+                bytesTransferred: bytes ?? 0
+            )
+        case .successWithCode(let code):
+            event = TelemetryEvent(
+                name: eventName,
+                accountAliasHash: aliasHash,
+                durationMs: ms,
+                success: true,
+                errorCode: code
+            )
+        case .failed(let code):
+            event = TelemetryEvent(
+                name: eventName,
+                accountAliasHash: aliasHash,
+                durationMs: ms,
+                success: false,
+                errorCode: code
+            )
+        case .paused:
+            event = TelemetryEvent(
+                name: eventName,
+                accountAliasHash: aliasHash,
+                durationMs: ms,
+                success: false,
+                errorCode: "capacity_paused"
+            )
         }
+        await track(event)
+    }
+
+    private func track(_ event: TelemetryEvent) async {
+        await telemetry?.track(event)
     }
 
     // MARK: - Semaphore helpers (actor-isolated)
@@ -1184,19 +1233,30 @@ public actor SyncEngine {
         uploadSlots[alias] = s
         return s
     }
-
-    // MARK: - Telemetry helper
-
-    private func track(_ event: TelemetryEvent) async {
-        await telemetry?.track(event)
-    }
 }
 
 // MARK: - Elapsed helper
 
+/// Returns elapsed milliseconds since `start`, floored at 1 ms to avoid
+/// reporting a sub-millisecond / zero duration in telemetry (the 1 ms floor
+/// is intentional and documented here rather than as a magic literal — sync-07).
+private let elapsedMsMinimum: Int64 = 1
+
 private func elapsedMs(since start: Date) -> Int64 {
     let d = Int64(Date().timeIntervalSince(start) * 1000)
-    return max(1, d)
+    return max(elapsedMsMinimum, d)
+}
+
+// MARK: - nowNs helper (sync-21)
+
+/// Returns the current time as Unix nanoseconds, clamped to `Int64` range.
+///
+/// Replaces the six `dateToNs(Date())!` force-unwraps throughout `SyncEngine`.
+/// `dateToNs` returns `nil` only for a `nil` input; passing `Date()` (never
+/// nil) could only fail if the clock is radically wrong. Clamping to `0`
+/// (the "unknown" sentinel) avoids both the force-unwrap and a crash (sync-21).
+private func currentNowNs() -> Int64 {
+    dateToNs(Date()) ?? 0
 }
 
 // MARK: - dateToNs (nonisolated helper)

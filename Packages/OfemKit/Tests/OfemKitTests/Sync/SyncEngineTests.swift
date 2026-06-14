@@ -66,17 +66,17 @@ struct SyncEngineTests {
         )
 
         // Before discard: should report a partial at offset 10.
-        let (offset, _, hasPartial) = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(offset == 10)
-        #expect(hasPartial)
+        let plan = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(plan.rangeStart == 10)
+        #expect(plan.hasPartial)
 
         // Simulate the 412 discard + state reset in SyncEngine.
         pm.discard(for: key)
-        // After discard: no partial on disk, rangeStart returns (0, nil, false).
-        let (offset2, etag2, hasPartial2) = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(offset2 == 0)
-        #expect(etag2 == nil)
-        #expect(!hasPartial2)
+        // After discard: no partial on disk, rangeStart returns .fullRestart.
+        let plan2 = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(plan2.rangeStart == 0)
+        #expect(plan2.pinnedEtag == nil)
+        #expect(!plan2.hasPartial)
     }
 
     /// Returns a `PartialManager` backed by a unique temp directory.
@@ -1249,13 +1249,13 @@ struct SyncEngineTests {
         #expect(ol.listPathCalls.isEmpty)
     }
 
-    // MARK: - isOffline property
+    // MARK: - currentlyOffline property
 
-    @Test("isOffline returns false by default")
+    @Test("currentlyOffline returns false by default")
     func testIsOfflineDefaultFalse() async throws {
         let ol = MockOneLakeClient()
         let (engine, _) = try makeEngine(onelake: ol)
-        #expect(await engine.isOffline == false)
+        #expect(await engine.currentlyOffline == false)
     }
 
     // MARK: - delete: uses recursive=true for directories
@@ -1338,16 +1338,16 @@ struct SyncEngineTests {
         #expect(ol.readCalls.count == 1)
     }
 
-    /// After a `refreshFolder` failure with the wrapped offline shape, `isOffline`
+    /// After a `refreshFolder` failure with the wrapped offline shape, `currentlyOffline`
     /// must flip to true because `offlineTracker.observe(_:)` was fed the error.
-    @Test("isOffline becomes true after refreshFolder fails with wrapped offline error via listPath")
+    @Test("currentlyOffline becomes true after refreshFolder fails with wrapped offline error via listPath")
     func testIsOffline_trueAfterRefreshFolderFailsOffline() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // Guard: starts online.
-        #expect(await engine.isOffline == false)
+        #expect(await engine.currentlyOffline == false)
 
         // Inject the realistic offline error that SyncEngine sees from OneLakeClient
         // after the short-circuit path: transport-wrapped, then OneLake-wrapped.
@@ -1367,7 +1367,7 @@ struct SyncEngineTests {
         }
 
         // OfflineTracker must now be in the offline state.
-        #expect(await engine.isOffline == true)
+        #expect(await engine.currentlyOffline == true)
     }
 
     @Test("delete() uses recursive=true when no cache row exists (unknown type)")

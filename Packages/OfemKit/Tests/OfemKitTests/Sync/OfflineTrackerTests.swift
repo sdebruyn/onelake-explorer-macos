@@ -11,7 +11,7 @@ struct OfflineTrackerTests {
 
     @Test func startsOnline() async {
         let tracker = OfflineTracker()
-        #expect(await tracker.isOffline == false)
+        #expect(await tracker.currentlyOffline() == false)
     }
 
     // MARK: - markOffline / markOnline
@@ -19,14 +19,14 @@ struct OfflineTrackerTests {
     @Test func markOfflineMakesOffline() async {
         let tracker = OfflineTracker()
         await tracker.markOffline()
-        #expect(await tracker.isOffline == true)
+        #expect(await tracker.currentlyOffline() == true)
     }
 
     @Test func markOnlineAfterOfflineMakesOnline() async {
         let tracker = OfflineTracker()
         await tracker.markOffline()
         await tracker.markOnline()
-        #expect(await tracker.isOffline == false)
+        #expect(await tracker.currentlyOffline() == false)
     }
 
     // MARK: - observe(_:)
@@ -35,14 +35,14 @@ struct OfflineTrackerTests {
         let tracker = OfflineTracker()
         await tracker.markOffline()
         await tracker.observe(nil)
-        #expect(await tracker.isOffline == false)
+        #expect(await tracker.currentlyOffline() == false)
     }
 
     @Test func observeURLErrorNoConnection() async {
         let tracker = OfflineTracker()
         let err = URLError(.notConnectedToInternet)
         await tracker.observe(err)
-        #expect(await tracker.isOffline == true)
+        #expect(await tracker.currentlyOffline() == true)
     }
 
     @Test func observeURLErrorTimedOutIsNotOffline() async {
@@ -50,14 +50,14 @@ struct OfflineTrackerTests {
         let err = URLError(.timedOut)
         await tracker.observe(err)
         // Timeout is NOT treated as offline (could be server-side).
-        #expect(await tracker.isOffline == false)
+        #expect(await tracker.currentlyOffline() == false)
     }
 
     @Test func observeRandomErrorIsNotOffline() async {
         let tracker = OfflineTracker()
         let err = NSError(domain: "test", code: 99)
         await tracker.observe(err)
-        #expect(await tracker.isOffline == false)
+        #expect(await tracker.currentlyOffline() == false)
     }
 
     // MARK: - isOfflineError

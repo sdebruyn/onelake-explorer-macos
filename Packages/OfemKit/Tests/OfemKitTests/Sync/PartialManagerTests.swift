@@ -5,8 +5,8 @@ import CryptoKit
 
 // MARK: - PartialManager Tests
 
-/// Tests for ``PartialManager`` covering the resume-offset decision matrix,
-/// ETag sidecar semantics, and finalise behaviour.
+/// Tests for ``PartialManager`` covering the resume-offset decision matrix
+/// and ETag sidecar semantics. `finalise` was dead code removed in sync-08.
 @Suite("PartialManager")
 struct PartialManagerTests {
 
@@ -41,10 +41,10 @@ struct PartialManagerTests {
     func testNoPartial() {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
-        let (offset, etag, hasPartial) = pm.rangeStart(for: Self.baseKey, cachedRecord: baseRecord())
-        #expect(offset == 0)
-        #expect(etag == nil)
-        #expect(!hasPartial)
+        let plan = pm.rangeStart(for: Self.baseKey, cachedRecord: baseRecord())
+        #expect(plan.rangeStart == 0)
+        #expect(plan.pinnedEtag == nil)
+        #expect(!plan.hasPartial)
     }
 
     @Test("rangeStart: partial with matching etag → (size, etag, true)")
@@ -59,10 +59,10 @@ struct PartialManagerTests {
         FileManager.default.createFile(atPath: partialURL.path, contents: Data(repeating: 0x41, count: 40))
         try pm.storeEtag("v1", for: key)
 
-        let (offset, etag, hasPartial) = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(offset == 40)
-        #expect(etag == "v1")
-        #expect(hasPartial)
+        let plan = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(plan.rangeStart == 40)
+        #expect(plan.pinnedEtag == "v1")
+        #expect(plan.hasPartial)
     }
 
     @Test("rangeStart: partial with mismatched etag → (0, nil, false) + discard")
@@ -76,9 +76,9 @@ struct PartialManagerTests {
         FileManager.default.createFile(atPath: partialURL.path, contents: Data(repeating: 0x42, count: 50))
         try pm.storeEtag("v2-different", for: key) // sidecar etag != record etag
 
-        let (offset, _, hasPartial) = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(offset == 0)
-        #expect(!hasPartial)
+        let plan = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(plan.rangeStart == 0)
+        #expect(!plan.hasPartial)
         // Partial and sidecar should have been discarded.
         #expect(!FileManager.default.fileExists(atPath: partialURL.path))
     }
@@ -94,18 +94,18 @@ struct PartialManagerTests {
         FileManager.default.createFile(atPath: partialURL.path, contents: Data(repeating: 0x43, count: 30))
         // No storeEtag call.
 
-        let (offset, _, hasPartial) = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(offset == 0)
-        #expect(!hasPartial)
+        let plan = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(plan.rangeStart == 0)
+        #expect(!plan.hasPartial)
     }
 
     @Test("rangeStart: record contentLength == 0 → no resume")
     func testNoResumeWhenContentLengthZero() {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
-        let (offset, _, hasPartial) = pm.rangeStart(for: Self.baseKey, cachedRecord: baseRecord(contentLength: 0))
-        #expect(offset == 0)
-        #expect(!hasPartial)
+        let plan = pm.rangeStart(for: Self.baseKey, cachedRecord: baseRecord(contentLength: 0))
+        #expect(plan.rangeStart == 0)
+        #expect(!plan.hasPartial)
     }
 
     // MARK: - ETag sidecar semantics
@@ -130,96 +130,13 @@ struct PartialManagerTests {
         #expect(pm.loadEtag(for: key) == nil)
     }
 
-    // MARK: - finalise
+    // MARK: - SyncError error types (retained from finalise tests — still valid)
 
-    @Test("finalise from scratch (rangeStart == 0) returns all bytes")
-    func testFinaliseFromScratch() throws {
-        let (pm, dir) = makeManager()
-        defer { cleanup(dir) }
-        let body = Data(repeating: 0xBB, count: 50)
-        let result = try pm.finalise(
-            key: Self.baseKey, body: body, rangeStart: 0, expectedTotal: 50, expectedSHA: nil
-        )
-        #expect(result == body)
-    }
-
-    @Test("finalise throws shortDownload when body is shorter than expected")
-    func testFinaliseShortDownload() throws {
-        let (pm, dir) = makeManager()
-        defer { cleanup(dir) }
-        let body = Data(repeating: 0xCC, count: 10)
-        do {
-            _ = try pm.finalise(
-                key: Self.baseKey, body: body, rangeStart: 0, expectedTotal: 50, expectedSHA: nil
-            )
-            Issue.record("Expected shortDownload")
-        } catch SyncError.shortDownload(let expected, let got) {
-            #expect(expected == 50)
-            #expect(got == 10)
-        }
-    }
-
-    @Test("finalise throws blobSHAMismatch on incorrect SHA")
-    func testFinaliseShaMismatch() throws {
-        let (pm, dir) = makeManager()
-        defer { cleanup(dir) }
-        let body = Data(repeating: 0xDD, count: 20)
-        do {
-            _ = try pm.finalise(
-                key: Self.baseKey, body: body, rangeStart: 0, expectedTotal: 20,
-                expectedSHA: "0000000000000000000000000000000000000000000000000000000000000000"
-            )
-            Issue.record("Expected blobSHAMismatch")
-        } catch SyncError.blobSHAMismatch {
-            // Correct.
-        }
-    }
-
-    @Test("finalise SHA verification passes with correct hash")
-    func testFinaliseShaCorrect() throws {
-        let (pm, dir) = makeManager()
-        defer { cleanup(dir) }
-        let body = Data(repeating: 0xEE, count: 20)
-        let expected = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
-        let result = try pm.finalise(
-            key: Self.baseKey, body: body, rangeStart: 0, expectedTotal: 20, expectedSHA: expected
-        )
-        #expect(result == body)
-    }
-
-    @Test("finalise throws spillFileError on disk-full simulation")
-    func testFinaliseSpillFileError() throws {
-        // We can't easily simulate disk full, but we can test that the
-        // spillFileError case exists in SyncError and has the right fpCode.
+    @Test("spillFileError has cannotSynchronize fpCode")
+    func testSpillFileErrorFpCode() {
         let innerErr = CocoaError(.fileWriteOutOfSpace)
         let syncErr = SyncError.spillFileError(innerErr)
         #expect(syncErr.fpCode == .cannotSynchronize)
-    }
-
-    // MARK: - Resume appending
-
-    @Test("finalise appends to existing partial at correct offset")
-    func testFinaliseAppendsToPartial() throws {
-        let (pm, dir) = makeManager()
-        defer { cleanup(dir) }
-        let key = Self.baseKey
-
-        // Create a partial with 20 bytes.
-        let partialURL = pm.partialURL(for: key)
-        let firstHalf = Data(repeating: 0x11, count: 20)
-        FileManager.default.createFile(atPath: partialURL.path, contents: firstHalf)
-
-        // Append 30 more bytes starting at offset 20.
-        let secondHalf = Data(repeating: 0x22, count: 30)
-        let result = try pm.finalise(
-            key: key, body: secondHalf, rangeStart: 20, expectedTotal: 50, expectedSHA: nil
-        )
-        #expect(result.count == 50)
-        #expect(result[0..<20] == firstHalf)
-        #expect(result[20...] == secondHalf)
-
-        // Partial should be cleaned up.
-        #expect(!FileManager.default.fileExists(atPath: partialURL.path))
     }
 
     // MARK: - partialURL / etagURL determinism
@@ -293,10 +210,10 @@ struct PartialManagerTests {
         )
         try pm.storeEtag("v1", for: key)
 
-        let (offset, etag, hasPartial) = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(offset == 0)
-        #expect(etag == nil)
-        #expect(!hasPartial)
+        let plan = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(plan.rangeStart == 0)
+        #expect(plan.pinnedEtag == nil)
+        #expect(!plan.hasPartial)
     }
 
     @Test("rangeStart: zero-size partial → no resume")
@@ -311,10 +228,10 @@ struct PartialManagerTests {
         FileManager.default.createFile(atPath: partialURL.path, contents: Data())
         try pm.storeEtag("v1", for: key)
 
-        let (offset, etag, hasPartial) = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(offset == 0)
-        #expect(etag == nil)
-        #expect(!hasPartial)
+        let plan = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(plan.rangeStart == 0)
+        #expect(plan.pinnedEtag == nil)
+        #expect(!plan.hasPartial)
     }
 
     @Test("rangeStart: empty sidecar etag is treated as missing → discard")
@@ -332,9 +249,9 @@ struct PartialManagerTests {
         // Write an empty sidecar manually so loadEtag returns "".
         try "".write(to: pm.etagURL(for: key), atomically: false, encoding: .utf8)
 
-        let (offset, _, hasPartial) = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(offset == 0)
-        #expect(!hasPartial)
+        let plan = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(plan.rangeStart == 0)
+        #expect(!plan.hasPartial)
         // discard() must have run.
         #expect(!FileManager.default.fileExists(atPath: partialURL.path))
     }
@@ -354,10 +271,10 @@ struct PartialManagerTests {
         )
         try pm.storeEtag("some-etag", for: key)
 
-        let (offset, etag, hasPartial) = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(offset == 60)
-        #expect(etag == "some-etag")
-        #expect(hasPartial)
+        let plan = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(plan.rangeStart == 60)
+        #expect(plan.pinnedEtag == "some-etag")
+        #expect(plan.hasPartial)
     }
 
     // MARK: - hashSpillFile
@@ -413,80 +330,6 @@ struct PartialManagerTests {
         let missing = dir.appendingPathComponent("no-such-file.partial")
         #expect(throws: (any Error).self) {
             try pm.hashSpillFile(missing)
-        }
-    }
-
-    // MARK: - finalise edge cases
-
-    @Test("finalise with expectedTotal == 0 skips length check")
-    func testFinaliseSkipsLengthCheckWhenZero() throws {
-        let (pm, dir) = makeManager()
-        defer { cleanup(dir) }
-        // Any body size is accepted when expectedTotal == 0.
-        let body = Data(repeating: 0xAB, count: 7)
-        let result = try pm.finalise(
-            key: Self.baseKey, body: body, rangeStart: 0, expectedTotal: 0, expectedSHA: nil
-        )
-        #expect(result == body)
-    }
-
-    @Test("finalise with empty expectedSHA skips SHA check")
-    func testFinaliseSkipsSHACheckWhenEmpty() throws {
-        let (pm, dir) = makeManager()
-        defer { cleanup(dir) }
-        let body = Data(repeating: 0xCD, count: 15)
-        // An empty expectedSHA must not trigger blobSHAMismatch.
-        let result = try pm.finalise(
-            key: Self.baseKey, body: body, rangeStart: 0, expectedTotal: 15, expectedSHA: ""
-        )
-        #expect(result == body)
-    }
-
-    @Test("finalise discards partial when totalWritten > expectedTotal")
-    func testFinaliseDiscardsWhenTooManyBytes() throws {
-        let (pm, dir) = makeManager()
-        defer { cleanup(dir) }
-        let key = Self.baseKey
-
-        // Write 40 existing bytes into the partial.
-        let partialURL = pm.partialURL(for: key)
-        FileManager.default.createFile(
-            atPath: partialURL.path,
-            contents: Data(repeating: 0x11, count: 40)
-        )
-
-        // Appending 30 bytes starting at offset 40 → totalWritten = 70 > expectedTotal (50).
-        let body = Data(repeating: 0x22, count: 30)
-        do {
-            _ = try pm.finalise(
-                key: key, body: body, rangeStart: 40, expectedTotal: 50, expectedSHA: nil
-            )
-            Issue.record("Expected shortDownload to be thrown")
-        } catch SyncError.shortDownload(let expected, let got) {
-            #expect(expected == 50)
-            #expect(got == 70)
-            // The partial must have been discarded because totalWritten > expectedTotal.
-            #expect(!FileManager.default.fileExists(atPath: partialURL.path))
-        }
-    }
-
-    @Test("finalise cleans up partial and sidecar on SHA mismatch")
-    func testFinaliseDiscardsOnSHAMismatch() throws {
-        let (pm, dir) = makeManager()
-        defer { cleanup(dir) }
-        let key = Self.baseKey
-        try pm.storeEtag("v1", for: key)
-
-        let body = Data(repeating: 0xFF, count: 10)
-        let badSHA = String(repeating: "0", count: 64)
-        do {
-            _ = try pm.finalise(
-                key: key, body: body, rangeStart: 0, expectedTotal: 10, expectedSHA: badSHA
-            )
-            Issue.record("Expected blobSHAMismatch")
-        } catch SyncError.blobSHAMismatch {
-            // Sidecar must be gone.
-            #expect(!FileManager.default.fileExists(atPath: pm.etagURL(for: key).path))
         }
     }
 

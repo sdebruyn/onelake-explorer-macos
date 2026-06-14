@@ -23,6 +23,9 @@ final class PartialManager: Sendable {
     /// Base directory name used when `scratchDir` is not configured.
     static let partialsDirName = "ofem-download-partials"
 
+    /// Buffer size (1 MiB) used when computing the SHA-256 of a spill file.
+    private static let hashBufferSize = 1 * 1024 * 1024
+
     // MARK: - State
 
     private let scratchDir: URL
@@ -41,9 +44,11 @@ final class PartialManager: Sendable {
     // MARK: - Partial path
 
     /// Returns the on-disk path for the partial spill of `key`.
+    ///
+    /// Uses ``CacheKey/stableKeyString`` so the field order is guaranteed
+    /// consistent with ``SyncEngine``'s coalescing map (sync-11).
     func partialURL(for key: CacheKey) -> URL {
-        let input = "\(key.accountAlias)\0\(key.workspaceID)\0\(key.itemID)\0\(key.path)"
-        let digest = SHA256.hash(data: Data(input.utf8))
+        let digest = SHA256.hash(data: Data(key.stableKeyString.utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined()
         return scratchDir.appendingPathComponent("\(hex).partial")
     }
@@ -80,28 +85,28 @@ final class PartialManager: Sendable {
     /// Determines the byte offset from which to resume a download, the ETag
     /// the partial is pinned to, and whether a partial was found.
     ///
-    /// Returns `(0, nil, false)` when resuming is not safe.
-    func rangeStart(for key: CacheKey, cachedRecord: MetadataRecord) -> (offset: Int64, etag: String?, hasPartial: Bool) {
-        guard cachedRecord.contentLength > 0 else { return (0, nil, false) }
+    /// Returns a ``ResumePlan/fullRestart`` when resuming is not safe.
+    func rangeStart(for key: CacheKey, cachedRecord: MetadataRecord) -> ResumePlan {
+        guard cachedRecord.contentLength > 0 else { return .fullRestart }
 
         let url = partialURL(for: key)
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let fileSize = attrs[.size] as? Int64,
+              let fileSize = (attrs[.size] as? NSNumber)?.int64Value,
               fileSize > 0, fileSize < cachedRecord.contentLength
-        else { return (0, nil, false) }
+        else { return .fullRestart }
 
         guard let etag = loadEtag(for: key), !etag.isEmpty else {
             discard(for: key)
-            return (0, nil, false)
+            return .fullRestart
         }
 
         // If we know the cached etag, it must match the sidecar.
         if !cachedRecord.etag.isEmpty && cachedRecord.etag != etag {
             discard(for: key)
-            return (0, nil, false)
+            return .fullRestart
         }
 
-        return (fileSize, etag, true)
+        return ResumePlan(rangeStart: fileSize, pinnedEtag: etag, hasPartial: true)
     }
 
     // MARK: - SHA hash of a spill file
@@ -112,85 +117,13 @@ final class PartialManager: Sendable {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
-        let bufferSize = 1 * 1024 * 1024 // 1 MiB
         while true {
-            let chunk = try handle.read(upToCount: bufferSize) ?? Data()
+            let chunk = try handle.read(upToCount: Self.hashBufferSize) ?? Data()
             guard !chunk.isEmpty else { break }
             hasher.update(data: chunk)
         }
         let digest = hasher.finalize()
         return digest.map { String(format: "%02x", $0) }.joined()
-    }
-
-    // MARK: - Finalise (legacy — kept for existing callers during migration)
-
-    /// Appends `body` to any existing partial spill for `key`, SHA-verifies
-    /// (when `expectedSHA` is provided), and returns all assembled bytes.
-    ///
-    /// The caller is responsible for storing the returned bytes in the blob
-    /// cache (via ``CacheStore/storeBlob(key:data:)`` after upserting the
-    /// metadata row).
-    ///
-    /// - Note: The streaming download path in ``SyncEngine`` no longer calls
-    ///   this method; it writes directly to the spill file via
-    ///   ``OneLakeClientProtocol/read(alias:workspaceGUID:itemGUID:path:range:ifMatch:destination:)``
-    ///   and uses ``hashSpillFile(_:)`` for SHA verification.
-    func finalise(
-        key: CacheKey,
-        body: Data,
-        rangeStart: Int64,
-        expectedTotal: Int64,
-        expectedSHA: String?
-    ) throws -> Data {
-        let url = partialURL(for: key)
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-
-        // Open (or create) the spill file and seek to rangeStart.
-        let handle: FileHandle
-        if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
-        }
-        handle = try FileHandle(forUpdating: url)
-        defer { try? handle.close() }
-
-        try handle.seek(toOffset: UInt64(rangeStart))
-        // sync-08: use the throwing write variant — the legacy `write(_:)` raises
-        // an ObjC NSException on disk-full; `write(contentsOf:)` throws a typed
-        // Swift error instead.
-        do {
-            try handle.write(contentsOf: body)
-        } catch {
-            discard(for: key)
-            throw SyncError.spillFileError(error)
-        }
-        let totalWritten = rangeStart + Int64(body.count)
-
-        if expectedTotal > 0 && totalWritten != expectedTotal {
-            if totalWritten > expectedTotal { discard(for: key) }
-            throw SyncError.shortDownload(expected: expectedTotal, got: totalWritten)
-        }
-
-        // Read all assembled bytes (single read — reused for SHA if needed).
-        try handle.seek(toOffset: 0)
-        let allBytes = try handle.readToEnd() ?? Data()
-
-        // SHA verification when an expected hash is known (sync-08: reuse buffer).
-        if let expected = expectedSHA, !expected.isEmpty {
-            let got = SHA256.hash(data: allBytes).map { String(format: "%02x", $0) }.joined()
-            if got != expected {
-                discard(for: key)
-                throw SyncError.blobSHAMismatch(got: got, expected: expected)
-            }
-        }
-
-        // Remove partial and sidecar on success.
-        try? FileManager.default.removeItem(at: url)
-        try? FileManager.default.removeItem(at: etagURL(for: key))
-
-        return allBytes
     }
 
     // MARK: - Stale partial cleanup
