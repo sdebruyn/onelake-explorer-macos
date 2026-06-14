@@ -331,7 +331,11 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           spctl --assess --type open --context context:primary-signature --verbose "build/Export/OneLake.app"
-          spctl --assess --type install --verbose "dist-app/OneLake-$VERSION.dmg"
+          # A notarized DMG is assessed as "open" (like the app); --type install
+          # is for .pkg installers and reports "no usable signature" on a DMG.
+          # Also confirm the notarization ticket is stapled.
+          spctl --assess --type open --context context:primary-signature --verbose "dist-app/OneLake-$VERSION.dmg"
+          xcrun stapler validate "dist-app/OneLake-$VERSION.dmg"
 
       - name: Compute DMG SHA-256
         id: dmg_sha
