@@ -32,8 +32,17 @@ public struct BlobShardCache: Sendable {
     /// SHA-256 digest length in lowercase hex characters.
     static let shaLength = 64
 
+    /// Number of leading hex characters used as the shard directory name.
+    /// The remaining `shaLength - shardPrefixLength` characters form the filename.
+    /// This constant is the single source of truth for `prefix(N)` / `dropFirst(N)`
+    /// calls and for sweep SHA reconstruction in `CacheStore`.
+    static let shardPrefixLength = 2
+
     /// Subdirectory under the cache root that holds blob shards.
     public static let blobsSubdir = "blobs"
+
+    /// Read-buffer size used when hashing a source file in `storeFromURL`.
+    private static let hashBufferSize = 1 * 1024 * 1024  // 1 MiB
 
     // MARK: Properties
 
@@ -88,7 +97,14 @@ public struct BlobShardCache: Sendable {
         do {
             try FileManager.default.moveItem(at: tmpURL, to: destURL)
         } catch CocoaError.fileWriteFileExists {
-        // Race: another writer arrived first — deduplicate.
+            // Race: another writer arrived first — deduplicate.
+            // Verify the winning file is actually present before claiming success.
+            guard FileManager.default.fileExists(atPath: destURL.path) else {
+                throw CacheError.blobIOError(
+                    CocoaError(.fileWriteUnknown,
+                               userInfo: [NSLocalizedDescriptionKey: "Blob dedup race: dest absent after fileWriteFileExists for sha \(sha)"])
+                )
+            }
         }
 
         let size = Int64(data.count)
@@ -132,14 +148,14 @@ public struct BlobShardCache: Sendable {
         var hasher = SHA256()
         let hashHandle = try FileHandle(forReadingFrom: sourceURL)
         defer { try? hashHandle.close() }
-        let bufSize = 1 * 1024 * 1024 // 1 MiB
+        let bufSize = Self.hashBufferSize
         while true {
             let chunk = try hashHandle.read(upToCount: bufSize) ?? Data()
             guard !chunk.isEmpty else { break }
             hasher.update(data: chunk)
         }
+        // The defer above closes hashHandle; no explicit close needed here.
         let sha = hasher.finalize().hexString
-        try? hashHandle.close()
 
         let (shardDir, destURL) = shardPath(for: sha)
 
@@ -162,8 +178,13 @@ public struct BlobShardCache: Sendable {
             try FileManager.default.moveItem(at: sourceURL, to: destURL)
         } catch CocoaError.fileWriteFileExists {
             // Race: another writer arrived first — deduplicate.
-        } catch {
-            // Cross-volume or read-only source: copy then rename.
+        } catch let err as NSError
+            where err.domain == NSCocoaErrorDomain
+                && (err.code == NSFileWriteVolumeReadOnlyError
+                    || (err.underlyingErrors.first as? NSError).map({ $0.code == EXDEV }) == true) {
+            // Cross-volume move (EXDEV) or read-only source: fall back to copy + rename.
+            // NSFileWriteOutOfSpaceError is intentionally excluded — a disk-full
+            // destination would cause the copy fallback to fail too, wasting I/O.
             let tmpURL = blobRoot.appendingPathComponent("blob-\(UUID().uuidString).tmp")
             defer { try? FileManager.default.removeItem(at: tmpURL) }
             try FileManager.default.copyItem(at: sourceURL, to: tmpURL)
@@ -173,6 +194,7 @@ public struct BlobShardCache: Sendable {
                 // Race during fallback — deduplicate.
             }
         }
+        // Any other moveItem error (permissions, disk full, I/O) propagates to the caller.
 
         Self.log.debug("BlobShardCache: storedFromURL sha=\(sha, privacy: .public) bytes=\(size, privacy: .public)")
         return (sha, size)
@@ -242,11 +264,20 @@ public struct BlobShardCache: Sendable {
     // MARK: - Wipe
 
     /// Removes all blob shard directories under `blobRoot`.
-    public func wipeAll() throws {
-        let entries = try FileManager.default.contentsOfDirectory(
-            at: blobRoot,
-            includingPropertiesForKeys: nil
-        )
+    /// Per-entry errors are logged and silenced; the function always returns normally.
+    public func wipeAll() {
+        let entries: [URL]
+        do {
+            entries = try FileManager.default.contentsOfDirectory(
+                at: blobRoot,
+                includingPropertiesForKeys: nil
+            )
+        } catch {
+            Self.log.warning(
+                "BlobShardCache: wipeAll failed to list blobRoot error=\(error, privacy: .public)"
+            )
+            return
+        }
         for entry in entries {
             do {
                 try FileManager.default.removeItem(at: entry)
@@ -262,11 +293,21 @@ public struct BlobShardCache: Sendable {
 
     /// Returns `(shardDirectory, blobFileURL)` for the given SHA-256 digest.
     func shardPath(for sha256: String) -> (dir: URL, file: URL) {
-        let prefix = String(sha256.prefix(2))
-        let suffix = String(sha256.dropFirst(2))
+        let prefix = String(sha256.prefix(Self.shardPrefixLength))
+        let suffix = String(sha256.dropFirst(Self.shardPrefixLength))
         let dir = blobRoot.appendingPathComponent(prefix, isDirectory: true)
         let file = dir.appendingPathComponent(suffix)
         return (dir, file)
+    }
+
+    /// Reconstructs the SHA-256 string from a shard directory name and filename.
+    ///
+    /// This is the inverse of `shardPath(for:)`. Centralising it here means
+    /// `CacheStore.sweepOrphanBlobs` does not need to duplicate the shard layout logic.
+    func sha(fromShard shard: String, file: String) -> String? {
+        let sha = shard + file
+        guard sha.count == Self.shaLength else { return nil }
+        return sha
     }
 
     /// Validates that `sha` is a 64-character lowercase hex string.

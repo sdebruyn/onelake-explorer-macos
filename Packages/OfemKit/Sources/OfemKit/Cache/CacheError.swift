@@ -23,7 +23,11 @@ extension CacheError: Equatable {
         case (.notFound(let a), .notFound(let b)): return a == b
         case (.invalidSHA(let a), .invalidSHA(let b)): return a == b
         case (.missingArgument(let a), .missingArgument(let b)): return a == b
-        case (.blobIOError, .blobIOError): return true  // compare case only; wrapped errors are not Equatable
+        case (.blobIOError(let a), .blobIOError(let b)):
+            // Compare by NSError domain + code so distinct underlying failures are
+            // distinguishable in tests (e.g. "disk full" vs "permission denied").
+            let na = a as NSError, nb = b as NSError
+            return na.domain == nb.domain && na.code == nb.code
         default: return false
         }
     }
