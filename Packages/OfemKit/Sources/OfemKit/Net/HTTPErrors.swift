@@ -74,6 +74,15 @@ public indirect enum HTTPClientError: Error, Sendable {
 
     /// The `TokenProvider` threw when asked for an access token.
     case tokenAcquisitionFailed(any Error)
+
+    // MARK: Response errors
+
+    /// The response body exceeded the configured size limit.
+    ///
+    /// `bytesReceived` is the actual body size; `limit` is the configured
+    /// ceiling. Callers that need to transfer large payloads must use a
+    /// dedicated streaming path rather than `execute(_:)` (net-19).
+    case responseTooLarge(bytesReceived: Int, limit: Int)
 }
 
 // MARK: - APIError
@@ -159,12 +168,10 @@ extension HTTPClientError {
     }
 
     /// Returns `true` when the status warrants a retry attempt.
+    ///
+    /// Delegates to ``HTTPRetryStatusPolicy/isRetriable(_:)`` — the single
+    /// source of truth for the retriable-status set (net-13).
     static func isRetriableStatus(_ status: Int) -> Bool {
-        switch status {
-        case 408, 425, 429, 500, 502, 503, 504:
-            return true
-        default:
-            return false
-        }
+        HTTPRetryStatusPolicy.isRetriable(status)
     }
 }

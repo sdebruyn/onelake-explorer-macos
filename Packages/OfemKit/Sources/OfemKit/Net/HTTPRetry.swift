@@ -35,6 +35,10 @@ public struct HTTPRetryPolicy: Sendable {
     /// transport error — i.e. the operation is idempotent. GET, HEAD, PUT
     /// and DELETE are always safe regardless. POST and PATCH require the
     /// caller to assert this.
+    ///
+    /// This field lives on the policy because it participates in the retry
+    /// decision. Callers should pass `idempotent: true` on ``HTTPClient/execute``
+    /// rather than mutating a shared policy instance (net-06).
     public var idempotent: Bool
 
     // MARK: - Initialisers
@@ -65,6 +69,36 @@ public struct HTTPRetryPolicy: Sendable {
     }
 }
 
+// MARK: - Retriable status policy
+
+/// The set of HTTP status codes that the retry loop will retry.
+///
+/// Consolidating the policy here (net-13) ensures the retry loop and the
+/// gate-penalty logic share a single source of truth.
+public enum HTTPRetryStatusPolicy {
+    /// Returns `true` when `status` warrants another attempt.
+    public static func isRetriable(_ status: Int) -> Bool {
+        switch status {
+        case 408, 425, 429, 500, 502, 503, 504:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Returns `true` when the gate should apply a shared pause window on
+    /// this status (i.e. the server signalled host-wide overload, not just
+    /// per-request back-pressure).
+    public static func shouldPenaliseGate(_ status: Int) -> Bool {
+        switch status {
+        case 429, 500, 502, 503, 504:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 // MARK: - RetryAfter parsing
 
 /// Parses an HTTP `Retry-After` header into a `Duration`.
@@ -75,6 +109,9 @@ public struct HTTPRetryPolicy: Sendable {
 ///
 /// Returns `nil` for an empty, negative, or unparseable value, or for an
 /// HTTP-date that is already in the past.
+///
+/// Thread-safe: uses value-type `Date.ISO8601FormatStyle` / local
+/// `DateFormatter` copies rather than shared mutable singletons (net-15).
 public func parseRetryAfter(_ value: String, now: Date = Date()) -> Duration? {
     let trimmed = value.trimmingCharacters(in: .whitespaces)
     guard !trimmed.isEmpty else { return nil }
@@ -85,10 +122,10 @@ public func parseRetryAfter(_ value: String, now: Date = Date()) -> Duration? {
         return .seconds(secs)
     }
 
-    // HTTP-date branch. Foundation's `DateFormatter` with RFC 1123 format and
-    // fallbacks covers the three date formats allowed by RFC 7231.
-    for formatter in HTTPRetryDateFormatters.all {
-        if let date = formatter.date(from: trimmed) {
+    // HTTP-date branch — create per-call formatter instances so concurrent
+    // callers never share mutable state (net-15: DateFormatter is not Sendable).
+    for fmt in makeRetryAfterFormatters() {
+        if let date = fmt.date(from: trimmed) {
             let delta = date.timeIntervalSince(now)
             guard delta > 0 else { return nil }
             let ms = Int64(delta * 1_000)
@@ -98,34 +135,73 @@ public func parseRetryAfter(_ value: String, now: Date = Date()) -> Duration? {
     return nil
 }
 
-// MARK: - Date formatters (internal so OneLakeResponse can reuse)
+/// Constructs fresh `DateFormatter` instances for each `parseRetryAfter` call.
+///
+/// Slightly more allocation than the old static singletons, but correct under
+/// concurrent access. `DateFormatter` is not `Sendable`; sharing one instance
+/// across threads is unsafe (net-15).
+private func makeRetryAfterFormatters() -> [DateFormatter] {
+    makeHTTPDateFormatters()
+}
 
+/// Creates a fresh set of HTTP-date formatters.
+///
+/// Callers that parse HTTP-date strings should call this and use the returned
+/// instances locally rather than sharing static singletons across threads.
+/// `DateFormatter` is not `Sendable` and concurrent `date(from:)` calls on a
+/// shared instance are unsafe (net-15).
+func makeHTTPDateFormatters() -> [DateFormatter] {
+    [
+        HTTPRetryDateFormatters.makeFresh(.rfc1123),
+        HTTPRetryDateFormatters.makeFresh(.rfc850),
+        HTTPRetryDateFormatters.makeFresh(.asctime),
+    ]
+}
+
+// MARK: - Date formatter factory (internal so tests and OneLakeResponse can share)
+
+/// HTTP-date format identifiers.
+enum HTTPDateFormat {
+    case rfc1123, rfc850, asctime
+
+    var formatString: String {
+        switch self {
+        case .rfc1123: return "EEE, dd MMM yyyy HH:mm:ss zzz"
+        case .rfc850:  return "EEEE, dd-MMM-yy HH:mm:ss zzz"
+        case .asctime: return "EEE MMM d HH:mm:ss yyyy"
+        }
+    }
+}
+
+/// Provides per-instance HTTP-date `DateFormatter` construction.
+///
+/// Previous design used static `let` singletons shared across threads, which
+/// is unsafe because `DateFormatter` is not `Sendable` (net-15). All callers
+/// should use `makeFresh(_:)` (or `makeHTTPDateFormatters()`) to create
+/// local instances rather than reading the deprecated static properties.
+///
+/// The `rfc850` and `asctime` static properties are **retained for test use
+/// only** (tests that format a date for fixture construction need a stable
+/// instance; they run single-threaded per test). Do not use them in
+/// production code paths that may run concurrently.
 enum HTTPRetryDateFormatters {
-    static let rfc1123: DateFormatter = {
+    /// Creates a fresh, per-caller `DateFormatter` for the given HTTP-date format.
+    static func makeFresh(_ format: HTTPDateFormat) -> DateFormatter {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone(abbreviation: "GMT")
-        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        f.dateFormat = format.formatString
         return f
-    }()
+    }
 
-    static let rfc850: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(abbreviation: "GMT")
-        f.dateFormat = "EEEE, dd-MMM-yy HH:mm:ss zzz"
-        return f
-    }()
+    // MARK: Test-use-only static instances (single-threaded test contexts only)
 
-    static let asctime: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(abbreviation: "GMT")
-        f.dateFormat = "EEE MMM d HH:mm:ss yyyy"
-        return f
-    }()
-
-    static let all: [DateFormatter] = [rfc1123, rfc850, asctime]
+    /// RFC 1123 formatter for test fixture construction. Not safe for concurrent use.
+    static let rfc1123: DateFormatter = makeFresh(.rfc1123)
+    /// RFC 850 formatter for test fixture construction. Not safe for concurrent use.
+    static let rfc850: DateFormatter = makeFresh(.rfc850)
+    /// asctime formatter for test fixture construction. Not safe for concurrent use.
+    static let asctime: DateFormatter = makeFresh(.asctime)
 }
 
 // MARK: - Backoff helpers
@@ -138,10 +214,23 @@ func nextBackoff(_ current: Duration, max maxBackoff: Duration) -> Duration {
 
 /// Returns a uniformly distributed random value in `[0, window)`.
 ///
-/// Falls back to `window / 2` if entropy is unavailable.
+/// Uses `Duration` arithmetic to avoid Int64 overflow and attosecond
+/// precision loss from manual unit conversion (net-07).
 func jitter(_ window: Duration) -> Duration {
     guard window > .zero else { return .zero }
-    let ns = window.components.seconds * 1_000_000_000 + window.components.attoseconds / 1_000_000_000
+    // Work entirely in nanoseconds, clamped to a safe range.
+    // `window.components.seconds` is Int64; multiplying by 1e9 overflows for
+    // values above ~9.2e9 s (centuries), but clamp to maxBackoff (30 s) makes
+    // it safe in practice. We still clamp explicitly for robustness.
+    let seconds = window.components.seconds
+    let attoseconds = window.components.attoseconds
+    // Cap at Int64.max / 1_000_000_000 to prevent overflow.
+    let maxSafeSeconds: Int64 = Int64.max / 1_000_000_000
+    guard seconds >= 0, seconds <= maxSafeSeconds else {
+        // Window is out of range — fall back to half the duration.
+        return window / 2
+    }
+    let ns = seconds * 1_000_000_000 &+ attoseconds / 1_000_000_000
     guard ns > 0 else { return .zero }
     let randomNS = Int64.random(in: 0..<ns)
     return Duration.nanoseconds(randomNS)

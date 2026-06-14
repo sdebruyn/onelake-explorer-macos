@@ -221,8 +221,10 @@ public actor HTTPGate {
                     break outerLoop
                 }
                 // Cap is full: refund the reserved token and retry.
-                availableTokens += 1.0
-                scheduleRefillTaskIfNeeded()
+                // Clamp to burst so we never exceed the bucket ceiling (net-08).
+                // Wake any waiters that can now consume this refunded token (net-09).
+                availableTokens = min(availableTokens + 1.0, Double(burst))
+                drainWaiters()
                 continue outerLoop
             }
 
@@ -241,8 +243,9 @@ public actor HTTPGate {
                 break outerLoop
             }
             // Cap is full: refund token and retry.
-            availableTokens += 1.0
-            scheduleRefillTaskIfNeeded()
+            // Clamp to burst (net-08) and drain waiters for the refunded token (net-09).
+            availableTokens = min(availableTokens + 1.0, Double(burst))
+            drainWaiters()
         }
 
         // 3. Claim the slot atomically (both checks passed above).
@@ -265,7 +268,18 @@ public actor HTTPGate {
     /// Releases one concurrency slot.
     ///
     /// Must be called exactly once for every successful ``acquire()``.
+    ///
+    /// Guards against double-release / underflow: a `release()` with no
+    /// matching `acquire()` would drive `inFlight` negative, permanently
+    /// breaking the concurrency cap with no diagnostic (net-10).
     public func release() {
+        guard inFlight > 0 else {
+            Self.log.fault(
+                "HTTPGate[\(self.host, privacy: .public)]: release() called with inFlight=0 (double-release or unmatched call)"
+            )
+            assertionFailure("HTTPGate.release(): inFlight underflow — unmatched acquire/release")
+            return
+        }
         inFlight -= 1
         refill()
         drainWaiters()
@@ -436,7 +450,12 @@ public struct HTTPGateState: Sendable {
     public let inFlight: Int
     /// Configured upper bound on `inFlight`.
     public let maxConcurrent: Int
-    /// Integer number of tokens currently available in the bucket.
+    /// Fractional number of tokens currently available in the bucket.
+    ///
+    /// The value is a `Double` because the token bucket accumulates at a
+    /// fractional rate (tokensPerSecond × elapsed); it is clamped to
+    /// `[0, burst]` in the snapshot. Callers needing an integer count can
+    /// use `Int(availableTokens)` (floor) or `Int(availableTokens.rounded())`.
     public let availableTokens: Double
     /// Configured upper bound on `availableTokens`.
     public let burst: Int
@@ -566,6 +585,42 @@ public let httpGateHostOneLake = "onelake.dfs.fabric.microsoft.com"
 /// Known Fabric REST host.
 public let httpGateHostFabric = "api.fabric.microsoft.com"
 
+// MARK: - Curated gate budgets (net-14: named constants, not inline magic numbers)
+//
+// These values mirror the Go implementation's defaults.  Change them here when
+// tuning; they are referenced by name in `makeDefault()` and in tests.
+
+/// In-flight cap for the OneLake DFS endpoint.
+public let httpGateOneLakeMaxConcurrent: Int = 16
+/// Steady-state QPS budget for OneLake DFS.
+public let httpGateOneLakeTokensPerSecond: Double = 8
+/// Token-bucket burst for OneLake DFS.
+public let httpGateOneLakeBurst: Int = 16
+
+/// In-flight cap for the Fabric REST endpoint.
+public let httpGateFabricMaxConcurrent: Int = 8
+/// Steady-state QPS budget for the Fabric REST endpoint.
+public let httpGateFabricTokensPerSecond: Double = 2
+/// Token-bucket burst for the Fabric REST endpoint.
+public let httpGateFabricBurst: Int = 4
+
+/// Default in-flight cap for unknown/lazily-created host gates.
+public let httpGateDefaultMaxConcurrent: Int = 8
+/// Default QPS for unknown/lazily-created host gates.
+public let httpGateDefaultTokensPerSecond: Double = 2
+/// Default burst for unknown/lazily-created host gates.
+public let httpGateDefaultBurst: Int = 4
+
+/// Default pause duration for 429/503 responses with no `Retry-After` header.
+public let httpGateDefaultMissingRetryAfter: Duration = .seconds(30)
+
+/// Maximum gate penalty accepted from a `Retry-After` header.
+///
+/// A buggy or hostile server may send an extremely long `Retry-After` value.
+/// Capping the penalty prevents a single response from closing the host gate
+/// for an unreasonable duration (net-17). Chosen to match `maxBackoff`.
+public let httpGateMaxPenaltyDuration: Duration = .seconds(30)
+
 extension HTTPGateRegistry {
     /// Builds a registry pre-registered with OneLake and Fabric gates using
     /// curated budgets.
@@ -576,22 +631,22 @@ extension HTTPGateRegistry {
     public static func makeDefault() -> HTTPGateRegistry {
         let fabricGate = HTTPGate(
             host: httpGateHostFabric,
-            maxConcurrent: 8,
-            tokensPerSecond: 2,
-            burst: 4
+            maxConcurrent: httpGateFabricMaxConcurrent,
+            tokensPerSecond: httpGateFabricTokensPerSecond,
+            burst: httpGateFabricBurst
         )
         let oneLakeGate = HTTPGate(
             host: httpGateHostOneLake,
-            maxConcurrent: 16,
-            tokensPerSecond: 8,
-            burst: 16
+            maxConcurrent: httpGateOneLakeMaxConcurrent,
+            tokensPerSecond: httpGateOneLakeTokensPerSecond,
+            burst: httpGateOneLakeBurst
         )
         return HTTPGateRegistry(
             defaults: HTTPGateDefaults(
-                maxConcurrent: 8,
-                tokensPerSecond: 2,
-                burst: 4,
-                missingRetryAfter: .seconds(30)
+                maxConcurrent: httpGateDefaultMaxConcurrent,
+                tokensPerSecond: httpGateDefaultTokensPerSecond,
+                burst: httpGateDefaultBurst,
+                missingRetryAfter: httpGateDefaultMissingRetryAfter
             ),
             seeded: [fabricGate, oneLakeGate]
         )
