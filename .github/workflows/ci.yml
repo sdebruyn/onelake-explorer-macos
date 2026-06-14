@@ -52,8 +52,33 @@ jobs:
       - name: Smoke tests (unsigned, host-less)
         # OneLakeTests bundle: File Provider identifier grammar (pure logic).
         # Runs before the slower full app build so a Swift compile regression
-        # surfaces in seconds.
+        # surfaces in seconds. `make test` writes DerivedData/HostTests.xcresult
+        # with coverage, which the next step reports to Codecov.
         run: make test
+
+      - name: Export host-app coverage
+        run: |
+          set -euo pipefail
+          brew install xcresultparser
+          xrp="$(brew --prefix xcresultparser)/bin/xcresultparser"
+          "$xrp" --output-format cobertura \
+            DerivedData/HostTests.xcresult > host-coverage.xml
+          # xcresultparser emits absolute filename paths; strip the workspace
+          # prefix so they are repo-relative (e.g. OneLake/Foo.swift), which is
+          # what Codecov needs to map coverage onto the tree.
+          sed "s|${GITHUB_WORKSPACE}/||g" host-coverage.xml > host-coverage.xml.tmp
+          mv host-coverage.xml.tmp host-coverage.xml
+          echo "host-coverage.xml: $(wc -l < host-coverage.xml) lines"
+
+      - name: Upload host coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: host-coverage.xml
+          flags: host
+          disable_search: true
+          # Never fail the build on a Codecov hiccup or a fork PR with no token.
+          fail_ci_if_error: false
 
       - name: Build app + extension (unsigned)
         # Compiles the OneLake app and the File Provider .appex with code

@@ -70,11 +70,14 @@ build-ci: gen ## Compile app + .appex unsigned (CI gate)
 #                      domain identifier composition)
 test: gen ## Run Swift unit tests (OfemKit + host-app logic)
 	cd Packages/OfemKit && swift test
+	rm -rf DerivedData/HostTests.xcresult
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLakeHostTests \
 		-configuration Debug \
 		-destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath DerivedData \
+		-enableCodeCoverage YES \
+		-resultBundlePath DerivedData/HostTests.xcresult \
 		$(APPLE_UNSIGNED) \
 		test
 

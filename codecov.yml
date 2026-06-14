@@ -17,9 +17,15 @@ comment:
   layout: "reach, diff, flags, files"
   require_changes: true
 
-# OfemKit is the engine package; its sources are what we measure.
+# Coverage is split by flag: the OfemKit engine package, and the host app /
+# File Provider extension (exercised by the OneLakeHostTests bundle).
 flags:
   ofemkit:
     paths:
       - Packages/OfemKit/Sources/
+    carryforward: true
+  host:
+    paths:
+      - OneLake/
+      - OneLakeFileProvider/
     carryforward: true
