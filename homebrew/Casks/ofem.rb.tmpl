@@ -12,10 +12,11 @@ cask "ofem" do
   version "{{ .Version }}"
   sha256 "{{ .DMGSHA256 }}"
 
-  url "https://github.com/sdebruyn/onelake-explorer-macos/releases/download/v#{version}/OneLake-#{version}.dmg"
+  url "https://github.com/sdebruyn/onelake-explorer-macos/releases/download/v#{version}/OneLake-#{version}.dmg",
+      verified: "github.com/sdebruyn/onelake-explorer-macos/"
   name "OneLake Explorer for macOS"
   desc "Browse Microsoft Fabric OneLake from Finder"
-  homepage "https://ofem.debruyn.dev"
+  homepage "https://ofem.debruyn.dev/"
 
   livecheck do
     url :url
@@ -34,10 +35,10 @@ cask "ofem" do
   uninstall quit: "dev.debruyn.ofem"
 
   zap trash: [
-    "~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem",
-    "~/Library/Preferences/dev.debruyn.ofem.plist",
     # Each account materialises as its own File Provider domain.
     # Zapped only on explicit `brew uninstall --zap` to avoid data loss.
     "~/Library/CloudStorage/OneLake-*",
+    "~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem",
+    "~/Library/Preferences/dev.debruyn.ofem.plist",
   ]
 end

@@ -486,7 +486,10 @@ jobs:
             -e "s/{{ \.DMGSHA256 }}/$DMG_SHA256/g" \
             homebrew/Casks/ofem.rb.tmpl > /tmp/ofem.rb
 
-          # Clone the tap, commit the new cask, push.
+          # Clone the tap first so we can validate the cask in its tap context.
+          # brew audit and brew style both require a tapped name (not a file path)
+          # since Homebrew 4+; running them against a standalone path always
+          # exits 1 with "Calling brew audit [path ...] is disabled!".
           git clone \
             "https://x-access-token:$HOMEBREW_TAP_GH_TOKEN@github.com/sdebruyn/homebrew-ofem.git" \
             /tmp/homebrew-ofem
@@ -494,13 +497,41 @@ jobs:
           mkdir -p /tmp/homebrew-ofem/Casks
           cp /tmp/ofem.rb /tmp/homebrew-ofem/Casks/ofem.rb
 
+          # Register the cloned directory as the local tap so brew can resolve
+          # the cask by name (sdebruyn/ofem/ofem) rather than by file path.
+          brew tap sdebruyn/ofem /tmp/homebrew-ofem
+
+          # Validate the rendered cask for syntax and structural correctness
+          # before committing to the tap. brew style checks Ruby/cask style;
+          # brew audit --cask --strict validates DSL structure and required fields.
+          # Both must pass or the step fails here, keeping the tap clean.
+          brew style sdebruyn/ofem/ofem
+          brew audit --cask --strict sdebruyn/ofem/ofem
+
           cd /tmp/homebrew-ofem
           git config user.name  "ofem-release-bot"
           git config user.email "noreply@debruyn.dev"
           git add Casks/ofem.rb
           git commit -m "chore(cask): bump ofem to v$VERSION"
-          git pull --rebase origin main
-          git push
+
+          # Retry loop: a concurrent push to the tap's main between our rebase
+          # and push would otherwise fail the release after the DMG is already
+          # public. Re-fetch and rebase on each attempt; give up after 5 tries.
+          # Abort any in-progress rebase first so each iteration starts clean —
+          # a content conflict in git pull --rebase leaves REBASE_MERGE state
+          # which causes every subsequent attempt to fail immediately.
+          max_attempts=5
+          attempt=0
+          until git pull --rebase origin main && git push; do
+            git rebase --abort 2>/dev/null || true
+            attempt=$((attempt + 1))
+            echo "Push attempt $attempt/$max_attempts failed; retrying in 10s..."
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "ERROR: tap push failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            sleep 10
+          done
 
       - name: Clean up keychain
         if: always()
