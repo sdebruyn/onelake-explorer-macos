@@ -112,7 +112,7 @@ struct AddAccountView: View {
         .onDisappear {
             coordinator.cancel()
         }
-        .onChange(of: coordinator.phase) { newPhase in
+        .onChange(of: coordinator.phase) { _, newPhase in
             // Auto-dismiss when the coordinator signals readyToDismiss.
             // The delay and policy live in the coordinator, not here (host-16/host-07).
             if case .readyToDismiss = newPhase {

@@ -41,7 +41,7 @@
 // shutdownSharedSubsystems() automatically so the final telemetry batch
 // is flushed before the FPE process exits.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import OfemKit
 import os.log
