@@ -176,28 +176,16 @@ final class OfemFPEClient {
     /// fake proxy without needing a real XPC connection.
     ///
     /// - Parameters:
-    ///   - proxy:            A typed proxy that may or may not implement
-    ///                       `getProtocolVersion(reply:)`.
+    ///   - proxy:            A typed proxy conforming to `OfemClientControlProtocol`.
     ///   - domainIdentifier: Used for log messages only (not logged as PII).
-    /// - Returns: The FPE's reported version (1 if the FPE pre-dates versioning).
+    /// - Returns: The FPE's reported version.
     @discardableResult
     func checkProtocolVersion(
         proxy: any OfemClientControlProtocol,
         domainIdentifier: String
     ) async -> Int {
-        // `getProtocolVersion` is @objc optional — a pre-v2 FPE will not
-        // implement it. Guard with responds(to:) and treat absence as version 1.
-        let sel = #selector(OfemClientControlProtocol.getProtocolVersion(reply:))
-        guard (proxy as AnyObject).responds(to: sel) else {
-            Self.log.info(
-                "FPE at \(domainIdentifier, privacy: .public) does not implement getProtocolVersion (pre-v2)"
-            )
-            notifyVersionMismatch(fpeVersion: 1, domainIdentifier: domainIdentifier)
-            return 1
-        }
-
         let fpeVersion: Int = await withCheckedContinuation { continuation in
-            proxy.getProtocolVersion! { version in
+            proxy.getProtocolVersion { version in
                 continuation.resume(returning: version)
             }
         }

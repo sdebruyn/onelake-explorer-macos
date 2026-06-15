@@ -32,13 +32,12 @@ import Foundation
     /// mismatched: treat the connection as degraded and show a stale-extension
     /// warning rather than silently misbehaving (xpc-06).
     ///
-    /// Declared `@objc optional` so existing FPE builds that pre-date
-    /// protocol version 2 do not fail to satisfy the protocol — the host
-    /// checks `proxy.responds(to:)` before calling and treats a non-response
-    /// as "version 1" (pre-versioning build).
+    /// The host app and FPE always ship together in the same `.app` bundle,
+    /// so a version mismatch indicates a corrupted installation and is surfaced
+    /// as a user-visible error rather than a silent degraded mode.
     ///
     /// - Parameter reply: Called with the FPE's protocol version integer.
-    @objc optional func getProtocolVersion(reply: @escaping (Int) -> Void)
+    func getProtocolVersion(reply: @escaping (Int) -> Void)
 
     // MARK: - Engine status
 
@@ -86,10 +85,7 @@ public let ofemControlServiceName = "dev.debruyn.ofem.control"
 
 /// The protocol version this build implements.
 ///
-/// Version history:
-///   1 — original protocol (getEngineStatus, setConfig, clearCache)
-///   2 — added getProtocolVersion; strict decode in XPC payloads
-///
 /// The FPE reports its version via `getProtocolVersion(reply:)`.
-/// The host compares to this constant and degrades gracefully on mismatch.
+/// The host compares this value to the FPE's report on every new connection;
+/// a mismatch is surfaced as a user-visible error.
 public let ofemControlProtocolVersion: Int = 2

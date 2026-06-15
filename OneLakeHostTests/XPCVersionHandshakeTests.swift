@@ -8,7 +8,6 @@
 // Cases covered:
 //   1. Matching version  → returns the version, no error surfaced
 //   2. Mismatched version → returns FPE version, error surfaced in model
-//   3. Pre-v2 proxy (method absent) → treated as version 1, error surfaced
 
 import XCTest
 import Foundation
@@ -28,22 +27,6 @@ import Combine
     }
 
     // Required protocol stubs — not exercised by version tests.
-    func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
-        reply(nil, NSError(domain: "test", code: 0))
-    }
-    func setConfig(key: String, value: String, reply: @escaping (Error?) -> Void) {
-        reply(nil)
-    }
-    func clearCache(reply: @escaping (Int64, Error?) -> Void) {
-        reply(0, nil)
-    }
-}
-
-/// Fake proxy that does NOT implement getProtocolVersion (pre-v2 behaviour).
-@objc private final class FakeLegacyProxy: NSObject, OfemClientControlProtocol {
-    // getProtocolVersion intentionally omitted — the @objc optional declaration
-    // on the protocol means this is a valid conformance (responds(to:) == false).
-
     func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
         reply(nil, NSError(domain: "test", code: 0))
     }
@@ -123,32 +106,5 @@ final class XPCVersionHandshakeTests: XCTestCase {
             XCTAssertTrue(errMsg.contains("\(fpeVersion)"),
                           "Error should mention FPE version: \(errMsg)")
         }
-    }
-
-    // MARK: - Pre-v2 FPE (method absent)
-
-    func testLegacyProxy_treatedAsVersion1_surfacesError_nocrash() async {
-        let proxy = FakeLegacyProxy()
-
-        // Verify responds(to:) is false for this proxy.
-        let sel = #selector(OfemClientControlProtocol.getProtocolVersion(reply:))
-        XCTAssertFalse((proxy as AnyObject).responds(to: sel),
-                       "FakeLegacyProxy must not implement getProtocolVersion")
-
-        let exp = expectation(description: "lastActionError set for pre-v2 FPE")
-        model.$lastActionError.dropFirst().sink { error in
-            if error != nil { exp.fulfill() }
-        }.store(in: &cancellables)
-
-        let returned = await client.checkProtocolVersion(
-            proxy: proxy,
-            domainIdentifier: "legacy-domain"
-        )
-        await fulfillment(of: [exp], timeout: 2)
-
-        XCTAssertEqual(returned, 1,
-                       "Pre-v2 FPE should be treated as version 1")
-        XCTAssertNotNil(model.lastActionError,
-                        "Pre-v2 FPE mismatch must be surfaced so the user knows to update")
     }
 }
