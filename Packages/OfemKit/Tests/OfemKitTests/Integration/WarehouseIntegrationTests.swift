@@ -103,13 +103,6 @@ struct WarehouseIntegrationTests {
         throw lastError ?? CocoaError(.fileReadUnknown)
     }
 
-    /// Strips the workspace-rooted `"<itemID>/"` prefix from a `PathEntry.name`
-    /// to yield the item-relative path that `read`/`CacheKey` expect.
-    private func stripItemPrefix(_ name: String, itemID: String) -> String {
-        let prefix = "\(itemID)/"
-        return name.hasPrefix(prefix) ? String(name.dropFirst(prefix.count)) : name
-    }
-
     /// Resolves a Parquet data file's item-relative path by following the Delta
     /// transaction log's `add` actions — the authoritative pointer a Delta
     /// reader uses. OneLake's recursive listing does not descend into the
@@ -122,7 +115,7 @@ struct WarehouseIntegrationTests {
             .sorted { $0.name < $1.name }
         // Newest commit first — the add for the inserted rows lives there.
         for entry in commits.reversed() {
-            let relPath = stripItemPrefix(entry.name, itemID: wh.itemID)
+            let relPath = entry.name
             let (data, _) = try await wh.onelakeClient.read(
                 alias: wh.alias, workspaceGUID: wh.workspaceID, itemGUID: wh.itemID, path: relPath
             )
@@ -227,7 +220,7 @@ struct WarehouseIntegrationTests {
             return
         }
 
-        let itemRelativePath = stripItemPrefix(jsonEntry.name, itemID: wh.itemID)
+        let itemRelativePath = jsonEntry.name
 
         let (data, _) = try await wh.onelakeClient.read(
             alias: wh.alias,
