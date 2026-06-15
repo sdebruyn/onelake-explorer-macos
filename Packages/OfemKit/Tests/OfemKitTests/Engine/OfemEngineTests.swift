@@ -293,3 +293,106 @@ struct OfemEngineFabricURLTests {
         await engine.shutdown()
     }
 }
+
+// MARK: - start / shutdown ordering (fpe-12)
+
+@Suite("OfemEngine — start/shutdown ordering (fpe-12)")
+struct OfemEngineStartShutdownOrderingTests {
+
+    @Test("shutdown after immediate start does not deadlock or crash")
+    func shutdownAfterImmediateStartCompletes() async throws {
+        // Verifies that calling shutdown() very soon after start() does not
+        // deadlock or crash. In a correct implementation start() is idempotent
+        // and shutdown() joins any in-flight start before tearing down.
+        let (store, paths) = try makeTempConfigStore()
+        let engine = try OfemEngine(configStore: store, paths: paths)
+        // Fire start and shutdown concurrently — neither must hang.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await engine.start() }
+            group.addTask { await engine.shutdown() }
+        }
+    }
+
+    @Test("multiple start/shutdown cycles complete without crash")
+    func multipleStartShutdownCycles() async throws {
+        let (store, paths) = try makeTempConfigStore()
+        let engine = try OfemEngine(configStore: store, paths: paths)
+        await engine.start()
+        await engine.shutdown()
+        // A second cycle must not crash (shutdown is a one-way gate but start
+        // is idempotent and safe to call again on a fully shut-down engine).
+        await engine.start()
+        await engine.shutdown()
+    }
+}
+
+// MARK: - shutdownSharedSubsystems flushes telemetry (fpe-14)
+
+@Suite("TelemetryClient — shutdownSharedSubsystems flushes final batch (fpe-14)")
+struct SharedSubsystemsTelemetryFlushTests {
+
+    @Test("shutdown flushes events that were tracked before shutdown")
+    func shutdownFlushesFinalBatch() async throws {
+        let sink = MemoryTelemetrySink()
+        let telemetry = TelemetryClient(
+            sink: sink,
+            appVersion: "0.0.0-test",
+            installID: "test-install",
+            configuration: TelemetryConfiguration(
+                optOut: false,
+                maxBatchSize: 100,
+                flushInterval: .seconds(3600)   // no auto-flush during test
+            )
+        )
+        await telemetry.start()
+        await telemetry.track(TelemetryEvent(name: "before_shutdown"))
+
+        // Shutdown must flush the pending event.
+        await telemetry.shutdown()
+
+        #expect(
+            sink.count == 1,
+            "shutdown must flush the final telemetry batch (fpe-14)"
+        )
+    }
+
+    @Test("events tracked after a per-engine shutdown are still flushed by shared client shutdown")
+    func perEngineShutdownDoesNotLoseSubsequentEvents() async throws {
+        let (store, paths) = try makeTempConfigStore()
+        let sink = MemoryTelemetrySink()
+        let sharedTelemetry = TelemetryClient(
+            sink: sink,
+            appVersion: "0.0.0-test",
+            installID: "test-install",
+            configuration: TelemetryConfiguration(
+                optOut: false,
+                maxBatchSize: 100,
+                flushInterval: .seconds(3600)
+            )
+        )
+        let sharedCache = try CacheStore(root: paths.cacheDir, maxBlobBytes: 0)
+        let sharedGates = HTTPGateRegistry.makeDefault()
+
+        await sharedTelemetry.start()
+
+        let engine = try OfemEngine(
+            configStore: store,
+            paths: paths,
+            sharedCache: sharedCache,
+            sharedTelemetry: sharedTelemetry,
+            sharedGateRegistry: sharedGates
+        )
+        await engine.start()
+        // Per-alias engine shutdown must NOT stop the shared telemetry.
+        await engine.shutdown()
+
+        // Events tracked after per-engine shutdown must survive to the final flush.
+        await sharedTelemetry.track(TelemetryEvent(name: "post_engine_shutdown"))
+        await sharedTelemetry.shutdown()
+
+        #expect(
+            sink.count == 1,
+            "final telemetry shutdown must flush events that arrived after per-engine shutdown"
+        )
+    }
+}
