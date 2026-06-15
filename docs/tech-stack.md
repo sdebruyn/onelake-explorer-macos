@@ -62,6 +62,25 @@ the File Provider Extension.
 - `XPCAccountInfo`, `XPCEngineStatus` — `NSSecureCoding` wrappers for XPC
   transport.
 
+## Swift language versions
+
+OfemKit (`Packages/OfemKit/`) is built in **Swift 6 language mode**
+(`swift-tools-version: 6.0`). The CI `OfemKit package tests` job runs
+`swift test` directly against the package, which enforces Swift 6 strict
+concurrency checking on all engine code.
+
+The host app (`OneLake/`) and File Provider Extension (`OneLakeFileProvider/`)
+use **`SWIFT_VERSION = 5.10`** (set in `project.yml`). The reason is that
+TOMLKit 0.6.0 — a dependency of OfemKit pulled into the app targets when
+xcodebuild builds the whole scheme — is not Sendable-conformant in Swift 6
+mode and produces approximately 14 compiler errors in `FormatOptions.swift`.
+Keeping the app/FPE targets at Swift 5.10 sidesteps those errors.
+
+The split is intentionally safe: the types that cross the boundary between
+OfemKit and the app targets are all value types (`struct`/`enum`) or are
+already `Sendable`-conformant, so no concurrency violations are silently
+suppressed by the lower language mode in the consumer targets.
+
 ## Build & release
 
 - `xcodebuild` builds the Swift `.app` and `.appex` from
