@@ -106,13 +106,23 @@ final class SharedOfemAuth {
 
     /// Runs the full interactive sign-in flow for a new account.
     ///
-    /// 1. Calls `InteractiveSignIn.acquireToken` — opens the Microsoft
-    ///    login page via ASWebAuthenticationSession in the host process.
-    /// 2. Uses `InteractiveSignInResult.commit(alias:to:)` to atomically
-    ///    transfer any scratch blob and persist the account via `OfemAuth`.
+    /// Two sequential interactive browser flows are required because the
+    /// Microsoft Entra v2 endpoint (AADSTS28000) rejects a single interactive
+    /// request whose scopes span more than one resource:
+    ///
+    /// 1. OneLake (storage) flow — acquires `user_impersonation` for
+    ///    `https://storage.azure.com/` and commits the account to `OfemAuth`.
+    /// 2. Fabric (Power BI) consent flow — acquires interactive consent for
+    ///    `Workspace.Read.All` + `Item.Read.All`. No admin pre-consent is
+    ///    assumed or required; the user consents via the second browser prompt.
     ///
     /// Returns an `XPCAccountInfo` the caller can relay to the FPE via XPC
     /// so the FPE can register the domain without re-reading config.
+    ///
+    /// Failure in the Fabric consent step (e.g. the user closes the browser
+    /// prompt, or Conditional Access blocks consent) is surfaced as a thrown
+    /// error so the coordinator can show an error UI. Sign-in does not
+    /// silently succeed with half the required consent.
     ///
     /// - Parameters:
     ///   - alias:    User-chosen short name (e.g. "work"). Must be unique.
@@ -140,6 +150,7 @@ final class SharedOfemAuth {
         let webviewParams = MSALWebviewParameters(authPresentationViewController: parentVC)
         webviewParams.webviewType = .default
 
+        // ── Flow 1: OneLake (storage) interactive sign-in ──────────────────
         let result: InteractiveSignInResult
         do {
             result = try await InteractiveSignIn.acquireToken(
@@ -173,9 +184,53 @@ final class SharedOfemAuth {
         try await accountToCommit.commit(alias: trimmedAlias, to: auth)
 
         let account = accountToCommit.account
+        let resolvedTenantID = account.tenantID
         Self.log.info(
-            "SharedOfemAuth.signIn: signed in alias=\(trimmedAlias, privacy: .public) user=\(account.username, privacy: .private)"
+            "SharedOfemAuth.signIn: OneLake sign-in succeeded alias=\(trimmedAlias, privacy: .public) user=\(account.username, privacy: .private)"
         )
+
+        // ── Flow 2: Fabric (Power BI) interactive consent ──────────────────
+        //
+        // The OneLake interactive flow above uses TokenScope.loginScopes
+        // (OneLake only). Entra AADSTS28000 prevents combining both resource
+        // audiences in a single interactive request, so Fabric consent must
+        // be obtained in a second browser flow. Without this step the Fabric
+        // token is absent from the MSAL Keychain and every FPE enumeration
+        // would fail with tokenAcquisitionFailed → FabricError.unauthorized →
+        // NSFileProviderError(.notAuthenticated).
+        //
+        // This is user-consent, not admin-consent. Workspace.Read.All and
+        // Item.Read.All are standard delegated permissions that individual
+        // end users can grant themselves through the browser prompt — no
+        // tenant admin is involved.
+        //
+        // MSAL writes the resulting Fabric access + refresh token to the
+        // shared App Group Keychain so the FPE's first tokenForScope(.fabric)
+        // call is an immediate silent cache hit.
+        do {
+            try await InteractiveSignIn.acquireFabricConsent(
+                clientID: effectiveClientID,
+                tenantID: resolvedTenantID,
+                webviewParams: webviewParams,
+                cacheStrategy: .msalKeychain
+            )
+            Self.log.info("SharedOfemAuth.signIn: Fabric consent obtained for alias=\(trimmedAlias, privacy: .public)")
+        } catch {
+            // Fabric consent failure is a hard failure: the Finder mount would
+            // be broken (every enumeration hits notAuthenticated) and the user
+            // has no prompt to fix it. Surface the error so the coordinator
+            // can show an actionable UI and the user knows they need to retry.
+            //
+            // We still need to clean up the already-committed storage account
+            // so the user can re-run the complete two-step sign-in when they
+            // retry — a partial account (storage only, no Fabric consent) is
+            // not a usable state.
+            Self.log.error(
+                "SharedOfemAuth.signIn: Fabric consent failed for alias=\(trimmedAlias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            try? await auth.removeAccount(alias: trimmedAlias)
+            throw SharedOfemAuthError.fabricConsentFailed(error)
+        }
 
         return XPCAccountInfo(
             alias: trimmedAlias,
@@ -205,10 +260,17 @@ final class SharedOfemAuth {
 enum SharedOfemAuthError: Error, CustomStringConvertible {
     case noViewController
 
+    /// The Fabric (Power BI) interactive consent flow failed after the
+    /// OneLake storage sign-in succeeded. The committed storage account has
+    /// been rolled back so the user can retry the complete sign-in flow.
+    case fabricConsentFailed(Error)
+
     var description: String {
         switch self {
         case .noViewController:
             return "SharedOfemAuth: no presenting view controller on window"
+        case .fabricConsentFailed:
+            return "SharedOfemAuth: Fabric consent could not be obtained — sign in was cancelled or blocked. Please try again."
         }
     }
 }

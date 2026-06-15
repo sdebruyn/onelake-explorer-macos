@@ -118,6 +118,92 @@ public enum InteractiveSignIn {
         )
     }
 
+    // MARK: - Fabric interactive consent
+
+    /// Runs an interactive browser flow to obtain user consent for the Fabric
+    /// (Power BI) scopes.
+    ///
+    /// This is the second of two sequential interactive flows that are required
+    /// to complete OFEM sign-in:
+    ///
+    /// 1. ``acquireToken(clientID:tenantHint:webviewParams:cacheStrategy:fileTokenStore:)``
+    ///    — interactive storage (OneLake) sign-in.
+    /// 2. ``acquireFabricConsent(clientID:tenantID:webviewParams:cacheStrategy:)``
+    ///    — this method — interactive Fabric (Power BI) consent.
+    ///
+    /// AADSTS28000 prevents combining both resources in a single interactive
+    /// request, so two sequential flows are required. The user sees two browser
+    /// prompts; the second is scoped to `TokenScope.fabricScopes`.
+    ///
+    /// Consent is written by MSAL directly to the shared App Group Keychain so
+    /// the FPE's subsequent `tokenForScope(.fabric)` is a fast silent cache hit.
+    /// No ``InteractiveSignInResult`` is returned — the purpose is Keychain hydration,
+    /// not a new account record.
+    ///
+    /// - Parameters:
+    ///   - clientID: The OFEM Entra App Registration client GUID. Pass
+    ///     ``ofemEntraClientID`` for the built-in registration.
+    ///   - tenantID: The user's home tenant GUID, obtained from the first
+    ///     interactive result. Must not be empty.
+    ///   - webviewParams: MSAL webview configuration including the parent
+    ///     `NSWindow`. Must be constructed on the main thread.
+    ///   - cacheStrategy: Token cache backend. Must match the strategy used for
+    ///     the first interactive flow so MSAL writes to the same Keychain group.
+    /// - Throws: `NSError` from MSAL on user cancellation or consent failure.
+    @MainActor
+    public static func acquireFabricConsent(
+        clientID: String = ofemEntraClientID,
+        tenantID: String,
+        webviewParams: MSALWebviewParameters,
+        cacheStrategy: TokenCacheStrategy = .msalKeychain
+    ) async throws {
+        guard !clientID.isEmpty else {
+            throw InteractiveSignInError.missingClientID
+        }
+        guard !tenantID.isEmpty else {
+            throw InteractiveSignInError.missingTenantID
+        }
+
+        // Use the resolved tenant authority (not "organizations") so the
+        // interactive prompt is pre-scoped to the user's home tenant and MSAL
+        // writes the refresh-token entry under the correct authority key in the
+        // shared Keychain — matching what OfemAuth.tokenForScope looks up during
+        // silent acquisition.
+        let config = try MsalApplicationConfig.make(
+            clientID: clientID,
+            tenantID: tenantID,
+            cacheStrategy: cacheStrategy,
+            fileTokenStore: nil,
+            alias: nil
+        )
+        let app = try MSALPublicClientApplication(configuration: config)
+
+        log.info("InteractiveSignIn: starting Fabric consent flow tenantID=\(tenantID, privacy: .public)")
+
+        let params = MSALInteractiveTokenParameters(
+            scopes: TokenScope.fabricScopes,
+            webviewParameters: webviewParams
+        )
+        // .consent forces the browser prompt even if a cached entry exists, so
+        // the user explicitly sees and accepts the Fabric scopes. Without this,
+        // MSAL might skip the browser if it finds an old cached SSO cookie.
+        params.promptType = .consent
+
+        let msalResult = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MSALResult, Error>) in
+            app.acquireToken(with: params) { result, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let result {
+                    continuation.resume(returning: result)
+                } else {
+                    continuation.resume(throwing: InteractiveSignInError.nilResult)
+                }
+            }
+        }
+
+        log.info("InteractiveSignIn: Fabric consent succeeded username=\(msalResult.account.username ?? "(nil)", privacy: .private)")
+    }
+
     // MARK: - Private helpers
 
     /// Shared `ISO8601DateFormatter` instance. `ISO8601DateFormatter` is
@@ -238,6 +324,7 @@ public struct InteractiveSignInResult: Sendable {
 public enum InteractiveSignInError: Error, CustomStringConvertible {
     case missingClientID
     case missingFileTokenStore
+    case missingTenantID
     case nilResult
 
     public var description: String {
@@ -246,6 +333,8 @@ public enum InteractiveSignInError: Error, CustomStringConvertible {
             return "InteractiveSignIn: clientID is required"
         case .missingFileTokenStore:
             return "InteractiveSignIn: fileTokenStore is required when cacheStrategy is .fileBackedFallback"
+        case .missingTenantID:
+            return "InteractiveSignIn: tenantID is required for Fabric consent flow"
         case .nilResult:
             return "InteractiveSignIn: MSAL returned neither a result nor an error"
         }

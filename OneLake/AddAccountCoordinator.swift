@@ -210,6 +210,7 @@ final class AddAccountCoordinator: ObservableObject {
         if let authErr = error as? SharedOfemAuthError {
             switch authErr {
             case .noViewController: return "Internal error: no window for authentication."
+            case .fabricConsentFailed: return "Fabric consent was not obtained. Please try signing in again and complete both browser prompts."
             }
         }
         if let authErr = error as? OfemAuthError {

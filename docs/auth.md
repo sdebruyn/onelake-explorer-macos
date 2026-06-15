@@ -19,7 +19,7 @@ We register a **multi-tenant public client application** in our own tenant:
 | Supported account types | Accounts in any organizational directory (multi-tenant) |
 | Redirect URI | `msauth.dev.debruyn.ofem://auth` (Mobile and desktop applications) |
 | Allow public client flows | **Yes** |
-| API permissions | `https://storage.azure.com/user_impersonation` (Azure Storage, delegated) **and** Power BI Service `Workspace.Read.All` + `Item.Read.All` (delegated, admin-consented) for Fabric REST discovery. |
+| API permissions | `https://storage.azure.com/user_impersonation` (Azure Storage, delegated) **and** Power BI Service `Workspace.Read.All` + `Item.Read.All` (delegated, user-consented) for Fabric REST discovery. |
 
 The client ID lives in `Packages/OfemKit/Sources/OfemKit/Auth/` as a constant — it is a public identifier, not a secret.
 
@@ -96,22 +96,33 @@ OFEM talks to two distinct Microsoft resource APIs that require different token 
 | `oneLakeScopes` | `https://storage.azure.com/` | OneLake ADLS Gen2 DFS file I/O |
 | `fabricScopes` | `https://analysis.windows.net/powerbi/api` | Fabric REST workspace + item discovery |
 
-### Single interactive consent via loginScopes
+### Two sequential interactive consent flows
 
-`loginScopes` is the union of both scope sets and is passed during the one-shot interactive login flow. Microsoft Entra records the user's consent for every resource in a single call. After that first consent:
+`loginScopes` is limited to the OneLake (storage) resource only. The Microsoft
+Entra v2 endpoint returns AADSTS28000 if an interactive request spans more than
+one resource, so sign-in requires two sequential browser flows:
 
-- `acquireTokenSilent` for `oneLakeScopes` returns a storage-audience token from the refresh token — no browser pop-up.
-- `acquireTokenSilent` for `fabricScopes` returns a Power BI-audience token from the same refresh token — also silent.
+1. **OneLake flow** — `TokenScope.loginScopes` (`user_impersonation` for
+   `https://storage.azure.com/`). The user signs in, consents to the storage
+   scope, and the account is committed to `OfemAuth`.
+2. **Fabric consent flow** — `TokenScope.fabricScopes` (`Workspace.Read.All` +
+   `Item.Read.All` for the Power BI audience). Immediately after the OneLake
+   flow, a second browser prompt asks the user to consent to the Fabric
+   delegated permissions. No admin pre-consent is assumed or required —
+   `Workspace.Read.All` and `Item.Read.All` are standard user-consentable
+   delegated permissions.
 
-MSAL manages this internally: one `MSALPublicClientApplication` per tenant can silently serve tokens for multiple resources as long as the refresh token carries the necessary consent.
+MSAL writes both the OneLake and Fabric tokens to the shared App Group Keychain
+after the respective flows, so subsequent silent acquisitions (`acquireTokenSilent`)
+for either resource are fast cache hits.
 
 ### Wiring in OFEM
 
-The `OfemAuth` class implements `TokenProvider`. For the Fabric REST client, `OfemAuth.scopedProvider(fabricScopes)` returns a `TokenProvider` that calls `tokenForScopes` with `fabricScopes`. This ensures each upstream receives a token its audience will accept.
+The `OfemAuth` actor implements `TokenProvider`. For the Fabric REST client, `tokenForScope(alias:scope:.fabric)` returns a token for the Power BI audience. `tokenForScope(alias:scope:.oneLake)` returns a token for the storage audience.
 
 ```
-auth.token(for: alias)                        → OneLake DFS token
-auth.scopedProvider(fabricScopes).token(...)  → Fabric REST token
+auth.tokenForScope(alias:scope:.oneLake)  → OneLake DFS token
+auth.tokenForScope(alias:scope:.fabric)   → Fabric REST token
 ```
 
 Passing the wrong scope set to a resource results in a 401 from the server.
