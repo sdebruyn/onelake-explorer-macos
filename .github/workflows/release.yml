@@ -71,7 +71,7 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@v6.0.3
         with:
           fetch-depth: 0
 
@@ -89,7 +89,7 @@ jobs:
           xcodebuild -version
 
       - name: Cache Homebrew downloads
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@v5.0.5
         with:
           path: |
             ~/Library/Caches/Homebrew/downloads
@@ -436,7 +436,7 @@ jobs:
       - name: Upload DMG as workflow artifact
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: OneLake-${{ steps.version.outputs.version }}-dmg
           path: dist-app/OneLake-${{ steps.version.outputs.version }}.dmg
@@ -448,7 +448,7 @@ jobs:
       # subjects since the previous tag (we use Conventional Commits).
       - name: Upload DMG to GitHub Release
         if: github.event_name != 'workflow_dispatch'
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        uses: softprops/action-gh-release@v3.0.0
         with:
           files: dist-app/OneLake-*.dmg
           fail_on_unmatched_files: true

@@ -21,7 +21,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v6.0.3
 
       - name: Assert Xcode 16.3 is present
         # Fail fast if the runner image no longer ships Xcode 16.3 rather
@@ -37,7 +37,7 @@ jobs:
           xcodebuild -version
 
       - name: Cache Homebrew downloads
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@v5.0.5
         with:
           path: |
             ~/Library/Caches/Homebrew/downloads
@@ -84,7 +84,7 @@ jobs:
           echo "host-coverage.xml: $(wc -l < host-coverage.xml) lines"
 
       - name: Upload host coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@v7.0.0
         with:
           files: host-coverage.xml
           flags: host
@@ -103,7 +103,7 @@ jobs:
           echo "fpe-coverage.xml: $(wc -l < fpe-coverage.xml) lines"
 
       - name: Upload FPE coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@v7.0.0
         with:
           files: fpe-coverage.xml
           flags: fpe
@@ -123,7 +123,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v6.0.3
 
       - name: Assert Xcode 16.3 is present
         run: |
@@ -176,7 +176,7 @@ jobs:
           echo "wrote coverage.lcov ($(wc -l < coverage.lcov) lines)"
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@v7.0.0
         with:
           files: Packages/OfemKit/coverage.lcov
           flags: ofemkit
@@ -190,12 +190,12 @@ jobs:
     timeout-minutes: 10
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v6.0.3
         with:
           fetch-depth: 0
 
       - name: Set up Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@v6.4.0
         with:
           node-version: "22"
 
