@@ -16,11 +16,14 @@ configFiles:
 settings:
   base:
     ARCHS: arm64
-    # SWIFT_VERSION stays at 5.10 for the app and FPE targets (build-14).
-    # Blocker: TOMLKit 0.6.0 (Packages/OfemKit) is not Sendable-conformant;
-    # compiling with SWIFT_VERSION=6.0 produces ~14 errors in TOMLKit's
-    # FormatOptions.swift. Upgrade to Swift 6 language mode once TOMLKit
-    # ships a Swift 6-compatible release.
+    # SWIFT_VERSION stays at 5.10 for the app and FPE targets.
+    # OfemKit itself builds in Swift 6 mode (swift-tools-version: 6.0) and its
+    # CI job runs `swift test` under strict concurrency checking.  The app/FPE
+    # targets remain at 5.10 because TOMLKit 0.6.0 is not Sendable-conformant;
+    # building those targets in Swift 6 mode produces ~14 errors in TOMLKit's
+    # FormatOptions.swift.  The types that cross the OfemKit/app boundary are
+    # all value types or already Sendable, so no concurrency violations are
+    # suppressed.  See docs/tech-stack.md for a full explanation.
     SWIFT_VERSION: "5.10"
     # MACOSX_DEPLOYMENT_TARGET is intentionally omitted here — XcodeGen
     # derives it from options.deploymentTarget.macOS above ("14.0") and

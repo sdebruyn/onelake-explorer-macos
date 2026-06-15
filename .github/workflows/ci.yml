@@ -36,6 +36,14 @@ jobs:
           fi
           xcodebuild -version
 
+      - name: Check bundle-ID consistency
+        # Asserts bundle IDs, team prefix, and app-group are consistent across
+        # OfemPaths.swift, project.yml, the cask template, and release.yml.
+        # Fails fast if they drift so regressions surface at PR time, not at
+        # notarization. The full single-source xcconfig refactor is deferred to
+        # a dedicated signed-release-validated PR; this guard covers the gap.
+        run: bash scripts/check-bundle-ids.sh
+
       - name: Cache Homebrew downloads
         uses: actions/cache@v5.0.5
         with:
@@ -45,6 +53,21 @@ jobs:
           key: brew-${{ runner.os }}-xcodegen-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
             brew-${{ runner.os }}-xcodegen-
+
+      - name: Cache SwiftPM build artifacts
+        # Cache .build and the Xcode DerivedData SourcePackages folder keyed on
+        # the lockfile so MSAL, GRDB, and TOMLKit are not re-resolved/recompiled
+        # on every run. The restore-key falls back to a prior run's cache when
+        # Package.resolved has not changed, accepting a slightly stale build
+        # artifact cache that re-increments on the next full build.
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            Packages/OfemKit/.build
+            DerivedData/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
 
       - name: Install xcodegen
         run: brew install xcodegen
@@ -135,6 +158,15 @@ jobs:
           fi
           xcodebuild -version
 
+      - name: Cache SwiftPM build artifacts
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            Packages/OfemKit/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
       - name: Validate Package.resolved is in sync
         # Ensures the committed lockfile matches Package.swift before running
         # tests, so CI surfaces drift early rather than at release time.
@@ -203,4 +235,11 @@ jobs:
         run: npm install --no-save @commitlint/cli@19.8.1 @commitlint/config-conventional@19.8.1
 
       - name: Validate PR commits
-        run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }} --verbose
+        # Use the merge-base rather than base.sha so commitlint validates only
+        # the commits on this PR branch, not stale base commits that diverged
+        # after a force-push or after main advanced since the branch was cut.
+        run: |
+          npx commitlint \
+            --from "$(git merge-base origin/${{ github.event.pull_request.base.ref }} HEAD)" \
+            --to HEAD \
+            --verbose

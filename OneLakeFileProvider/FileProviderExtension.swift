@@ -206,18 +206,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     progress.totalUnitCount = knownSize
                 }
 
-                // Download via the sync engine.
-                // open() returns a file URL (streaming path):
-                // bytes never pass through memory as a whole. We copy the blob
-                // file to `dest` so the File Provider framework can hand it to
-                // the system without touching the shared blob cache.
+                // Download via the sync engine and hand the blob to the FPE
+                // without a full copy. open() downloads the blob into the cache
+                // if not already present. handoffBlob then hard-links the cache
+                // file to `dest` so the FPE hands that path to the system
+                // without a second full on-disk copy (fpe-06). Because cache
+                // blobs are immutable content-addressed files, the hard link is
+                // safe: a cache eviction of the entry removes the shard dir
+                // entry but leaves the inode (and `dest`) intact.
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
-                let blobURL = try await engine.sync.open(key: key)
+                _ = try await engine.sync.open(key: key)
 
-                // Copy blob to the staging destination without loading into RAM.
                 // Remove dest first so retries are idempotent.
                 try? FileManager.default.removeItem(at: dest)
-                try FileManager.default.copyItem(at: blobURL, to: dest)
+                try await engine.cache.handoffBlob(key: key, to: dest)
 
                 // Update progress from the file size on disk.
                 let actualBytes: Int64
