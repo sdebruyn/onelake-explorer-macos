@@ -15,7 +15,7 @@
 #   ./scripts/seed-labels.sh            # create + update only
 #   ./scripts/seed-labels.sh --prune    # also delete labels not in YAML
 
-set -eo pipefail
+set -euo pipefail
 
 repo="${OFEM_REPO:-sdebruyn/onelake-explorer-macos}"
 labels_file=".github/labels.yml"

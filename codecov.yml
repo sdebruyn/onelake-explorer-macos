@@ -17,8 +17,10 @@ comment:
   layout: "reach, diff, flags, files"
   require_changes: true
 
-# Coverage is split by flag: the OfemKit engine package, and the host app /
-# File Provider extension (exercised by the OneLakeHostTests bundle).
+# Coverage is split by flag:
+#   ofemkit  — the OfemKit engine package (swift test, lcov)
+#   host     — the host app sources (OneLakeHostTests bundle, xcresult)
+#   fpe      — the File Provider Extension sources (OneLakeFileProviderTests bundle, xcresult)
 flags:
   ofemkit:
     paths:
@@ -27,5 +29,8 @@ flags:
   host:
     paths:
       - OneLake/
+    carryforward: true
+  fpe:
+    paths:
       - OneLakeFileProvider/
     carryforward: true

@@ -8,7 +8,7 @@
 #
 # Usage: ./scripts/check-prereqs.sh
 
-set -o pipefail
+set -uo pipefail
 
 # Colors when stdout is a TTY.
 if [ -t 1 ]; then

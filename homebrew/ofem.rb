@@ -1,17 +1,15 @@
 # frozen_string_literal: true
 
-# Dummy 0.0.0 cask used to validate the tap-install pipeline before the first
-# real signed and notarized release of OFEM ships.
+# Dummy 0.0.0 cask kept for reference only.
 #
-# The download URL below points at a release asset that does not exist yet —
-# `brew install` will 404 until we tag v0.0.0 (or the first real CalVer
-# release) on sdebruyn/onelake-explorer-macos. The cask still parses, audits,
-# and lets us validate `brew tap` + `brew info` end-to-end.
+# The canonical cask is homebrew/Casks/ofem.rb.tmpl — the release workflow
+# renders it into sdebruyn/homebrew-ofem as Casks/ofem.rb on every tagged
+# release. That rendered cask is what users install via `brew install`.
 #
-# `sha256 :no_check` is intentional for the dummy. On the first real release
-# this becomes the real DMG SHA-256 (the release workflow's `Update Homebrew
-# cask` step computes and substitutes it — see docs/packaging-homebrew.md in
-# the main repo).
+# This file is NOT published or installed by anyone. It exists so that
+# `brew tap sdebruyn/ofem` can be validated before the first real release.
+# Once a real CalVer tag has shipped, this file serves only as a local
+# reference; do not update it to track the template.
 cask "ofem" do
   version "0.0.0"
   sha256 :no_check
@@ -21,15 +19,8 @@ cask "ofem" do
   desc "Browse Microsoft Fabric OneLake from Finder"
   homepage "https://ofem.debruyn.dev"
 
-  # No releases exist yet for the dummy 0.0.0 cask. Once the first real
-  # tag ships on sdebruyn/onelake-explorer-macos, swap this for:
-  #   livecheck do
-  #     url :url
-  #     strategy :github_releases
-  #     regex(/^v(\d+\.\d+\.\d+)$/i)
-  #   end
   livecheck do
-    skip "pre-release — no stable tag yet"
+    skip "reference dummy — see homebrew/Casks/ofem.rb.tmpl for the canonical cask"
   end
 
   depends_on macos: :sonoma
@@ -37,17 +28,10 @@ cask "ofem" do
 
   app "OneLake.app"
 
-  # Open the app post-install so the first launch happens immediately,
-  # registering the login item and starting the File Provider Extension
-  # without requiring the user to manually launch the app first.
   postflight do
     system_command "/usr/bin/open", args: ["-a", "OneLake"]
   end
 
-  # Keep these stanzas in lockstep with homebrew/Casks/ofem.rb.tmpl (the
-  # template the release workflow renders into the tap). This dummy only
-  # validates the tap pipeline, but stale uninstall/zap rules here would
-  # mislead anyone reading it.
   uninstall quit: "dev.debruyn.ofem"
 
   zap trash: [

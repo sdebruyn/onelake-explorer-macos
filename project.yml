@@ -16,7 +16,6 @@ configFiles:
 settings:
   base:
     ARCHS: arm64
-    ONLY_ACTIVE_ARCH: YES
     # SWIFT_VERSION stays at 5.10 for the app and FPE targets (build-14).
     # Blocker: TOMLKit 0.6.0 (Packages/OfemKit) is not Sendable-conformant;
     # compiling with SWIFT_VERSION=6.0 produces ~14 errors in TOMLKit's
@@ -40,6 +39,12 @@ settings:
     # Release builds override these via the xcodebuild command line.
     MARKETING_VERSION: "0.0.0-dev"
     CURRENT_PROJECT_VERSION: "0"
+  configs:
+    Debug:
+      # ONLY_ACTIVE_ARCH is Debug-only: faster local incremental builds.
+      # Release uses -destination "generic/platform=macOS" which builds all
+      # architectures regardless, making this setting redundant there.
+      ONLY_ACTIVE_ARCH: YES
 # OfemKit is a local Swift Package that houses all engine modules
 # (auth, cache, sync, OneLake clients, telemetry). Linked into both the
 # host app and the File Provider Extension.
