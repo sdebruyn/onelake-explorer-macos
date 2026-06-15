@@ -345,10 +345,18 @@ public actor SyncEngine {
         // Build remote children set, filtering macOS metadata artefacts at emit
         // time so that remote .DS_Store / ._* files never appear in listings and
         // cannot resurrect after a local-only delete.
+        //
+        // onelake-12: listPath() returns PathEntry.name values that are already
+        // item-relative (convertRawEntry stripped the "<itemGUID>/" prefix before
+        // returning). Do NOT call Enumerator.stripItemPrefix here — that would
+        // attempt to strip the itemGUID prefix a second time and return nil for
+        // every entry, leaving remoteChildren empty and causing refreshFolder to
+        // reconcile zero children against the cache.
         var remoteChildren: [String: PathEntry] = [:]
         for entry in result.entries {
-            guard let rel = Enumerator.stripItemPrefix(name: entry.name, itemGUID: key.itemID),
-                  !rel.isEmpty,
+            // Trim any trailing slash that the DFS API may append to directory names.
+            let rel = entry.name.hasSuffix("/") ? String(entry.name.dropLast()) : entry.name
+            guard !rel.isEmpty,
                   Enumerator.isDirectChild(parent: key.path, child: rel),
                   !isMacOSMetadata(rel)
             else { continue }
