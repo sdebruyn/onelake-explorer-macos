@@ -19,6 +19,15 @@ let ofemSubsystem = "dev.debruyn.ofem"
 /// in OneLakeApp and the `openWindow(id:)` call site in MenuBarView.
 let ofemAddAccountWindowID = "add-account"
 
+// MARK: - Domain identifier
+
+/// Prefix every OFEM-owned File Provider domain identifier carries.
+///
+/// Mirrored in `OneLakeFileProvider/FileProviderExtension.swift`
+/// (`ofemDomainIdentifierPrefix`); the two targets do not share source
+/// files so the constant is defined independently on each side.
+let ofemDomainIdentifierPrefix = "ofem."
+
 // MARK: - Config keys
 
 /// Config key names for the shared config.toml.

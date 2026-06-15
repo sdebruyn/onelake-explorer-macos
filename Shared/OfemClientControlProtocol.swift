@@ -10,6 +10,7 @@
 // XPCEngineStatus (see XPCEngineStatus.swift), conforming to NSSecureCoding.
 //
 // Protocol surface:
+//   - getProtocolVersion(reply:)  — version handshake; call before any other method
 //   - getEngineStatus(reply:)     — cache stats + config snapshot
 //   - setConfig(key:value:reply:) — write a single config field and notify FPE
 //   - clearCache(reply:)          — wipe all cached blobs
@@ -21,6 +22,23 @@ import Foundation
 ///
 /// Must match exactly on both sides.
 @objc public protocol OfemClientControlProtocol {
+
+    // MARK: - Protocol version handshake
+
+    /// Returns the protocol version implemented by the FPE.
+    ///
+    /// Call this first after obtaining a proxy. If the returned version is
+    /// lower than `ofemControlProtocolVersion`, the host and FPE are
+    /// mismatched: treat the connection as degraded and show a stale-extension
+    /// warning rather than silently misbehaving (xpc-06).
+    ///
+    /// Declared `@objc optional` so existing FPE builds that pre-date
+    /// protocol version 2 do not fail to satisfy the protocol — the host
+    /// checks `proxy.responds(to:)` before calling and treats a non-response
+    /// as "version 1" (pre-versioning build).
+    ///
+    /// - Parameter reply: Called with the FPE's protocol version integer.
+    @objc optional func getProtocolVersion(reply: @escaping (Int) -> Void)
 
     // MARK: - Engine status
 
@@ -63,3 +81,15 @@ import Foundation
 /// The NSFileProviderServiceName string used to look up the FPE's
 /// control service. Shared between FPE (publisher) and host (subscriber).
 public let ofemControlServiceName = "dev.debruyn.ofem.control"
+
+// MARK: - Protocol version
+
+/// The protocol version this build implements.
+///
+/// Version history:
+///   1 — original protocol (getEngineStatus, setConfig, clearCache)
+///   2 — added getProtocolVersion; strict decode in XPC payloads
+///
+/// The FPE reports its version via `getProtocolVersion(reply:)`.
+/// The host compares to this constant and degrades gracefully on mismatch.
+public let ofemControlProtocolVersion: Int = 2

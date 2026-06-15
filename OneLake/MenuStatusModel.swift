@@ -350,11 +350,13 @@ final class MenuStatusModel: ObservableObject {
                     workspaceId: xpc.workspaceID,
                     reason: xpc.reason,
                     // A zero/negative detectedAtSec means the timestamp is
-                    // unknown; use nil rather than Date() to avoid presenting
-                    // an unknown detection time as "just detected" on every refresh.
+                    // unknown. Use Date.distantPast (Apple's conventional
+                    // "never / unknown" sentinel) rather than the Unix epoch
+                    // (1970-01-01), which would format as a nonsensical date
+                    // in any downstream display.
                     detectedAt: xpc.detectedAtSec > 0
                         ? Date(timeIntervalSince1970: xpc.detectedAtSec)
-                        : Date(timeIntervalSince1970: 0),
+                        : Date.distantPast,
                     probedAt: nil
                 )
             }
@@ -364,6 +366,24 @@ final class MenuStatusModel: ObservableObject {
                 "Engine status fetch skipped (FPE not reachable): \(error.localizedDescription, privacy: .public)"
             )
         }
+    }
+
+    // MARK: - XPC version mismatch surfacing (xpc-06)
+
+    /// Surfaces a host/FPE protocol version mismatch as a non-intrusive
+    /// inline error in the menu bar. Called by OfemFPEClient after each
+    /// new connection is established.
+    ///
+    /// - Parameters:
+    ///   - hostVersion: The version constant this host build expects.
+    ///   - fpeVersion:  The version the connected FPE reported (1 if pre-v2).
+    func setVersionMismatchError(hostVersion: Int, fpeVersion: Int) {
+        lastActionError = "Extension version mismatch (host v\(hostVersion), extension v\(fpeVersion)). Restart the app after updating."
+    }
+
+    /// Clears `lastActionError`. Used in tests to reset state between test cases.
+    func clearLastActionError() {
+        lastActionError = nil
     }
 
     // MARK: - Actions

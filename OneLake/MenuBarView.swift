@@ -70,7 +70,7 @@ struct MenuBarView: View {
             // without a blocking modal (host-09). The item is only shown when
             // an error is set; it clears on the next successful action or refresh.
             if let error = model.lastActionError {
-                Text("⚠ \(error)")
+                Text("Error: \(error)")
                     .foregroundStyle(.red)
                     .font(.caption)
                     .disabled(true)

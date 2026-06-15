@@ -119,7 +119,7 @@ final class AddAccountCoordinator: ObservableObject {
         clientID: String?,
         window: NSWindow
     ) {
-        guard phase != .waiting else { return }
+        guard !phase.isInProgress else { return }
 
         let trimmedAlias = alias.trimmingCharacters(in: .whitespaces)
         guard !trimmedAlias.isEmpty else { return }

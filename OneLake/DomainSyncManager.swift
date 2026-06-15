@@ -47,10 +47,8 @@ final class DomainSyncManager {
     /// without this prefix is left alone — even if it lives in our
     /// process — to avoid clobbering domains another tool registered.
     ///
-    /// Mirrored in `FileProviderExtension.extractAlias` (`ofemDomainIdentifierPrefix`);
-    /// the two targets do not share source files, so the constant is defined
-    /// twice on purpose.
-    let identifierPrefix = "ofem."
+    /// The canonical value lives in `OfemConstants.ofemDomainIdentifierPrefix`.
+    var identifierPrefix: String { ofemDomainIdentifierPrefix }
 
     init() {}
 

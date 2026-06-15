@@ -167,6 +167,85 @@ final class OfemFPEClient {
         }
     }
 
+    // MARK: - Protocol version check
+
+    /// Queries the FPE's protocol version via an already-typed proxy and
+    /// surfaces a mismatch via the model.
+    ///
+    /// Extracted from the NSXPCConnection-level helper so tests can inject a
+    /// fake proxy without needing a real XPC connection.
+    ///
+    /// - Parameters:
+    ///   - proxy:            A typed proxy that may or may not implement
+    ///                       `getProtocolVersion(reply:)`.
+    ///   - domainIdentifier: Used for log messages only (not logged as PII).
+    /// - Returns: The FPE's reported version (1 if the FPE pre-dates versioning).
+    @discardableResult
+    func checkProtocolVersion(
+        proxy: any OfemClientControlProtocol,
+        domainIdentifier: String
+    ) async -> Int {
+        // `getProtocolVersion` is @objc optional — a pre-v2 FPE will not
+        // implement it. Guard with responds(to:) and treat absence as version 1.
+        let sel = #selector(OfemClientControlProtocol.getProtocolVersion(reply:))
+        guard (proxy as AnyObject).responds(to: sel) else {
+            Self.log.info(
+                "FPE at \(domainIdentifier, privacy: .public) does not implement getProtocolVersion (pre-v2)"
+            )
+            await notifyVersionMismatch(fpeVersion: 1, domainIdentifier: domainIdentifier)
+            return 1
+        }
+
+        let fpeVersion: Int = await withCheckedContinuation { continuation in
+            proxy.getProtocolVersion! { version in
+                continuation.resume(returning: version)
+            }
+        }
+
+        if fpeVersion != ofemControlProtocolVersion {
+            Self.log.warning(
+                "Protocol version mismatch for \(domainIdentifier, privacy: .public): host=\(ofemControlProtocolVersion) fpe=\(fpeVersion)"
+            )
+            await notifyVersionMismatch(fpeVersion: fpeVersion, domainIdentifier: domainIdentifier)
+        } else {
+            Self.log.info(
+                "Protocol version OK for \(domainIdentifier, privacy: .public): v\(fpeVersion)"
+            )
+        }
+        return fpeVersion
+    }
+
+    /// Connection-level wrapper: obtains a proxy from the connection and
+    /// delegates to `checkProtocolVersion(proxy:domainIdentifier:)`.
+    ///
+    /// Called once per new connection in `connection(for:)` after the
+    /// connection is cached and resumed.
+    private func checkProtocolVersion(
+        connection: NSXPCConnection,
+        domainIdentifier: String
+    ) async {
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+            // Log only; failure here is non-fatal — the connection is already
+            // cached and subsequent method calls will surface their own errors.
+            OfemFPEClient.log.warning(
+                "getProtocolVersion proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+        }) as? any OfemClientControlProtocol else {
+            // Cast failure means the connection is already broken; skip check.
+            return
+        }
+        await checkProtocolVersion(proxy: proxy, domainIdentifier: domainIdentifier)
+    }
+
+    /// Surfaces a version mismatch to the user via `MenuStatusModel.lastActionError`.
+    @MainActor
+    private func notifyVersionMismatch(fpeVersion: Int, domainIdentifier: String) {
+        MenuStatusModel.shared.setVersionMismatchError(
+            hostVersion: ofemControlProtocolVersion,
+            fpeVersion: fpeVersion
+        )
+    }
+
     // MARK: - Generic proxy helper
 
     /// Acquires a typed proxy for `alias`, invokes `body`, and returns the result.
@@ -269,6 +348,12 @@ final class OfemFPEClient {
         Self.log.info(
             "FPE XPC connection established for domain \(domainIdentifier, privacy: .public)"
         )
+
+        // Perform the protocol version handshake on each new connection (xpc-06).
+        // Non-fatal: a mismatch is logged and surfaced to the user but does not
+        // prevent the connection from being used.
+        await checkProtocolVersion(connection: conn, domainIdentifier: domainIdentifier)
+
         return (conn, domainIdentifier)
     }
 

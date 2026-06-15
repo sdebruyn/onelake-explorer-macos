@@ -143,7 +143,11 @@ final class MenuStatusModelExtendedTests: XCTestCase {
         // Use a post-refresh check after a brief delay instead.
         Task {
             model.refresh()
-            // Give the task time to complete.
+            // With no accounts, doRefresh() returns immediately without an XPC
+            // call, so $accounts never fires a changed notification (it stays
+            // empty). A short fixed sleep is the simplest deterministic option
+            // here; 100 ms is ample for a synchronous no-op path but is fragile
+            // under heavy CI load — harden to signal-based if this flakes.
             try? await Task.sleep(for: .milliseconds(100))
             exp.fulfill()
         }
