@@ -127,15 +127,8 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
         //
         // `setCodeSigningRequirement` is available on macOS 13+ (our minimum is 14).
         // Peer validation is lazy and happens on the first message; this call
-        // only fails if the requirement string is syntactically invalid.
-        do {
-            try newConnection.setCodeSigningRequirement(ofemXPCPeerRequirement)
-        } catch {
-            Self.log.error(
-                "XPC: malformed code-signing requirement string: \(error.localizedDescription, privacy: .public)"
-            )
-            return false
-        }
+        // only records the requirement — the ObjC method is non-throwing.
+        newConnection.setCodeSigningRequirement(ofemXPCPeerRequirement)
         newConnection.exportedInterface = makeInterface()
         newConnection.exportedObject = OfemControlXPCHandler(engineHost: engineHost)
         newConnection.resume()
