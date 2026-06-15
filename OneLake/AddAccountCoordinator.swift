@@ -211,6 +211,7 @@ final class AddAccountCoordinator: ObservableObject {
             switch authErr {
             case .noViewController: return "Internal error: no window for authentication."
             case .fabricConsentFailed: return "Fabric consent was not obtained. Please try signing in again and complete both browser prompts."
+            case .unknownAlias(let a): return "Account '\(a)' not found."
             }
         }
         if let authErr = error as? OfemAuthError {

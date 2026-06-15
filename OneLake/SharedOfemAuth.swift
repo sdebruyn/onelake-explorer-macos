@@ -240,6 +240,91 @@ final class SharedOfemAuth {
         )
     }
 
+    // MARK: - Re-authentication for an existing account
+
+    /// Re-runs the two-step interactive sign-in flow for an **already-registered** account.
+    ///
+    /// Used when the account's refresh token has expired or a Conditional Access policy
+    /// has revoked the token (`needsSignIn` flag is set on the FPE). The account metadata
+    /// in `config.toml` is unchanged — only the MSAL Keychain tokens are refreshed.
+    ///
+    /// The same two sequential flows as `signIn(alias:tenant:clientID:window:)` are used
+    /// because AADSTS28000 prevents combining OneLake and Fabric scopes in one request:
+    ///
+    /// 1. OneLake (storage) interactive flow — refreshes the user_impersonation token.
+    /// 2. Fabric (Power BI) consent flow — refreshes Workspace.Read.All + Item.Read.All.
+    ///
+    /// On success the FPE's next silent token acquisition is an immediate cache hit, which
+    /// unblocks enumeration. The caller is responsible for signalling the FPE to reload its
+    /// engine (clearing `needsSignIn`) via the XPC setConfig channel.
+    ///
+    /// - Parameters:
+    ///   - alias:  The existing account alias to re-authenticate.
+    ///   - window: The NSWindow that anchors the ASWebAuthenticationSession sheet.
+    /// - Throws: `SharedOfemAuthError.unknownAlias` if the alias is not registered,
+    ///           `SharedOfemAuthError.noViewController` if the window has no content VC,
+    ///           or MSAL errors on browser-flow failure.
+    func reSignIn(alias: String, window: NSWindow) async throws {
+        // Look up the registered account to get its tenantID and clientID.
+        let accounts = await auth.listAccounts()
+        guard let existing = accounts.first(where: { $0.alias == alias }) else {
+            throw SharedOfemAuthError.unknownAlias(alias)
+        }
+
+        let effectiveClientID = existing.clientID.flatMap { $0.isEmpty ? nil : $0 } ?? ofemEntraClientID
+        let tenantID = existing.tenantID
+
+        guard let parentVC = window.contentViewController else {
+            throw SharedOfemAuthError.noViewController
+        }
+        let webviewParams = MSALWebviewParameters(authPresentationViewController: parentVC)
+        webviewParams.webviewType = .default
+
+        Self.log.info(
+            "SharedOfemAuth.reSignIn: starting re-auth for alias=\(alias, privacy: .public)"
+        )
+
+        // ── Flow 1: OneLake (storage) interactive re-auth ─────────────────────
+        // acquireToken writes fresh tokens to the shared App Group Keychain.
+        // We do NOT call commit/addAccount — the account record already exists.
+        do {
+            _ = try await InteractiveSignIn.acquireToken(
+                clientID: effectiveClientID,
+                tenantHint: tenantID.isEmpty ? nil : tenantID,
+                webviewParams: webviewParams,
+                cacheStrategy: .msalKeychain
+            )
+        } catch let nsError as NSError where nsError.domain == "MSALErrorDomain" {
+            let description = nsError.userInfo[MSALErrorDescriptionKey] as? String ?? "(none)"
+            let internalCode = (nsError.userInfo[MSALInternalErrorCodeKey] as? NSNumber)?.stringValue ?? "(none)"
+            let oauthError = nsError.userInfo[MSALOAuthErrorKey] as? String ?? "(none)"
+            let correlationID = nsError.userInfo[MSALCorrelationIDKey] as? String ?? "(none)"
+            Self.log.error(
+                "SharedOfemAuth.reSignIn: MSAL error (storage) code=\(nsError.code, privacy: .public) internalCode=\(internalCode, privacy: .public) oauthError=\(oauthError, privacy: .public) correlationID=\(correlationID, privacy: .public) description=\(description, privacy: .public)"
+            )
+            throw nsError
+        }
+        Self.log.info(
+            "SharedOfemAuth.reSignIn: OneLake token refreshed for alias=\(alias, privacy: .public)"
+        )
+
+        // ── Flow 2: Fabric (Power BI) interactive consent ────────────────────
+        do {
+            try await InteractiveSignIn.acquireFabricConsent(
+                clientID: effectiveClientID,
+                tenantID: tenantID,
+                webviewParams: webviewParams,
+                cacheStrategy: .msalKeychain
+            )
+            Self.log.info("SharedOfemAuth.reSignIn: Fabric consent refreshed for alias=\(alias, privacy: .public)")
+        } catch {
+            Self.log.error(
+                "SharedOfemAuth.reSignIn: Fabric consent failed for alias=\(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            throw SharedOfemAuthError.fabricConsentFailed(error)
+        }
+    }
+
     // MARK: - Private helpers
 
     /// Shows a non-blocking alert informing the user that the config file could
@@ -265,12 +350,18 @@ enum SharedOfemAuthError: Error, CustomStringConvertible {
     /// been rolled back so the user can retry the complete sign-in flow.
     case fabricConsentFailed(Error)
 
+    /// The alias passed to `reSignIn(alias:window:)` does not match any
+    /// registered account. Indicates a logic error in the caller.
+    case unknownAlias(String)
+
     var description: String {
         switch self {
         case .noViewController:
             return "SharedOfemAuth: no presenting view controller on window"
         case .fabricConsentFailed:
             return "SharedOfemAuth: Fabric consent could not be obtained — sign in was cancelled or blocked. Please try again."
+        case .unknownAlias(let a):
+            return "SharedOfemAuth: account '\(a)' not found — cannot re-authenticate"
         }
     }
 }

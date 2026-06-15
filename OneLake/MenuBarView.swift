@@ -165,6 +165,7 @@ private struct AccountSubmenu: View {
     // The singleton lives for the process lifetime but the semantics are
     // safer and change observation works correctly with @ObservedObject.
     @ObservedObject var model: MenuStatusModel
+    @Environment(\.openWindow) private var openWindow
 
     private static let log = Logger(subsystem: ofemSubsystem, category: "menubar-view")
 
@@ -184,6 +185,14 @@ private struct AccountSubmenu: View {
         }
 
         Divider()
+
+        // "Sign in again" refreshes the MSAL tokens for this account via the
+        // same two-step interactive browser flow used at first sign-in. Always
+        // shown (harmless when the account is healthy — it just refreshes consent)
+        // to avoid menu-state churn from showing/hiding it based on needsSignIn.
+        Button("Sign In Again…") {
+            signInAgain()
+        }
 
         // "Set as Default" is hidden (replaced by the checkmark in the
         // parent label) when this account is already the default.
@@ -232,6 +241,35 @@ private struct AccountSubmenu: View {
         }
         if !NSWorkspace.shared.open(url) {
             NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
+
+    private func signInAgain() {
+        // Bring the app to the foreground so the MSAL browser sheet appears
+        // in front (LSUIElement apps do not activate automatically).
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        // Resolve the presenting window. MSAL's ASWebAuthenticationSession
+        // needs a contentViewController from an NSWindow to anchor its sheet.
+        // When no window is currently open (typical for a menu-bar-only app),
+        // open the Add Account window as an anchor — the MSAL sheet will
+        // overlay it immediately, so the user only sees the browser prompt.
+        //
+        // We try keyWindow first (e.g. Settings or About is already open),
+        // then fall back to opening the Add Account window.
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+            model.reSignIn(alias: account.alias, window: window)
+        } else {
+            // Open the Add Account window so there is an anchor NSWindow for MSAL.
+            // Schedule the reSignIn call after the window has been presented.
+            openWindow(id: ofemAddAccountWindowID)
+            // Defer until the next run-loop turn so the window has time to appear
+            // and become the key window before we request the MSAL sheet.
+            Task { @MainActor in
+                if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+                    model.reSignIn(alias: account.alias, window: window)
+                }
+            }
         }
     }
 
