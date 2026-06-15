@@ -1,4 +1,5 @@
 import Foundation
+import os.log
 
 /// A thread-safe, disk-backed log writer that rotates the active file when it
 /// exceeds a configurable size limit and keeps a bounded number of rotated
@@ -37,6 +38,10 @@ public final class RotatingFileWriter: @unchecked Sendable {
     // MARK: - Constants
 
     private static let fileName = "ofem.log"
+
+    /// Fallback os.Logger used only for internal diagnostics (e.g. flush
+    /// failures) that cannot be routed through the per-alias `OfemLogger`.
+    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "RotatingFileWriter")
 
     /// Default rotate-at size (10 MB).
     public static let defaultMaxFileSizeBytes: Int = 10 * 1_024 * 1_024
@@ -102,6 +107,19 @@ public final class RotatingFileWriter: @unchecked Sendable {
             let handle = try fileHandleUnlocked()
             try handle.write(contentsOf: bytes)
             currentSize += bytes.count
+            // Flush to the OS page cache after every write so log lines land
+            // on disk before the FPE engine is torn down.  The FPE process is
+            // short-lived (built per enumeration, shut down quickly) and
+            // buffered writes would be silently discarded on teardown without
+            // this synchronize call.
+            do {
+                try handle.synchronize()
+            } catch {
+                // Non-fatal: data was written to the kernel page cache but may
+                // not be durable against SIGKILL.  Route through os.Logger so
+                // the failure is visible without breaking the logging pipeline.
+                Self.log.warning("RotatingFileWriter: synchronize() failed — \(error.localizedDescription, privacy: .public)")
+            }
         } catch {
             // Best-effort: if we cannot write (e.g. disk full), skip silently.
             // os.Logger is still logging; the file is a secondary channel.

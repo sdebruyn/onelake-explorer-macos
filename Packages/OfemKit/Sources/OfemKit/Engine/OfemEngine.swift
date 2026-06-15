@@ -1,5 +1,4 @@
 import Foundation
-import os.log
 
 // MARK: - OfemEngine
 
@@ -91,8 +90,6 @@ public actor OfemEngine {
     }
 
     private let subsystemOwnership: SubsystemOwnership
-
-    private static let log = Logger(subsystem: OfemPaths.bundleID, category: "OfemEngine")
 
     /// Default Fabric REST base URL. Named constant eliminates both the
     /// force-unwrap and the magic-string duplication (fp-01, engine-04).
@@ -247,7 +244,9 @@ public actor OfemEngine {
         guard !started else { return }
         started = true
         await telemetry.start()
-        Self.log.info("OfemEngine: started")
+        // Use self.logger so the "started" line reaches the RotatingFileWriter
+        // file sink (and not only os_log).
+        logger.info("OfemEngine: started")
     }
 
     /// Stops per-alias background tasks and, when this engine owns the shared
@@ -276,7 +275,10 @@ public actor OfemEngine {
             // shutdown() returns.  Actor isolation guarantees no new reads/
             // writes can start after this point.
         }
-        Self.log.info("OfemEngine: shutdown complete")
+        // Use self.logger so the "shutdown complete" line reaches the file
+        // sink before the writer is torn down (the RotatingFileWriter flushes
+        // on every write, so this line lands on disk immediately).
+        logger.info("OfemEngine: shutdown complete")
     }
 
     // MARK: - Private helpers

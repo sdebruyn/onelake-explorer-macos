@@ -1,6 +1,8 @@
 import Foundation
 import os.log
 
+// MARK: - OfemLogger
+
 /// Structured logger façade for OFEM's Swift targets.
 ///
 /// `OfemLogger` wraps Apple's `os.Logger` (Unified Logging System) and adds
@@ -13,8 +15,12 @@ import os.log
 /// ### Privacy model
 ///
 /// os.Logger messages: static format strings and level/category are
-/// `.public`; every dynamically interpolated value is `.private` so it
-/// is redacted in the system log on non-development builds.
+/// `.public`; dynamically interpolated values use a `#if DEBUG` gate:
+///   - **DEBUG** builds: `.public` — un-redacted so `log show` / `log stream`
+///     show real values during local development.
+///   - **release** builds: `.private` — redacted in the system log, matching
+///     the telemetry privacy stance.  It is impossible to ship un-redacted
+///     prod logs by accident because the gate is compile-time.
 ///
 /// On-disk JSON file: all metadata values are passed through
 /// `Privacy.scrubLogValue(_:)` before being written.  The `msg` field is
@@ -74,12 +80,29 @@ public struct OfemLogger: Sendable {
         // os.Logger — visible in Console.app, `log stream`, and Instruments.
         //
         // Static format strings and the level label use .public; dynamic
-        // values (call-site messages, metadata) use .private so they are
-        // redacted in the system log on non-development builds.
+        // values (call-site messages) use a compile-time #if DEBUG gate:
+        //   DEBUG build   → .public  (un-redacted for local development)
+        //   release build → .private (redacted; matches telemetry privacy stance)
+        //
+        // os_log's privacy: argument must be a static/literal value — the Swift
+        // compiler rejects runtime OSLogPrivacy variables — so the #if DEBUG
+        // block is duplicated per level rather than stored in a variable.
         //
         // Mapping: warn → .error, error → .error.  .fault is reserved for
         // programmer faults and is always persisted to disk unconditionally.
         let levelLabel = Self.levelLabel(level)
+        #if DEBUG
+        switch level {
+        case .debug:
+            osLogger.debug("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
+        case .info:
+            osLogger.info("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
+        case .warn:
+            osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
+        case .error:
+            osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
+        }
+        #else
         switch level {
         case .debug:
             osLogger.debug("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
@@ -90,6 +113,7 @@ public struct OfemLogger: Sendable {
         case .error:
             osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
         }
+        #endif
 
         // Rotating file — JSON-structured, redacted at the Privacy boundary.
         if let writer = configuration.fileWriter {
