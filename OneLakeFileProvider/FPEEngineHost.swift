@@ -267,8 +267,12 @@ final class FPEEngineHost: EngineProviding {
     /// Most-recent build error.  Cleared after `buildErrorBackoff` nanoseconds so
     /// the next `engine()` call retries.
     private nonisolated(unsafe) var _buildError: Error?
-    /// Monotonic uptime nanoseconds of the last failed build attempt.
-    private nonisolated(unsafe) var _buildErrorTimestampNs: UInt64 = 0
+    /// Monotonic uptime nanoseconds (`DispatchTime.now().uptimeNanoseconds`) of
+    /// the last failed build attempt.  The back-off window is measured against
+    /// this clock, so it does **not** elapse while the Mac is asleep — intentional
+    /// for a sub-minute retry window where wall-clock progress during sleep would
+    /// not meaningfully advance the transient-error recovery window.
+    private nonisolated(unsafe) var _lastBuildErrorUptimeNs: UInt64 = 0
     /// Set to `true` by `shutdown()` once teardown begins.
     /// After this point `engine()` always throws rather than rebuilding.
     private nonisolated(unsafe) var _invalidated: Bool = false
@@ -281,6 +285,11 @@ final class FPEEngineHost: EngineProviding {
     /// 5 seconds covers the most common transient causes (Keychain momentarily
     /// locked, TOML file mid-write) while allowing recovery in a single macOS
     /// re-enumeration cycle.
+    ///
+    /// The elapsed time is measured using `DispatchTime.now().uptimeNanoseconds`
+    /// (monotonic uptime), so the window does not count down while the Mac sleeps.
+    /// This is correct for a sub-minute retry: it avoids a premature retry
+    /// immediately after wake when the transient condition may still be present.
     ///
     /// Declared `internal` (rather than `private`) intentionally so that
     /// `FPEEngineHostTests` can assert the constant is positive via
@@ -350,10 +359,10 @@ final class FPEEngineHost: EngineProviding {
 
         // Honour a cached build error only within the back-off window.
         // Capture both fields in a single lock closure to avoid reading
-        // _buildErrorTimestampNs outside the critical section.
+        // _lastBuildErrorUptimeNs outside the critical section.
         let cachedError: (Error, UInt64)? = lock.withLock {
             guard let err = _buildError else { return nil }
-            return (err, _buildErrorTimestampNs)
+            return (err, _lastBuildErrorUptimeNs)
         }
         if let (err, ts) = cachedError {
             let elapsedNs = DispatchTime.now().uptimeNanoseconds &- ts
@@ -363,7 +372,7 @@ final class FPEEngineHost: EngineProviding {
             // Window expired — clear and fall through to retry.
             lock.withLock {
                 _buildError = nil
-                _buildErrorTimestampNs = 0
+                _lastBuildErrorUptimeNs = 0
             }
         }
 
@@ -411,7 +420,7 @@ final class FPEEngineHost: EngineProviding {
             let e = _engine
             _engine = nil
             _buildError = nil
-            _buildErrorTimestampNs = 0
+            _lastBuildErrorUptimeNs = 0
             _buildTask?.cancel()
             _buildTask = nil
             return e
@@ -457,12 +466,12 @@ final class FPEEngineHost: EngineProviding {
         // Honour a still-fresh cached build error.
         let cachedErr: (Error, UInt64)? = lock.withLock {
             guard let e = _buildError else { return nil }
-            return (e, _buildErrorTimestampNs)
+            return (e, _lastBuildErrorUptimeNs)
         }
         if let (err, ts) = cachedErr {
             let elapsedNs = DispatchTime.now().uptimeNanoseconds &- ts
             if elapsedNs < FPEEngineHost.buildErrorBackoffNs { throw err }
-            lock.withLock { _buildError = nil; _buildErrorTimestampNs = 0 }
+            lock.withLock { _buildError = nil; _lastBuildErrorUptimeNs = 0 }
         }
 
         Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: building OfemEngine")
@@ -496,7 +505,7 @@ final class FPEEngineHost: EngineProviding {
         } catch {
             lock.withLock {
                 _buildError = error
-                _buildErrorTimestampNs = DispatchTime.now().uptimeNanoseconds
+                _lastBuildErrorUptimeNs = DispatchTime.now().uptimeNanoseconds
             }
             Self.log.error(
                 "FPEEngineHost[\(self.alias, privacy: .public)]: engine build failed: \(error.localizedDescription, privacy: .public)"
