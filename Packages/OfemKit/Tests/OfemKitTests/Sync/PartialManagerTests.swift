@@ -392,4 +392,40 @@ struct PartialManagerTests {
         // Must not throw / crash.
         PartialManager.reapStalePartialDirs(under: missing)
     }
+
+    // MARK: - 412 resume discard (tests-12: moved from SyncEngineTests)
+
+    @Test("discard+reset after 412: rangeStart returns 0 and hasPartial is false")
+    func test412DiscardResetsRangeStart() throws {
+        // Tests the PartialManager discard path triggered by a 412 response in
+        // SyncEngine — after discard the partial state is fully cleared.
+        let (pm, dir) = makeManager()
+        defer { cleanup(dir) }
+
+        let key = CacheKey(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "Files/data.csv")
+
+        // Seed a 10-byte partial with etag so the manager reports a resume offset.
+        let partialURL = pm.partialURL(for: key)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: partialURL.path, contents: Data(repeating: 0x41, count: 10))
+        try pm.storeEtag("old-etag", for: key)
+
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Files/data.csv", parentPath: "Files", name: "data.csv",
+            isDir: false, contentLength: 100, etag: "old-etag"
+        )
+
+        // Before discard: partial at offset 10.
+        let before = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(before.rangeStart == 10)
+        #expect(before.hasPartial)
+
+        // Discard (412 path) and verify state is fully cleared.
+        pm.discard(for: key)
+        let after = pm.rangeStart(for: key, cachedRecord: record)
+        #expect(after.rangeStart == 0)
+        #expect(after.pinnedEtag == nil)
+        #expect(!after.hasPartial)
+    }
 }

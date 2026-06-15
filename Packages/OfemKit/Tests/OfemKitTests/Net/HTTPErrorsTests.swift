@@ -23,22 +23,30 @@ struct HTTPClientErrorTests {
 
     @Test("413 maps to .payloadTooLarge")
     func maps413() {
-        #expect(HTTPClientError.sentinel(for: 413) == .payloadTooLarge)
+        guard case .payloadTooLarge = HTTPClientError.sentinel(for: 413) else {
+            Issue.record("expected .payloadTooLarge for 413"); return
+        }
     }
 
     @Test("415 maps to .unsupportedMediaType")
     func maps415() {
-        #expect(HTTPClientError.sentinel(for: 415) == .unsupportedMediaType)
+        guard case .unsupportedMediaType = HTTPClientError.sentinel(for: 415) else {
+            Issue.record("expected .unsupportedMediaType for 415"); return
+        }
     }
 
     @Test("416 maps to .rangeNotSatisfiable")
     func maps416() {
-        #expect(HTTPClientError.sentinel(for: 416) == .rangeNotSatisfiable)
+        guard case .rangeNotSatisfiable = HTTPClientError.sentinel(for: 416) else {
+            Issue.record("expected .rangeNotSatisfiable for 416"); return
+        }
     }
 
     @Test("422 maps to .unprocessableEntity")
     func maps422() {
-        #expect(HTTPClientError.sentinel(for: 422) == .unprocessableEntity)
+        guard case .unprocessableEntity = HTTPClientError.sentinel(for: 422) else {
+            Issue.record("expected .unprocessableEntity for 422"); return
+        }
     }
 
     @Test("500 maps to .serverError(500)")

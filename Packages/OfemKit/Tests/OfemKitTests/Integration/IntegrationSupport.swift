@@ -15,14 +15,32 @@ let integrationEnabled = ProcessInfo.processInfo.environment["OFEM_INTEGRATION"]
 /// The warehouse table must be seeded first by `scripts/prep_warehouse.sql`.
 let warehouseConfigured = !(ProcessInfo.processInfo.environment["OFEM_TEST_WAREHOUSE_ID"] ?? "").isEmpty
 
+/// `true` only when all required integration env vars are present and non-empty.
+///
+/// tests-22: gate on ALL required vars so that a partially-configured environment
+/// (OFEM_INTEGRATION=1 but missing workspace IDs) produces a clean skip rather
+/// than a thrown test failure. The thrown-failure path in
+/// `IntegrationConfig.fromEnvironment()` is only reachable when this trait
+/// permits execution, guaranteeing every var is present.
+private let integrationFullyConfigured: Bool = {
+    let env = ProcessInfo.processInfo.environment
+    guard integrationEnabled else { return false }
+    let required = ["OFEM_TEST_WORKSPACE_ID", "OFEM_TEST_LAKEHOUSE_ID",
+                    "OFEM_TOKEN_ONELAKE", "OFEM_TOKEN_FABRIC"]
+    return required.allSatisfy { !(env[$0] ?? "").isEmpty }
+}()
+
 extension Trait where Self == ConditionTrait {
-    /// Skips a suite/test unless `OFEM_INTEGRATION=1`. Integration tests hit a
-    /// live Fabric workspace and need bearer tokens injected through
-    /// ``EnvVarTokenProvider``; they cannot run in the host-less unit pass.
+    /// Skips a suite/test unless `OFEM_INTEGRATION=1` AND all required
+    /// workspace/token env vars are present. Integration tests hit a live Fabric
+    /// workspace; they cannot run in the host-less unit pass.
+    ///
+    /// tests-22: checking all required vars here prevents the "red test instead
+    /// of skip" failure when the env is partially configured.
     static var integration: Self {
         .enabled(
-            if: integrationEnabled,
-            "set OFEM_INTEGRATION=1 with injected tokens + workspace env to run live integration tests"
+            if: integrationFullyConfigured,
+            "set OFEM_INTEGRATION=1 with OFEM_TEST_WORKSPACE_ID, OFEM_TEST_LAKEHOUSE_ID, OFEM_TOKEN_ONELAKE, and OFEM_TOKEN_FABRIC to run live integration tests"
         )
     }
 
@@ -31,7 +49,7 @@ extension Trait where Self == ConditionTrait {
     /// `scripts/prep_warehouse.sql` (CI runs it before the suite).
     static var warehouse: Self {
         .enabled(
-            if: integrationEnabled && warehouseConfigured,
+            if: integrationFullyConfigured && warehouseConfigured,
             "set OFEM_INTEGRATION=1 and OFEM_TEST_WAREHOUSE_ID (after scripts/prep_warehouse.sql) to run warehouse tests"
         )
     }

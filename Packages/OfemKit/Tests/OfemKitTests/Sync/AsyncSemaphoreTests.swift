@@ -13,12 +13,22 @@ struct AsyncSemaphoreTests {
 
     // MARK: - Basic acquire / release
 
+    // tests-20: strengthened to assert that wait() actually decrements the
+    // semaphore (so signal() is required to allow another wait()).
     @Test func singleWaitSignal() async throws {
         let sem = AsyncSemaphore(value: 1)
         try await sem.wait()
-        sem.signal()
-        // No assertion needed beyond "reaches here without deadlock".
-        #expect(sem.waiterCount == 0)
+        // After consuming the only slot, a second wait() must block.
+        // The waiterCount doesn't help here since the slot is consumed but not
+        // in the waiter queue — assert that a Task attempting wait() would queue
+        // as a waiter (i.e., the slot is truly consumed).
+        let blocked = Task<Void, any Error> { try await sem.wait() }
+        while sem.waiterCount < 1 { await Task.yield() }
+        #expect(sem.waiterCount == 1, "slot must be consumed: second waiter blocks")
+        sem.signal()                 // Release to unblock
+        try await blocked.value      // Must complete now
+        sem.signal()                 // Return to initial capacity
+        #expect(sem.waiterCount == 0, "semaphore must be fully released")
     }
 
     @Test func capacityAllowsMultipleConcurrentWaiters() async throws {
@@ -26,10 +36,17 @@ struct AsyncSemaphoreTests {
         try await sem.wait()
         try await sem.wait()
         try await sem.wait()
+        // All 3 slots consumed; a fourth waiter must block.
+        let blocked = Task<Void, any Error> { try await sem.wait() }
+        while sem.waiterCount < 1 { await Task.yield() }
+        #expect(sem.waiterCount == 1, "slot capacity respected: fourth waiter must queue")
+        blocked.cancel()
+        // Wait for the cancellation to drain the waiter.
+        while sem.waiterCount > 0 { await Task.yield() }
+        sem.signal()
+        sem.signal()
+        sem.signal()
         #expect(sem.waiterCount == 0)
-        sem.signal()
-        sem.signal()
-        sem.signal()
     }
 
     // MARK: - Blocking and unblocking (deterministic via waiterCount)
