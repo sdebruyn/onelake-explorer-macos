@@ -192,7 +192,7 @@ final class OfemFPEClient {
             Self.log.info(
                 "FPE at \(domainIdentifier, privacy: .public) does not implement getProtocolVersion (pre-v2)"
             )
-            await notifyVersionMismatch(fpeVersion: 1, domainIdentifier: domainIdentifier)
+            notifyVersionMismatch(fpeVersion: 1, domainIdentifier: domainIdentifier)
             return 1
         }
 
@@ -206,7 +206,7 @@ final class OfemFPEClient {
             Self.log.warning(
                 "Protocol version mismatch for \(domainIdentifier, privacy: .public): host=\(ofemControlProtocolVersion) fpe=\(fpeVersion)"
             )
-            await notifyVersionMismatch(fpeVersion: fpeVersion, domainIdentifier: domainIdentifier)
+            notifyVersionMismatch(fpeVersion: fpeVersion, domainIdentifier: domainIdentifier)
         } else {
             Self.log.info(
                 "Protocol version OK for \(domainIdentifier, privacy: .public): v\(fpeVersion)"
