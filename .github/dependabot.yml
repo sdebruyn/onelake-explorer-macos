@@ -3,6 +3,9 @@ updates:
   # Swift Package Manager dependencies — MSAL, GRDB, TOMLKit.
   # Keeps security patches (especially MSAL, the auth library) arriving via PR
   # rather than requiring manual bumps.
+  # Group all SPM updates into a single PR: Package.swift and Package.resolved
+  # must move together (exact: pins), so separate PRs can land one file without
+  # the other and break the build.
   - package-ecosystem: swift
     directory: "/Packages/OfemKit"
     schedule:
@@ -10,6 +13,10 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      swift-packages:
+        patterns:
+          - "*"
 
   # GitHub Actions — keeps the SHA-pinned `uses:` entries current (and
   # updates the trailing `# vX.Y.Z` version comment) so pinning to a SHA
@@ -21,3 +28,7 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

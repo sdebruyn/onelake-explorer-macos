@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -23,6 +22,19 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Assert Xcode 16.3 is present
+        # Fail fast if the runner image no longer ships Xcode 16.3 rather
+        # than silently falling back to a different Xcode version.
+        run: |
+          set -euo pipefail
+          if [ ! -d /Applications/Xcode_16.3.app ]; then
+            echo "ERROR: Xcode_16.3.app not found at /Applications/Xcode_16.3.app" >&2
+            echo "Available Xcode installations:" >&2
+            ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
+            exit 1
+          fi
+          xcodebuild -version
 
       - name: Cache Homebrew downloads
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -50,10 +62,11 @@ jobs:
         run: test -f OneLake.xcodeproj/project.pbxproj
 
       - name: Smoke tests (unsigned, host-less)
-        # OneLakeTests bundle: File Provider identifier grammar (pure logic).
-        # Runs before the slower full app build so a Swift compile regression
-        # surfaces in seconds. `make test` writes DerivedData/HostTests.xcresult
-        # with coverage, which the next step reports to Codecov.
+        # Runs the host-app logic bundle (OneLakeHostTests) and the FPE logic
+        # bundle (OneLakeFileProviderTests). Runs before the slower full app
+        # build so a Swift compile regression surfaces in seconds.
+        # `make test` writes DerivedData/HostTests.xcresult and
+        # DerivedData/FPETests.xcresult with coverage for Codecov upload below.
         run: make test
 
       - name: Export host-app coverage
@@ -73,7 +86,6 @@ jobs:
       - name: Upload host coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
           files: host-coverage.xml
           flags: host
           disable_search: true
@@ -93,7 +105,6 @@ jobs:
       - name: Upload FPE coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
           files: fpe-coverage.xml
           flags: fpe
           disable_search: true
@@ -113,6 +124,30 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Assert Xcode 16.3 is present
+        run: |
+          set -euo pipefail
+          if [ ! -d /Applications/Xcode_16.3.app ]; then
+            echo "ERROR: Xcode_16.3.app not found at /Applications/Xcode_16.3.app" >&2
+            ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
+            exit 1
+          fi
+          xcodebuild -version
+
+      - name: Validate Package.resolved is in sync
+        # Ensures the committed lockfile matches Package.swift before running
+        # tests, so CI surfaces drift early rather than at release time.
+        working-directory: Packages/OfemKit
+        run: |
+          set -euo pipefail
+          swift package resolve --only-use-versions-from-resolved-file 2>/dev/null || \
+            swift package resolve
+          if ! git diff --quiet -- Package.resolved; then
+            echo "ERROR: Package.resolved drifted from Package.swift — commit the updated lockfile." >&2
+            git diff -- Package.resolved >&2
+            exit 1
+          fi
 
       - name: Run OfemKit tests
         # The engine package owns all sync/auth/cache logic. No xcodegen
@@ -143,7 +178,6 @@ jobs:
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
           files: Packages/OfemKit/coverage.lcov
           flags: ofemkit
           disable_search: true

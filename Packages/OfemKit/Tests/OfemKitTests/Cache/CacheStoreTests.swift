@@ -670,6 +670,61 @@ struct CacheStoreTests {
         #expect(sortedDeleted.contains("ws-1/lh-1/Files/dir/a.csv"))
         #expect(sortedDeleted.contains("ws-1/lh-1/Files/dir/b.csv"))
     }
+
+    // MARK: - Batch operations (tests-12: moved from SyncEngineTests)
+
+    @Test("batchUpsert inserts multiple records in a single call")
+    func batchUpsertInsertsAll() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let records = (0..<10).map { i in
+            MetadataRecord(
+                accountAlias: "a", workspaceID: "ws", itemID: "it",
+                path: "f\(i).txt", parentPath: "", name: "f\(i).txt",
+                isDir: false, contentLength: Int64(i)
+            )
+        }
+        try await store.batchUpsert(records)
+
+        let root = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "", parentPath: "", name: "root", isDir: true
+        )
+        try await store.upsert(root)
+
+        let key = CacheKey(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "")
+        let children = try await store.children(of: key)
+        #expect(children.count == 10)
+    }
+
+    @Test("batchDelete removes multiple keys in one call")
+    func batchDeleteRemovesAll() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let root = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "", parentPath: "", name: "root", isDir: true
+        )
+        try await store.upsert(root)
+        for i in 0..<5 {
+            let r = MetadataRecord(
+                accountAlias: "a", workspaceID: "ws", itemID: "it",
+                path: "f\(i).txt", parentPath: "", name: "f\(i).txt", isDir: false
+            )
+            try await store.upsert(r)
+        }
+
+        let keys = (0..<5).map { i in
+            CacheKey(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "f\(i).txt")
+        }
+        try await store.batchDelete(keys)
+
+        let parentKey = CacheKey(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "")
+        let remaining = try await store.children(of: parentKey)
+        #expect(remaining.isEmpty)
+    }
 }
 
 // MARK: - Test helper: SHA-256 hex string

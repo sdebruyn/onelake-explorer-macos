@@ -25,10 +25,17 @@ private func requestBody(_ request: URLRequest) -> Data? {
 /// A `URLProtocol` subclass that returns a pre-configured stub response
 /// without hitting the network.
 ///
-/// The handler is stored in a lock-protected dictionary keyed by the
-/// URLSession's ObjectIdentifier, and each test creates its own session.
-/// The HTTP suite is serialized (via `@Suite(.serialized)`) so only one
-/// test's handler is active at a time.
+/// **Global-handler scope (tests-05):** `currentHandler` is a process-global
+/// mutable static. A second suite that also registered `StubURLProtocol` on
+/// its own `URLSession` would clobber this handler. Currently `StubURLProtocol`
+/// is only used by `AppInsightsSinkHTTPTests`; no other suite in this package
+/// registers it. `AppInsightsSinkHTTPTests` is annotated `@Suite(.serialized)`
+/// to prevent intra-suite handler races. If a future suite also needs this
+/// stub, migrate to the per-instance queue pattern used by
+/// `MockStreamURLProtocol` in `OneLakeStreamingTests.swift`.
+///
+/// Call `reset()` at the start of each test to clear stale handler state left
+/// by a previous test.
 final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var currentHandler: ((URLRequest) -> (Data, HTTPURLResponse))?
     static let lock = NSLock()
@@ -49,6 +56,12 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+
+    /// Clears the current handler, resetting state between tests so that stale
+    /// state from a prior test cannot leak into the next one.
+    static func reset() {
+        lock.withLock { currentHandler = nil }
+    }
 
     /// Creates a `URLSession` backed by this protocol and sets the response stub.
     static func makeSession(statusCode: Int, body: String = "") -> URLSession {
@@ -223,7 +236,11 @@ struct AppInsightsEnvelopeTests {
         )
 
         let data = try JSONEncoder().encode(envelope)
-        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        // tests-06: use as? + #require so a shape regression fails THIS test, not the whole run.
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            "envelope JSON must be a dictionary"
+        )
 
         #expect(json["name"] as? String == "Microsoft.ApplicationInsights.Event")
         #expect(json["iKey"] as? String == "test-ikey")
@@ -240,9 +257,13 @@ struct AppInsightsEnvelopeTests {
         )
 
         let data = try JSONEncoder().encode(envelope)
-        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        let dataDict = json["data"] as! [String: Any]
-        let baseData = dataDict["baseData"] as! [String: Any]
+        // tests-06: guarded casts so shape regressions fail this test only.
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            "envelope JSON must be a dictionary"
+        )
+        let dataDict = try #require(json["data"] as? [String: Any], "'data' key must be a dictionary")
+        let baseData = try #require(dataDict["baseData"] as? [String: Any], "'baseData' key must be a dictionary")
 
         #expect(dataDict["baseType"] as? String == "EventData")
         #expect(baseData["ver"] as? Int == 2)
@@ -303,9 +324,13 @@ struct AppInsightsEnvelopeTests {
             event: event, iKey: "k", role: "r", installID: "", sdkTag: "s"
         )
         let data = try JSONEncoder().encode(envelope)
-        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        let dataDict = json["data"] as! [String: Any]
-        let baseData = dataDict["baseData"] as! [String: Any]
+        // tests-06: guarded casts so shape regressions fail this test only.
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            "envelope JSON must be a dictionary"
+        )
+        let dataDict = try #require(json["data"] as? [String: Any], "'data' key must be a dictionary")
+        let baseData = try #require(dataDict["baseData"] as? [String: Any], "'baseData' key must be a dictionary")
         #expect(baseData["measurements"] == nil, "measurements must be nil for bare event")
     }
 }
@@ -316,6 +341,10 @@ struct AppInsightsEnvelopeTests {
 
 @Suite("AppInsightsSink — HTTP status handling", .serialized)
 struct AppInsightsSinkHTTPTests {
+
+    /// Reset any stale handler before each test so prior-test state cannot
+    /// leak forward (tests-05: per-test handler reset).
+    init() { StubURLProtocol.reset() }
 
     @Test("200 OK completes without throwing")
     func status200() async throws {
@@ -505,12 +534,22 @@ struct AppInsightsSinkHTTPTests {
 
     @Test("POST request carries correct headers and JSON body")
     func postRequestShape() async throws {
-        var capturedRequest: URLRequest?
-        var capturedBody: Data?
+        // tests-05: use NSLock-protected boxes to avoid data races on vars
+        // captured in the handler closure, which runs on URLSession's delegate
+        // queue, and read after the await on the test's task.
+        final class CaptureBox: @unchecked Sendable {
+            let lock = NSLock()
+            var request: URLRequest?
+            var body: Data?
+        }
+        let box = CaptureBox()
         StubURLProtocol.lock.withLock {
             StubURLProtocol.currentHandler = { request in
-                capturedRequest = request
-                capturedBody = requestBody(request)
+                let body = requestBody(request)
+                box.lock.withLock {
+                    box.request = request
+                    box.body = body
+                }
                 let resp = HTTPURLResponse(
                     url: request.url!,
                     statusCode: 200,
@@ -526,6 +565,7 @@ struct AppInsightsSinkHTTPTests {
         let sink = try makeSink(session: session)
         try await sink.send(makeEvents(2))
 
+        let (capturedRequest, capturedBody) = box.lock.withLock { (box.request, box.body) }
         let req = try #require(capturedRequest, "No request was captured")
         #expect(req.httpMethod == "POST")
         #expect(req.value(forHTTPHeaderField: "Content-Type") == "application/json; charset=utf-8")
@@ -533,8 +573,12 @@ struct AppInsightsSinkHTTPTests {
         #expect(req.url?.absoluteString == "https://eastus.in.applicationinsights.azure.com/v2/track")
 
         // Body must be a JSON array of 2 envelopes.
+        // tests-06: guarded casts so shape regressions fail this test only.
         let body = try #require(capturedBody, "Request body must not be nil")
-        let json = try JSONSerialization.jsonObject(with: body) as! [[String: Any]]
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: body) as? [[String: Any]],
+            "Request body must be a JSON array of objects"
+        )
         #expect(json.count == 2)
         #expect(json[0]["iKey"] as? String == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         #expect(json[0]["name"] as? String == "Microsoft.ApplicationInsights.Event")
@@ -542,10 +586,16 @@ struct AppInsightsSinkHTTPTests {
 
     @Test("iKey in envelope matches the instrumentation key from the connection string")
     func iKeyInEnvelope() async throws {
-        var capturedBody: Data?
+        // tests-05: lock-protected box avoids the handler→test data race.
+        final class BodyBox: @unchecked Sendable {
+            let lock = NSLock()
+            var data: Data?
+        }
+        let box = BodyBox()
         StubURLProtocol.lock.withLock {
             StubURLProtocol.currentHandler = { request in
-                capturedBody = requestBody(request)
+                let body = requestBody(request)
+                box.lock.withLock { box.data = body }
                 let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
                 return (Data(), resp)
             }
@@ -563,8 +613,13 @@ struct AppInsightsSinkHTTPTests {
         )
         try await sink.send(makeEvents(1))
 
+        let capturedBody = box.lock.withLock { box.data }
+        // tests-06: guarded cast so shape regressions fail this test only.
         let body = try #require(capturedBody)
-        let json = try JSONSerialization.jsonObject(with: body) as! [[String: Any]]
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: body) as? [[String: Any]],
+            "Request body must be a JSON array of objects"
+        )
         #expect(json[0]["iKey"] as? String == "12345678-1234-1234-1234-123456789abc")
     }
 

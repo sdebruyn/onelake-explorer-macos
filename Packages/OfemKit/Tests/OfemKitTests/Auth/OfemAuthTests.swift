@@ -40,7 +40,8 @@ struct OfemAuthTests {
 
     @Test("listAccounts returns empty list when no accounts exist")
     func listAccountsEmpty() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
         let accounts = await auth.listAccounts()
         #expect(accounts.isEmpty)
@@ -48,7 +49,8 @@ struct OfemAuthTests {
 
     @Test("listAccounts returns accounts sorted by alias")
     func listAccountsSorted() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
         try await auth.addAccount(makeAccount(alias: "zebra"))
@@ -63,7 +65,8 @@ struct OfemAuthTests {
 
     @Test("addAccount persists the account to the config store")
     func addAccountPersists() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
         let account = makeAccount(alias: "work")
 
@@ -77,7 +80,8 @@ struct OfemAuthTests {
 
     @Test("addAccount rejects duplicate alias")
     func addAccountDuplicateAlias() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
         try await auth.addAccount(makeAccount(alias: "work"))
@@ -88,7 +92,8 @@ struct OfemAuthTests {
 
     @Test("addAccount rejects invalid alias")
     func addAccountInvalidAlias() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
         let bad = Account(
             alias: "-bad-alias",
@@ -106,7 +111,8 @@ struct OfemAuthTests {
 
     @Test("removeAccount removes the account from the config store")
     func removeAccountRemoves() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
         try await auth.addAccount(makeAccount(alias: "work"))
@@ -118,7 +124,8 @@ struct OfemAuthTests {
 
     @Test("removeAccount throws on unknown alias")
     func removeAccountUnknown() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
         await #expect(throws: OfemAuthError.self) {
             try await auth.removeAccount(alias: "nonexistent")
@@ -127,7 +134,8 @@ struct OfemAuthTests {
 
     @Test("removeAccount clears the default if the removed account was default")
     func removeAccountClearsDefault() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
         try await auth.addAccount(makeAccount(alias: "work"))
@@ -143,6 +151,7 @@ struct OfemAuthTests {
     @Test("removeAccount deletes FileTokenStore blob for the alias")
     func removeAccountDeletesTokenBlob() async throws {
         let (store, root) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
         let paths = OfemPaths(root: root)
         let tokenStore = try FileTokenStore(tokensDir: paths.tokensDir)
         let auth = OfemAuth(
@@ -176,7 +185,8 @@ struct OfemAuthTests {
 
     @Test("defaultAccount returns nil when no default is set")
     func defaultAccountNilWhenNotSet() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
         let def = await auth.defaultAccount()
         #expect(def == nil)
@@ -184,7 +194,8 @@ struct OfemAuthTests {
 
     @Test("setDefaultAccount persists and reads back correctly")
     func setDefaultAccountRoundTrips() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
         try await auth.addAccount(makeAccount(alias: "work"))
@@ -195,7 +206,8 @@ struct OfemAuthTests {
 
     @Test("setDefaultAccount throws on unknown alias")
     func setDefaultAccountUnknown() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
         await #expect(throws: OfemAuthError.self) {
             try await auth.setDefaultAccount(alias: "nonexistent")
@@ -204,7 +216,8 @@ struct OfemAuthTests {
 
     @Test("Removing one account does not remove others")
     func removeAccountIsolated() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
         try await auth.addAccount(makeAccount(alias: "work"))
@@ -218,7 +231,8 @@ struct OfemAuthTests {
 
     @Test("removeAccount calls MSAL remove to purge the Keychain refresh token")
     func removeAccountPurgesMsalKeychain() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
         factory.stubbedClient = mockClient
@@ -278,7 +292,8 @@ struct OfemAuthTokenTests {
 
     @Test("tokenForScope returns cached access token on success")
     func tokenCacheHit() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
         mockClient.stubbedAccessToken = "access-token-123"
@@ -296,7 +311,8 @@ struct OfemAuthTokenTests {
 
     @Test("tokenForScope throws unknownAlias when account does not exist")
     func tokenUnknownAlias() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store, msalClientFactory: MockMsalAuthClientFactory())
 
         await #expect(throws: OfemAuthError.self) {
@@ -308,7 +324,8 @@ struct OfemAuthTokenTests {
 
     @Test("tokenForScope propagates interactionRequired when MSAL returns the typed error code")
     func tokenInteractionRequiredTyped() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
         // Inject the typed MSAL error.
@@ -329,7 +346,8 @@ struct OfemAuthTokenTests {
 
     @Test("tokenForScope does not treat non-MSAL errors as interaction-required")
     func tokenNonMsalErrorNotInteractionRequired() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
         let nonMsalError = NSError(domain: "SomeOtherDomain", code: 42, userInfo: nil)
@@ -356,7 +374,8 @@ struct OfemAuthTokenTests {
 
     @Test("clientFor reuses the same client instance for the same (clientID, tenantID)")
     func clientReuseForSamePair() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
         mockClient.stubbedAccessToken = "tok"
@@ -378,7 +397,8 @@ struct OfemAuthTokenTests {
 
     @Test("clientFor builds separate clients for different tenantIDs")
     func clientSeparateForDifferentTenants() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
         mockClient.stubbedAccessToken = "tok"
@@ -400,7 +420,8 @@ struct OfemAuthTokenTests {
 
     @Test("tokenForScope maps MsalAuthClientError.accountNotFound to interactionRequired")
     func tokenAccountNotFoundMapsToInteractionRequired() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
         // accountNotFound fires when the Keychain cache is empty (e.g. clean
@@ -421,7 +442,8 @@ struct OfemAuthTokenTests {
 
     @Test("tokenForScope passes the account's homeAccountID to acquireTokenSilent")
     func tokenPassesHomeAccountID() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
         mockClient.stubbedAccessToken = "tok"
@@ -440,7 +462,8 @@ struct OfemAuthTokenTests {
 
     @Test("isInteractionRequired returns true for MSALError.interactionRequired")
     func isInteractionRequiredTypedCode() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
         let msalError = NSError(
@@ -454,7 +477,8 @@ struct OfemAuthTokenTests {
 
     @Test("isInteractionRequired returns false for a non-MSAL error domain")
     func isInteractionRequiredNonMsal() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
         let otherError = NSError(domain: "NSURLErrorDomain", code: -1009, userInfo: nil)
@@ -464,7 +488,8 @@ struct OfemAuthTokenTests {
 
     @Test("isInteractionRequired returns false for unrelated MSAL error codes")
     func isInteractionRequiredOtherMsalCode() async throws {
-        let (store, _) = try makeStore()
+        let (store, _t) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
         let otherMsalError = NSError(
@@ -550,32 +575,36 @@ final class MockMsalAuthClient: MsalAuthClientProtocol, @unchecked Sendable {
 /// only the typed MSAL error code triggers the interaction-required path.
 @Suite("OfemAuth isInteractionRequired")
 struct OfemAuthIsInteractionRequiredTests {
-    private func makeAuth() throws -> OfemAuth {
+    // tests-07: helper returns the temp URL so callers can clean up via defer.
+    private func makeAuth() throws -> (OfemAuth, URL) {
         let tmp = FileManager.default.temporaryDirectory
             .appending(path: "IsIRTests-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         let paths = OfemPaths(root: tmp)
         let store = try OfemConfigStore(paths: paths)
-        return OfemAuth(configStore: store)
+        return (OfemAuth(configStore: store), tmp)
     }
 
     @Test("MSALError.interactionRequired typed code → true")
     func typedInteractionRequired() async throws {
-        let auth = try makeAuth()
+        let (auth, _t) = try makeAuth()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let err = NSError(domain: MSALErrorDomain, code: MSALError.interactionRequired.rawValue)
         #expect(await auth.isInteractionRequired(err))
     }
 
     @Test("Non-MSAL domain → false")
     func nonMsalDomain() async throws {
-        let auth = try makeAuth()
+        let (auth, _t) = try makeAuth()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let err = NSError(domain: "NSURLErrorDomain", code: -1009)
         #expect(await auth.isInteractionRequired(err) == false)
     }
 
     @Test("MSALError.serverDeclinedScopes (different code) → false")
     func serverDeclinedScopes() async throws {
-        let auth = try makeAuth()
+        let (auth, _t) = try makeAuth()
+        defer { try? FileManager.default.removeItem(at: _t) }
         let err = NSError(domain: MSALErrorDomain, code: MSALError.serverDeclinedScopes.rawValue)
         #expect(await auth.isInteractionRequired(err) == false)
     }

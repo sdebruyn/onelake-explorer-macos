@@ -2,20 +2,54 @@ import Foundation
 import Testing
 @testable import OfemKit
 
+// MARK: - TempTokenStore helper (tests-07)
+
+/// Wraps a `FileTokenStore` backed by a unique temp directory and removes the
+/// directory on `deinit`. Callers assign to a named `let` so the cleanup fires
+/// when the variable goes out of scope at the end of the test function.
+///
+/// Usage:
+/// ```swift
+/// let store = try makeStore()   // holds TempTokenStore until end of test
+/// try await store.write(...)    // forwarded to the inner FileTokenStore
+/// ```
+@dynamicMemberLookup
+final class TempTokenStore: Sendable {
+    let inner: FileTokenStore
+    private let dir: URL
+
+    init() throws {
+        let d = FileManager.default.temporaryDirectory
+            .appending(path: "ofem-token-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        inner = try FileTokenStore(tokensDir: d)
+        dir = d
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    subscript<T>(dynamicMember keyPath: KeyPath<FileTokenStore, T>) -> T {
+        inner[keyPath: keyPath]
+    }
+
+    func read(alias: String) throws -> Data { try inner.read(alias: alias) }
+    func write(alias: String, data: Data) async throws { try await inner.write(alias: alias, data: data) }
+    func delete(alias: String) async throws { try await inner.delete(alias: alias) }
+    func atomicUpdate(alias: String, transform: (Data) throws -> Data?) async throws {
+        try await inner.atomicUpdate(alias: alias, transform: transform)
+    }
+}
+
 // MARK: - FileTokenStoreTests
 
 @Suite("FileTokenStore")
 struct FileTokenStoreTests {
     // MARK: - Helpers
 
-    private func makeStore() throws -> FileTokenStore {
-        let dir = FileManager.default.temporaryDirectory
-            .appending(
-                path: "ofem-token-test-\(UUID().uuidString)",
-                directoryHint: .isDirectory
-            )
-        return try FileTokenStore(tokensDir: dir)
-    }
+    /// Returns a `TempTokenStore` backed by a fresh unique temp directory.
+    /// The directory is deleted when the returned value goes out of scope.
+    private func makeStore() throws -> TempTokenStore { try TempTokenStore() }
 
     // MARK: - Basic read / write / delete
 

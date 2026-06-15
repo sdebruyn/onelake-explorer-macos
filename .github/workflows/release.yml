@@ -42,8 +42,10 @@ on:
       - "v[0-9][0-9][0-9][0-9].[0-9]*.[0-9]+"
   workflow_dispatch:
 
+# Default: read-only. The publish job elevates to contents:write only when
+# it actually needs to create a GitHub Release (not on dry-run paths).
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -58,6 +60,13 @@ jobs:
     name: Build, sign, notarize and publish app
     runs-on: macos-15
     timeout-minutes: 90
+    # contents:write is granted to this job (not the workflow) so only this
+    # job can create releases — not any other potential future jobs.
+    # On a dry run (workflow_dispatch) no release is created, but the job
+    # permission cannot be made conditional, so it is scoped to the job level
+    # (narrower than the old workflow-level grant).
+    permissions:
+      contents: write
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
     steps:
@@ -65,6 +74,19 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
+
+      - name: Assert Xcode 16.3 is present
+        # Fail fast if the runner image no longer ships Xcode 16.3 rather
+        # than silently falling back to a different Xcode version.
+        run: |
+          set -euo pipefail
+          if [ ! -d /Applications/Xcode_16.3.app ]; then
+            echo "ERROR: Xcode_16.3.app not found at /Applications/Xcode_16.3.app" >&2
+            echo "Available Xcode installations:" >&2
+            ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
+            exit 1
+          fi
+          xcodebuild -version
 
       - name: Cache Homebrew downloads
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -86,6 +108,7 @@ jobs:
           APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
         run: |
+          set -euo pipefail
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
 
@@ -114,6 +137,7 @@ jobs:
         env:
           APPLE_API_KEY_JSON: ${{ secrets.APPLE_API_KEY_JSON }}
         run: |
+          set -euo pipefail
           mkdir -p "$RUNNER_TEMP/notary"
           echo "$APPLE_API_KEY_JSON" | jq -r '.key' > "$RUNNER_TEMP/notary/key.p8"
           chmod 600 "$RUNNER_TEMP/notary/key.p8"
@@ -125,22 +149,30 @@ jobs:
         # Homebrew tap even if the glob were widened in the future.
         if: github.event_name != 'workflow_dispatch'
         run: |
+          set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           if echo "$tag" | grep -qE -- '-'; then
             echo "ERROR: tag '$tag' looks like a pre-release. Aborting to protect the stable tap."
             exit 1
           fi
 
-      - name: Extract version from tag
+      - name: Extract and validate version from tag
         id: version
         run: |
+          set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             # No tag on a manual dry run; synthesise a throwaway CalVer so
             # the bundle version is well-formed. Nothing is published.
             echo "version=0.0.0" >> "$GITHUB_OUTPUT"
           else
             # Strip leading 'v' from the tag to get the CalVer string.
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            raw="${GITHUB_REF_NAME#v}"
+            # Validate strict CalVer: YYYY.MM.PATCH (zero-padded month, numeric patch).
+            if ! echo "$raw" | grep -qE '^[0-9]{4}\.(0[1-9]|1[0-2])\.[0-9]+$'; then
+              echo "ERROR: tag '${GITHUB_REF_NAME}' does not match CalVer YYYY.MM.PATCH (e.g. 2026.06.1)" >&2
+              exit 1
+            fi
+            echo "version=$raw" >> "$GITHUB_OUTPUT"
           fi
 
       # Bootstrap the xcconfig with the real team ID from the secret so
@@ -153,21 +185,43 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          set -euo pipefail
           cp Local.xcconfig.sample Local.xcconfig
           sed -i '' "s/DEVELOPMENT_TEAM =.*/DEVELOPMENT_TEAM = $APPLE_TEAM_ID/" Local.xcconfig
 
+      # NOTE: Write Local.xcconfig (above) MUST run before this step.
+      # xcodegen validates configFiles at generation time; a missing or
+      # placeholder-only Local.xcconfig causes "Invalid config file" and aborts.
       - name: Generate Xcode project
         run: make gen
+
+      - name: Validate Package.resolved is in sync
+        # Ensures the committed lockfile matches Package.swift so that
+        # -disableAutomaticPackageResolution below uses the exact pinned deps.
+        working-directory: Packages/OfemKit
+        run: |
+          set -euo pipefail
+          swift package resolve --only-use-versions-from-resolved-file 2>/dev/null || \
+            swift package resolve
+          if ! git diff --quiet -- Package.resolved; then
+            echo "ERROR: Package.resolved drifted from Package.swift — commit the updated lockfile." >&2
+            git diff -- Package.resolved >&2
+            exit 1
+          fi
 
       # Run tests before archiving so we never sign + notarize a broken build.
       # swift test covers the full OfemKit engine suite; make test covers the
       # host-app logic bundle. Both are fast (seconds) relative to the archive.
       - name: Run OfemKit tests
         working-directory: Packages/OfemKit
-        run: swift test
+        run: |
+          set -euo pipefail
+          swift test
 
       - name: Run host app tests
-        run: make test
+        run: |
+          set -euo pipefail
+          make test
 
       # Stage the Developer ID provisioning profiles for the host app
       # and the File Provider Extension so xcodebuild can match them
@@ -179,6 +233,7 @@ jobs:
           APPLE_PROVISION_PROFILE_APP: ${{ secrets.APPLE_PROVISION_PROFILE_APP }}
           APPLE_PROVISION_PROFILE_FP: ${{ secrets.APPLE_PROVISION_PROFILE_FP }}
         run: |
+          set -euo pipefail
           PROFILES_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PROFILES_DIR"
 
@@ -202,6 +257,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           # Signing settings (Manual, Developer ID cert, per-target
           # provisioning profile) live in project.yml on each
           # target's Release config. xcodebuild's command-line
@@ -228,6 +284,7 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          set -euo pipefail
           # ExportOptions: manual signing + per-bundle-id profile mapping.
           # The signingCertificate pin keeps Cloud Signing from being
           # tried; the provisioningProfiles dict tells xcodebuild which
@@ -249,11 +306,33 @@ jobs:
             -exportPath build/Export \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
 
-      - name: Verify code signature
-        # Catch malformed signatures before submitting to Apple — a bad
-        # signature only surfaces as a notarization rejection otherwise.
+      - name: Verify code signature and hardened runtime
+        # Catch malformed signatures and missing entitlements before submitting
+        # to Apple — a bad signature only surfaces as a notarization rejection.
+        # --deep is deprecated for verification; verify the app and the embedded
+        # .appex explicitly instead.
         run: |
-          codesign --verify --deep --strict --verbose=2 "build/Export/OneLake.app"
+          set -euo pipefail
+          APP="build/Export/OneLake.app"
+          APPEX="$APP/Contents/PlugIns/OneLakeFileProvider.appex"
+
+          codesign --verify --strict --verbose=4 "$APP"
+          codesign --verify --strict --verbose=4 "$APPEX"
+
+          # Assert hardened runtime is enabled on both binaries.
+          for binary in "$APP/Contents/MacOS/OneLake" "$APPEX/Contents/MacOS/OneLakeFileProvider"; do
+            flags=$(codesign -dvvv "$binary" 2>&1 | grep 'flags=' || true)
+            if ! echo "$flags" | grep -q 'runtime'; then
+              echo "ERROR: hardened runtime not set on $binary (flags: $flags)" >&2
+              exit 1
+            fi
+          done
+
+          # Dump entitlements for diagnostics (not a gate — just visibility).
+          echo "--- OneLake.app entitlements ---"
+          codesign -d --entitlements - "$APP" 2>/dev/null || true
+          echo "--- OneLakeFileProvider.appex entitlements ---"
+          codesign -d --entitlements - "$APPEX" 2>/dev/null || true
 
       - name: Notarize app bundle
         # Notarize and staple the .app BEFORE building the DMG so the bundle
@@ -267,6 +346,7 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           # Zip the .app for submission (notarytool requires a zip or dmg).
           ditto -c -k --sequesterRsrc --keepParent \
             "build/Export/OneLake.app" \
@@ -292,6 +372,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           mkdir -p dist-app
           create-dmg \
             --volname "OneLake $VERSION" \
@@ -311,6 +392,7 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           xcrun notarytool submit \
             "dist-app/OneLake-$VERSION.dmg" \
             --key "$RUNNER_TEMP/notary/key.p8" \
@@ -330,6 +412,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           # The app is signed with Developer ID and notarized — assess it via
           # Gatekeeper's primary-signature context.
           spctl --assess --type open --context context:primary-signature --verbose "build/Export/OneLake.app"
@@ -344,8 +427,20 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           sha=$(shasum -a 256 "dist-app/OneLake-$VERSION.dmg" | awk '{print $1}')
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      # Upload the DMG as a workflow artifact so it is preserved even if a
+      # later step (notarize, cask push) fails — avoiding a full re-sign cycle.
+      - name: Upload DMG as workflow artifact
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: OneLake-${{ steps.version.outputs.version }}-dmg
+          path: dist-app/OneLake-${{ steps.version.outputs.version }}.dmg
+          retention-days: 7
 
       # Upload the DMG to the GitHub Release attached to the tag. Skipped
       # on a dry run, which has no tag/release to attach to. Release
@@ -369,6 +464,9 @@ jobs:
           DMG_SHA256: ${{ steps.dmg_sha.outputs.sha256 }}
           HOMEBREW_TAP_GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GH_TOKEN }}
         run: |
+          set -euo pipefail
+          # VERSION was validated to be strict CalVer (YYYY.MM.PATCH) above;
+          # no sed metacharacters are possible in a string matching that regex.
           # Render the cask from the template by substituting placeholders.
           # Escape dots in the sed patterns so they match literals, not wildcards.
           sed \

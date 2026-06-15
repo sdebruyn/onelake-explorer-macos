@@ -13,12 +13,33 @@ struct AsyncSemaphoreTests {
 
     // MARK: - Basic acquire / release
 
+    // tests-20: strengthened to assert that wait() actually decrements the
+    // semaphore (so signal() is required to allow another wait()).
     @Test func singleWaitSignal() async throws {
         let sem = AsyncSemaphore(value: 1)
         try await sem.wait()
-        sem.signal()
-        // No assertion needed beyond "reaches here without deadlock".
-        #expect(sem.waiterCount == 0)
+        // After consuming the only slot, a second wait() must block.
+        // The waiterCount doesn't help here since the slot is consumed but not
+        // in the waiter queue — assert that a Task attempting wait() would queue
+        // as a waiter (i.e., the slot is truly consumed).
+        let blocked = Task<Void, any Error> { try await sem.wait() }
+        // Bounded busy-wait: fail with a clear message instead of hanging the
+        // runner indefinitely if a regression prevents the task from queuing.
+        var itr1 = 0
+        while sem.waiterCount < 1 {
+            await Task.yield()
+            itr1 += 1
+            if itr1 > 10_000 {
+                blocked.cancel()
+                Issue.record("Timed out waiting for task to enter waiter queue in singleWaitSignal")
+                return
+            }
+        }
+        #expect(sem.waiterCount == 1, "slot must be consumed: second waiter blocks")
+        sem.signal()                 // Release to unblock
+        try await blocked.value      // Must complete now
+        sem.signal()                 // Return to initial capacity
+        #expect(sem.waiterCount == 0, "semaphore must be fully released")
     }
 
     @Test func capacityAllowsMultipleConcurrentWaiters() async throws {
@@ -26,10 +47,36 @@ struct AsyncSemaphoreTests {
         try await sem.wait()
         try await sem.wait()
         try await sem.wait()
+        // All 3 slots consumed; a fourth waiter must block.
+        let blocked = Task<Void, any Error> { try await sem.wait() }
+        // Bounded busy-wait: fail with a clear message instead of hanging the
+        // runner indefinitely if a regression prevents the task from queuing.
+        var itr2 = 0
+        while sem.waiterCount < 1 {
+            await Task.yield()
+            itr2 += 1
+            if itr2 > 10_000 {
+                blocked.cancel()
+                Issue.record("Timed out waiting for task to enter waiter queue in capacityAllowsMultipleConcurrentWaiters")
+                return
+            }
+        }
+        #expect(sem.waiterCount == 1, "slot capacity respected: fourth waiter must queue")
+        blocked.cancel()
+        // Wait for the cancellation to drain the waiter.
+        var itr3 = 0
+        while sem.waiterCount > 0 {
+            await Task.yield()
+            itr3 += 1
+            if itr3 > 10_000 {
+                Issue.record("Timed out waiting for waiter queue to drain after cancellation in capacityAllowsMultipleConcurrentWaiters")
+                return
+            }
+        }
+        sem.signal()
+        sem.signal()
+        sem.signal()
         #expect(sem.waiterCount == 0)
-        sem.signal()
-        sem.signal()
-        sem.signal()
     }
 
     // MARK: - Blocking and unblocking (deterministic via waiterCount)
