@@ -8,12 +8,9 @@ private let streamBaseURL = URL(string: "https://onelake.dfs.fabric.microsoft.co
 private let wsGUID = "ws-guid-stream"
 private let itemGUID = "item-guid-stream"
 
+// tests-15: makeGate(host:) lives in NetTestHelpers.swift.
 private func makeStreamingGate() -> HTTPGateRegistry {
-    HTTPGateRegistry(
-        defaults: HTTPGateDefaults(maxConcurrent: 8, tokensPerSecond: 100, burst: 100),
-        seeded: [HTTPGate(host: "onelake.dfs.fabric.microsoft.com",
-                          maxConcurrent: 8, tokensPerSecond: 100, burst: 100)]
-    )
+    makeGate(host: "onelake.dfs.fabric.microsoft.com")
 }
 
 /// Makes an OneLakeClient backed by a MockURLSession (buffered path).
@@ -39,12 +36,9 @@ private func makeClientForTests(session: MockURLSession, maxAttempts: Int = 1) -
                          baseURL: streamBaseURL)
 }
 
+// tests-15: makeTempFileHandle(prefix:) lives in NetTestHelpers.swift.
 private func makeTempFile() throws -> (URL, FileHandle) {
-    let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("ofem-stream-test-\(UUID().uuidString).bin")
-    FileManager.default.createFile(atPath: url.path, contents: nil)
-    let handle = try FileHandle(forUpdating: url)
-    return (url, handle)
+    try makeTempFileHandle(prefix: "ofem-stream-test")
 }
 
 private func stub(status: Int, body: Data = Data(), headers: [String: String] = [:]) -> MockURLSession.Stub {
