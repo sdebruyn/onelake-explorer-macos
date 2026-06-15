@@ -283,6 +283,66 @@ struct OfemAuthRefreshCoalescingTests {
                 "concurrent callers must coalesce onto one refresh Task (auth-01); got \(callCount)")
     }
 
+    @Test("shared Task failure is received by all N concurrent waiters, and subsequent call retries fresh")
+    func concurrentTokenRequestsCoalesceFailure() async throws {
+        let factory = MockMsalAuthClientFactory()
+        let mockClient = MockMsalAuthClient()
+        // Make MSAL throw a non-interaction-required error for the shared task.
+        let injectedError = NSError(domain: "SomeNetworkDomain", code: -1001, userInfo: nil)
+        mockClient.stubbedError = injectedError
+        // Delay so all callers are waiting on the same in-flight task.
+        mockClient.acquireDelay = 0.05
+        factory.stubbedClient = mockClient
+
+        let auth = try makeAuth(factory: factory)
+        let account = Account(
+            alias: "work",
+            tenantID: "t1",
+            homeAccountID: "home-fail-coalesce",
+            username: "work@contoso.com",
+            addedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        try await auth.addAccount(account)
+
+        // Launch 5 concurrent token requests — all should fail with silentTokenFailed.
+        var errorCount = 0
+        var successCount = 0
+        await withThrowingTaskGroup(of: String.self) { group in
+            for _ in 0..<5 {
+                group.addTask {
+                    try await auth.tokenForScope(alias: "work", scope: .oneLake)
+                }
+            }
+            while let result = await group.nextResult() {
+                switch result {
+                case .success: successCount += 1
+                case .failure(OfemAuthError.silentTokenFailed):
+                    errorCount += 1
+                case .failure:
+                    // Any other error type is unexpected.
+                    errorCount += 1
+                }
+            }
+        }
+
+        // All 5 callers received the error — none succeeded silently.
+        #expect(successCount == 0, "no caller should succeed when the shared task fails")
+        #expect(errorCount == 5, "all 5 callers must receive the thrown error")
+
+        // The in-flight entry must have been evicted: a fresh call should start
+        // a new Task (one new MSAL call) rather than re-serving the failed task.
+        let callCountBefore = await mockClient.acquireCallCount // should be 1 (the shared call)
+
+        // Allow the next call to succeed.
+        mockClient.stubbedError = nil
+        mockClient.stubbedAccessToken = "fresh-token"
+        let freshToken = try await auth.tokenForScope(alias: "work", scope: .oneLake)
+        #expect(freshToken == "fresh-token", "subsequent call after eviction must return fresh token")
+        let callCountAfter = await mockClient.acquireCallCount
+        #expect(callCountAfter == callCountBefore + 1,
+                "evicted task must cause a fresh MSAL call on retry (not re-serve the cached failure)")
+    }
+
     @Test("two different (alias, scope) pairs each trigger their own MSAL call")
     func differentAliasesTriggerSeparateCalls() async throws {
         let factory = MockMsalAuthClientFactory()
@@ -331,24 +391,68 @@ struct OfemAuthInteractionRequiredAADSTSTests {
         return OfemAuth(configStore: store)
     }
 
-    @Test("AADSTS50076 in localizedDescription triggers isInteractionRequired")
-    func aadsts50076InDescription() async throws {
-        let auth = try makeAuth()
-        let err = NSError(
-            domain: MSALErrorDomain,
-            code: -50000, // server error code
-            userInfo: [NSLocalizedDescriptionKey: "AADSTS50076: Due to a configuration change made by your administrator, or because you moved to a new location, you must enroll in multi-factor authentication."]
-        )
-        #expect(await auth.isInteractionRequired(err))
-    }
-
-    @Test("AADSTS50079 in localizedDescription triggers isInteractionRequired")
-    func aadsts50079InDescription() async throws {
+    @Test("AADSTS50076 in MSALSTSErrorCodesKey (integer array) triggers isInteractionRequired")
+    func aadsts50076InSTSErrorCodes() async throws {
         let auth = try makeAuth()
         let err = NSError(
             domain: MSALErrorDomain,
             code: -50000,
-            userInfo: [NSLocalizedDescriptionKey: "AADSTS50079: Due to a configuration change made by your administrator, you are required to use multi-factor authentication."]
+            userInfo: ["MSALSTSErrorCodesKey": [NSNumber(value: 50076)]]
+        )
+        #expect(await auth.isInteractionRequired(err))
+    }
+
+    @Test("AADSTS50079 in MSALSTSErrorCodesKey triggers isInteractionRequired")
+    func aadsts50079InSTSErrorCodes() async throws {
+        let auth = try makeAuth()
+        let err = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: ["MSALSTSErrorCodesKey": [NSNumber(value: 50079)]]
+        )
+        #expect(await auth.isInteractionRequired(err))
+    }
+
+    @Test("AADSTS50078 in MSALSTSErrorCodesKey triggers isInteractionRequired")
+    func aadsts50078InSTSErrorCodes() async throws {
+        let auth = try makeAuth()
+        let err = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: ["MSALSTSErrorCodesKey": [NSNumber(value: 50078)]]
+        )
+        #expect(await auth.isInteractionRequired(err))
+    }
+
+    @Test("AADSTS50158 in MSALSTSErrorCodesKey triggers isInteractionRequired")
+    func aadsts50158InSTSErrorCodes() async throws {
+        let auth = try makeAuth()
+        let err = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: ["MSALSTSErrorCodesKey": [NSNumber(value: 50158)]]
+        )
+        #expect(await auth.isInteractionRequired(err))
+    }
+
+    @Test("unrelated STS error code in MSALSTSErrorCodesKey does not trigger isInteractionRequired")
+    func unrelatedSTSCodeDoesNotTrigger() async throws {
+        let auth = try makeAuth()
+        let err = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: ["MSALSTSErrorCodesKey": [NSNumber(value: 70011)]]
+        )
+        #expect(!(await auth.isInteractionRequired(err)))
+    }
+
+    @Test("AADSTS50076 in MSALOAuthSubErrorKey triggers isInteractionRequired (sub-error path)")
+    func aadsts50076InOAuthSubErrorKey() async throws {
+        let auth = try makeAuth()
+        let err = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: ["MSALOAuthSubErrorKey": "AADSTS50076"]
         )
         #expect(await auth.isInteractionRequired(err))
     }
@@ -362,6 +466,22 @@ struct OfemAuthInteractionRequiredAADSTSTests {
             userInfo: ["MSALOAuthErrorKey": "AADSTS50076"]
         )
         #expect(await auth.isInteractionRequired(err))
+    }
+
+    @Test("NSLocalizedDescriptionKey alone does not trigger isInteractionRequired (locale-stable check)")
+    func aadstsInDescriptionOnlyDoesNotTrigger() async throws {
+        // Removed: NSLocalizedDescriptionKey substring match is locale-fragile.
+        // An AADSTS code in the description alone must NOT trigger interaction-required;
+        // only structured userInfo keys (MSALSTSErrorCodesKey, MSALOAuthErrorKey,
+        // MSALOAuthSubErrorKey) or the typed MSALError.interactionRequired code do.
+        let auth = try makeAuth()
+        let err = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: [NSLocalizedDescriptionKey: "AADSTS50076: MFA required (localized string only)"]
+        )
+        #expect(!(await auth.isInteractionRequired(err)),
+                "description-only match was removed to avoid locale-fragile detection")
     }
 
     @Test("unrelated MSAL server error does not trigger isInteractionRequired")
@@ -378,7 +498,6 @@ struct OfemAuthInteractionRequiredAADSTSTests {
     @Test("non-MSAL domain never triggers isInteractionRequired")
     func nonMsalDomainNeverTriggers() async throws {
         let auth = try makeAuth()
-        // Even if the description contains an AADSTS code, non-MSAL domain = false.
         let err = NSError(
             domain: "NSURLErrorDomain",
             code: -1009,

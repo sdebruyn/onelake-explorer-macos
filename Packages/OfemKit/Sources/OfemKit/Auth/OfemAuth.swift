@@ -156,6 +156,11 @@ public actor OfemAuth {
                 } catch {
                     // A failed Keychain purge means the refresh token survives
                     // logout — surface this rather than silently proceeding.
+                    // The host-app coordinator surfaces a sign-out error banner
+                    // (no retry affordance) when this is thrown. A retry path
+                    // (e.g. "Try again" button on the error sheet) is a UX
+                    // improvement tracked for the WP-Host work package; it is
+                    // out of scope for auth-WP.
                     throw OfemAuthError.msalRemoveFailed(alias, error)
                 }
             }
@@ -236,6 +241,10 @@ public actor OfemAuth {
 
         // Per-account in-flight coalescing: if a refresh is already underway for
         // this (alias, scope), await the existing Task rather than starting another.
+        // Ordering assumption: `TokenScope.scopes` is `[String]` (a stable-ordered
+        // array), so joined(separator:) is deterministic for the same logical scope.
+        // If scopes were ever backed by a Set, two calls for the same scope could
+        // produce different keys and miss coalescing. Keep scopes as [String].
         let dedupKey = "\(alias)|\(scope.scopes.joined(separator: ","))"
         if let existing = inFlightTokenTasks[dedupKey] {
             return try await existing.value
@@ -328,6 +337,12 @@ public actor OfemAuth {
                 Self.log.warning("OfemAuth: account \(alias, privacy: .public) not in MSAL cache; re-auth required")
                 throw OfemAuthError.interactionRequired
             }
+            // Log the underlying error before stripping it from the thrown case.
+            // The doc-comment on silentTokenFailed promises this log; without it
+            // any network failure, server 5xx, or revoked-scope error is invisible
+            // in production. The error is .private so UPN / tenant detail stays out
+            // of unredacted logs; alias is .public (not PII).
+            Self.log.error("OfemAuth: silent token for \(alias, privacy: .public) failed: \(error, privacy: .private)")
             throw OfemAuthError.silentTokenFailed(alias)
         }
     }
@@ -338,12 +353,19 @@ public actor OfemAuth {
     ///
     /// Detection is based on:
     /// 1. The **typed** MSAL error code `MSALError.interactionRequired`.
-    /// 2. Server-side AADSTS sub-error codes that `docs/auth.md` explicitly
-    ///    calls out: `AADSTS50076` (MFA required) and `AADSTS50079`
-    ///    (Conditional Access). These surface under MSAL as an
-    ///    `MSALErrorDomain` error with the AADSTS code in `MSALOAuthErrorKey`
-    ///    or `MSALOAuthSubErrorKey` in `userInfo`, not as the top-level
-    ///    `MSALError.interactionRequired` code.
+    /// 2. Server-side AADSTS numeric codes that `docs/auth.md` explicitly
+    ///    calls out: 50076 (MFA required), 50079 (Conditional Access), 50078,
+    ///    50158. These surface under MSAL as an `MSALErrorDomain` error with
+    ///    the integer STS codes in `MSALSTSErrorCodesKey` (`NSArray<NSNumber *>`
+    ///    in MSAL's userInfo — see MSALError.h). String-keyed `MSALOAuthErrorKey`
+    ///    and `MSALOAuthSubErrorKey` carry OAuth error and sub-error tokens
+    ///    (e.g. `"invalid_grant"`, `"mfa_required"`) and are also checked as a
+    ///    secondary signal.
+    ///
+    /// Locale note: `NSLocalizedDescriptionKey` substring matching was
+    /// intentionally removed — it is fragile on non-English OS locales and
+    /// over-matches if the AADSTS code appears in a description for a different
+    /// error. All detection here is on machine-readable, locale-stable keys.
     ///
     /// Not matched: `MSALError.serverDeclinedScopes` — a partial-success case
     /// where the server issued tokens for a subset of the requested scopes.
@@ -358,14 +380,27 @@ public actor OfemAuth {
         if nsError.code == MSALError.interactionRequired.rawValue {
             return true
         }
-        // Secondary: AADSTS server error codes for MFA/CA that surface as
-        // server errors in MSAL userInfo. Per docs/auth.md:79.
-        let aadstsCodeStrings: Set<String> = ["AADSTS50076", "AADSTS50079", "AADSTS50078", "AADSTS50158"]
+        // Secondary: AADSTS numeric STS codes in MSALSTSErrorCodesKey.
+        // MSAL populates this as NSArray<NSNumber *> (see MSALErrorConverter.m).
+        // Per docs/auth.md:79: 50076 (MFA required), 50079 (CA), 50078, 50158.
+        let aadstsIntCodes: Set<Int> = [50076, 50079, 50078, 50158]
+        if let stsCodes = nsError.userInfo["MSALSTSErrorCodesKey"] as? [NSNumber] {
+            if stsCodes.contains(where: { aadstsIntCodes.contains($0.intValue) }) {
+                return true
+            }
+        }
+        // Tertiary: OAuth error / sub-error string tokens in MSALOAuthErrorKey
+        // and MSALOAuthSubErrorKey. These are locale-stable machine-readable
+        // strings (e.g. "invalid_grant", "mfa_required") that MSAL sets from
+        // the STS JSON response regardless of OS locale.
         let oauthError = nsError.userInfo["MSALOAuthErrorKey"] as? String ?? ""
         let subError = nsError.userInfo["MSALOAuthSubErrorKey"] as? String ?? ""
-        let errorDescription = nsError.userInfo[NSLocalizedDescriptionKey] as? String ?? ""
+        // Check for the OAuth/sub-error token strings that AADSTS MFA/CA errors produce.
+        // These are checked via exact/substring match on the structured userInfo fields,
+        // NOT on NSLocalizedDescriptionKey (which is locale-translated).
+        let aadstsCodeStrings: Set<String> = ["AADSTS50076", "AADSTS50079", "AADSTS50078", "AADSTS50158"]
         for code in aadstsCodeStrings {
-            if oauthError.contains(code) || subError.contains(code) || errorDescription.contains(code) {
+            if oauthError.contains(code) || subError.contains(code) {
                 return true
             }
         }

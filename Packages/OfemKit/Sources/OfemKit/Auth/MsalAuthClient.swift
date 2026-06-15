@@ -291,8 +291,28 @@ final class FileTokenStoreCacheDelegate: NSObject, MSALSerializedADALCacheProvid
         // Failures are logged explicitly rather than swallowed — a silent
         // failure here would lose the freshly minted refresh token.
         //
-        // Async bridge: `atomicUpdate` is async; we block this MSAL-internal
-        // thread (not a Swift cooperative-pool thread) via a semaphore.
+        // Thread model (deadlock analysis):
+        //   1. MSAL calls didWriteCache on its own internal thread (neither a
+        //      Swift cooperative-pool thread nor the main actor thread).
+        //   2. `sema.wait()` blocks MSAL's thread. The Swift cooperative pool
+        //      is never blocked here — safe. ✓
+        //   3. The unstructured `Task {}` runs on the cooperative pool and
+        //      calls `acquireAliasLockAsync`, which spawns a *dedicated* OS
+        //      thread for the blocking `F_SETLKW` syscall. The cooperative-pool
+        //      thread is released at the `await` suspension point. ✓
+        //   4. After `F_SETLKW` succeeds, the continuation resumes on the
+        //      cooperative pool and calls `serialQueue.sync`. This DOES block
+        //      the cooperative-pool thread for the duration of the file write
+        //      (typically microseconds to low milliseconds). Under simultaneous
+        //      writes for N accounts, N cooperative-pool threads may be briefly
+        //      blocked — not a deadlock, but it reduces pool availability. With
+        //      OFEM's typical 1–3 accounts the practical impact is negligible.
+        //   5. On Task completion, `sema.signal()` unblocks MSAL's thread.
+        //   No deadlock path exists: the blocked MSAL thread is entirely
+        //   unrelated to the Swift cooperative pool that the Task runs on.
+        //   Do NOT restructure this into a sync call on MSAL's thread — that
+        //   would block `F_SETLKW` on a cooperative-pool thread and risk
+        //   starvation under high load.
         let sema = DispatchSemaphore(value: 0)
         let capturedAlias = alias
         let capturedStore = store

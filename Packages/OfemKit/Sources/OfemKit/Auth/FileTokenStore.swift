@@ -46,7 +46,6 @@ import os.log
 /// internal (non-cooperative) thread.
 public final class FileTokenStore: Sendable {
     private let root: URL
-    private let lock = NSLock()
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "FileTokenStore")
 
     // MARK: - Process-wide intra-process serialisation registry
