@@ -104,7 +104,7 @@ jobs:
           OFEM_TEST_WH_TABLE: ${{ vars.OFEM_TEST_WH_TABLE }}
         run: |
           set -euo pipefail
-          brew install sqlcmd
+          brew list sqlcmd &>/dev/null || brew install sqlcmd
           # Reference the Homebrew-managed binary directly: a pre-existing
           # mssql-tools symlink can shadow it in PATH on the runner.
           SQLCMD="$(brew --prefix sqlcmd)/bin/sqlcmd"
