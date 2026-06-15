@@ -179,16 +179,6 @@ struct MsalAuthClientGuardTests {
         return OfemAuth(configStore: store, msalClientFactory: factory)
     }
 
-    private func makeAccount(alias: String, tenantID: String = "t1") -> Account {
-        Account(
-            alias: alias,
-            tenantID: tenantID,
-            homeAccountID: "home-\(UUID().uuidString)",
-            username: "\(alias)@contoso.com",
-            addedAt: ISO8601DateFormatter().string(from: Date())
-        )
-    }
-
     @Test("empty homeAccountID on account triggers interactionRequired without calling factory")
     func emptyHomeAccountIDTriggersInteractionRequired() async throws {
         let factory = MockMsalAuthClientFactory()

@@ -49,23 +49,10 @@ struct HTTPClientTransportRetryTests {
 
     private let testURL = URL(string: "https://onelake.dfs.fabric.microsoft.com/ws/item/file.txt")!
 
-    private func makeGate() -> HTTPGateRegistry {
-        let reg = HTTPGateRegistry(
-            defaults: HTTPGateDefaults(maxConcurrent: 8, tokensPerSecond: 100, burst: 100)
-        )
-        Task { [reg] in
-            await reg.register(
-                host: "onelake.dfs.fabric.microsoft.com",
-                maxConcurrent: 8, tokensPerSecond: 100, burst: 100
-            )
-        }
-        return reg
-    }
-
     private func makeClient(session: MockThrowingURLSession, maxAttempts: Int = 3) -> HTTPClient {
         HTTPClient(
             session: session,
-            gateRegistry: makeGate(),
+            gateRegistry: makeGate(host: "onelake.dfs.fabric.microsoft.com"),
             retryPolicy: HTTPRetryPolicy(
                 maxAttempts: maxAttempts,
                 initialBackoff: .milliseconds(5),
@@ -159,23 +146,10 @@ struct HTTPClientHardOfflineShortCircuitTests {
 
     private let testURL = URL(string: "https://onelake.dfs.fabric.microsoft.com/ws/item/file.txt")!
 
-    private func makeGate() -> HTTPGateRegistry {
-        let reg = HTTPGateRegistry(
-            defaults: HTTPGateDefaults(maxConcurrent: 8, tokensPerSecond: 100, burst: 100)
-        )
-        Task { [reg] in
-            await reg.register(
-                host: "onelake.dfs.fabric.microsoft.com",
-                maxConcurrent: 8, tokensPerSecond: 100, burst: 100
-            )
-        }
-        return reg
-    }
-
     private func makeClient(session: MockThrowingURLSession, maxAttempts: Int = 3) -> HTTPClient {
         HTTPClient(
             session: session,
-            gateRegistry: makeGate(),
+            gateRegistry: makeGate(host: "onelake.dfs.fabric.microsoft.com"),
             retryPolicy: HTTPRetryPolicy(
                 maxAttempts: maxAttempts,
                 initialBackoff: .milliseconds(5),
@@ -374,23 +348,10 @@ struct OneLakeClientStreamingWriteTests {
         MockURLSession.Stub(data: Data(), status: status, headers: [:], url: dfsBaseURL)
     }
 
-    private func makeGate() -> HTTPGateRegistry {
-        let reg = HTTPGateRegistry(
-            defaults: HTTPGateDefaults(maxConcurrent: 8, tokensPerSecond: 100, burst: 100)
-        )
-        Task { [reg] in
-            await reg.register(
-                host: "onelake.dfs.fabric.microsoft.com",
-                maxConcurrent: 8, tokensPerSecond: 100, burst: 100
-            )
-        }
-        return reg
-    }
-
     private func makeClient(session: MockURLSession) -> OneLakeClient {
         let http = HTTPClient(
             session: session,
-            gateRegistry: makeGate(),
+            gateRegistry: makeGate(host: "onelake.dfs.fabric.microsoft.com"),
             retryPolicy: HTTPRetryPolicy(maxAttempts: 1)
         )
         return OneLakeClient(http: http, tokenProvider: MockTokenProvider(token: "tok"), baseURL: dfsBaseURL)
@@ -473,7 +434,7 @@ struct OneLakeClientStreamingWriteTests {
 
         let http = HTTPClient(
             session: session,
-            gateRegistry: makeGate(),
+            gateRegistry: makeGate(host: "onelake.dfs.fabric.microsoft.com"),
             retryPolicy: HTTPRetryPolicy(maxAttempts: 1)
         )
         // Use a 32-byte chunk size to force 4 append requests for the 100-byte file.
@@ -526,23 +487,10 @@ struct OneLakeClientListPathTests {
         MockURLSession.Stub(data: body.data(using: .utf8)!, status: status, headers: headers, url: dfsBaseURL)
     }
 
-    private func makeGate() -> HTTPGateRegistry {
-        let reg = HTTPGateRegistry(
-            defaults: HTTPGateDefaults(maxConcurrent: 8, tokensPerSecond: 100, burst: 100)
-        )
-        Task { [reg] in
-            await reg.register(
-                host: "onelake.dfs.fabric.microsoft.com",
-                maxConcurrent: 8, tokensPerSecond: 100, burst: 100
-            )
-        }
-        return reg
-    }
-
     private func makeClient(session: MockURLSession) -> OneLakeClient {
         let http = HTTPClient(
             session: session,
-            gateRegistry: makeGate(),
+            gateRegistry: makeGate(host: "onelake.dfs.fabric.microsoft.com"),
             retryPolicy: HTTPRetryPolicy(maxAttempts: 1)
         )
         return OneLakeClient(http: http, tokenProvider: MockTokenProvider(token: "tok"), baseURL: dfsBaseURL)
@@ -618,23 +566,10 @@ struct FabricClientContinuationURITests {
         MockURLSession.Stub(data: body.data(using: .utf8)!, status: status, headers: [:], url: fabricBase)
     }
 
-    private func makeGate() -> HTTPGateRegistry {
-        let reg = HTTPGateRegistry(
-            defaults: HTTPGateDefaults(maxConcurrent: 8, tokensPerSecond: 100, burst: 100)
-        )
-        Task { [reg] in
-            await reg.register(
-                host: "api.fabric.microsoft.com",
-                maxConcurrent: 8, tokensPerSecond: 100, burst: 100
-            )
-        }
-        return reg
-    }
-
     private func makeClient(session: MockURLSession) -> FabricClient {
         let http = HTTPClient(
             session: session,
-            gateRegistry: makeGate(),
+            gateRegistry: makeGate(host: "api.fabric.microsoft.com"),
             retryPolicy: HTTPRetryPolicy(maxAttempts: 1)
         )
         return FabricClient(http: http, tokenProvider: MockTokenProvider(token: "tok"), baseURL: fabricBase)
