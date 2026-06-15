@@ -1,20 +1,26 @@
 // XPCAccountInfo.swift
-// NSSecureCoding wrapper for account metadata passed over XPC.
+// Account metadata produced by the host app's sign-in flow.
 //
-// NSXPCInterface requires all types crossing the XPC boundary to
-// conform to NSSecureCoding. This class wraps the AccountInfo data
-// returned by OfemAuth so it can travel over NSXPCConnection.
+// XPCAccountInfo is created in `SharedOfemAuth.signIn` (host process) after a
+// successful interactive MSAL sign-in and is consumed in the same process by
+// `AddAccountCoordinator`. It does NOT cross the NSXPCConnection boundary —
+// none of the `OfemClientControlProtocol` methods carry it as a parameter or
+// reply value (xpc-10).
 //
-// The encoding keys deliberately match the Go wire format used by
-// the existing StatusTypes.AccountInfo Decodable type — same field
-// names, so the host app can adapt quickly.
+// The NSSecureCoding conformance is retained for future use (the type is
+// `Shared/` so the FPE could receive it if a future protocol method needs it)
+// and for symmetry with the other Shared/ payload types. The `@unchecked
+// Sendable` conformance makes it safe to pass across actor boundaries in the
+// host app (xpc-05).
 
 import Foundation
 
-/// NSSecureCoding-conformant account info for XPC transport.
+/// Immutable account metadata produced after a successful sign-in.
 ///
-/// Used in OfemClientControlProtocol replies that return account data.
-@objc public final class XPCAccountInfo: NSObject, NSSecureCoding {
+/// Carries the user-chosen alias, MSAL-resolved username, tenant GUID, and
+/// tenant display name. All fields are required; `init?(coder:)` returns nil
+/// if any is absent so decoding a partial archive fails loudly.
+@objc public final class XPCAccountInfo: NSObject, NSSecureCoding, @unchecked Sendable {
     @objc public static var supportsSecureCoding: Bool { true }
 
     @objc public let alias: String

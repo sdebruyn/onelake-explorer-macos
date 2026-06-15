@@ -15,10 +15,19 @@
 // - logLevel — "debug" | "info" | "warn" | "error"
 // - pausedWorkspaces — workspaces whose Fabric capacity is currently paused;
 // empty array = no workspaces paused.
+//
+// Decode policy (xpc-04): logLevel is a required string field; init?(coder:)
+// returns nil when it is absent or the wrong type. This is a stricter contract
+// than the previous `?? "info"` fallback, which masked protocol drift by
+// silently substituting a plausible-but-wrong default. Callers that archive
+// an XPCEngineStatus must always encode logLevel.
 
 import Foundation
 
-@objc public final class XPCEngineStatus: NSObject, NSSecureCoding {
+/// `@unchecked Sendable` is safe here: all stored properties are `let` (immutable
+/// after init) and NSObject's retain/release is thread-safe. The type is built on
+/// the FPE side inside a Task and consumed on the host's MainActor (xpc-05).
+@objc public final class XPCEngineStatus: NSObject, NSSecureCoding, @unchecked Sendable {
     @objc public static var supportsSecureCoding: Bool { true }
 
     @objc public let cacheBytes: Int64
@@ -76,13 +85,27 @@ import Foundation
     }
 
     @objc public required init?(coder: NSCoder) {
-        cacheBytes = coder.decodeInt64(forKey: Keys.cacheBytes.rawValue)
-        cacheMaxBytes = coder.decodeInt64(forKey: Keys.cacheMaxBytes.rawValue)
-        cacheMaxSizeGB = coder.decodeInteger(forKey: Keys.cacheMaxSizeGB.rawValue)
+        // logLevel is a required string field: return nil when absent or wrong
+        // type rather than falling back to "info", which would mask protocol
+        // drift between host and FPE builds (xpc-04).
+        //
+        // Numeric fields (Int64, Int, Bool) decode as 0/false when absent; this
+        // is unavoidable with NSCoder's primitive decode methods — there is no
+        // "contains key" API for primitives in NSSecureCoding. Accept the
+        // 0/false sentinel for numeric fields; they are observable in the UI.
+        //
+        // pausedWorkspaces defaults to [] when absent: an empty list is a valid
+        // runtime state (no paused workspaces), so a missing key from an older
+        // build is safe here.
+        guard let logLevel = coder.decodeObject(of: NSString.self, forKey: Keys.logLevel.rawValue) as? String
+        else { return nil }
+        cacheBytes       = coder.decodeInt64(forKey: Keys.cacheBytes.rawValue)
+        cacheMaxBytes    = coder.decodeInt64(forKey: Keys.cacheMaxBytes.rawValue)
+        cacheMaxSizeGB   = coder.decodeInteger(forKey: Keys.cacheMaxSizeGB.rawValue)
         telemetryEnabled = coder.decodeBool(forKey: Keys.telemetryEnabled.rawValue)
-        netMaxUploads = coder.decodeInteger(forKey: Keys.netMaxUploads.rawValue)
-        netMaxDownloads = coder.decodeInteger(forKey: Keys.netMaxDownloads.rawValue)
-        logLevel = (coder.decodeObject(of: NSString.self, forKey: Keys.logLevel.rawValue) as? String) ?? "info"
+        netMaxUploads    = coder.decodeInteger(forKey: Keys.netMaxUploads.rawValue)
+        netMaxDownloads  = coder.decodeInteger(forKey: Keys.netMaxDownloads.rawValue)
+        self.logLevel    = logLevel
         let decoded = coder.decodeObject(
             of: [NSArray.self, XPCPausedWorkspace.self],
             forKey: Keys.pausedWorkspaces.rawValue

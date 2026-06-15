@@ -12,10 +12,18 @@
 //                     when reason is unknown.
 //   - detectedAtSec — Unix seconds when the pause was first detected.
 //                     0 means "unknown".
+//
+// Decode policy (xpc-04): every string field is required. init?(coder:)
+// returns nil if any field is absent or the wrong type, so a partial or
+// corrupt archive fails loudly instead of producing an object with silent
+// empty-string defaults that mask protocol drift.
 
 import Foundation
 
-@objc public final class XPCPausedWorkspace: NSObject, NSSecureCoding {
+/// `@unchecked Sendable` is safe here: all stored properties are `let` (immutable
+/// after init) and NSObject's retain/release is thread-safe. The type is built on
+/// the FPE side and consumed on the host side without mutation (xpc-05).
+@objc public final class XPCPausedWorkspace: NSObject, NSSecureCoding, @unchecked Sendable {
     @objc public static var supportsSecureCoding: Bool { true }
 
     @objc public let accountAlias: String
@@ -53,10 +61,19 @@ import Foundation
     }
 
     @objc public required init?(coder: NSCoder) {
-        accountAlias = (coder.decodeObject(of: NSString.self, forKey: Keys.accountAlias.rawValue) as? String) ?? ""
-        workspaceID  = (coder.decodeObject(of: NSString.self, forKey: Keys.workspaceID.rawValue)  as? String) ?? ""
-        reason       = (coder.decodeObject(of: NSString.self, forKey: Keys.reason.rawValue)       as? String) ?? ""
-        detectedAtSec = coder.decodeDouble(forKey: Keys.detectedAtSec.rawValue)
+        // All string fields are required: return nil if any is absent or the wrong
+        // type so a partial archive fails loudly rather than producing an object with
+        // silent empty-string defaults (xpc-04). `detectedAtSec` decodes as Double;
+        // a missing key returns 0.0, which is the documented "unknown" sentinel.
+        guard
+            let accountAlias = coder.decodeObject(of: NSString.self, forKey: Keys.accountAlias.rawValue) as? String,
+            let workspaceID  = coder.decodeObject(of: NSString.self, forKey: Keys.workspaceID.rawValue)  as? String,
+            let reason       = coder.decodeObject(of: NSString.self, forKey: Keys.reason.rawValue)       as? String
+        else { return nil }
+        self.accountAlias  = accountAlias
+        self.workspaceID   = workspaceID
+        self.reason        = reason
+        self.detectedAtSec = coder.decodeDouble(forKey: Keys.detectedAtSec.rawValue)
         super.init()
     }
 }
