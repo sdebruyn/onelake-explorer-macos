@@ -16,38 +16,9 @@
 // The menu shows account-scoped actions; hasAccounts drives controls.
 
 import AppKit
+import FileProvider
 import SwiftUI
 import os.log
-
-// MARK: - MountPathResolver
-
-/// Resolves the on-disk mount path for a File Provider domain by alias.
-///
-/// The host app is sandboxed, so `NSHomeDirectory()` and `expandingTildeInPath`
-/// return the App Sandbox container path, not the real user home. We read the
-/// passwd record directly via `getpwuid(getuid())` to get the real `$HOME`.
-/// This logic is extracted here (away from the View) so it can be unit-tested.
-enum MountPathResolver {
-    /// Returns the real user home directory, bypassing the App Sandbox.
-    static func realHomeDirectory() -> String {
-        if let pw = getpwuid(getuid()), let cstr = pw.pointee.pw_dir {
-            return String(cString: cstr)
-        }
-        return NSHomeDirectory()
-    }
-
-    /// Returns the Finder-visible mount path for the given alias.
-    ///
-    /// Convention: `~/Library/CloudStorage/OneLake-<alias>/`
-    /// (see CLAUDE.md mount-path section).
-    static func mountURL(alias: String) -> URL {
-        let home = realHomeDirectory()
-        return URL(
-            fileURLWithPath: "\(home)/Library/CloudStorage/OneLake-\(alias)",
-            isDirectory: true
-        )
-    }
-}
 
 struct MenuBarView: View {
     // The model is owned at the App level (OneLakeApp @StateObject) so
@@ -207,15 +178,36 @@ private struct AccountSubmenu: View {
     }
 
     private func openInFinder() {
-        // Delegate path resolution to MountPathResolver so the logic is
-        // testable and the sandbox-safe getpwuid trick lives in one place.
-        let url = MountPathResolver.mountURL(alias: account.alias)
-        Self.log.info("Opening Finder at \(url.path, privacy: .public)")
-        // Skip createDirectory: the File Provider Extension owns the
-        // mount path and the sandbox blocks us from writing there
-        // anyway. NSWorkspace.shared.open hands off to Finder (a
-        // separate, non-sandboxed process), which can read the mount
-        // directly even when our app cannot.
+        // Build the domain identifier the same way DomainSyncManager does.
+        let domainID = NSFileProviderDomainIdentifier(rawValue: "\(ofemDomainIdentifierPrefix)\(account.alias)")
+        let domain = NSFileProviderDomain(identifier: domainID, displayName: account.alias)
+        Task {
+            await Self.revealDomain(domain, log: Self.log)
+        }
+    }
+
+    /// Resolves the Finder-visible URL for `domain` via the File Provider
+    /// framework and reveals it in Finder. Runs asynchronously; silently
+    /// does nothing if the domain is not yet registered or the URL cannot
+    /// be obtained (e.g. the FPE is not running).
+    @MainActor
+    private static func revealDomain(_ domain: NSFileProviderDomain, log: Logger) async {
+        guard let manager = NSFileProviderManager(for: domain) else {
+            log.notice("openInFinder: no manager for domain \(domain.identifier.rawValue, privacy: .public) — domain not registered")
+            return
+        }
+        let url: URL
+        do {
+            url = try await manager.getUserVisibleURL(for: .rootContainer)
+        } catch {
+            log.notice("openInFinder: getUserVisibleURL failed for \(domain.identifier.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        log.info("Opening Finder at \(url.path, privacy: .public)")
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+        }
         if !NSWorkspace.shared.open(url) {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
