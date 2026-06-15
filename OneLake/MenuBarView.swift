@@ -178,8 +178,8 @@ private struct AccountSubmenu: View {
     }
 
     private func openInFinder() {
-        // Build the domain identifier the same way DomainSyncManager does.
-        let domainID = NSFileProviderDomainIdentifier(rawValue: "\(ofemDomainIdentifierPrefix)\(account.alias)")
+        let rawID = DomainSyncManager.shared.domainIdentifier(for: account.alias)
+        let domainID = NSFileProviderDomainIdentifier(rawValue: rawID)
         let domain = NSFileProviderDomain(identifier: domainID, displayName: account.alias)
         Task {
             await Self.revealDomain(domain, log: Self.log)
