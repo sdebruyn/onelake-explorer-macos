@@ -13,34 +13,14 @@ import Foundation
 @Suite("OfemAuth account management")
 struct OfemAuthTests {
     // MARK: - Helpers
-
-    /// Creates a fresh temp dir + `OfemPaths` + `OfemConfigStore`.
-    private func makeStore() throws -> (store: OfemConfigStore, root: URL) {
-        let tmp = FileManager.default.temporaryDirectory
-            .appending(path: "OfemAuthTests-\(UUID().uuidString)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
-        let paths = OfemPaths(root: tmp)
-        let store = try OfemConfigStore(paths: paths)
-        return (store, tmp)
-    }
-
-    private func makeAccount(alias: String, tenantID: String = "tenant-\(UUID().uuidString)") -> Account {
-        Account(
-            alias: alias,
-            tenantID: tenantID,
-            tenantName: nil,
-            homeAccountID: "home-\(UUID().uuidString)",
-            username: "\(alias)@contoso.com",
-            addedAt: ISO8601DateFormatter().string(from: Date()),
-            clientID: nil
-        )
-    }
+    // tests-15: makeStore(label:) and makeAccount(alias:tenantID:homeAccountID:)
+    // live in AuthTestHelpers.swift and are shared across all Auth suites.
 
     // MARK: - listAccounts
 
     @Test("listAccounts returns empty list when no accounts exist")
     func listAccountsEmpty() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
         let accounts = await auth.listAccounts()
@@ -49,7 +29,7 @@ struct OfemAuthTests {
 
     @Test("listAccounts returns accounts sorted by alias")
     func listAccountsSorted() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
@@ -65,7 +45,7 @@ struct OfemAuthTests {
 
     @Test("addAccount persists the account to the config store")
     func addAccountPersists() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
         let account = makeAccount(alias: "work")
@@ -80,7 +60,7 @@ struct OfemAuthTests {
 
     @Test("addAccount rejects duplicate alias")
     func addAccountDuplicateAlias() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
@@ -92,7 +72,7 @@ struct OfemAuthTests {
 
     @Test("addAccount rejects invalid alias")
     func addAccountInvalidAlias() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
         let bad = Account(
@@ -111,7 +91,7 @@ struct OfemAuthTests {
 
     @Test("removeAccount removes the account from the config store")
     func removeAccountRemoves() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
@@ -124,7 +104,7 @@ struct OfemAuthTests {
 
     @Test("removeAccount throws on unknown alias")
     func removeAccountUnknown() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
         await #expect(throws: OfemAuthError.self) {
@@ -134,7 +114,7 @@ struct OfemAuthTests {
 
     @Test("removeAccount clears the default if the removed account was default")
     func removeAccountClearsDefault() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
@@ -150,7 +130,7 @@ struct OfemAuthTests {
 
     @Test("removeAccount deletes FileTokenStore blob for the alias")
     func removeAccountDeletesTokenBlob() async throws {
-        let (store, root) = try makeStore()
+        let (store, root) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: root) }
         let paths = OfemPaths(root: root)
         let tokenStore = try FileTokenStore(tokensDir: paths.tokensDir)
@@ -185,7 +165,7 @@ struct OfemAuthTests {
 
     @Test("defaultAccount returns nil when no default is set")
     func defaultAccountNilWhenNotSet() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
         let def = await auth.defaultAccount()
@@ -194,7 +174,7 @@ struct OfemAuthTests {
 
     @Test("setDefaultAccount persists and reads back correctly")
     func setDefaultAccountRoundTrips() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
@@ -206,7 +186,7 @@ struct OfemAuthTests {
 
     @Test("setDefaultAccount throws on unknown alias")
     func setDefaultAccountUnknown() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
         await #expect(throws: OfemAuthError.self) {
@@ -216,7 +196,7 @@ struct OfemAuthTests {
 
     @Test("Removing one account does not remove others")
     func removeAccountIsolated() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
@@ -231,7 +211,7 @@ struct OfemAuthTests {
 
     @Test("removeAccount calls MSAL remove to purge the Keychain refresh token")
     func removeAccountPurgesMsalKeychain() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
@@ -266,33 +246,14 @@ struct OfemAuthTests {
 @Suite("OfemAuth token acquisition")
 struct OfemAuthTokenTests {
     // MARK: - Helpers
-
-    private func makeStore() throws -> (store: OfemConfigStore, root: URL) {
-        let tmp = FileManager.default.temporaryDirectory
-            .appending(path: "OfemAuthTokenTests-\(UUID().uuidString)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
-        let paths = OfemPaths(root: tmp)
-        let store = try OfemConfigStore(paths: paths)
-        return (store, tmp)
-    }
-
-    private func makeAccount(alias: String, tenantID: String, homeAccountID: String) -> Account {
-        Account(
-            alias: alias,
-            tenantID: tenantID,
-            tenantName: nil,
-            homeAccountID: homeAccountID,
-            username: "\(alias)@contoso.com",
-            addedAt: ISO8601DateFormatter().string(from: Date()),
-            clientID: nil
-        )
-    }
+    // tests-15: makeStore(label:) and makeAccount(alias:tenantID:homeAccountID:)
+    // live in AuthTestHelpers.swift and are shared across all Auth suites.
 
     // MARK: - Token cache hit
 
     @Test("tokenForScope returns cached access token on success")
     func tokenCacheHit() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
@@ -311,7 +272,7 @@ struct OfemAuthTokenTests {
 
     @Test("tokenForScope throws unknownAlias when account does not exist")
     func tokenUnknownAlias() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store, msalClientFactory: MockMsalAuthClientFactory())
 
@@ -324,7 +285,7 @@ struct OfemAuthTokenTests {
 
     @Test("tokenForScope propagates interactionRequired when MSAL returns the typed error code")
     func tokenInteractionRequiredTyped() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
@@ -346,7 +307,7 @@ struct OfemAuthTokenTests {
 
     @Test("tokenForScope does not treat non-MSAL errors as interaction-required")
     func tokenNonMsalErrorNotInteractionRequired() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
@@ -374,7 +335,7 @@ struct OfemAuthTokenTests {
 
     @Test("clientFor reuses the same client instance for the same (clientID, tenantID)")
     func clientReuseForSamePair() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
@@ -397,7 +358,7 @@ struct OfemAuthTokenTests {
 
     @Test("clientFor builds separate clients for different tenantIDs")
     func clientSeparateForDifferentTenants() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
@@ -420,7 +381,7 @@ struct OfemAuthTokenTests {
 
     @Test("tokenForScope maps MsalAuthClientError.accountNotFound to interactionRequired")
     func tokenAccountNotFoundMapsToInteractionRequired() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
@@ -442,7 +403,7 @@ struct OfemAuthTokenTests {
 
     @Test("tokenForScope passes the account's homeAccountID to acquireTokenSilent")
     func tokenPassesHomeAccountID() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let factory = MockMsalAuthClientFactory()
         let mockClient = MockMsalAuthClient()
@@ -462,7 +423,7 @@ struct OfemAuthTokenTests {
 
     @Test("isInteractionRequired returns true for MSALError.interactionRequired")
     func isInteractionRequiredTypedCode() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
@@ -477,7 +438,7 @@ struct OfemAuthTokenTests {
 
     @Test("isInteractionRequired returns false for a non-MSAL error domain")
     func isInteractionRequiredNonMsal() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 
@@ -488,7 +449,7 @@ struct OfemAuthTokenTests {
 
     @Test("isInteractionRequired returns false for unrelated MSAL error codes")
     func isInteractionRequiredOtherMsalCode() async throws {
-        let (store, _t) = try makeStore()
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
 

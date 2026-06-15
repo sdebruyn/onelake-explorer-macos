@@ -70,19 +70,11 @@ private func stub(status: Int, body: String = "", headers: [String: String] = [:
 }
 
 private func makeGate() -> HTTPGateRegistry {
+    // Delegates to the shared helper in NetTestHelpers.swift (tests-15).
     // Use the seeded initializer so the gate is registered before any
     // execute() call. Firing registration inside an unstructured Task{}
     // creates a race where execute() may run before the registration lands.
-    let gate = HTTPGate(
-        host: "onelake.dfs.fabric.microsoft.com",
-        maxConcurrent: 8,
-        tokensPerSecond: 100,
-        burst: 100
-    )
-    return HTTPGateRegistry(
-        defaults: HTTPGateDefaults(maxConcurrent: 8, tokensPerSecond: 100, burst: 100),
-        seeded: [gate]
-    )
+    makeGate(host: "onelake.dfs.fabric.microsoft.com")
 }
 
 // MARK: - HTTPClientTests

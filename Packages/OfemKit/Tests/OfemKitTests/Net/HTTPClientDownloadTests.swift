@@ -81,24 +81,10 @@ final class MockDirectStreamSession: URLSessionStreamProtocol, @unchecked Sendab
 }
 
 // MARK: - Helpers
+// tests-15: makeGate(host:) and makeTempFileHandle(prefix:) live in
+// NetTestHelpers.swift and are shared across Net / OneLake download tests.
 
 private let dlBaseURL = URL(string: "https://onelake.dfs.fabric.microsoft.com")!
-
-private func makeDLGate() -> HTTPGateRegistry {
-    HTTPGateRegistry(
-        defaults: HTTPGateDefaults(maxConcurrent: 8, tokensPerSecond: 100, burst: 100),
-        seeded: [HTTPGate(host: "onelake.dfs.fabric.microsoft.com",
-                          maxConcurrent: 8, tokensPerSecond: 100, burst: 100)]
-    )
-}
-
-private func makeTempFileHandle() throws -> (URL, FileHandle) {
-    let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("ofem-dl-test-\(UUID().uuidString).bin")
-    FileManager.default.createFile(atPath: url.path, contents: nil)
-    let handle = try FileHandle(forUpdating: url)
-    return (url, handle)
-}
 
 // MARK: - HTTPClientDownloadTests (SHOULD-1)
 
@@ -137,7 +123,7 @@ struct HTTPClientDownloadTests {
         let http = HTTPClient(
             session: MockURLSession(stubs: []),  // buffered session not used by download
             streamSession: streamSession,
-            gateRegistry: makeDLGate(),
+            gateRegistry: makeGate(host: "onelake.dfs.fabric.microsoft.com"),
             retryPolicy: HTTPRetryPolicy(
                 maxAttempts: 3,
                 initialBackoff: .milliseconds(5),
@@ -145,7 +131,7 @@ struct HTTPClientDownloadTests {
             )
         )
 
-        let (tmpURL, handle) = try makeTempFileHandle()
+        let (tmpURL, handle) = try makeTempFileHandle(prefix: "ofem-dl-test")
         defer {
             try? handle.close()
             try? FileManager.default.removeItem(at: tmpURL)
@@ -192,7 +178,7 @@ struct HTTPClientDownloadTests {
         let http = HTTPClient(
             session: MockURLSession(stubs: []),
             streamSession: streamSession,
-            gateRegistry: makeDLGate(),
+            gateRegistry: makeGate(host: "onelake.dfs.fabric.microsoft.com"),
             retryPolicy: HTTPRetryPolicy(
                 maxAttempts: 3,
                 initialBackoff: .milliseconds(5),
@@ -200,7 +186,7 @@ struct HTTPClientDownloadTests {
             )
         )
 
-        let (tmpURL, handle) = try makeTempFileHandle()
+        let (tmpURL, handle) = try makeTempFileHandle(prefix: "ofem-dl-test")
         defer {
             try? handle.close()
             try? FileManager.default.removeItem(at: tmpURL)

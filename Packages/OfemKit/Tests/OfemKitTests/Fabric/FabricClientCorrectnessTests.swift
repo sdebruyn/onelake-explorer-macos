@@ -4,9 +4,9 @@ import Testing
 
 // MARK: - Helpers (reuse the fabric test helpers declared in FabricClientTests.swift)
 
-// NOTE: `stub`, `makeGate`, and `makeClient` are already defined in
-// FabricClientTests.swift in the same test target. We define new helpers
-// here that differ only in configuration.
+// tests-15: makeGate(host:) lives in NetTestHelpers.swift. The per-file
+// fabricStub / makeFabricClient wrappers remain local because they bind
+// fabricBaseURL, keeping call sites concise.
 
 private let fabricBaseURL = URL(string: "https://api.fabric.microsoft.com")!
 
@@ -19,17 +19,10 @@ private func fabricStub(status: Int, body: String = "", headers: [String: String
     )
 }
 
-private func makeFabricGate() -> HTTPGateRegistry {
-    HTTPGateRegistry(
-        defaults: HTTPGateDefaults(maxConcurrent: 8, tokensPerSecond: 100, burst: 100),
-        seeded: [HTTPGate(host: "api.fabric.microsoft.com", maxConcurrent: 8, tokensPerSecond: 100, burst: 100)]
-    )
-}
-
 private func makeFabricClient(session: MockURLSession, maxAttempts: Int = 1) -> FabricClient {
     let http = HTTPClient(
         session: session,
-        gateRegistry: makeFabricGate(),
+        gateRegistry: makeGate(host: "api.fabric.microsoft.com"),
         retryPolicy: HTTPRetryPolicy(maxAttempts: maxAttempts, initialBackoff: .milliseconds(5), maxBackoff: .milliseconds(20))
     )
     return FabricClient(http: http, tokenProvider: MockTokenProvider(token: "fab-tok"), baseURL: fabricBaseURL)

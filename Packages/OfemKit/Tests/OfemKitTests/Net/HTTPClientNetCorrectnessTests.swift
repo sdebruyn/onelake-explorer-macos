@@ -11,24 +11,19 @@ private func stub(status: Int, body: Data = Data(), headers: [String: String] = 
     MockURLSession.Stub(data: body, status: status, headers: headers, url: testURL)
 }
 
+// tests-15: delegates to makeGate(host:) in NetTestHelpers.swift.
+// Use the seeded initializer so the gate is registered synchronously
+// and execute() never races against an unregistered host.
 private func makeGateRegistry(
     maxConcurrent: Int = 32,
     tokensPerSecond: Double = 1000,
     burst: Int = 1000
 ) -> HTTPGateRegistry {
-    // Use the seeded initializer so the gate is registered synchronously
-    // and execute() never races against an unregistered host. Firing
-    // registration inside an unstructured Task{} could schedule it after
-    // the first execute() call, making tests depend on scheduling luck.
-    let gate = HTTPGate(
+    makeGate(
         host: "onelake.dfs.fabric.microsoft.com",
         maxConcurrent: maxConcurrent,
         tokensPerSecond: tokensPerSecond,
         burst: burst
-    )
-    return HTTPGateRegistry(
-        defaults: HTTPGateDefaults(maxConcurrent: maxConcurrent, tokensPerSecond: tokensPerSecond, burst: burst),
-        seeded: [gate]
     )
 }
 
