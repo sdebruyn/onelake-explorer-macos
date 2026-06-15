@@ -102,6 +102,12 @@ public final class RotatingFileWriter: @unchecked Sendable {
             let handle = try fileHandleUnlocked()
             try handle.write(contentsOf: bytes)
             currentSize += bytes.count
+            // Flush to the OS page cache after every write so log lines land
+            // on disk before the FPE engine is torn down.  The FPE process is
+            // short-lived (built per enumeration, shut down quickly) and
+            // buffered writes would be silently discarded on teardown without
+            // this synchronize call.
+            try? handle.synchronize()
         } catch {
             // Best-effort: if we cannot write (e.g. disk full), skip silently.
             // os.Logger is still logging; the file is a secondary channel.

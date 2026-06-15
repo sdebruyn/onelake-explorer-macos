@@ -132,6 +132,33 @@ struct RotatingFileWriterTests {
         #expect(fm.fileExists(atPath: logFile.path))
     }
 
+    // MARK: - Flush-on-write (logging-10)
+
+    /// Verifies that log lines are readable from disk immediately after
+    /// `write(_:)` returns — without calling `close()` first.
+    ///
+    /// The FPE engine is short-lived (built per enumeration, torn down after
+    /// the enumeration completes).  If writes were buffered and only flushed
+    /// on `close()` / `deinit`, a fast teardown would leave `ofem.log` empty.
+    /// `RotatingFileWriter.write(_:)` calls `FileHandle.synchronize()` after
+    /// each append to prevent this.
+    @Test("write flushes to disk immediately — readable without close() (logging-10)")
+    func writeFlushesImmediately() throws {
+        try withTempDir { dir in
+            let writer = RotatingFileWriter(logDirectory: dir)
+            writer.write("flushed line")
+
+            // Read the file WITHOUT calling writer.close() to confirm the line
+            // was flushed to the OS page cache by write(_:) itself.
+            let logFile = dir.appending(path: "ofem.log", directoryHint: .notDirectory)
+            let content = try String(contentsOf: logFile, encoding: .utf8)
+            #expect(content.contains("flushed line"),
+                    "written line must be readable from disk before close() is called")
+
+            writer.close()
+        }
+    }
+
     @Test("write to non-existent directory creates it")
     func createsDirectory() throws {
         try withTempDir { baseDir in
