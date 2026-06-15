@@ -1,19 +1,25 @@
 name: Integration tests
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 6 * * 1'
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.github/ISSUE_TEMPLATE/**'
   # pull_request_target (not pull_request) is intentional:
   # - `pull_request` runs in the context of the PR head (untrusted fork code)
   #   while holding id-token:write + Azure OIDC access — a secret-exposure risk.
   # - `pull_request_target` runs in the context of the BASE branch; the
   #   checked-out ref below is pinned to github.event.pull_request.base.sha so
   #   fork-PR code is NEVER executed by this workflow.
-  # - The `integration` environment gate (required reviewers) means a maintainer
-  #   must explicitly approve before any Azure token is minted.
+  # - Fork PRs are gated by the maintainer-only `integration` label; that label
+  #   plus the base-SHA checkout is the only fork gate. The `integration`
+  #   environment has no required reviewers, so push-to-main runs execute
+  #   unattended and still access environment-scoped Azure secrets/vars.
   pull_request_target:
     types: [labeled]
+  workflow_dispatch:
 
 permissions:
   id-token: write
