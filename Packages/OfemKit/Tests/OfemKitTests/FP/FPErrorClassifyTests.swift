@@ -174,4 +174,12 @@ struct FPErrorClassifyTests {
         let err = NSError(domain: "com.example.custom", code: 42)
         #expect(FPError.classify(err) == .cannotSynchronize)
     }
+
+    // tests-12: moved here from SyncEngineTests (OneLakeError.httpError wrapping
+    // HTTPClientError.throttled must map to .serverBusy, not .cannotSynchronize).
+    @Test("OneLakeError.httpError(.throttled) maps to serverBusy")
+    func oneLakeThrottledMapsToServerBusy() {
+        let wrapped = OneLakeError.httpError(HTTPClientError.throttled)
+        #expect(FPError.classify(wrapped) == .serverBusy)
+    }
 }

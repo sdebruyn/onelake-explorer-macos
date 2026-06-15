@@ -118,15 +118,10 @@ struct TelemetryClientTests {
         #expect(ev?.time != nil)
     }
 
-    @Test("NoopTelemetrySink discards events silently")
-    func noopSinkDiscards() async {
-        let client = makeClient(sink: NoopTelemetrySink())
-        await client.start()
-        for _ in 0..<10 { await client.track(TelemetryEvent(name: "app_start")) }
-        await client.flush()
-        await client.shutdown()
-    // No crash, no assertions needed — just verify it completes.
-    }
+    // tests-20: noopSinkDiscards was removed — it only verified "no crash" and
+    // could not assert that events were actually discarded (NoopTelemetrySink has
+    // no observable state). The opt-out path is already covered by optOutUsesNoop
+    // below, which asserts sink.count == 0 on a MemoryTelemetrySink.
 
     @Test("optOut configuration uses NoopTelemetrySink regardless of sink")
     func optOutUsesNoop() async {

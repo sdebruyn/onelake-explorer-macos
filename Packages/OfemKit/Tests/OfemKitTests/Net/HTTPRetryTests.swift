@@ -189,41 +189,59 @@ struct BackoffTests {
 
 // MARK: - HTTPClientError sentinels
 
+// tests-13: use pattern matching instead of == to avoid the brittle retroactive
+// Equatable conformance. Case-pattern matching is exhaustive per case and does
+// not require a `default: false` arm that would silently pass new cases.
+
 @Suite("HTTPClientError sentinels")
 struct HTTPClientErrorSentinelTests {
     @Test("401 maps to .unauthorized")
     func maps401() {
-        #expect(HTTPClientError.sentinel(for: 401) == .unauthorized)
+        guard case .unauthorized = HTTPClientError.sentinel(for: 401) else {
+            Issue.record("expected .unauthorized for 401"); return
+        }
     }
 
     @Test("403 maps to .forbidden")
     func maps403() {
-        #expect(HTTPClientError.sentinel(for: 403) == .forbidden)
+        guard case .forbidden = HTTPClientError.sentinel(for: 403) else {
+            Issue.record("expected .forbidden for 403"); return
+        }
     }
 
     @Test("404 maps to .notFound")
     func maps404() {
-        #expect(HTTPClientError.sentinel(for: 404) == .notFound)
+        guard case .notFound = HTTPClientError.sentinel(for: 404) else {
+            Issue.record("expected .notFound for 404"); return
+        }
     }
 
     @Test("409 maps to .conflict")
     func maps409() {
-        #expect(HTTPClientError.sentinel(for: 409) == .conflict)
+        guard case .conflict = HTTPClientError.sentinel(for: 409) else {
+            Issue.record("expected .conflict for 409"); return
+        }
     }
 
     @Test("410 maps to .gone")
     func maps410() {
-        #expect(HTTPClientError.sentinel(for: 410) == .gone)
+        guard case .gone = HTTPClientError.sentinel(for: 410) else {
+            Issue.record("expected .gone for 410"); return
+        }
     }
 
     @Test("412 maps to .preconditionFailed")
     func maps412() {
-        #expect(HTTPClientError.sentinel(for: 412) == .preconditionFailed)
+        guard case .preconditionFailed = HTTPClientError.sentinel(for: 412) else {
+            Issue.record("expected .preconditionFailed for 412"); return
+        }
     }
 
     @Test("429 maps to .throttled")
     func maps429() {
-        #expect(HTTPClientError.sentinel(for: 429) == .throttled)
+        guard case .throttled = HTTPClientError.sentinel(for: 429) else {
+            Issue.record("expected .throttled for 429"); return
+        }
     }
 
     @Test("500 maps to .serverError")
@@ -243,28 +261,5 @@ struct HTTPClientErrorSentinelTests {
     @Test("400 has no sentinel")
     func maps400() {
         #expect(HTTPClientError.sentinel(for: 400) == nil)
-    }
-}
-
-// MARK: - HTTPClientError equatable conformance helper
-
-extension HTTPClientError: Equatable {
-    public static func == (lhs: HTTPClientError, rhs: HTTPClientError) -> Bool {
-        switch (lhs, rhs) {
-        case (.unauthorized, .unauthorized): return true
-        case (.forbidden, .forbidden): return true
-        case (.notFound, .notFound): return true
-        case (.conflict, .conflict): return true
-        case (.gone, .gone): return true
-        case (.preconditionFailed, .preconditionFailed): return true
-        case (.payloadTooLarge, .payloadTooLarge): return true
-        case (.unsupportedMediaType, .unsupportedMediaType): return true
-        case (.rangeNotSatisfiable, .rangeNotSatisfiable): return true
-        case (.unprocessableEntity, .unprocessableEntity): return true
-        case (.throttled, .throttled): return true
-        case (.serverError(let a), .serverError(let b)): return a == b
-        case (.cancelled, .cancelled): return true
-        default: return false
-        }
     }
 }

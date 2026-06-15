@@ -21,6 +21,10 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
     // MARK: - Recorded calls (for assertions)
 
     private(set) var listPathCalls: [ListPathCall] = []
+    // tests-10: record getProperties and createDirectory calls so tests can
+    // assert "exactly one HEAD was issued" or "mkdir was called with this path".
+    private(set) var getPropertiesCalls: [GetPropertiesCall] = []
+    private(set) var createDirectoryCalls: [CreateDirectoryCall] = []
     private(set) var readCalls: [ReadCall] = []
     private(set) var writeCalls: [WriteCall] = []
     private(set) var deleteCalls: [DeleteCall] = []
@@ -31,6 +35,20 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
         let itemGUID: String
         let directory: String
         let recursive: Bool
+    }
+
+    struct GetPropertiesCall {
+        let alias: String
+        let workspaceGUID: String
+        let itemGUID: String
+        let path: String
+    }
+
+    struct CreateDirectoryCall {
+        let alias: String
+        let workspaceGUID: String
+        let itemGUID: String
+        let path: String
     }
 
     struct ReadCall {
@@ -71,6 +89,8 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
     func getProperties(
         alias: String, workspaceGUID: String, itemGUID: String, path: String
     ) async throws -> PathProperties {
+        // tests-10: record the call so tests can assert HEAD count and args.
+        lock.withLock { getPropertiesCalls.append(GetPropertiesCall(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, path: path)) }
         return try dequeue(&getPropertiesResults, name: "getProperties")
     }
 
@@ -112,6 +132,8 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
     func createDirectory(
         alias: String, workspaceGUID: String, itemGUID: String, path: String
     ) async throws {
+        // tests-10: record the call so tests can assert mkdir count and path.
+        lock.withLock { createDirectoryCalls.append(CreateDirectoryCall(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, path: path)) }
         try dequeueVoid(&createDirectoryResults, name: "createDirectory")
     }
 
@@ -222,25 +244,45 @@ final class BlockingMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendabl
 
 // MARK: - MockFabricClient
 
+// tests-09: protect all mutable arrays with an NSLock, matching the pattern
+// used by MockOneLakeClient, so that any future concurrent-Fabric test does
+// not race the array mutation.
 final class MockFabricClient: FabricClientProtocol, @unchecked Sendable {
 
     var listWorkspacesResults: [Result<[Workspace], any Error>] = []
     var listItemsResults: [Result<[Item], any Error>] = []
     var listFoldersResults: [Result<[Folder], any Error>] = []
 
+    private let lock = NSLock()
+
     func listAllWorkspaces(alias: String) async throws -> [Workspace] {
-        guard !listWorkspacesResults.isEmpty else { throw MockError.stubsExhausted("listAllWorkspaces") }
-        return try listWorkspacesResults.removeFirst().get()
+        let result: Result<[Workspace], any Error> = lock.withLock {
+            guard !listWorkspacesResults.isEmpty else {
+                return .failure(MockError.stubsExhausted("listAllWorkspaces"))
+            }
+            return listWorkspacesResults.removeFirst()
+        }
+        return try result.get()
     }
 
     func listAllItems(alias: String, workspaceID: String) async throws -> [Item] {
-        guard !listItemsResults.isEmpty else { throw MockError.stubsExhausted("listAllItems") }
-        return try listItemsResults.removeFirst().get()
+        let result: Result<[Item], any Error> = lock.withLock {
+            guard !listItemsResults.isEmpty else {
+                return .failure(MockError.stubsExhausted("listAllItems"))
+            }
+            return listItemsResults.removeFirst()
+        }
+        return try result.get()
     }
 
     func listAllFolders(alias: String, workspaceID: String) async throws -> [Folder] {
-        guard !listFoldersResults.isEmpty else { throw MockError.stubsExhausted("listAllFolders") }
-        return try listFoldersResults.removeFirst().get()
+        let result: Result<[Folder], any Error> = lock.withLock {
+            guard !listFoldersResults.isEmpty else {
+                return .failure(MockError.stubsExhausted("listAllFolders"))
+            }
+            return listFoldersResults.removeFirst()
+        }
+        return try result.get()
     }
 }
 

@@ -16,8 +16,11 @@ struct SyncEngineTests {
         store: CacheStore? = nil
     ) throws -> (SyncEngine, CacheStore) {
         let s = try store ?? makeTempStore()
-        let scratchDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        // tests-07: nest the scratch dir under store.root so the single
+        // `defer { try? FileManager.default.removeItem(at: store.root) }` at
+        // each call site cleans both the cache and the partial-download scratch
+        // directory — no orphaned temp dirs left in $TMPDIR.
+        let scratchDir = s.root.appending(path: "scratch", directoryHint: .isDirectory)
         let engine = SyncEngine(
             cache: s,
             onelake: onelake,
@@ -36,64 +39,20 @@ struct SyncEngineTests {
         CacheKey(accountAlias: alias, workspaceID: wsID, itemID: itID, path: path)
     }
 
-    // MARK: - sync-01: 412 retry resets rangeStart
+    // NOTE: PartialManager.discard+reset (412 path) coverage has been moved to
+    // Sync/PartialManagerTests.swift (tests-12: was misplaced in SyncEngine suite).
 
-    @Test("412 resume retry — PartialManager discard+reset path compiles and resets state")
-    func test412RetryResetsRangeStart() throws {
-        // Unit test for PartialManager's sync-01 fix: after discard + reset,
-        // rangeStart is 0 and hasPartial is false.
-        let (pm, dir) = makePartialManager()
-        defer { try? FileManager.default.removeItem(at: dir) }
+    // MARK: - First open: no cache → downloads and returns content
 
-        let key = Self.baseKey
-
-        // Create a 10-byte partial with etag.
-        let partialURL = pm.partialURL(for: key)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: partialURL.path, contents: Data(repeating: 0x41, count: 10))
-        try pm.storeEtag("old-etag", for: key)
-
-        let record = MetadataRecord(
-            accountAlias: Self.alias,
-            workspaceID: Self.wsID,
-            itemID: Self.itID,
-            path: Self.path,
-            parentPath: "Files",
-            name: "data.csv",
-            isDir: false,
-            contentLength: 100,
-            etag: "old-etag"
-        )
-
-        // Before discard: should report a partial at offset 10.
-        let plan = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(plan.rangeStart == 10)
-        #expect(plan.hasPartial)
-
-        // Simulate the 412 discard + state reset in SyncEngine.
-        pm.discard(for: key)
-        // After discard: no partial on disk, rangeStart returns .fullRestart.
-        let plan2 = pm.rangeStart(for: key, cachedRecord: record)
-        #expect(plan2.rangeStart == 0)
-        #expect(plan2.pinnedEtag == nil)
-        #expect(!plan2.hasPartial)
-    }
-
-    /// Returns a `PartialManager` backed by a unique temp directory.
-    private func makePartialManager() -> (PartialManager, URL) {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ofem-test-pm-\(UUID().uuidString)", isDirectory: true)
-        return (PartialManager(scratchDir: dir), dir)
-    }
-
-    // MARK: - sync-07: cache failure returns downloaded bytes
-
-    @Test("Cache write failure still returns downloaded bytes")
-    func testCacheFailureReturnsBytesInMemory() async throws {
+    // tests-08: renamed from "Cache write failure still returns downloaded bytes"
+    // (mislabeled — this test never induces a cache failure; it only exercises the
+    // happy-path download and verifies the returned file URL is readable).
+    @Test("open() downloads and returns correct bytes on first open (no prior cache)")
+    func testFirstOpenDownloadsAndReturnsContent() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
 
-        // Use a real store to test the "blob URL is accessible after download" path.
+        // Use a real store to exercise the full blob-write path.
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
@@ -106,6 +65,7 @@ struct SyncEngineTests {
         let fileURL = try await engine.open(key: key)
         let data = try Data(contentsOf: fileURL)
         #expect(data.count == 50)
+        #expect(data == body)
     }
 
     // MARK: - sync-06: concurrent opens coalesce
@@ -146,9 +106,9 @@ struct SyncEngineTests {
 
         // Max 1 download slot so a stuck slot would deadlock the second call.
         let store = try makeTempStore()
+        // tests-07: nest scratch under store.root so one removeItem covers both.
+        let scratchDir = store.root.appending(path: "scratch", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: store.root) }
-        let scratchDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let engine = SyncEngine(
             cache: store,
             onelake: ol,
@@ -284,15 +244,8 @@ struct SyncEngineTests {
         #expect(status?.state == .paused)
     }
 
-    // MARK: - sync-12: 429 from OneLakeError.httpError classified as serverBusy
-
-    @Test("FPError.classify maps OneLakeError.httpError(.throttled) to serverBusy")
-    func testThrottledClassifiedAsServerBusy() {
-        let inner = HTTPClientError.throttled
-        let wrapped = OneLakeError.httpError(inner)
-        let code = FPError.classify(wrapped)
-        #expect(code == .serverBusy)
-    }
+    // NOTE: FPError.classify(.throttled) coverage has been moved to
+    // FP/FPErrorClassifyTests.swift (tests-12: was misplaced in SyncEngine suite).
 
     // MARK: - T1: cancellation-poisoning (C1 livelock fix)
 
@@ -343,6 +296,11 @@ struct SyncEngineTests {
 
     // MARK: - T2: real sync-07 fallback (blob store failure returns in-memory bytes)
 
+    // tests-08: this test uses chmod 0o555 to force a write failure. That is
+    // root-fragile — processes running as root ignore POSIX directory permissions
+    // and the write succeeds, so the fallback path is never exercised. A
+    // protocol-level injectable cache would be more robust; tracked for the
+    // future but left as-is because the test is still valid for non-root CI.
     @Test("Blob store failure still returns downloaded bytes (real fallback path)")
     func testBlobStoreFailureReturnsBytesFromMemory() async throws {
         let ol = MockOneLakeClient()
@@ -414,56 +372,8 @@ struct SyncEngineTests {
         #expect(ol.readCalls[1].range == nil)
     }
 
-    // MARK: - sync-15: batch reconciliation
-
-    @Test("refreshFolder upserts are batched (batchUpsert API exists and works)")
-    func testBatchUpsert() async throws {
-        let store = try makeTempStore()
-        defer { try? FileManager.default.removeItem(at: store.root) }
-
-        let records = (0..<10).map { i -> MetadataRecord in
-            MetadataRecord(
-                accountAlias: "a",
-                workspaceID: "ws",
-                itemID: "it",
-                path: "f\(i).txt",
-                parentPath: "",
-                name: "f\(i).txt",
-                isDir: false,
-                contentLength: Int64(i)
-            )
-        }
-
-        try await store.batchUpsert(records)
-        let key = CacheKey(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "")
-        let root = MetadataRecord(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "", parentPath: "", name: "root", isDir: true)
-        try await store.upsert(root)
-        // All 10 records should exist.
-        let children = try await store.children(of: key)
-        #expect(children.count == 10)
-    }
-
-    @Test("batchDelete removes multiple keys in one call")
-    func testBatchDelete() async throws {
-        let store = try makeTempStore()
-        defer { try? FileManager.default.removeItem(at: store.root) }
-
-        let root = MetadataRecord(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "", parentPath: "", name: "root", isDir: true)
-        try await store.upsert(root)
-        for i in 0..<5 {
-            let r = MetadataRecord(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "f\(i).txt", parentPath: "", name: "f\(i).txt", isDir: false)
-            try await store.upsert(r)
-        }
-
-        let keys = (0..<5).map { i in
-            CacheKey(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "f\(i).txt")
-        }
-        try await store.batchDelete(keys)
-
-        let parentKey = CacheKey(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "")
-        let remaining = try await store.children(of: parentKey)
-        #expect(remaining.isEmpty)
-    }
+    // NOTE: CacheStore.batchUpsert / batchDelete coverage has been moved to
+    // Cache/CacheStoreTests.swift (tests-12: was misplaced in SyncEngine suite).
 
     // MARK: - Paused workspace guard: guardPaused throws before any network call
 
@@ -635,17 +545,19 @@ struct SyncEngineTests {
         ol.deleteResults.append(.failure(OneLakeError.httpError(networkErr)))
 
         let key = Self.baseKey
-        var threw = false
+        // tests-11: assert the concrete error type — any throw is not enough.
         do {
             try await engine.delete(key: key)
-        } catch {
-            threw = true
-            // Must not remap to workspacePaused.
-            if case SyncError.workspacePaused = error {
-                Issue.record("Should not remap to workspacePaused for a plain network error")
+            Issue.record("Expected OneLakeError.httpError to be rethrown")
+        } catch let err as OneLakeError {
+            if case .httpError = err {
+                // Correct — network error propagated as-is.
+            } else {
+                Issue.record("Expected .httpError, got \(err)")
             }
+        } catch {
+            Issue.record("Expected OneLakeError, got \(type(of: error)): \(error)")
         }
-        #expect(threw)
     }
 
     @Test("delete() marks workspace paused and throws workspacePaused on capacity error")
@@ -744,13 +656,19 @@ struct SyncEngineTests {
         ol.createDirectoryResults.append(.failure(OneLakeError.httpError(networkErr)))
 
         let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "NewDir")
-        var threw = false
+        // tests-11: assert the concrete error type, not just that something threw.
         do {
             try await engine.mkdir(key: key)
+            Issue.record("Expected OneLakeError.httpError to be rethrown")
+        } catch let err as OneLakeError {
+            if case .httpError = err {
+                // Correct — network error propagated as-is.
+            } else {
+                Issue.record("Expected .httpError, got \(err)")
+            }
         } catch {
-            threw = true
+            Issue.record("Expected OneLakeError, got \(type(of: error)): \(error)")
         }
-        #expect(threw)
     }
 
     @Test("mkdir() marks workspace paused and throws workspacePaused on capacity error")
@@ -836,13 +754,19 @@ struct SyncEngineTests {
         ol.writeResults.append(.failure(OneLakeError.httpError(networkErr)))
 
         let key = Self.baseKey
-        var threw = false
+        // tests-11: assert the concrete error type, not just that something threw.
         do {
             try await engine.put(key: key, sourceURL: src)
+            Issue.record("Expected OneLakeError.httpError to be rethrown")
+        } catch let err as OneLakeError {
+            if case .httpError = err {
+                // Correct — write error propagated as-is.
+            } else {
+                Issue.record("Expected .httpError, got \(err)")
+            }
         } catch {
-            threw = true
+            Issue.record("Expected OneLakeError, got \(type(of: error)): \(error)")
         }
-        #expect(threw)
     }
 
     // MARK: - HEAD freshness: etag changed falls through to download
@@ -895,8 +819,11 @@ struct SyncEngineTests {
         let url2 = try await engine.open(key: key)
         let data2 = try Data(contentsOf: url2)
         #expect(data2.count == 20)
-        // No second network read.
+        // No second network read — served from cache.
         #expect(ol.readCalls.count == 1)
+        // tests-10: exactly one HEAD (getProperties) should have been issued for the
+        // freshness check, not zero (which would mean cache was skipped).
+        #expect(ol.getPropertiesCalls.count == 1, "expected exactly one HEAD for freshness check")
     }
 
     @Test("open() falls through to download when cached etag is empty")
@@ -1067,8 +994,10 @@ struct SyncEngineTests {
         let updated = try? await store.fetch(key: CacheKey(
             accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "data.csv"
         ))
-        // Blob linkage must be cleared when etag changed.
-        #expect(updated?.blobSHA256 == "" || updated?.blobSHA256 == nil || updated?.blobSHA256.isEmpty == true)
+        // tests-18: assert the exact canonical cleared representation ("") rather than
+        // a disjunction — MetadataRecord.blobSHA256 defaults to "" when blob linkage
+        // is not carried (etag changed path in SyncEngine.refreshFolder).
+        #expect(updated?.blobSHA256 == "", "blobSHA256 must be cleared (empty string) when etag changes")
         #expect(updated?.etag == "new-etag")
     }
 
@@ -1083,16 +1012,17 @@ struct SyncEngineTests {
 
         fabric.listWorkspacesResults.append(.failure(MockError.intentional("network down")))
 
-        var threw = false
+        // tests-11: assert the concrete error type (MockError.intentional), not just that
+        // something threw. A wrong error type (e.g. mis-mapped SyncError) would still pass
+        // the old `threw == true` check.
         do {
             _ = try await engine.listWorkspaces(alias: Self.alias)
+            Issue.record("Expected MockError.intentional to be rethrown")
+        } catch MockError.intentional {
+            // Correct — non-paused error propagated as-is.
         } catch {
-            threw = true
-            if case SyncError.workspacePaused = error {
-                Issue.record("Should not remap non-paused error to workspacePaused")
-            }
+            Issue.record("Expected MockError.intentional, got \(type(of: error)): \(error)")
         }
-        #expect(threw)
     }
 
     @Test("listWorkspaces() marks paused and throws workspacePaused on capacity error")
@@ -1158,13 +1088,15 @@ struct SyncEngineTests {
 
         fabric.listItemsResults.append(.failure(MockError.intentional("timeout")))
 
-        var threw = false
+        // tests-11: assert the concrete error type, not just that something threw.
         do {
             _ = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
+            Issue.record("Expected MockError.intentional to be rethrown")
+        } catch MockError.intentional {
+            // Correct — non-paused error propagated as-is.
         } catch {
-            threw = true
+            Issue.record("Expected MockError.intentional, got \(type(of: error)): \(error)")
         }
-        #expect(threw)
     }
 
     @Test("listItems() returns items and stamps cache rows on success")
