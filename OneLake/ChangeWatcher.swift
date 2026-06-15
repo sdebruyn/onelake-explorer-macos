@@ -20,7 +20,7 @@ import os.log
 final class ChangeWatcher {
     static let shared = ChangeWatcher()
 
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "change-watcher")
+    private static let log = Logger(subsystem: ofemSubsystem, category: "change-watcher")
 
     private init() {}
 
@@ -40,10 +40,10 @@ final class ChangeWatcher {
 
     private func signalAllDomains() async {
         do {
-            let domains = try await allDomains()
+            let domains = try await ofemGetAllDomains()
             for domain in domains {
                 await signalContainer(
-                    domainId: domain.identifier.rawValue,
+                    domain: domain,
                     containerId: NSFileProviderItemIdentifier.workingSet.rawValue
                 )
             }
@@ -57,14 +57,14 @@ final class ChangeWatcher {
         }
     }
 
-    private func signalContainer(domainId: String, containerId: String) async {
-        let domainIdentifier = NSFileProviderDomainIdentifier(rawValue: domainId)
+    private func signalContainer(domain: NSFileProviderDomain, containerId: String) async {
+        let domainId = domain.identifier.rawValue
         let itemIdentifier = NSFileProviderItemIdentifier(rawValue: containerId)
 
-        guard let manager = NSFileProviderManager(for: NSFileProviderDomain(
-            identifier: domainIdentifier,
-            displayName: ""
-        )) else {
+        // Use the real domain object (not a re-fabricated one with an empty
+        // displayName) so that NSFileProviderManager(for:) receives the
+        // same domain that macOS registered.
+        guard let manager = NSFileProviderManager(for: domain) else {
             Self.log.debug(
                 "ChangeWatcher: no manager for domain \(domainId, privacy: .public); domain may not be registered yet"
             )
@@ -89,18 +89,6 @@ final class ChangeWatcher {
             Self.log.warning(
                 "ChangeWatcher: signalEnumerator failed for \(domainId, privacy: .public)/\(containerId, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
-        }
-    }
-
-    private func allDomains() async throws -> [NSFileProviderDomain] {
-        try await withCheckedThrowingContinuation { continuation in
-            NSFileProviderManager.getDomainsWithCompletionHandler { domains, error in
-                if let error = error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: domains)
-                }
-            }
         }
     }
 }

@@ -18,7 +18,9 @@
 // user's downloaded content — they may want it back).
 //
 // Calling `reconcile()` more than once concurrently is safe: the
-// `@MainActor` annotation serialises every entry point.
+// `@MainActor` annotation serialises every entry point, and the
+// `reconcileInFlight` guard prevents two reconcile passes from
+// interleaving at async suspension points.
 //
 // reconcile() reads the account list from SharedOfemAuth (config.toml).
 // addDomain(alias:) and removeDomain(alias:) are surgical alternatives
@@ -37,7 +39,7 @@ final class DomainSyncManager {
     static let shared = DomainSyncManager()
 
     private static let log = Logger(
-        subsystem: "dev.debruyn.ofem",
+        subsystem: ofemSubsystem,
         category: "domain-sync"
     )
 
@@ -60,6 +62,13 @@ final class DomainSyncManager {
     }
 
     /// Returns an NSFileProviderDomain for `alias`.
+    ///
+    /// The `displayName` is set to the bare alias (not `"OneLake — <alias>"`):
+    /// macOS composes the Finder sidebar label from `CFBundleDisplayName`
+    /// ("OneLake") and the domain's `displayName` with an em-dash separator,
+    /// producing "OneLake — <alias>" automatically. Passing just the alias is
+    /// the correct and intentional input to that composition. Do not include the
+    /// em-dash here — it is a display artefact, not part of the stored identifier.
     private func makeDomain(alias: String) -> NSFileProviderDomain {
         NSFileProviderDomain(
             identifier: NSFileProviderDomainIdentifier(rawValue: domainIdentifier(for: alias)),
@@ -104,7 +113,7 @@ final class DomainSyncManager {
         let id = domainIdentifier(for: alias)
         let existing: [NSFileProviderDomain]
         do {
-            existing = try await Self.existingDomains()
+            existing = try await ofemGetAllDomains()
         } catch {
             Self.log.error(
                 "removeDomain: getDomainsWithCompletionHandler failed: \(error.localizedDescription, privacy: .public)"
@@ -127,16 +136,31 @@ final class DomainSyncManager {
 
     // MARK: - Full reconcile
 
+    /// In-flight guard: prevents two concurrent reconcile() calls from
+    /// interleaving at async suspension points and performing duplicate
+    /// add/remove operations (host-20).
+    private var reconcileInFlight = false
+
     /// Reconcile the macOS domain list with the account list from
     /// config.toml (via SharedOfemAuth).
     ///
-    /// Safe to call repeatedly. Logs at info level for every add / remove
-    /// so the operator can audit the activity from Console.app.
-    /// Expressed in terms of addDomain/removeDomain so error-handling and
-    /// domain-identifier composition are defined in exactly one place.
+    /// Safe to call repeatedly; concurrent calls while a pass is already
+    /// in flight are dropped (not queued) since the in-flight pass will
+    /// complete with the current account list anyway. Logs at info level
+    /// for every add / remove so the operator can audit the activity from
+    /// Console.app. Expressed in terms of addDomain/removeDomain so
+    /// error-handling and domain-identifier composition are defined in
+    /// exactly one place.
     func reconcile() async throws {
+        guard !reconcileInFlight else {
+            Self.log.debug("reconcile: skipped (pass already in flight)")
+            return
+        }
+        reconcileInFlight = true
+        defer { reconcileInFlight = false }
+
         let accounts = await SharedOfemAuth.shared.auth.listAccounts()
-        let existing = try await Self.existingDomains()
+        let existing = try await ofemGetAllDomains()
         let existingById: [String: NSFileProviderDomain] = Dictionary(
             uniqueKeysWithValues: existing.map { ($0.identifier.rawValue, $0) }
         )
@@ -167,30 +191,6 @@ final class DomainSyncManager {
                 Self.log.notice(
                     "NSFileProviderManager.remove(\(id, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)"
                 )
-            }
-        }
-    }
-
-    // MARK: - Helpers
-
-    /// Snapshot the currently-registered domains. Bridges the
-    /// completion-handler API into `async` so the rest of the
-    /// reconciliation reads top-to-bottom.
-    ///
-    /// We funnel through `withCheckedThrowingContinuation` rather
-    /// than relying on Swift's auto-bridged `getDomains()`
-    /// overload because the latter has shifted shape across macOS
-    /// SDK revisions (sometimes `() async throws -> [Domain]`,
-    /// sometimes `() async -> [Domain]`). The explicit bridge
-    /// keeps the call site predictable.
-    private static func existingDomains() async throws -> [NSFileProviderDomain] {
-        try await withCheckedThrowingContinuation { continuation in
-            NSFileProviderManager.getDomainsWithCompletionHandler { domains, error in
-                if let error = error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                continuation.resume(returning: domains)
             }
         }
     }

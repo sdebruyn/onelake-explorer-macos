@@ -52,9 +52,18 @@ final class AddAccountCoordinator: ObservableObject {
 
     enum Phase: Equatable {
         case idle
-        case waiting             // sign-in in flight
-        case success(String)     // signed-in username
-        case failure(String)     // human-readable error
+        case waiting                 // sign-in in flight
+        case success(String)         // signed-in username; brief success display
+        case readyToDismiss(String)  // pause elapsed; view should dismiss
+        case failure(String)         // human-readable error
+
+        /// True while sign-in is in progress (fields should be disabled).
+        var isInProgress: Bool {
+            switch self {
+            case .waiting, .success, .readyToDismiss: return true
+            case .idle, .failure: return false
+            }
+        }
     }
 
     @Published private(set) var phase: Phase = .idle
@@ -64,7 +73,10 @@ final class AddAccountCoordinator: ObservableObject {
     private let signInProvider: SignInProvider
     private let domainRegistrar: DomainRegistrar
 
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "add-account-coordinator")
+    private static let log = Logger(subsystem: ofemSubsystem, category: "add-account-coordinator")
+
+    /// Duration the success state is shown before transitioning to readyToDismiss.
+    static let successDisplayDuration: Duration = .milliseconds(1_200)
 
     /// Production initialiser — wires to shared singletons by default.
     /// The `@MainActor` default args are safe here because the class itself
@@ -91,11 +103,16 @@ final class AddAccountCoordinator: ObservableObject {
 
     /// Drives the sign-in flow.
     ///
+    /// Accepts raw field strings from the View and normalises them here so the
+    /// View has no orchestration logic. The View supplies the anchor window
+    /// (key window at the time Sign In is tapped) rather than the coordinator
+    /// reaching into NSApp directly, which keeps the coordinator testable.
+    ///
     /// - Parameters:
-    ///   - alias:      Trimmed, non-empty alias string.
-    ///   - tenant:     Optional tenant GUID/domain; nil means "let AAD pick".
-    ///   - clientID:   Optional custom Entra App Registration; nil means built-in.
-    ///   - window:     Window that anchors the ASWebAuthenticationSession sheet.
+    ///   - alias:    Raw alias string from the text field (will be trimmed).
+    ///   - tenant:   Raw tenant field (trimmed; nil if blank).
+    ///   - clientID: Raw client ID field (trimmed; nil if blank).
+    ///   - window:   Window that anchors the MSAL ASWebAuthenticationSession sheet.
     func startLogin(
         alias: String,
         tenant: String?,
@@ -103,10 +120,22 @@ final class AddAccountCoordinator: ObservableObject {
         window: NSWindow
     ) {
         guard phase != .waiting else { return }
+
+        let trimmedAlias = alias.trimmingCharacters(in: .whitespaces)
+        guard !trimmedAlias.isEmpty else { return }
+
+        let tenantArg = tenant?.trimmingCharacters(in: .whitespaces)
+        let clientIDArg = clientID?.trimmingCharacters(in: .whitespaces)
+
         isCancelled = false
         phase = .waiting
         loginTask = Task { [weak self] in
-            await self?.runLogin(alias: alias, tenant: tenant, clientID: clientID, window: window)
+            await self?.runLogin(
+                alias: trimmedAlias,
+                tenant: tenantArg.flatMap { $0.isEmpty ? nil : $0 },
+                clientID: clientIDArg.flatMap { $0.isEmpty ? nil : $0 },
+                window: window
+            )
         }
     }
 
@@ -149,10 +178,24 @@ final class AddAccountCoordinator: ObservableObject {
             // Finder sidebar immediately.
             await domainRegistrar.registerDomain(alias: info.alias)
 
+            guard !Task.isCancelled, !isCancelled else { return }
+
+            // Brief success display before auto-dismiss (host-16): the pause and
+            // the transition to readyToDismiss live here so the View has no
+            // sleep or dismiss orchestration.
+            try? await Task.sleep(for: Self.successDisplayDuration)
+            guard !Task.isCancelled, !isCancelled else { return }
+            phase = .readyToDismiss(info.username)
+
         } catch is CancellationError {
-            Self.log.info("sign-in task cancelled by user")
-            // phase was already reset by cancel() or remains .waiting —
-            // callers should call cancel() to reset; don't touch phase here.
+            Self.log.info("sign-in task cancelled")
+            // A CancellationError can arrive from the provider even when
+            // cancel() was not called (e.g. the framework cancels the task
+            // directly). Explicitly reset to .idle so the UI is never left
+            // stuck in .waiting with a disabled Sign In button (host-04).
+            if !isCancelled {
+                phase = .idle
+            }
         } catch {
             guard !Task.isCancelled, !isCancelled else { return }
             Self.log.error("sign-in failed: \(error.localizedDescription, privacy: .public)")

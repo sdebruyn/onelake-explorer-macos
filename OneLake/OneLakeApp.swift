@@ -19,7 +19,7 @@ import os.log
 /// scenes do not surface (becomeActive, willTerminate) and to perform
 /// the initial boot sequence at launch.
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "app-delegate")
+    private static let log = Logger(subsystem: ofemSubsystem, category: "app-delegate")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.log.info("OneLake host app did finish launching")
@@ -80,7 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// Root SwiftUI app — menu-bar agent only, no window, no Dock icon.
 @main
 struct OneLakeApp: App {
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "app")
+    private static let log = Logger(subsystem: ofemSubsystem, category: "app")
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
@@ -108,7 +108,7 @@ struct OneLakeApp: App {
         // The Window scene produces a single floating panel; the id matches
         // the string passed to openWindow. WindowStyle.titleBar is default
         // (non-resizable by the user); we constrain the frame in the view.
-        Window("Add OneLake Account", id: "add-account") {
+        Window("Add OneLake Account", id: ofemAddAccountWindowID) {
             AddAccountView()
         }
         .windowResizability(.contentSize)

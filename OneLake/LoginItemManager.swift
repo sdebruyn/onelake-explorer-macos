@@ -26,7 +26,7 @@ import os.log
 final class LoginItemManager: ObservableObject {
     static let shared = LoginItemManager()
 
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "login-item")
+    private static let log = Logger(subsystem: ofemSubsystem, category: "login-item")
 
     // MARK: Published
 

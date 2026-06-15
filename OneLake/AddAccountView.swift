@@ -33,9 +33,11 @@ struct AddAccountView: View {
     // The follow-on docs page that describes when and how to bring
     // your own Entra App Registration. Linked from the Advanced
     // section so curious users don't have to dig for it.
-    private static let customAppRegDocsURL = URL(
+    // URL(string:) can return nil for malformed literals; guard with a fallback
+    // so a typo doesn't crash at first access of the view type (host-18).
+    private static let customAppRegDocsURL: URL = URL(
         string: "https://ofem.debruyn.dev/custom-app-registration/"
-    )!
+    ) ?? URL(string: "https://ofem.debruyn.dev/")!
 
     // MARK: - Body
 
@@ -51,7 +53,7 @@ struct AddAccountView: View {
                     .foregroundStyle(.secondary)
                 TextField("e.g. work", text: $alias)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(coordinator.phase == .waiting)
+                    .disabled(coordinator.phase.isInProgress)
                 // fixedSize(vertical) lets the caption wrap to a second
                 // line when the alias is long enough to push the
                 // composed preview past the field width, instead of
@@ -69,7 +71,7 @@ struct AddAccountView: View {
                     .foregroundStyle(.secondary)
                 TextField("GUID or domain", text: $tenant)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(coordinator.phase == .waiting)
+                    .disabled(coordinator.phase.isInProgress)
                 Text("Optional. Leave blank and Microsoft will pick the right tenant at sign-in. Pin a specific tenant only if you belong to multiple and want to skip the picker.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -111,12 +113,10 @@ struct AddAccountView: View {
             coordinator.cancel()
         }
         .onChange(of: coordinator.phase) { newPhase in
-            // Auto-dismiss after the success pause.
-            if case .success = newPhase {
-                Task {
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    dismiss()
-                }
+            // Auto-dismiss when the coordinator signals readyToDismiss.
+            // The delay and policy live in the coordinator, not here (host-16/host-07).
+            if case .readyToDismiss = newPhase {
+                dismiss()
             }
         }
     }
@@ -133,7 +133,7 @@ struct AddAccountView: View {
                     .padding(.top, 4)
                 TextField("Use the built-in app registration when blank", text: $customClientID)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(coordinator.phase == .waiting)
+                    .disabled(coordinator.phase.isInProgress)
                 // Help text — kept short here, with a link to the full
                 // docs page that explains when this is needed and how
                 // to configure the Entra registration.
@@ -167,7 +167,7 @@ struct AddAccountView: View {
                     .font(.subheadline)
             }
 
-        case .success(let username):
+        case .success(let username), .readyToDismiss(let username):
             Label("Signed in as \(username)", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
                 .font(.subheadline)
@@ -187,28 +187,21 @@ struct AddAccountView: View {
         guard !alias.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
         switch coordinator.phase {
         case .idle, .failure: return true
-        case .waiting, .success: return false
+        case .waiting, .success, .readyToDismiss: return false
         }
     }
 
     private func startLogin() {
-        let trimmedAlias = alias.trimmingCharacters(in: .whitespaces)
-        guard !trimmedAlias.isEmpty else { return }
-
         // Resolve the window that presents the MSAL auth sheet.
-        // The "Add Account" window is the key window while the form is
-        // open; fall back to mainWindow if keyWindow is briefly nil.
-        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else {
-            return
-        }
-
-        let tenantArg = tenant.trimmingCharacters(in: .whitespaces)
-        let clientIDArg = customClientID.trimmingCharacters(in: .whitespaces)
-
+        // The "Add Account" window is the key window while the form is open;
+        // fall back to mainWindow if keyWindow is briefly nil.
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+        // Field normalisation and nil-vs-value decisions live in the coordinator
+        // (host-07); the View only resolves the window and forwards raw values.
         coordinator.startLogin(
-            alias: trimmedAlias,
-            tenant: tenantArg.isEmpty ? nil : tenantArg,
-            clientID: clientIDArg.isEmpty ? nil : clientIDArg,
+            alias: alias,
+            tenant: tenant,
+            clientID: customClientID,
             window: window
         )
     }

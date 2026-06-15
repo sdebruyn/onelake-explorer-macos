@@ -57,7 +57,7 @@ struct MenuBarView: View {
     @ObservedObject var model: MenuStatusModel
     @Environment(\.openWindow) private var openWindow
 
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "menubar-view")
+    private static let log = Logger(subsystem: ofemSubsystem, category: "menubar-view")
 
     var body: some View {
         // The `.menu` style MenuBarExtra does not fire SwiftUI.onAppear on
@@ -66,6 +66,15 @@ struct MenuBarView: View {
         // onAppear is intentionally absent; do not re-add it.
         Group {
             statusHeader
+            // Surface the last action error inline so the user can see it
+            // without a blocking modal (host-09). The item is only shown when
+            // an error is set; it clears on the next successful action or refresh.
+            if let error = model.lastActionError {
+                Text("⚠ \(error)")
+                    .foregroundStyle(.red)
+                    .font(.caption)
+                    .disabled(true)
+            }
             Divider()
             accountRows
             Divider()
@@ -119,7 +128,7 @@ struct MenuBarView: View {
     }
 
     private func openAddAccountWindow() {
-        openWindow(id: "add-account")
+        openWindow(id: ofemAddAccountWindowID)
         // Bring the window to the front; LSUIElement apps do not activate
         // automatically when a window is opened programmatically.
         NSApp.activate(ignoringOtherApps: true)
@@ -168,11 +177,14 @@ struct MenuBarView: View {
 
 private struct AccountSubmenu: View {
     let account: AccountInfo
-    // Unowned reference to the shared singleton; its lifetime is tied to the
-    // app process (owned by OneLakeApp via @StateObject), so unowned is safe.
-    unowned let model: MenuStatusModel
+    // @ObservedObject is the correct, safe, observation-aware choice here.
+    // SwiftUI Views are structs; AppKit may retain them as part of an open
+    // NSMenu, so `unowned` would trap if the model were ever deallocated.
+    // The singleton lives for the process lifetime but the semantics are
+    // safer and change observation works correctly with @ObservedObject.
+    @ObservedObject var model: MenuStatusModel
 
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "menubar-view")
+    private static let log = Logger(subsystem: ofemSubsystem, category: "menubar-view")
 
     var body: some View {
         Button("Open in Finder") {

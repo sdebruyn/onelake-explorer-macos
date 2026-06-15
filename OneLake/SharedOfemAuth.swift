@@ -32,7 +32,7 @@ import os.log
 final class SharedOfemAuth {
     static let shared = SharedOfemAuth()
 
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "shared-auth")
+    private static let log = Logger(subsystem: ofemSubsystem, category: "shared-auth")
 
     let configStore: OfemConfigStore
     let auth: OfemAuth
@@ -43,15 +43,62 @@ final class SharedOfemAuth {
     //
     // OfemConfigStore() throws only on TOML parse failure. On a fresh install
     // the file doesn't exist and a default config is returned — never throws.
-    // A corrupt TOML is a fatal misconfiguration; crashing early surfaces the
-    // root cause in crash logs.
+    // If the TOML is corrupt, we degrade gracefully: back up the corrupt file,
+    // reinitialise with defaults, and surface a non-blocking alert. We do NOT
+    // crash (host-25): a fatalError here would trap the menu-bar agent in a
+    // crash loop on every login with no recovery path for the user.
     init() {
+        let paths = OfemPaths()
+        var loadedStore: OfemConfigStore?
+        var configError: Error?
+
         do {
-            let store = try OfemConfigStore()
-            self.configStore = store
-            self.auth = OfemAuth(configStore: store)
+            loadedStore = try OfemConfigStore()
         } catch {
-            fatalError("SharedOfemAuth: OfemConfigStore init failed: \(error)")
+            configError = error
+            Self.log.error(
+                "SharedOfemAuth: OfemConfigStore init failed (corrupt config.toml?): \(error.localizedDescription, privacy: .public)"
+            )
+            // Back up the corrupt file so data is not silently discarded.
+            let configFile = paths.configFile
+            let timestamp = Int(Date.now.timeIntervalSince1970)
+            let backupURL = configFile.deletingLastPathComponent()
+                .appendingPathComponent("config.toml.corrupt-\(timestamp)")
+            do {
+                try FileManager.default.moveItem(at: configFile, to: backupURL)
+                Self.log.info(
+                    "Moved corrupt config to \(backupURL.path(percentEncoded: false), privacy: .public)"
+                )
+            } catch {
+                Self.log.warning(
+                    "Could not back up corrupt config: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+            // Re-try: with the file gone OfemConfigStore returns defaults.
+            loadedStore = try? OfemConfigStore()
+        }
+
+        // If the retry after backing up the corrupt file also fails, this is an
+        // unrecoverable I/O state (e.g. the App Group container is missing
+        // entirely). Log a fault and crash — this is fundamentally different from
+        // a parse error and indicates a system-level misconfiguration that the
+        // user needs professional help to diagnose. The common corrupt-TOML case
+        // (host-25) is handled above by the move-and-retry path.
+        let finalStore: OfemConfigStore
+        if let s = loadedStore {
+            finalStore = s
+        } else {
+            fatalError("SharedOfemAuth: cannot initialise OfemConfigStore even after removing corrupt file — App Group container may be inaccessible")
+        }
+        self.configStore = finalStore
+        self.auth = OfemAuth(configStore: finalStore)
+
+        // Surface the problem non-modally after init so the app can finish launching.
+        if let err = configError {
+            let description = err.localizedDescription
+            Task { @MainActor in
+                SharedOfemAuth.showCorruptConfigAlert(description: description)
+            }
         }
     }
 
@@ -136,6 +183,20 @@ final class SharedOfemAuth {
             tenantId: account.tenantID,
             tenantName: account.tenantName ?? ""
         )
+    }
+
+    // MARK: - Private helpers
+
+    /// Shows a non-blocking alert informing the user that the config file could
+    /// not be parsed and the app started with defaults.
+    private static func showCorruptConfigAlert(description: String) {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "OneLake Configuration Error"
+        alert.informativeText = "The OneLake configuration file was corrupt and has been backed up. The app started with defaults — you will need to sign in again.\n\nError: \(description)"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 }
 
