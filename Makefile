@@ -43,6 +43,11 @@ gen: bootstrap ## Regenerate OneLake.xcodeproj from project.yml
 
 # Build the OneLake.app target (Debug, arm64) for local dogfooding.
 build: gen ## Build OneLake.app (Debug, signed) for local use
+	@if grep -q 'REPLACE_WITH_YOUR_TEAM_ID' $(APPLE_CONFIG) 2>/dev/null; then \
+		echo "ERROR: $(APPLE_CONFIG) still has the placeholder DEVELOPMENT_TEAM."; \
+		echo "       Edit it and set your real Apple Developer Team ID."; \
+		exit 1; \
+	fi
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLake \
 		-configuration Debug \
@@ -115,9 +120,15 @@ test-integration: ## Run live integration tests (needs OFEM_TOKEN_* + OFEM_TEST_
 # (-2001) and the Finder mount never appears. Always run `make clean`
 # before removing a worktree you built the app in.
 clean: ## Remove build artefacts and unregister app from LaunchServices
-	@app="$(CURDIR)/DerivedData/Build/Products/Debug/OneLake.app"; \
-	lsreg="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"; \
-	if [ -d "$$app" ] && [ -x "$$lsreg" ]; then "$$lsreg" -u "$$app" 2>/dev/null || true; fi
+	@lsreg="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"; \
+	if [ -x "$$lsreg" ]; then \
+		for app in \
+			"$(CURDIR)/DerivedData/Build/Products/Debug/OneLake.app" \
+			"$(CURDIR)/build/Release/Build/Products/Release/OneLake.app" \
+			"$(CURDIR)/build/Export/OneLake.app"; do \
+			if [ -d "$$app" ]; then "$$lsreg" -u "$$app" 2>/dev/null || true; fi; \
+		done; \
+	fi
 	rm -rf OneLake.xcodeproj OneLake.xcworkspace build DerivedData
 
 help: ## Show available targets

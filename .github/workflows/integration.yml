@@ -4,7 +4,15 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '0 6 * * 1'
-  pull_request:
+  # pull_request_target (not pull_request) is intentional:
+  # - `pull_request` runs in the context of the PR head (untrusted fork code)
+  #   while holding id-token:write + Azure OIDC access — a secret-exposure risk.
+  # - `pull_request_target` runs in the context of the BASE branch; the
+  #   checked-out ref below is pinned to github.event.pull_request.base.sha so
+  #   fork-PR code is NEVER executed by this workflow.
+  # - The `integration` environment gate (required reviewers) means a maintainer
+  #   must explicitly approve before any Azure token is minted.
+  pull_request_target:
     types: [labeled]
 
 permissions:
@@ -17,17 +25,22 @@ concurrency:
 
 jobs:
   integration:
-    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'integration') }}
+    if: ${{ github.event_name != 'pull_request_target' || contains(github.event.pull_request.labels.*.name, 'integration') }}
     runs-on: macos-15
     environment: integration
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      # SECURITY: always check out the BASE ref, never the PR head.
+      # On pull_request_target the default ref IS the base, but we pin
+      # explicitly to guard against future event-schema changes.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
 
       - name: Ensure Azure CLI is available
         run: which az || brew install azure-cli
 
-      - uses: azure/login@v3
+      - uses: azure/login@a65d910e8af852a8061c627c456678983e180302 # v2.2.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -35,11 +48,11 @@ jobs:
 
       - name: Resume Fabric capacity
         run: |
-          set -e
+          set -euo pipefail
           CAPACITY_ID="${{ vars.OFEM_TEST_CAPACITY_ID }}"
 
           # Wait for the capacity to leave any transitional state, up to 5 min
-          for i in {1..30}; do
+          for _ in {1..30}; do
             STATE=$(az resource show --ids "$CAPACITY_ID" --query 'properties.state' -o tsv 2>/dev/null || echo "Unknown")
             echo "Pre-resume state: $STATE"
             case "$STATE" in
@@ -59,7 +72,7 @@ jobs:
           done
 
           # Poll until Active, then sleep 120s for data-plane warm-up (max ~7 min)
-          for i in {1..30}; do
+          for _ in {1..30}; do
             STATE=$(az resource show --ids "$CAPACITY_ID" --query 'properties.state' -o tsv)
             echo "Post-resume state: $STATE"
             if [[ "$STATE" == "Active" ]]; then
@@ -116,11 +129,11 @@ jobs:
       - name: Suspend Fabric capacity
         if: always()
         run: |
-          set -e
+          set -euo pipefail
           CAPACITY_ID="${{ vars.OFEM_TEST_CAPACITY_ID }}"
 
           # Wait for the capacity to leave any transitional state, up to 5 min
-          for i in {1..30}; do
+          for _ in {1..30}; do
             STATE=$(az resource show --ids "$CAPACITY_ID" --query 'properties.state' -o tsv 2>/dev/null || echo "Unknown")
             echo "Pre-suspend state: $STATE"
             case "$STATE" in
@@ -140,7 +153,7 @@ jobs:
           done
 
           # Poll until Paused, max 5 min
-          for i in {1..30}; do
+          for _ in {1..30}; do
             STATE=$(az resource show --ids "$CAPACITY_ID" --query 'properties.state' -o tsv)
             echo "Post-suspend state: $STATE"
             [[ "$STATE" == "Paused" ]] && exit 0
