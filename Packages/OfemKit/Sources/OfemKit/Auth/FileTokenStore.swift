@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import os.log
 
@@ -14,7 +15,7 @@ import os.log
 ///
 /// **Cross-process safety**: the host app and the FPE may both write token
 /// blobs for the same alias concurrently (interactive refresh in host-app;
-/// silent refresh in FPE). Each write acquires an exclusive `F_SETLK` record
+/// silent refresh in FPE). Each write acquires an exclusive `F_SETLKW` record
 /// lock on a per-alias sidecar `.lock` file before reading, modifying, and
 /// writing the blob — preventing last-writer-wins clobbering of freshly
 /// minted refresh tokens.
@@ -22,7 +23,8 @@ import os.log
 /// **Path layout**: the alias is hex-encoded so any byte sequence (including
 /// slashes and non-ASCII characters) maps to a safe, unique filename. The
 /// resulting filename is the lowercase hex encoding of the UTF-8 byte
-/// sequence of the alias, suffixed with `.bin`.
+/// sequence of the alias, suffixed with `.bin`. The `.lock` sidecar uses the
+/// same stem (`hexStem(alias:)`), ensuring the two paths always agree.
 ///
 /// **Atomic writes**: `write` writes to a temp file in the same directory
 /// and then renames it, so a crash mid-write can never leave a half-written
@@ -32,6 +34,16 @@ import os.log
 /// **Empty-value semantics**: calling `write` with `Data()` or a zero-length
 /// buffer is equivalent to `delete` — the existing entry is removed and no
 /// new file is written.
+///
+/// **Lock acquisition — no blocking sleep on cooperative pool threads**:
+/// `atomicUpdate`, `write`, and `delete` acquire the cross-process lock via
+/// `acquireAliasLockAsync`, which uses `F_SETLKW` on a *dedicated* OS thread
+/// (not on a Swift cooperative-pool thread). This mirrors the pattern used by
+/// `ConfigFileLock` in `Config/ConfigFileLock.swift`. The methods are `async`
+/// so callers on actor/async contexts do not block the cooperative pool.
+/// `FileTokenStoreCacheDelegate` bridges these async methods back to the
+/// synchronous MSAL delegate calls via `DispatchSemaphore` on MSAL's own
+/// internal (non-cooperative) thread.
 public final class FileTokenStore: Sendable {
     private let root: URL
     private let lock = NSLock()
@@ -111,15 +123,18 @@ public final class FileTokenStore: Sendable {
     ///     `nil` to leave the store unchanged. The closure is called on the
     ///     intra-process serial queue while the cross-process lock is held.
     /// - Throws: ``FileTokenStoreError`` variants on I/O failures.
-    public func atomicUpdate(alias: String, transform: (Data) throws -> Data?) throws {
+    public func atomicUpdate(alias: String, transform: (Data) throws -> Data?) async throws {
         let dest = tokenURL(for: alias)
-        var outerError: Error?
 
+        // Acquire the cross-process lock asynchronously (F_SETLKW on dedicated thread).
+        let lockFD = try await acquireAliasLockAsync(alias: alias)
+        defer { releaseAliasLock(lockFD) }
+
+        // Intra-process serialisation: the per-path serial queue ensures
+        // at most one write is in flight per process for this tokens dir.
+        var outerError: Error?
         serialQueue.sync {
             do {
-                let lockFD = try acquireAliasLock(alias: alias)
-                defer { releaseAliasLock(lockFD) }
-
                 // Read existing bytes (empty Data if none).
                 let existing: Data
                 do {
@@ -131,13 +146,7 @@ public final class FileTokenStore: Sendable {
                 }
 
                 // Apply the transform.
-                let newData: Data?
-                do {
-                    newData = try transform(existing)
-                } catch {
-                    throw error
-                }
-
+                let newData: Data? = try transform(existing)
                 guard let data = newData, !data.isEmpty else { return }
 
                 // Write atomically (tmp + rename).
@@ -172,6 +181,10 @@ public final class FileTokenStore: Sendable {
 
     /// Reads the opaque byte blob previously stored for `alias`.
     ///
+    /// This is a synchronous point read with no lock: reads are lock-free and
+    /// safe to call from any context. Only the write path requires the
+    /// cross-process lock.
+    ///
     /// - Parameter alias: The user-chosen account alias.
     /// - Returns: The stored bytes.
     /// - Throws: ``FileTokenStoreError/notFound(_:)`` when no entry exists for
@@ -198,24 +211,23 @@ public final class FileTokenStore: Sendable {
     ///   - alias: The user-chosen account alias.
     ///   - data: The opaque byte blob to store.
     /// - Throws: ``FileTokenStoreError`` variants on I/O failures.
-    public func write(alias: String, data: Data) throws {
+    public func write(alias: String, data: Data) async throws {
         guard !data.isEmpty else {
-            try delete(alias: alias)
+            try await delete(alias: alias)
             return
         }
 
         let dest = tokenURL(for: alias)
-        var writeError: Error?
+
+        // Acquire the cross-process lock asynchronously (F_SETLKW on dedicated thread).
+        let lockFD = try await acquireAliasLockAsync(alias: alias)
+        defer { releaseAliasLock(lockFD) }
 
         // Intra-process serialisation: the per-path serial queue ensures
         // at most one write is in flight per process for this tokens dir.
+        var writeError: Error?
         serialQueue.sync {
             do {
-                // Cross-process exclusion: acquire a POSIX advisory record lock
-                // on a per-alias sidecar file.
-                let lockFD = try acquireAliasLock(alias: alias)
-                defer { releaseAliasLock(lockFD) }
-
                 let tmpURL = root.appending(
                     path: ".tmp-\(ProcessInfo.processInfo.globallyUniqueString).bin",
                     directoryHint: .notDirectory
@@ -267,13 +279,16 @@ public final class FileTokenStore: Sendable {
     /// - Parameter alias: The user-chosen account alias.
     /// - Throws: ``FileTokenStoreError/deleteFailed(_:_:)`` on unexpected
     ///   I/O errors.
-    public func delete(alias: String) throws {
+    public func delete(alias: String) async throws {
         let url = tokenURL(for: alias)
+
+        // Acquire the cross-process lock asynchronously (F_SETLKW on dedicated thread).
+        let lockFD = try await acquireAliasLockAsync(alias: alias)
+        defer { releaseAliasLock(lockFD) }
+
         var deleteError: Error?
         serialQueue.sync {
             do {
-                let lockFD = try acquireAliasLock(alias: alias)
-                defer { releaseAliasLock(lockFD) }
                 do {
                     try FileManager.default.removeItem(at: url)
                 } catch let error as CocoaError where error.code == .fileNoSuchFile {
@@ -291,20 +306,23 @@ public final class FileTokenStore: Sendable {
     // MARK: - Cross-process alias lock
 
     /// Maximum total wait time for the cross-process per-alias lock.
-    private static let lockTimeoutNs: UInt64 = 5_000_000_000 // 5 seconds
+    static let lockTimeoutNs: UInt64 = 5_000_000_000 // 5 seconds
 
     /// Returns the URL of the per-alias lock sidecar file.
     private func aliasLockURL(alias: String) -> URL {
-        let hex = Data(alias.utf8).map { String(format: "%02x", $0) }.joined()
-        return root.appending(path: "\(hex).lock", directoryHint: .notDirectory)
+        return root.appending(path: "\(Self.hexStem(alias: alias)).lock", directoryHint: .notDirectory)
     }
 
     /// Acquires an exclusive POSIX advisory `fcntl` record lock on the
     /// per-alias `.lock` sidecar file.
     ///
-    /// Uses non-blocking `F_SETLK` with exponential back-off (same pattern as
-    /// ``OfemConfigStore``). Total cap ~5 s; throws on timeout.
-    private func acquireAliasLock(alias: String) throws -> Int32 {
+    /// Uses `F_SETLKW` (blocking) on a *dedicated* OS thread, mirroring the
+    /// `ConfigFileLock` pattern from `Config/ConfigFileLock.swift`. The calling
+    /// task's cooperative-pool thread is released back to the pool immediately;
+    /// the dedicated thread blocks inside the kernel until the peer releases the
+    /// lock. A timeout timer cancels the wait via fd-close (causing `F_SETLKW`
+    /// to return `EBADF`) after `lockTimeoutNs` nanoseconds.
+    func acquireAliasLockAsync(alias: String) async throws -> Int32 {
         let lockURL = aliasLockURL(alias: alias)
         let fd = Darwin.open(lockURL.path(percentEncoded: false), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
         guard fd >= 0 else {
@@ -312,35 +330,66 @@ public final class FileTokenStore: Sendable {
                 NSError(domain: NSPOSIXErrorDomain, code: Int(Darwin.errno)))
         }
 
-        var lk = Darwin.flock()
-        lk.l_type   = Int16(F_WRLCK)
-        lk.l_whence = Int16(SEEK_SET)
-        lk.l_start  = 0
-        lk.l_len    = 0
+        return try await withCheckedThrowingContinuation { continuation in
+            // fdState arbitrates fd ownership between the lock thread and timer.
+            // Transitions (via compareExchange, same pattern as ConfigFileLock):
+            //   .open  → .acquiredByThread  (lock thread, on F_SETLKW success)
+            //   .open  → .closedByTimer     (timer handler, on timeout)
+            let fdState = TokenLockFDState(.open)
 
-        let deadline = DispatchTime.now() + .nanoseconds(Int(Self.lockTimeoutNs))
-        var sleepNs: UInt64 = 10_000_000 // 10 ms initial
-        while true {
-            if Darwin.fcntl(fd, F_SETLK, &lk) == 0 {
-                return fd
+            let timer = DispatchSource.makeTimerSource(queue: .global())
+            timer.schedule(deadline: .now() + .nanoseconds(Int(Self.lockTimeoutNs)))
+            timer.setEventHandler {
+                if fdState.compareExchange(expected: .open, desired: .closedByTimer) {
+                    Darwin.close(fd)
+                }
             }
-            let err = Darwin.errno
-            guard err == EAGAIN || err == EACCES else {
-                Darwin.close(fd)
-                throw FileTokenStoreError.lockFailed(alias,
-                    NSError(domain: NSPOSIXErrorDomain, code: Int(err)))
+            timer.resume()
+
+            let t = Thread {
+                var lk = Darwin.flock()
+                lk.l_type   = Int16(F_WRLCK)
+                lk.l_whence = Int16(SEEK_SET)
+                lk.l_start  = 0
+                lk.l_len    = 0
+
+                // EINTR-aware loop: retry on signal delivery, bail if timer fired.
+                var result: Int32
+                repeat {
+                    result = Darwin.fcntl(fd, F_SETLKW, &lk)
+                } while result != 0
+                    && Darwin.errno == EINTR
+                    && fdState.load() != .closedByTimer
+
+                if result == 0 {
+                    if fdState.compareExchange(expected: .open, desired: .acquiredByThread) {
+                        timer.cancel()
+                        continuation.resume(returning: fd)
+                    } else {
+                        // Timer closed fd just before F_SETLKW returned.
+                        timer.cancel()
+                        continuation.resume(throwing: FileTokenStoreError.lockTimeout(alias))
+                    }
+                } else {
+                    let err = Darwin.errno
+                    timer.cancel()
+                    if fdState.load() == .closedByTimer {
+                        continuation.resume(throwing: FileTokenStoreError.lockTimeout(alias))
+                    } else {
+                        Darwin.close(fd)
+                        continuation.resume(throwing: FileTokenStoreError.lockFailed(alias,
+                            NSError(domain: NSPOSIXErrorDomain, code: Int(err))))
+                    }
+                }
             }
-            if DispatchTime.now() >= deadline {
-                Darwin.close(fd)
-                throw FileTokenStoreError.lockTimeout(alias)
-            }
-            Thread.sleep(forTimeInterval: Double(sleepNs) / 1_000_000_000)
-            sleepNs = min(sleepNs * 2, 640_000_000)
+            t.name = "dev.debruyn.ofem.token-lock.\(alias)"
+            t.qualityOfService = .utility
+            t.start()
         }
     }
 
     /// Releases the POSIX advisory lock and closes the file descriptor.
-    private func releaseAliasLock(_ fd: Int32) {
+    func releaseAliasLock(_ fd: Int32) {
         var lk = Darwin.flock()
         lk.l_type   = Int16(F_UNLCK)
         lk.l_whence = Int16(SEEK_SET)
@@ -352,13 +401,20 @@ public final class FileTokenStore: Sendable {
 
     // MARK: - Private helpers
 
+    /// Returns the lowercase hex encoding of `alias`'s UTF-8 bytes.
+    ///
+    /// Used as the shared filename stem for both the `.bin` blob and the `.lock`
+    /// sidecar so the two paths always agree and cannot drift independently.
+    static func hexStem(alias: String) -> String {
+        Data(alias.utf8).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Returns the file URL for an alias's token blob.
     ///
     /// The alias is hex-encoded so any byte value (including `/`) produces a
     /// valid, unique filename.
     private func tokenURL(for alias: String) -> URL {
-        let hex = Data(alias.utf8).map { String(format: "%02x", $0) }.joined()
-        return root.appending(path: "\(hex).bin", directoryHint: .notDirectory)
+        return root.appending(path: "\(Self.hexStem(alias: alias)).bin", directoryHint: .notDirectory)
     }
 }
 
@@ -384,4 +440,35 @@ public enum FileTokenStoreError: Error {
     case lockFailed(String, Error)
     /// The cross-process `fcntl` lock was not released within ~5 s.
     case lockTimeout(String)
+}
+
+// MARK: - TokenLockFDState
+
+fileprivate enum TokenFDStateValue { case open, acquiredByThread, closedByTimer }
+
+/// Minimal thread-safe state machine for the fd lifecycle during token lock acquisition.
+///
+/// Mirrors `AtomicFDState` in `Config/ConfigFileLock.swift` but is scoped to the
+/// `Auth/` package to avoid coupling between the two subsystems.
+fileprivate final class TokenLockFDState: @unchecked Sendable {
+    private var _lock = os_unfair_lock()
+    private var _state: TokenFDStateValue
+
+    init(_ initial: TokenFDStateValue) { _state = initial }
+
+    func load() -> TokenFDStateValue {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        return _state
+    }
+
+    /// Returns `true` if the transition from `expected` → `desired` succeeded.
+    @discardableResult
+    func compareExchange(expected: TokenFDStateValue, desired: TokenFDStateValue) -> Bool {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        guard _state == expected else { return false }
+        _state = desired
+        return true
+    }
 }

@@ -154,7 +154,7 @@ struct OfemAuthTests {
         let alias = "work"
         try await auth.addAccount(makeAccount(alias: alias))
         // Write a fake token blob.
-        try tokenStore.write(alias: alias, data: Data("refresh-token".utf8))
+        try await tokenStore.write(alias: alias, data: Data("refresh-token".utf8))
 
         // Verify the blob exists before removal.
         let blobBefore = try? tokenStore.read(alias: alias)
@@ -482,6 +482,8 @@ struct OfemAuthTokenTests {
 /// Test double for ``MsalAuthClientFactory``.
 final class MockMsalAuthClientFactory: MsalAuthClientFactory, @unchecked Sendable {
     var stubbedClient: MockMsalAuthClient?
+    /// When set, `makeClient` throws this error instead of returning a client.
+    var throwError: Error?
     private(set) var makeClientCallCount = 0
     private let _lock = NSLock()
 
@@ -493,6 +495,7 @@ final class MockMsalAuthClientFactory: MsalAuthClientFactory, @unchecked Sendabl
         alias: String
     ) throws -> any MsalAuthClientProtocol {
         _lock.withLock { makeClientCallCount += 1 }
+        if let err = throwError { throw err }
         guard let client = stubbedClient else {
             throw MockError.noClientStubbed
         }
@@ -507,27 +510,37 @@ final class MockMsalAuthClientFactory: MsalAuthClientFactory, @unchecked Sendabl
 /// Returns `stubbedAccessToken` or throws `stubbedError` from
 /// `acquireTokenSilent`. Records the `homeAccountID` passed to each call
 /// in `capturedHomeAccountIDs` for assertion. Tracks `removeAccount` calls
-/// in `removedHomeAccountIDs`.
+/// in `removedHomeAccountIDs`. Optionally throws `removeError` from `removeAccount`.
 final class MockMsalAuthClient: MsalAuthClientProtocol, @unchecked Sendable {
     var stubbedAccessToken: String = "mock-token"
     var stubbedError: Error?
+    /// Optional error to throw from `removeAccount`.
+    var removeError: Error?
+    /// Optional artificial delay (seconds) for `acquireTokenSilent` — used to
+    /// build up concurrency in coalescing tests.
+    var acquireDelay: TimeInterval = 0
+
     /// IDs passed to `acquireTokenSilent` — verifies the right account is used.
     private(set) var capturedHomeAccountIDs: [String] = []
     /// IDs passed to `removeAccount` — verifies Keychain purge on sign-out.
     private(set) var removedHomeAccountIDs: [String] = []
-    private let _lock = NSLock()
+    let _lock = NSLock()
 
     func acquireTokenSilent(
         scopes: [String],
         homeAccountID: String
     ) async throws -> String {
         _lock.withLock { capturedHomeAccountIDs.append(homeAccountID) }
+        if acquireDelay > 0 {
+            try await Task.sleep(nanoseconds: UInt64(acquireDelay * 1_000_000_000))
+        }
         if let error = stubbedError { throw error }
         return stubbedAccessToken
     }
 
     func removeAccount(homeAccountID: String) throws {
         _lock.withLock { removedHomeAccountIDs.append(homeAccountID) }
+        if let error = removeError { throw error }
     }
 }
 

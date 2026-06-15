@@ -53,7 +53,9 @@ public struct AccountAlias: Hashable, Sendable, CustomStringConvertible {
         guard alias.count <= maxLength else {
             throw AccountAliasError.tooLong(alias, maxLength)
         }
-        let first = alias.unicodeScalars.first!
+        guard let first = alias.unicodeScalars.first else {
+            throw AccountAliasError.empty
+        }
         if first == UnicodeScalar(UInt8(ascii: "-")) {
             throw AccountAliasError.startsWithDash(alias)
         }
