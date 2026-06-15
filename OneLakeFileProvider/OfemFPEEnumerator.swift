@@ -486,6 +486,12 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 Self.log.debug(
                     "WorkingSet: enumerateChanges for \(aliasCopy, privacy: .public): \(updatedRecords.count, privacy: .public) updates, \(deletedIdStrings.count, privacy: .public) deletions since anchor=\(previousNs, privacy: .public)"
                 )
+            } catch is CancellationError {
+                // The enumerator was invalidated while the task was in flight.
+                // Signal userCancelled so the framework knows this was a clean
+                // cancellation, not a sync failure (mirrors OfemFPEEnumerator
+                // enumerateChanges — fpe-15).
+                observer.finishEnumeratingWithError(CocoaError(.userCancelled))
             } catch {
                 let code = FPError.classify(error)
                 Self.log.error(

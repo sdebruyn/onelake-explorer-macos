@@ -469,6 +469,7 @@ final class FPEEngineHost: EngineProviding {
             _buildTask = nil
             let e = _engine
             let st = _startTask
+            _engine = nil
             _startTask = nil
             return (e, st)
         }
@@ -479,15 +480,17 @@ final class FPEEngineHost: EngineProviding {
             startTask?.cancel()
             await startTask?.value
             await e.shutdown()
-            lock.withLock { _engine = nil }
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine shut down")
         }
 
         // Decrement the process-wide host count. When the last host exits,
         // flush and stop the shared telemetry so the final batch is not lost
-        // (fpe-14).
+        // (fpe-14). Guard against underflow: if the framework calls invalidate()
+        // twice on the same host, the second call must not drive the counter
+        // negative (which would prevent == 0 from ever firing and silently
+        // drop the final telemetry flush).
         let shouldShutdownShared = Self.activeHostLock.withLock { () -> Bool in
-            Self._activeHostCount -= 1
+            if Self._activeHostCount > 0 { Self._activeHostCount -= 1 }
             return Self._activeHostCount == 0
         }
         if shouldShutdownShared {
@@ -539,12 +542,14 @@ final class FPEEngineHost: EngineProviding {
                 sharedTelemetry: telemetry,
                 sharedGateRegistry: gateRegistry
             )
-            lock.withLock { _engine = engine }
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine built")
-            // Start background tasks (telemetry flush timer). Store the Task so
-            // shutdown() / reloadEngine() can await it before tearing down the
-            // engine, preventing a start/shutdown race (fpe-12). start() is
-            // idempotent so this is safe when called for a shared telemetry client.
+            // Start background tasks (telemetry flush timer). Create the Task
+            // before taking the lock, then store _engine and _startTask together
+            // in a single critical section so shutdown() can never observe
+            // _engine non-nil while _startTask is still nil (fpe-12).
+            // The Task captures engine weakly, so creating it before the store
+            // is safe — if shutdown() wins the lock first, the task just exits
+            // immediately via the `guard let engine` check.
             let startTask = Task { [weak self, weak engine] in
                 guard let engine else { return }
                 await engine.start()
@@ -554,7 +559,10 @@ final class FPEEngineHost: EngineProviding {
                     )
                 }
             }
-            lock.withLock { _startTask = startTask }
+            lock.withLock {
+                _engine = engine
+                _startTask = startTask
+            }
             return engine
         } catch {
             lock.withLock {

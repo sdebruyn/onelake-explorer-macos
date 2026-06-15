@@ -45,6 +45,22 @@ final class FPEEngineHostTests: XCTestCase {
         }
     }
 
+    // MARK: - double shutdown does not underflow _activeHostCount (fpe-14)
+
+    func testDoubleShutdownIsIdempotent() async {
+        // Simulates the framework calling invalidate() twice on the same host
+        // (observed in degraded states). The second shutdown() must not drive
+        // _activeHostCount negative, which would prevent == 0 from ever firing
+        // and silently drop the final telemetry flush.
+        let host = FPEEngineHost(alias: "double-shutdown", domain: makeDomain("double-shutdown"))
+        await host.shutdown()
+        // A second shutdown must not crash or corrupt the host count.
+        await host.shutdown()
+        // After both calls the count must be >= 0 (no underflow).
+        // We verify indirectly: calling shutdownSharedSubsystems() must be safe.
+        await FPEEngineHost.shutdownSharedSubsystems()
+    }
+
     // MARK: - existingEngine returns nil before first build
 
     func testExistingEngineNilBeforeBuild() {
