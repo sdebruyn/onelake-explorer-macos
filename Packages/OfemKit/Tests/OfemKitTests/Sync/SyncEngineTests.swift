@@ -147,9 +147,9 @@ struct SyncEngineTests {
 
         let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
         let listing = ListResult(entries: [
-            PathEntry(name: "\(Self.itID)/real.csv", isDirectory: false, contentLength: 10, eTag: "e1", lastModified: Date(timeIntervalSince1970: 0)),
-            PathEntry(name: "\(Self.itID)/.DS_Store", isDirectory: false, contentLength: 4, eTag: "e2", lastModified: Date(timeIntervalSince1970: 0)),
-            PathEntry(name: "\(Self.itID)/._real.csv", isDirectory: false, contentLength: 4, eTag: "e3", lastModified: Date(timeIntervalSince1970: 0)),
+            PathEntry(name: "real.csv", isDirectory: false, contentLength: 10, eTag: "e1", lastModified: Date(timeIntervalSince1970: 0)),
+            PathEntry(name: ".DS_Store", isDirectory: false, contentLength: 4, eTag: "e2", lastModified: Date(timeIntervalSince1970: 0)),
+            PathEntry(name: "._real.csv", isDirectory: false, contentLength: 4, eTag: "e3", lastModified: Date(timeIntervalSince1970: 0)),
         ])
         ol.listPathResults.append(.success(listing))
 
@@ -863,6 +863,62 @@ struct SyncEngineTests {
         #expect(ol.readCalls.count == 1)
     }
 
+    // MARK: - refreshFolder: item-relative PathEntry.name (issue-244 regression)
+
+    /// Regression test for the double-stripping bug fixed in issue #244.
+    ///
+    /// After onelake-12 (commit 6d3c25f), `OneLakeClient.listPath` returns
+    /// `PathEntry.name` values that are already item-relative — the `<itemGUID>/`
+    /// prefix is stripped by `convertRawEntry` inside the client. Before the fix,
+    /// `SyncEngine.refreshFolder` called `Enumerator.stripItemPrefix` on those
+    /// already-stripped names, which returned `nil` for every entry (the itemGUID
+    /// was not present as a prefix) and left `remoteChildren` empty — causing zero
+    /// children to be reconciled into the cache.
+    ///
+    /// This test drives `refreshFolder` with a mock returning item-relative names
+    /// (matching what the real client returns) and asserts all children are cached.
+    @Test("refreshFolder() reconciles item-relative PathEntry.name values into the cache (issue-244)")
+    func testRefreshFolderItemRelativeNames() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Directory at a nested path, as used by the integration tests.
+        let dir = "Files/ofem-ci/test-run"
+        let key = CacheKey(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            itemID: Self.itID,
+            path: dir
+        )
+
+        // Item-relative names — no "<itemGUID>/" prefix.  This matches what
+        // OneLakeClient.listPath returns after onelake-12.
+        ol.listPathResults.append(.success(ListResult(entries: [
+            PathEntry(name: "\(dir)/alpha.bin", isDirectory: false, contentLength: 100, eTag: "e1", lastModified: .distantPast),
+            PathEntry(name: "\(dir)/beta.bin",  isDirectory: false, contentLength: 200, eTag: "e2", lastModified: .distantPast),
+            PathEntry(name: "\(dir)/sub",        isDirectory: true,  contentLength: 0,   eTag: "",   lastModified: .distantPast),
+        ])))
+
+        let diff = try await engine.refreshFolder(key: key)
+
+        // Before the fix, all three entries were dropped (remoteChildren empty)
+        // because stripItemPrefix returned nil for every item-relative name.
+        #expect(diff.added == 3, "refreshFolder must add all 3 remote entries")
+
+        let kids = try await store.children(of: key)
+        #expect(kids.count == 3, "cache must contain 3 children after refresh")
+
+        let alpha = kids.first { $0.name == "alpha.bin" }
+        #expect(alpha != nil, "alpha.bin must be cached")
+        #expect(alpha?.isDir == false)
+        #expect(alpha?.contentLength == 100)
+
+        let sub = kids.first { $0.name == "sub" }
+        #expect(sub != nil, "sub directory must be cached")
+        #expect(sub?.isDir == true)
+    }
+
     // MARK: - refreshFolder: empty remote listing removes all cached children
 
     @Test("refreshFolder() with empty remote listing deletes all cached children")
@@ -917,8 +973,8 @@ struct SyncEngineTests {
 
         // Remote only returns keep.csv and also-keep.csv.
         let listing = ListResult(entries: [
-            PathEntry(name: "\(Self.itID)/keep.csv",      isDirectory: false, contentLength: 10, eTag: "e1", lastModified: .distantPast),
-            PathEntry(name: "\(Self.itID)/also-keep.csv", isDirectory: false, contentLength: 10, eTag: "e2", lastModified: .distantPast),
+            PathEntry(name: "keep.csv",      isDirectory: false, contentLength: 10, eTag: "e1", lastModified: .distantPast),
+            PathEntry(name: "also-keep.csv", isDirectory: false, contentLength: 10, eTag: "e2", lastModified: .distantPast),
         ])
         ol.listPathResults.append(.success(listing))
 
@@ -954,7 +1010,7 @@ struct SyncEngineTests {
 
         // Remote returns same etag → blob linkage should be preserved.
         let listing = ListResult(entries: [
-            PathEntry(name: "\(Self.itID)/data.csv", isDirectory: false, contentLength: 50, eTag: "stable-etag", lastModified: .distantPast),
+            PathEntry(name: "data.csv", isDirectory: false, contentLength: 50, eTag: "stable-etag", lastModified: .distantPast),
         ])
         ol.listPathResults.append(.success(listing))
 
@@ -985,7 +1041,7 @@ struct SyncEngineTests {
 
         // Remote returns a new etag.
         let listing = ListResult(entries: [
-            PathEntry(name: "\(Self.itID)/data.csv", isDirectory: false, contentLength: 60, eTag: "new-etag", lastModified: Date()),
+            PathEntry(name: "data.csv", isDirectory: false, contentLength: 60, eTag: "new-etag", lastModified: Date()),
         ])
         ol.listPathResults.append(.success(listing))
 
@@ -1142,7 +1198,7 @@ struct SyncEngineTests {
 
         // No parent row in cache → enumerate must call refreshFolder.
         let listing = ListResult(entries: [
-            PathEntry(name: "\(Self.itID)/hello.txt", isDirectory: false, contentLength: 5, eTag: "e1", lastModified: .distantPast),
+            PathEntry(name: "hello.txt", isDirectory: false, contentLength: 5, eTag: "e1", lastModified: .distantPast),
         ])
         ol.listPathResults.append(.success(listing))
 
