@@ -21,6 +21,9 @@
 // setCacheLimitGB / setNetMaxUploads / setNetMaxDownloads debounce their
 // XPC write (see setCacheLimitDebounce / setNetConcurrencyDebounce) so
 // a held-down Stepper does not flood the FPE.
+//
+// Dependencies injected via protocols (host-13) so tests can verify
+// refresh, fence, and action logic without a live FPE/config stack.
 
 import FileProvider
 import Foundation
@@ -40,6 +43,42 @@ enum MenuIconState {
     case paused
 }
 
+// MARK: - Dependency protocols
+
+/// Provides the account list and default account.
+/// Implemented by OfemAuth (via extension in OfemFPEClient.swift conformances);
+/// faked in tests.
+protocol AccountProvider {
+    /// Returns all known accounts. Returns an empty array if the store is empty.
+    func listAccounts() async -> [Account]
+    /// Returns the alias of the default account, or nil if none is set.
+    func defaultAccount() async -> String?
+    func setDefaultAccount(alias: String) async throws
+    func removeAccount(alias: String) async throws
+}
+
+/// Provides engine status and config writes over XPC.
+/// Implemented by OfemFPEClient; faked in tests.
+protocol EngineStatusProvider {
+    func getEngineStatus(alias: String) async throws -> XPCEngineStatus
+    func setConfig(alias: String, key: String, value: String) async throws
+    func clearCache(alias: String) async throws -> Int64
+}
+
+/// Provides domain management (add/remove).
+/// Implemented by DomainSyncManager; faked in tests.
+protocol DomainManager {
+    func removeDomain(alias: String) async
+}
+
+// MARK: - Production conformances
+
+extension OfemAuth: AccountProvider {}
+
+extension OfemFPEClient: EngineStatusProvider {}
+
+extension DomainSyncManager: DomainManager {}
+
 // MARK: - MenuStatusModel
 
 /// Published state for the menu-bar dropdown.
@@ -54,15 +93,35 @@ final class MenuStatusModel: ObservableObject {
     /// Single shared instance. Owned (via @StateObject) by OneLakeApp so it
     /// lives for the full process lifetime. MenuBarView receives it as an
     /// @ObservedObject — it observes but does not own.
+    ///
+    /// Initialised lazily on the main actor: `@MainActor` static stored
+    /// properties are guaranteed by Swift to be initialised on the main actor,
+    /// so `MenuStatusModel()` runs on the main actor and can safely touch
+    /// `@Published` stored properties.
+    @MainActor
     static let shared = MenuStatusModel()
 
-    /// `nonisolated` because `static let shared` initializers run on
-    /// whatever thread first touches them — not guaranteed to be the
-    /// main actor. The body only assigns literal defaults to stored
-    /// properties, so no MainActor work is required at construction.
-    nonisolated init() {}
+    private static let log = Logger(subsystem: ofemSubsystem, category: "menu-status")
 
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "menu-status")
+    // MARK: Dependencies
+
+    private let accountProvider: any AccountProvider
+    private let engineStatusProvider: any EngineStatusProvider
+    private let domainManager: any DomainManager
+
+    // MARK: Init
+
+    /// Production init wires to shared singletons.
+    /// Provide non-nil values in tests to inject fakes.
+    init(
+        accountProvider: (any AccountProvider)? = nil,
+        engineStatusProvider: (any EngineStatusProvider)? = nil,
+        domainManager: (any DomainManager)? = nil
+    ) {
+        self.accountProvider = accountProvider ?? SharedOfemAuth.shared.auth
+        self.engineStatusProvider = engineStatusProvider ?? OfemFPEClient.shared
+        self.domainManager = domainManager ?? DomainSyncManager.shared
+    }
 
     // MARK: Published
 
@@ -85,6 +144,11 @@ final class MenuStatusModel: ObservableObject {
     @Published private(set) var netMaxDownloads: Int = 0
     /// FPE log level (Settings → Advanced). One of "debug", "info", "warn", "error".
     @Published private(set) var logLevel: String = ""
+
+    /// Last action error for display to the user. nil if the last action succeeded.
+    /// Set by destructive actions (removeAccount, cacheClear, setDefaultAccount)
+    /// when they fail so the UI can surface a non-intrusive inline message.
+    @Published private(set) var lastActionError: String? = nil
 
     // MARK: Computed conveniences
 
@@ -199,7 +263,8 @@ final class MenuStatusModel: ObservableObject {
         }
     }
 
-    /// Refresh now, then repeatedly every `interval`.
+    /// Refresh now, then repeatedly every `interval` while `autoRefreshTask` is live.
+    /// Cancel `autoRefreshTask` (or call `stopAutoRefresh()`) to stop the loop.
     func startAutoRefresh(interval: Duration = .seconds(5)) {
         autoRefreshTask?.cancel()
         autoRefreshTask = Task { @MainActor [weak self] in
@@ -210,16 +275,24 @@ final class MenuStatusModel: ObservableObject {
         }
     }
 
+    /// Cancel the auto-refresh loop. Call this when no surface is visible
+    /// (currently unused — the host keeps the loop alive for the process
+    /// lifetime, but `stopAutoRefresh` is the correct hook if that changes).
+    func stopAutoRefresh() {
+        autoRefreshTask?.cancel()
+        autoRefreshTask = nil
+    }
+
     private func doRefresh() async {
         // Stamp this refresh so we can discard stale results when a newer
         // refresh has already completed (generation counter fix for app-07).
         refreshGeneration &+= 1
         let myGeneration = refreshGeneration
 
-        // Primary path: read accounts from SharedOfemAuth (config.toml).
+        // Primary path: read accounts from the injected AccountProvider.
         // Works whether or not any FPE domain is loaded.
-        let nativeAccounts = await SharedOfemAuth.shared.auth.listAccounts()
-        let nativeDefault = await SharedOfemAuth.shared.auth.defaultAccount() ?? ""
+        let nativeAccounts = await accountProvider.listAccounts()
+        let nativeDefault = await accountProvider.defaultAccount() ?? ""
 
         // Check cancellation before publishing (no suspension between read and publish).
         guard !Task.isCancelled else { return }
@@ -244,7 +317,7 @@ final class MenuStatusModel: ObservableObject {
         guard let firstAlias = nativeAccounts.first?.alias else { return }
 
         do {
-            let status = try await OfemFPEClient.shared.getEngineStatus(alias: firstAlias)
+            let status = try await engineStatusProvider.getEngineStatus(alias: firstAlias)
 
             // Discard results if a newer refresh already ran while we were
             // awaiting the XPC reply (stale-snapshot guard for app-07).
@@ -276,9 +349,14 @@ final class MenuStatusModel: ObservableObject {
                     accountAlias: xpc.accountAlias,
                     workspaceId: xpc.workspaceID,
                     reason: xpc.reason,
+                    // A zero/negative detectedAtSec means the timestamp is
+                    // unknown. Use Date.distantPast (Apple's conventional
+                    // "never / unknown" sentinel) rather than the Unix epoch
+                    // (1970-01-01), which would format as a nonsensical date
+                    // in any downstream display.
                     detectedAt: xpc.detectedAtSec > 0
                         ? Date(timeIntervalSince1970: xpc.detectedAtSec)
-                        : Date(),
+                        : Date.distantPast,
                     probedAt: nil
                 )
             }
@@ -290,16 +368,36 @@ final class MenuStatusModel: ObservableObject {
         }
     }
 
+    // MARK: - XPC version mismatch surfacing (xpc-06)
+
+    /// Surfaces a host/FPE protocol version mismatch as a non-intrusive
+    /// inline error in the menu bar. Called by OfemFPEClient after each
+    /// new connection is established.
+    ///
+    /// - Parameters:
+    ///   - hostVersion: The version constant this host build expects.
+    ///   - fpeVersion:  The version the connected FPE reported (1 if pre-v2).
+    func setVersionMismatchError(hostVersion: Int, fpeVersion: Int) {
+        lastActionError = "Extension version mismatch (host v\(hostVersion), extension v\(fpeVersion)). Restart the app after updating."
+    }
+
+    /// Clears `lastActionError`. Used in tests to reset state between test cases.
+    func clearLastActionError() {
+        lastActionError = nil
+    }
+
     // MARK: - Actions
 
     /// Make `alias` the default account and refresh.
     func setDefaultAccount(alias: String) {
+        lastActionError = nil
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await SharedOfemAuth.shared.auth.setDefaultAccount(alias: alias)
+                try await accountProvider.setDefaultAccount(alias: alias)
             } catch {
                 Self.log.error("setDefaultAccount failed: \(error.localizedDescription, privacy: .public)")
+                lastActionError = "Could not set default account: \(error.localizedDescription)"
             }
             refresh()
         }
@@ -307,13 +405,15 @@ final class MenuStatusModel: ObservableObject {
 
     /// Remove the account and drop the File Provider domain from Finder.
     func removeAccount(alias: String) {
+        lastActionError = nil
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await SharedOfemAuth.shared.auth.removeAccount(alias: alias)
-                await DomainSyncManager.shared.removeDomain(alias: alias)
+                try await accountProvider.removeAccount(alias: alias)
+                await domainManager.removeDomain(alias: alias)
             } catch {
                 Self.log.error("removeAccount failed: \(error.localizedDescription, privacy: .public)")
+                lastActionError = "Could not sign out '\(alias)': \(error.localizedDescription)"
             }
             refresh()
         }
@@ -321,15 +421,17 @@ final class MenuStatusModel: ObservableObject {
 
     /// Wipe all cached blobs and refresh.
     func cacheClear() {
+        lastActionError = nil
         Task { [weak self] in
             guard let self else { return }
-            // Read directly from SharedOfemAuth so this works even before the first
+            // Read directly from AccountProvider so this works even before the first
             // doRefresh() has populated the published `accounts` property — same
-            // rationale as writeConfigToAllAliases.
-            let currentAccounts = await SharedOfemAuth.shared.auth.listAccounts()
+            // rationale as writeConfig.
+            let currentAccounts = await accountProvider.listAccounts()
+            var firstError: Error?
             for acc in currentAccounts {
                 do {
-                    let remaining = try await OfemFPEClient.shared.clearCache(alias: acc.alias)
+                    let remaining = try await engineStatusProvider.clearCache(alias: acc.alias)
                     Self.log.info(
                         "clearCache(\(acc.alias, privacy: .public)): bytes remaining=\(remaining, privacy: .public)"
                     )
@@ -337,11 +439,17 @@ final class MenuStatusModel: ObservableObject {
                     Self.log.error(
                         "clearCache(\(acc.alias, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)"
                     )
+                    if firstError == nil { firstError = error }
                 }
+            }
+            if let error = firstError {
+                lastActionError = "Cache clear failed: \(error.localizedDescription)"
             }
             refresh()
         }
     }
+
+    // MARK: - Debounced config setters
 
     /// Stage a new cache-size limit (in whole gigabytes) for the FPE engine.
     ///
@@ -351,14 +459,13 @@ final class MenuStatusModel: ObservableObject {
         let clamped = max(1, min(100, gb))
         beginWrite(.cacheMaxSize)
         cacheMaxSizeGB = clamped
-        cacheMaxBytes = Int64(clamped) * 1024 * 1024 * 1024
+        cacheMaxBytes = Int64(clamped) * 1_073_741_824  // 1 GiB in bytes
         setCacheLimitTask?.cancel()
         setCacheLimitTask = Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.endWrite(.cacheMaxSize) } }
             try? await Task.sleep(for: MenuStatusModel.setCacheLimitDebounce)
-            guard let self else { return }
-            if Task.isCancelled { return }
-            await self.writeConfigToAllAliases(key: "cache.max_size_gb", value: String(clamped))
-            endWrite(.cacheMaxSize)
+            guard let self, !Task.isCancelled else { return }
+            await self.writeConfig(key: OfemConfigKey.cacheMaxSizeGB, value: String(clamped))
             refresh()
         }
     }
@@ -368,12 +475,12 @@ final class MenuStatusModel: ObservableObject {
         beginWrite(.telemetry)
         telemetryEnabled = enabled
         Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.endWrite(.telemetry) } }
             guard let self else { return }
-            await writeConfigToAllAliases(
-                key: "telemetry",
+            await self.writeConfig(
+                key: OfemConfigKey.telemetry,
                 value: enabled ? "on" : "off"
             )
-            endWrite(.telemetry)
             refresh()
         }
     }
@@ -385,14 +492,13 @@ final class MenuStatusModel: ObservableObject {
         netMaxUploads = clamped
         setNetUploadsTask?.cancel()
         setNetUploadsTask = Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.endWrite(.netMaxUploads) } }
             try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
-            guard let self else { return }
-            if Task.isCancelled { return }
-            await writeConfigToAllAliases(
-                key: "net.max_concurrent_uploads_per_account",
+            guard let self, !Task.isCancelled else { return }
+            await self.writeConfig(
+                key: OfemConfigKey.netMaxUploads,
                 value: String(clamped)
             )
-            endWrite(.netMaxUploads)
             refresh()
         }
     }
@@ -404,14 +510,13 @@ final class MenuStatusModel: ObservableObject {
         netMaxDownloads = clamped
         setNetDownloadsTask?.cancel()
         setNetDownloadsTask = Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.endWrite(.netMaxDownloads) } }
             try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
-            guard let self else { return }
-            if Task.isCancelled { return }
-            await writeConfigToAllAliases(
-                key: "net.max_concurrent_downloads_per_account",
+            guard let self, !Task.isCancelled else { return }
+            await self.writeConfig(
+                key: OfemConfigKey.netMaxDownloads,
                 value: String(clamped)
             )
-            endWrite(.netMaxDownloads)
             refresh()
         }
     }
@@ -421,9 +526,9 @@ final class MenuStatusModel: ObservableObject {
         beginWrite(.logLevel)
         logLevel = level
         Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.endWrite(.logLevel) } }
             guard let self else { return }
-            await writeConfigToAllAliases(key: "log.level", value: level)
-            endWrite(.logLevel)
+            await self.writeConfig(key: OfemConfigKey.logLevel, value: level)
             refresh()
         }
     }
@@ -438,14 +543,14 @@ final class MenuStatusModel: ObservableObject {
     /// snapshot and the running engine are both updated in one round-trip.
     /// Fanning out to every alias would produce N redundant write-lock-read-
     /// merge-write cycles for the same key/value with no additional benefit.
-    private func writeConfigToAllAliases(key: String, value: String) async {
-        // Read directly from SharedOfemAuth so this works even before the first
+    private func writeConfig(key: String, value: String) async {
+        // Read directly from AccountProvider so this works even before the first
         // doRefresh() has populated the published `accounts` property — e.g. when
         // the user changes a setting immediately after app launch.
-        let currentAccounts = await SharedOfemAuth.shared.auth.listAccounts()
+        let currentAccounts = await accountProvider.listAccounts()
         guard let first = currentAccounts.first else { return }
         do {
-            try await OfemFPEClient.shared.setConfig(
+            try await engineStatusProvider.setConfig(
                 alias: first.alias,
                 key: key,
                 value: value

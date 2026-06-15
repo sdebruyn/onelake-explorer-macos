@@ -16,6 +16,33 @@
 import AppKit
 import SwiftUI
 
+// MARK: - Copyright derivation (testable free function)
+
+/// Derives the copyright year from a CalVer version string.
+///
+/// The version string is expected to be "YYYY.MM.PATCH"; the year component is
+/// the first dot-separated token. If the token is a valid 4-digit integer the
+/// function returns it as the year; otherwise it falls back to the current
+/// calendar year.
+///
+/// This logic is extracted from `AboutView.init` so it can be unit-tested
+/// without a live Bundle.main (host-10). The exact parsing this guards against
+/// — the `$(CURRENT_YEAR)` placeholder that produces an empty year — is
+/// precisely the kind of regression that benefits from an isolated test.
+func copyrightYear(from version: String) -> String {
+    if let yearComponent = version.split(separator: ".").first,
+       yearComponent.count == 4,
+       Int(yearComponent) != nil {
+        return String(yearComponent)
+    }
+    return String(Calendar.current.component(.year, from: Date()))
+}
+
+/// Builds the full copyright line for `version`.
+func copyrightString(version: String) -> String {
+    "Copyright © \(copyrightYear(from: version)) Debruyn Consultancy BV. MIT licensed."
+}
+
 // MARK: - Singleton controller
 
 @MainActor
@@ -68,17 +95,8 @@ private struct AboutView: View {
         let b = info["CFBundleVersion"] as? String ?? ""
         version = v
         build = b
-
-        // Derive the copyright year from the CalVer version prefix ("YYYY.MM.PATCH").
-        // Fall back to the current calendar year if the version is not in CalVer form.
-        let year: String
-        if let yearComponent = v.split(separator: ".").first, yearComponent.count == 4,
-           Int(yearComponent) != nil {
-            year = String(yearComponent)
-        } else {
-            year = String(Calendar.current.component(.year, from: Date()))
-        }
-        copyright = "Copyright © \(year) Debruyn Consultancy BV. MIT licensed."
+        // Delegate year/copyright derivation to the testable free function.
+        copyright = copyrightString(version: v)
     }
 
     var body: some View {

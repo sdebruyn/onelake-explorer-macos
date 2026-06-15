@@ -38,7 +38,9 @@ struct SettingsView: View {
         // which makes the chrome feel jumpy.
         .frame(width: 520, height: 340)
         .onAppear {
-            model.refresh()
+            // Only refresh the login-item status (the only state genuinely
+            // unknown to the auto-refresh poll loop). The extra model.refresh()
+            // is redundant work on top of the always-on 5-second poll (host-21).
             loginItem.refresh()
         }
     }
@@ -55,7 +57,7 @@ private struct GeneralSettingsTab: View {
             Section {
                 Toggle(isOn: Binding(
                     get: { loginItem.isRegistered },
-                    set: { $0 ? loginItem.register() : loginItem.unregister() }
+                    set: { _ in loginItem.toggle() }
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Open at Login")
@@ -193,7 +195,9 @@ private struct CacheSettingsTab: View {
     /// Used / limit clamped to [0, 1]. A transient overage during eviction
     /// would otherwise render as an overflowing bar.
     private var usageFraction: Double {
-        let limitBytes = Double(model.cacheMaxSizeGB) * 1024 * 1024 * 1024
+        // Use cacheMaxBytes (the byte-level value kept in sync by the model)
+        // instead of re-deriving from cacheMaxSizeGB to avoid the GiB literal.
+        let limitBytes = Double(model.cacheMaxBytes)
         guard limitBytes > 0 else { return 0 }
         return min(1.0, max(0.0, Double(model.cacheBytes) / limitBytes))
     }
@@ -207,11 +211,9 @@ private struct CacheSettingsTab: View {
     }
 
     private var usageLabel: String {
-        let f = ByteCountFormatter()
-        f.allowedUnits = [.useGB, .useMB, .useKB]
-        f.countStyle = .binary
-        f.allowsNonnumericFormatting = false
-        let used = f.string(fromByteCount: model.cacheBytes)
+        // Use the same binary formatter configuration as MenuStatusModel.formattedCache
+        // so the two surfaces display consistent representations of the same number.
+        let used = ByteCountFormatter.string(fromByteCount: model.cacheBytes, countStyle: .binary)
         return "\(used) of \(model.cacheMaxSizeGB) GB"
     }
 }

@@ -60,6 +60,28 @@ final class OneShotContinuation<T>: @unchecked Sendable {
     }
 }
 
+// MARK: - Shared async domain listing bridge
+
+/// Async wrapper for `NSFileProviderManager.getDomainsWithCompletionHandler`.
+///
+/// We funnel through `withCheckedThrowingContinuation` rather than relying
+/// on Swift's auto-bridged `getDomains()` overload because the latter has
+/// shifted shape across macOS SDK revisions. The explicit bridge keeps the
+/// call site predictable across DomainSyncManager, ChangeWatcher, and
+/// OfemFPEClient — all three formerly maintained separate copies of this
+/// identical bridge.
+func ofemGetAllDomains() async throws -> [NSFileProviderDomain] {
+    try await withCheckedThrowingContinuation { continuation in
+        NSFileProviderManager.getDomainsWithCompletionHandler { domains, error in
+            if let error {
+                continuation.resume(throwing: error)
+            } else {
+                continuation.resume(returning: domains)
+            }
+        }
+    }
+}
+
 // MARK: - OfemFPEClient
 
 /// Manages XPC connections to the FPE's control service.
@@ -67,7 +89,7 @@ final class OneShotContinuation<T>: @unchecked Sendable {
 final class OfemFPEClient {
     static let shared = OfemFPEClient()
 
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "fpe-client")
+    private static let log = Logger(subsystem: ofemSubsystem, category: "fpe-client")
 
     nonisolated init() {}
 
@@ -91,29 +113,7 @@ final class OfemFPEClient {
     /// - Parameter alias: Account alias identifying the domain.
     /// - Returns: `XPCEngineStatus` on success.
     func getEngineStatus(alias: String) async throws -> XPCEngineStatus {
-        let (connection, domainIdentifier) = try await connection(for: alias)
-        return try await withCheckedThrowingContinuation { rawContinuation in
-            let cont = OneShotContinuation(rawContinuation)
-            // Construct the proxy inside the continuation body so the error
-            // handler captures `cont` and can resume it on connection fault.
-            // This guarantees the task never hangs: XPC fires either the reply
-            // block or the error handler — never both — but never neither.
-            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
-                Task { @MainActor [weak self] in
-                    if let old = self?.connections.removeValue(forKey: domainIdentifier) {
-                        old.invalidate()
-                    }
-                }
-                OfemFPEClient.log.error(
-                    "FPE XPC proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                )
-                cont.resume(throwing: error)
-            }) as? any OfemClientControlProtocol else {
-                cont.resume(throwing: OfemFPEClientError.connectionFailed(
-                    "proxy cast failed for \(domainIdentifier)"
-                ))
-                return
-            }
+        try await withProxy(alias: alias) { proxy, cont in
             proxy.getEngineStatus { status, error in
                 if let error {
                     cont.resume(throwing: error)
@@ -137,25 +137,7 @@ final class OfemFPEClient {
     ///   - key:   Config key in dot notation.
     ///   - value: New value as a string.
     func setConfig(alias: String, key: String, value: String) async throws {
-        let (connection, domainIdentifier) = try await connection(for: alias)
-        try await withCheckedThrowingContinuation { (rawContinuation: CheckedContinuation<Void, Error>) in
-            let cont = OneShotContinuation(rawContinuation)
-            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
-                Task { @MainActor [weak self] in
-                    if let old = self?.connections.removeValue(forKey: domainIdentifier) {
-                        old.invalidate()
-                    }
-                }
-                OfemFPEClient.log.error(
-                    "FPE XPC proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                )
-                cont.resume(throwing: error)
-            }) as? any OfemClientControlProtocol else {
-                cont.resume(throwing: OfemFPEClientError.connectionFailed(
-                    "proxy cast failed for \(domainIdentifier)"
-                ))
-                return
-            }
+        let _: Void = try await withProxy(alias: alias) { proxy, cont in
             proxy.setConfig(key: key, value: value) { error in
                 if let error {
                     cont.resume(throwing: error)
@@ -174,15 +156,127 @@ final class OfemFPEClient {
     /// - Returns: Byte count remaining after the wipe (always 0 on success).
     @discardableResult
     func clearCache(alias: String) async throws -> Int64 {
+        try await withProxy(alias: alias) { proxy, cont in
+            proxy.clearCache { remaining, error in
+                if let error {
+                    cont.resume(throwing: error)
+                } else {
+                    cont.resume(returning: remaining)
+                }
+            }
+        }
+    }
+
+    // MARK: - Protocol version check
+
+    /// Queries the FPE's protocol version via an already-typed proxy and
+    /// surfaces a mismatch via the model.
+    ///
+    /// Extracted from the NSXPCConnection-level helper so tests can inject a
+    /// fake proxy without needing a real XPC connection.
+    ///
+    /// - Parameters:
+    ///   - proxy:            A typed proxy that may or may not implement
+    ///                       `getProtocolVersion(reply:)`.
+    ///   - domainIdentifier: Used for log messages only (not logged as PII).
+    /// - Returns: The FPE's reported version (1 if the FPE pre-dates versioning).
+    @discardableResult
+    func checkProtocolVersion(
+        proxy: any OfemClientControlProtocol,
+        domainIdentifier: String
+    ) async -> Int {
+        // `getProtocolVersion` is @objc optional — a pre-v2 FPE will not
+        // implement it. Guard with responds(to:) and treat absence as version 1.
+        let sel = #selector(OfemClientControlProtocol.getProtocolVersion(reply:))
+        guard (proxy as AnyObject).responds(to: sel) else {
+            Self.log.info(
+                "FPE at \(domainIdentifier, privacy: .public) does not implement getProtocolVersion (pre-v2)"
+            )
+            await notifyVersionMismatch(fpeVersion: 1, domainIdentifier: domainIdentifier)
+            return 1
+        }
+
+        let fpeVersion: Int = await withCheckedContinuation { continuation in
+            proxy.getProtocolVersion! { version in
+                continuation.resume(returning: version)
+            }
+        }
+
+        if fpeVersion != ofemControlProtocolVersion {
+            Self.log.warning(
+                "Protocol version mismatch for \(domainIdentifier, privacy: .public): host=\(ofemControlProtocolVersion) fpe=\(fpeVersion)"
+            )
+            await notifyVersionMismatch(fpeVersion: fpeVersion, domainIdentifier: domainIdentifier)
+        } else {
+            Self.log.info(
+                "Protocol version OK for \(domainIdentifier, privacy: .public): v\(fpeVersion)"
+            )
+        }
+        return fpeVersion
+    }
+
+    /// Connection-level wrapper: obtains a proxy from the connection and
+    /// delegates to `checkProtocolVersion(proxy:domainIdentifier:)`.
+    ///
+    /// Called once per new connection in `connection(for:)` after the
+    /// connection is cached and resumed.
+    private func checkProtocolVersion(
+        connection: NSXPCConnection,
+        domainIdentifier: String
+    ) async {
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+            // Log only; failure here is non-fatal — the connection is already
+            // cached and subsequent method calls will surface their own errors.
+            OfemFPEClient.log.warning(
+                "getProtocolVersion proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+        }) as? any OfemClientControlProtocol else {
+            // Cast failure means the connection is already broken; skip check.
+            return
+        }
+        await checkProtocolVersion(proxy: proxy, domainIdentifier: domainIdentifier)
+    }
+
+    /// Surfaces a version mismatch to the user via `MenuStatusModel.lastActionError`.
+    @MainActor
+    private func notifyVersionMismatch(fpeVersion: Int, domainIdentifier: String) {
+        MenuStatusModel.shared.setVersionMismatchError(
+            hostVersion: ofemControlProtocolVersion,
+            fpeVersion: fpeVersion
+        )
+    }
+
+    // MARK: - Generic proxy helper
+
+    /// Acquires a typed proxy for `alias`, invokes `body`, and returns the result.
+    ///
+    /// Centralises the shared boilerplate that all public API methods used to repeat:
+    ///   1. Resolve the cached/built connection.
+    ///   2. Construct the proxy with `remoteObjectProxyWithErrorHandler`; the error
+    ///      handler resumes the continuation and is the *only* place that evicts the
+    ///      cached connection — the per-call handler no longer invalidates connections
+    ///      itself, because `buildConnection` already installs `invalidationHandler`
+    ///      and `interruptionHandler` for that purpose.
+    ///   3. Cast to `any OfemClientControlProtocol` (fails immediately if cast fails).
+    ///   4. Call `body` with the typed proxy and the one-shot continuation.
+    ///
+    /// - Parameters:
+    ///   - alias: Account alias identifying the domain.
+    ///   - body:  Closure that calls one method on the proxy and resumes `cont`.
+    private func withProxy<T>(
+        alias: String,
+        _ body: @escaping (any OfemClientControlProtocol, OneShotContinuation<T>) -> Void
+    ) async throws -> T {
         let (connection, domainIdentifier) = try await connection(for: alias)
         return try await withCheckedThrowingContinuation { rawContinuation in
-            let cont = OneShotContinuation(rawContinuation)
-            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] error in
-                Task { @MainActor [weak self] in
-                    if let old = self?.connections.removeValue(forKey: domainIdentifier) {
-                        old.invalidate()
-                    }
-                }
+            let cont = OneShotContinuation<T>(rawContinuation)
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+                // The per-call error handler's only job is to resume the
+                // continuation so the awaiting Task doesn't hang. Connection
+                // eviction/invalidation is handled exclusively by the
+                // `invalidationHandler` and `interruptionHandler` installed in
+                // `buildConnection` — not here — so there is exactly one
+                // code path responsible for cache eviction.
                 OfemFPEClient.log.error(
                     "FPE XPC proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
@@ -193,13 +287,7 @@ final class OfemFPEClient {
                 ))
                 return
             }
-            proxy.clearCache { remaining, error in
-                if let error {
-                    cont.resume(throwing: error)
-                } else {
-                    cont.resume(returning: remaining)
-                }
-            }
+            body(proxy, cont)
         }
     }
 
@@ -216,12 +304,9 @@ final class OfemFPEClient {
     /// Returns the NSXPCConnection (and its domain identifier) for the domain
     /// identified by `alias`. Creates a connection if needed.
     ///
-    /// Callers are responsible for constructing the proxy with
-    /// `remoteObjectProxyWithErrorHandler` INSIDE their own continuation body so
-    /// the error handler captures their `OneShotContinuation` and can resume it
-    /// on connection fault. This ensures no task can hang when the FPE crashes.
+    /// Callers use `withProxy(alias:_:)` rather than calling this directly.
     private func connection(for alias: String) async throws -> (NSXPCConnection, String) {
-        let domainIdentifier = "ofem.\(alias)"
+        let domainIdentifier = DomainSyncManager.shared.domainIdentifier(for: alias)
 
         // Return a cached connection if one exists.
         if let conn = connections[domainIdentifier] {
@@ -263,12 +348,18 @@ final class OfemFPEClient {
         Self.log.info(
             "FPE XPC connection established for domain \(domainIdentifier, privacy: .public)"
         )
+
+        // Perform the protocol version handshake on each new connection (xpc-06).
+        // Non-fatal: a mismatch is logged and surfaced to the user but does not
+        // prevent the connection from being used.
+        await checkProtocolVersion(connection: conn, domainIdentifier: domainIdentifier)
+
         return (conn, domainIdentifier)
     }
 
     /// Build and configure a new NSXPCConnection for `domainIdentifier`.
     private func buildConnection(domainIdentifier: String) async throws -> NSXPCConnection {
-        // Find the domain.
+        // Find the domain using the shared helper.
         let domain = try await findDomain(identifier: domainIdentifier)
 
         // Ask NSFileProviderManager for the XPC service.
@@ -314,12 +405,14 @@ final class OfemFPEClient {
 
         // Configure the connection interface.
         connection.remoteObjectInterface = makeInterface()
+
+        // The invalidation and interruption handlers are the single canonical
+        // place for connection cache eviction. The per-call proxy error handler
+        // (in withProxy) only resumes the waiting continuation; it does NOT
+        // evict — avoiding the triple-eviction race (host-11).
         connection.invalidationHandler = { [weak self] in
             Task { @MainActor [weak self] in
-                // Evict and explicitly invalidate so libxpc releases the connection.
-                if let old = self?.connections.removeValue(forKey: domainIdentifier) {
-                    old.invalidate()
-                }
+                self?.connections.removeValue(forKey: domainIdentifier)
                 OfemFPEClient.log.info(
                     "FPE XPC connection invalidated for domain \(domainIdentifier, privacy: .public)"
                 )
@@ -327,11 +420,7 @@ final class OfemFPEClient {
         }
         connection.interruptionHandler = { [weak self] in
             Task { @MainActor [weak self] in
-                // Evict and invalidate the interrupted connection; the next call
-                // to proxy(for:) will rebuild it.
-                if let old = self?.connections.removeValue(forKey: domainIdentifier) {
-                    old.invalidate()
-                }
+                self?.connections.removeValue(forKey: domainIdentifier)
                 OfemFPEClient.log.warning(
                     "FPE XPC connection interrupted for domain \(domainIdentifier, privacy: .public)"
                 )
@@ -342,16 +431,7 @@ final class OfemFPEClient {
     }
 
     private func findDomain(identifier: String) async throws -> NSFileProviderDomain {
-        let domains: [NSFileProviderDomain] = try await withCheckedThrowingContinuation { rawCont in
-            let cont = OneShotContinuation(rawCont)
-            NSFileProviderManager.getDomainsWithCompletionHandler { domains, error in
-                if let error {
-                    cont.resume(throwing: error)
-                } else {
-                    cont.resume(returning: domains)
-                }
-            }
-        }
+        let domains = try await ofemGetAllDomains()
         guard let domain = domains.first(where: { $0.identifier.rawValue == identifier }) else {
             throw OfemFPEClientError.domainNotFound(identifier)
         }
@@ -363,6 +443,11 @@ final class OfemFPEClient {
         // getEngineStatus reply: (XPCEngineStatus?, Error?)
         // XPCEngineStatus carries an NSArray of XPCPausedWorkspace; all three
         // types must be listed so XPC's secure-coding policy allows them.
+        //
+        // `setClasses(_:for:argumentIndex:ofReply:)` requires `Set<AnyHashable>`.
+        // NSObject subclasses bridge to AnyHashable through ObjC, so the
+        // NSSet(array:) bridge is the idiomatic Swift way to construct this set.
+        // The force-cast is safe: ObjC class objects always bridge to AnyHashable.
         iface.setClasses(
             NSSet(array: [XPCEngineStatus.self, NSArray.self, XPCPausedWorkspace.self]) as! Set<AnyHashable>,
             for: #selector(OfemClientControlProtocol.getEngineStatus(reply:)),

@@ -89,10 +89,14 @@ final class AddAccountCoordinatorTests: XCTestCase {
         await fulfillment(of: [expectation], timeout: 2)
         observation.cancel()
 
-        if case .success(let username) = coordinator.phase {
+        // The coordinator transitions .success → .readyToDismiss after a brief pause.
+        // Accept either phase here since the check runs just after the .success
+        // expectation fires (before the 1.2s sleep in the coordinator elapses).
+        switch coordinator.phase {
+        case .success(let username), .readyToDismiss(let username):
             XCTAssertEqual(username, "alice@contoso.com")
-        } else {
-            XCTFail("Expected .success, got \(coordinator.phase)")
+        default:
+            XCTFail("Expected .success or .readyToDismiss, got \(coordinator.phase)")
         }
     }
 
