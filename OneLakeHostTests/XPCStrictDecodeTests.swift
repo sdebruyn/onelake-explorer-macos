@@ -34,8 +34,12 @@ private func rawArchive(_ pairs: [(String, Any)]) throws -> Data {
 }
 
 private func unarchive<T: NSObject & NSSecureCoding>(_ type: T.Type, from data: Data) -> T? {
+    // requiresSecureCoding = true mirrors the real XPC decode path:
+    // NSXPCConnection always decodes reply objects with secure coding enabled.
+    // This means decodeObject(of:forKey:) enforces the allowed-class list and
+    // rejects unexpected types — the same constraints the live XPC runtime applies.
     let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data)
-    unarchiver?.requiresSecureCoding = false
+    unarchiver?.requiresSecureCoding = true
     return unarchiver.flatMap { T(coder: $0) }
 }
 

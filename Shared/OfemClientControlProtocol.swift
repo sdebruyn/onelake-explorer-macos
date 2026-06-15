@@ -39,6 +39,12 @@
 //           }
 //       }
 //
+//   NOTE: the `replied` flag above is NOT thread-safe if `safeReply` is called
+//   from multiple concurrent contexts (e.g. a Task body AND a cancellation
+//   handler on a different thread). The pattern is safe only when `safeReply`
+//   is called exclusively from within a single Task — which is the intended
+//   usage here.
+//
 //   Failing to call reply on cancellation causes the host's continuation to
 //   hang until the connection's interruptionHandler fires, which is the only
 //   backstop but is not guaranteed to fire promptly.

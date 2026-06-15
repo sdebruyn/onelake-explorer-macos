@@ -109,6 +109,13 @@ public extension NSError {
         // Infer the code from the error's string representation so common
         // SetConfigError cases map to the right code without a hard import
         // dependency on the FPE-internal SetConfigError enum.
+        //
+        // FRAGILE: String(reflecting:) produces a fully-qualified name like
+        // "OneLakeFileProvider.SetConfigError". A module rename or type rename
+        // silently breaks this heuristic, causing all SetConfigError cases to
+        // fall through to .internalError. If SetConfigError ever moves to
+        // OfemKit (where Shared/ can import it), switch to a typed check:
+        //   if let e = error as? SetConfigError { … }
         let desc = error.localizedDescription
         let typeName = String(reflecting: type(of: error))
 

@@ -83,14 +83,13 @@ final class XPCSendableTests: XCTestCase {
         // Accessing via a let binding and checking the type: if any of these
         // were `var`, this block would still compile — but we at least verify
         // the fields exist and have the expected values.
-        let _: String = info.alias
-        let _: String = info.username
-        let _: String = info.tenantId
-        let _: String = info.tenantName
-        // If any property were declared `var`, the Sendable conformance would
-        // require `Sendable` on the mutated type — the `@unchecked` annotation
-        // documents that immutability is maintained manually.
-        XCTAssertTrue(true, "Compile-time check: properties are accessible as let")
+        XCTAssertEqual(info.alias, "a")
+        XCTAssertEqual(info.username, "u")
+        XCTAssertEqual(info.tenantId, "t")
+        XCTAssertEqual(info.tenantName, "n")
+        // Immutability is enforced at compile time via `let` + `@unchecked Sendable`.
+        // The assertions above confirm the values survive round-trip through `let`
+        // bindings; any accidental `var` mutation would change them.
     }
 }
 
