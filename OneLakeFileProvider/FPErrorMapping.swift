@@ -1,10 +1,8 @@
 // FPErrorMapping.swift
 // Shared FPError.Code → NSFileProviderError conversion.
 //
-// Previously copy-pasted verbatim in FileProviderExtension.swift and
-// OfemFPEEnumerator.swift (fpe-17). One canonical mapping ensures that a
-// code change (e.g. deciding .serverBusy should surface differently) is
-// applied consistently everywhere.
+// One canonical mapping ensures that a code change (e.g. deciding .serverBusy
+// should surface differently) is applied consistently at every FPE call site.
 
 import FileProvider
 import OfemKit

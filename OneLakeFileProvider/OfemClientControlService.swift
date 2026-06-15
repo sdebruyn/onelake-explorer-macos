@@ -13,7 +13,7 @@
 // XPC methods exposed:
 //   - getEngineStatus(reply:)     — cache stats + config snapshot
 //   - setConfig(key:value:reply:) — write one config field, persist and trigger engine reload
-//   - clearCache(reply:)          — wipe all cached blobs
+//   - clearCache(reply:)          — wipe all cached blobs; reply carries freed byte count
 //
 // NSXPCInterface setup notes:
 //   - XPCEngineStatus must be listed for the getEngineStatus reply.
@@ -25,6 +25,23 @@ import FileProvider
 import Foundation
 import OfemKit
 import os.log
+
+// MARK: - XPC code-signing requirement
+
+/// Code-signing requirement that the FPE enforces on incoming XPC connections.
+///
+/// Requires the exact host-app bundle identifier and the OFEM developer Team ID.
+/// Encoded as a constant so the string is defined once and auditable — a change
+/// to the bundle ID or Team ID that is not reflected here fails the connection
+/// at runtime with a clear "connection invalid" rather than a silent security gap.
+///
+/// Syntax: Code Signing Requirement Language (man csreq / Security.framework).
+///   - `identifier "..."` — exact CFBundleIdentifier match
+///   - `anchor apple generic` — any Apple-issued cert chain
+///   - `certificate leaf[subject.OU]` — Developer Team ID leaf field
+let ofemXPCPeerRequirement = #"identifier "dev.debruyn.ofem" and anchor apple generic and certificate leaf[subject.OU] = "6D79CUWZ4J""#
+
+// MARK: - OfemClientControlService
 
 /// NSFileProviderServiceSource that vends the OfemClientControlProtocol XPC service.
 ///
@@ -44,7 +61,7 @@ final class OfemClientControlService: NSObject, NSFileProviderServiceSource {
 
     let serviceName = NSFileProviderServiceName(ofemControlServiceName)
 
-    private let engineHost: FPEEngineHost
+    private let engineHost: any EngineProviding
 
     // NSXPCListener.delegate is a weak property, so we must retain the delegate
     // ourselves for as long as the listener lives. Both listener and delegate are
@@ -54,7 +71,7 @@ final class OfemClientControlService: NSObject, NSFileProviderServiceSource {
     private var listener: NSXPCListener?
     private var listenerDelegate: OfemXPCListenerDelegate?
 
-    init(engineHost: FPEEngineHost) {
+    init(engineHost: any EngineProviding) {
         self.engineHost = engineHost
         super.init()
     }
@@ -89,13 +106,13 @@ final class OfemClientControlService: NSObject, NSFileProviderServiceSource {
 
 /// Accepts and configures incoming XPC connections for the control protocol.
 private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
-    private let engineHost: FPEEngineHost
+    private let engineHost: any EngineProviding
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
         category: "control-service"
     )
 
-    init(engineHost: FPEEngineHost) {
+    init(engineHost: any EngineProviding) {
         self.engineHost = engineHost
         super.init()
     }
@@ -105,24 +122,15 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
         shouldAcceptNewConnection newConnection: NSXPCConnection
     ) -> Bool {
         // Validate that the connecting process is the OFEM host app by checking
-        // its code-signing requirement: same team ID and the exact host-app
-        // bundle identifier. This scopes mutating operations (setConfig,
-        // clearCache) to the host app and rejects any other process that
-        // happens to open a file in a OneLake domain and obtain the endpoint.
+        // its code-signing requirement. The requirement string is the single
+        // authoritative definition; see `ofemXPCPeerRequirement`.
         //
         // `setCodeSigningRequirement` is available on macOS 13+ (our minimum is 14).
-        // Syntax: Code Signing Requirement Language (man csreq / Security.framework).
-        //   - `identifier "..."` — exact CFBundleIdentifier match
-        //   - `anchor apple generic` — any Apple-issued cert chain
-        //   - `certificate leaf[subject.OU]` — Developer Team ID leaf field
-        let requirement = "identifier \"dev.debruyn.ofem\" and anchor apple generic and certificate leaf[subject.OU] = \"6D79CUWZ4J\""
+        // Peer validation is lazy and happens on the first message; this call
+        // only fails if the requirement string is syntactically invalid.
         do {
-            try newConnection.setCodeSigningRequirement(requirement)
+            try newConnection.setCodeSigningRequirement(ofemXPCPeerRequirement)
         } catch {
-            // This catch fires when the requirement string is syntactically
-            // invalid (parse failure), not when a peer fails validation.
-            // Peer validation is lazy and happens on the first message.
-            // With a correct requirement string this branch should never fire.
             Self.log.error(
                 "XPC: malformed code-signing requirement string: \(error.localizedDescription, privacy: .public)"
             )
@@ -141,8 +149,15 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
         // Argument index 0 is XPCEngineStatus (which contains an NSArray of
         // XPCPausedWorkspace). All three types must be listed so XPC's
         // secure-coding policy allows them to cross the boundary.
+        //
+        // Build the Set<AnyHashable> via NSSet with explicit bridging.
+        // NSSet(array:) bridges AnyObject (class metatypes) to AnyHashable safely;
+        // the cast is guaranteed to succeed because all elements are ObjC class metatypes
+        // which bridge to AnyHashable via NSObjectProtocol.
+        let classArray: [AnyObject] = [XPCEngineStatus.self, NSArray.self, XPCPausedWorkspace.self]
+        let replyClasses = NSSet(array: classArray) as! Set<AnyHashable>  // safe: AnyObject metatypes
         iface.setClasses(
-            NSSet(array: [XPCEngineStatus.self, NSArray.self, XPCPausedWorkspace.self]) as! Set<AnyHashable>,
+            replyClasses,
             for: #selector(OfemClientControlProtocol.getEngineStatus(reply:)),
             argumentIndex: 0,
             ofReply: true
@@ -161,9 +176,9 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
         category: "xpc-handler"
     )
 
-    private let engineHost: FPEEngineHost
+    private let engineHost: any EngineProviding
 
-    init(engineHost: FPEEngineHost) {
+    init(engineHost: any EngineProviding) {
         self.engineHost = engineHost
         super.init()
     }
@@ -171,7 +186,17 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
     // MARK: - getEngineStatus
 
     func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
+        // xpc-02: reply-once guard — fires exactly once on every path,
+        // including Task cancellation or connection teardown. Without this a
+        // torn-down connection can leave the host app waiting forever.
+        var replied = false
+        let replyOnce: (XPCEngineStatus?, Error?) -> Void = { status, err in
+            guard !replied else { return }
+            replied = true
+            reply(status, err)
+        }
         Task { [self] in
+            defer { replyOnce(nil, NSFileProviderError(.cannotSynchronize)) }
             do {
                 // Read config snapshot via the shared configStore — does NOT
                 // require the engine to be built yet (cheaper for first call).
@@ -218,12 +243,12 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                     logLevel: cfg.log.level,
                     pausedWorkspaces: pausedWorkspaces
                 )
-                reply(status, nil)
+                replyOnce(status, nil)
             } catch {
                 Self.log.error(
                     "getEngineStatus failed: \(error.localizedDescription, privacy: .public)"
                 )
-                reply(nil, error)
+                replyOnce(nil, error)
             }
         }
     }
@@ -231,22 +256,31 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
     // MARK: - setConfig
 
     func setConfig(key: String, value: String, reply: @escaping (Error?) -> Void) {
+        // xpc-02: reply-once guard — fires exactly once on every path,
+        // including Task cancellation or connection teardown.
+        var replied = false
+        let replyOnce: (Error?) -> Void = { err in
+            guard !replied else { return }
+            replied = true
+            reply(err)
+        }
         Task { [self] in
+            defer { replyOnce(NSFileProviderError(.cannotSynchronize)) }
             do {
                 let configStore = try engineHost.configStore()
-                var applyError: Error? = nil
+                var applyError: SetConfigError? = nil
                 try await configStore.updateAndSave { cfg in
                     switch key {
                     case "telemetry":
                         guard value == "on" || value == "off" else {
-                            applyError = SetConfigError.invalidValue(key: key, value: value,
+                            applyError = .invalidValue(key: key, value: value,
                                 reason: "expected \"on\" or \"off\"")
                             return
                         }
                         cfg.telemetry = (value == "on")
                     case "cache.max_size_gb":
                         guard let gb = Int(value) else {
-                            applyError = SetConfigError.invalidValue(key: key, value: value,
+                            applyError = .invalidValue(key: key, value: value,
                                 reason: "expected an integer")
                             return
                         }
@@ -257,28 +291,34 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                             : min(max(gb, CacheConfig.minSizeGB), CacheConfig.maxSizeGB)
                     case "net.max_concurrent_uploads_per_account":
                         guard let n = Int(value) else {
-                            applyError = SetConfigError.invalidValue(key: key, value: value,
+                            applyError = .invalidValue(key: key, value: value,
                                 reason: "expected an integer")
                             return
                         }
-                        cfg.net.maxConcurrentUploadsPerAccount = min(max(n, 1), 16)
+                        // xpc-07: use named constants from NetConfig.
+                        // Upper bound is per-protocol (16 uploads); the shared
+                        // NetConfig.maxConcurrent (64) is the absolute ceiling
+                        // for any concurrency field — the XPC protocol caps
+                        // uploads more tightly to avoid swamping the endpoint.
+                        cfg.net.maxConcurrentUploadsPerAccount = min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxUploadsPerAccount)
                     case "net.max_concurrent_downloads_per_account":
                         guard let n = Int(value) else {
-                            applyError = SetConfigError.invalidValue(key: key, value: value,
+                            applyError = .invalidValue(key: key, value: value,
                                 reason: "expected an integer")
                             return
                         }
-                        cfg.net.maxConcurrentDownloadsPerAccount = min(max(n, 1), 32)
+                        // xpc-08: use named constants from NetConfig.
+                        cfg.net.maxConcurrentDownloadsPerAccount = min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxDownloadsPerAccount)
                     case "log.level":
                         let allowed = ["debug", "info", "warn", "error"]
                         guard allowed.contains(value) else {
-                            applyError = SetConfigError.invalidValue(key: key, value: value,
+                            applyError = .invalidValue(key: key, value: value,
                                 reason: "expected one of \(allowed.joined(separator: ", "))")
                             return
                         }
                         cfg.log.level = value
                     default:
-                        applyError = SetConfigError.unknownKey(key)
+                        applyError = .unknownKey(key)
                     }
                 }
 
@@ -286,7 +326,10 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                     Self.log.warning(
                         "setConfig: key='\(key, privacy: .public)' rejected: \(applyError.localizedDescription, privacy: .public)"
                     )
-                    reply(applyError)
+                    // xpc-03: bridge SetConfigError to NSError so the host
+                    // receives a decodable, classifiable error at the XPC
+                    // boundary rather than an opaque SwiftErrorDomain blob.
+                    replyOnce(applyError.asNSError())
                     return
                 }
 
@@ -301,12 +344,12 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                 // _engine and _buildError, and let the next use rebuild lazily.
                 await engineHost.reloadEngine()
 
-                reply(nil)
+                replyOnce(nil)
             } catch {
                 Self.log.error(
                     "setConfig failed: key='\(key, privacy: .public)' error=\(error.localizedDescription, privacy: .public)"
                 )
-                reply(error)
+                replyOnce(error)
             }
         }
     }
@@ -314,20 +357,45 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
     // MARK: - clearCache
 
     func clearCache(reply: @escaping (Int64, Error?) -> Void) {
+        // xpc-02: reply-once guard — fires exactly once on every path,
+        // including Task cancellation or connection teardown.
+        var replied = false
+        let replyOnce: (Int64, Error?) -> Void = { bytes, err in
+            guard !replied else { return }
+            replied = true
+            reply(bytes, err)
+        }
         Task { [self] in
+            defer { replyOnce(0, NSFileProviderError(.cannotSynchronize)) }
             do {
                 let engine = try await engineHost.engine()
-                let (_, _) = try await engine.cache.wipe()
-                Self.log.info("clearCache: blobs wiped")
-                reply(0, nil)
+                let (_, freedBytes) = try await engine.cache.wipe()
+                Self.log.info("clearCache: \(freedBytes, privacy: .public) bytes freed")
+                replyOnce(freedBytes, nil)
             } catch {
                 Self.log.error(
                     "clearCache failed: \(error.localizedDescription, privacy: .public)"
                 )
-                reply(0, error)
+                replyOnce(0, error)
             }
         }
     }
+}
+
+// MARK: - SetConfig concurrency limits (xpc-07/08)
+
+/// Per-field upper bounds for the XPC setConfig handler's concurrency fields.
+///
+/// These values are intentionally tighter than `NetConfig.maxConcurrent` (64)
+/// to avoid saturating the OneLake / Fabric endpoints from a single client.
+/// The XPC protocol comments document these numbers; keep them in sync.
+enum SetConfigLimits {
+    /// Maximum allowed concurrent uploads per account (maps to the protocol
+    /// comment "integer string, 1–16").
+    static let maxUploadsPerAccount = 16
+    /// Maximum allowed concurrent downloads per account (maps to the protocol
+    /// comment "integer string, 1–32").
+    static let maxDownloadsPerAccount = 32
 }
 
 // MARK: - SetConfig errors
@@ -345,5 +413,26 @@ enum SetConfigError: Error, LocalizedError {
         case .invalidValue(let k, let v, let r):
             return "setConfig: invalid value '\(v)' for key '\(k)': \(r)"
         }
+    }
+
+    /// Bridges to `NSError` so the value survives the XPC boundary as a
+    /// decodable, classifiable error (xpc-03). Sending a plain Swift enum
+    /// across XPC produces a `SwiftErrorDomain` blob with no useful fields
+    /// on the receiving side.
+    func asNSError() -> NSError {
+        let code: Int
+        var userInfo: [String: Any] = [:]
+        switch self {
+        case .unknownKey(let k):
+            code = 1
+            userInfo["key"] = k
+        case .invalidValue(let k, let v, let r):
+            code = 2
+            userInfo["key"] = k
+            userInfo["value"] = v
+            userInfo["reason"] = r
+        }
+        userInfo[NSLocalizedDescriptionKey] = errorDescription ?? localizedDescription
+        return NSError(domain: "dev.debruyn.ofem.setConfig", code: code, userInfo: userInfo)
     }
 }

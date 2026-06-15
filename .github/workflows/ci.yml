@@ -80,6 +80,25 @@ jobs:
           # Never fail the build on a Codecov hiccup or a fork PR with no token.
           fail_ci_if_error: false
 
+      - name: Export FPE coverage
+        run: |
+          set -euo pipefail
+          xrp="$(brew --prefix xcresultparser)/bin/xcresultparser"
+          "$xrp" --output-format cobertura \
+            DerivedData/FPETests.xcresult > fpe-coverage.xml
+          sed "s|${GITHUB_WORKSPACE}/||g" fpe-coverage.xml > fpe-coverage.xml.tmp
+          mv fpe-coverage.xml.tmp fpe-coverage.xml
+          echo "fpe-coverage.xml: $(wc -l < fpe-coverage.xml) lines"
+
+      - name: Upload FPE coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: fpe-coverage.xml
+          flags: fpe
+          disable_search: true
+          fail_ci_if_error: false
+
       - name: Build app + extension (unsigned)
         # Compiles the OneLake app and the File Provider .appex with code
         # signing disabled. Catches Swift compile regressions on every PR

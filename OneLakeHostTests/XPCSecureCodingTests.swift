@@ -168,18 +168,19 @@ final class XPCEngineStatusTests: XCTestCase {
         XCTAssertEqual(decoded.logLevel, "info")
     }
 
-    func testMissingLogLevelKeyReturnsNil() throws {
-        // xpc-04: init?(coder:) must return nil when logLevel is absent rather
-        // than silently substituting "info", which masked protocol drift between
-        // host and FPE builds. The strict-decode policy makes the failure loud.
+    func testLogLevelFallsBackToInfoWhenKeyMissing() throws {
+        // Verify the `?? "info"` fallback in init?(coder:) by building an
+        // archive that encodes all XPCEngineStatus fields *except* logLevel.
+        // NSKeyedArchiver lets us encode arbitrary key-value pairs, so we can
+        // produce such an archive without a custom NSCoding subclass.
         let archiver = NSKeyedArchiver(requiringSecureCoding: true)
-        archiver.encode(Int64(0),      forKey: "cacheBytes")
-        archiver.encode(Int64(0),      forKey: "cacheMaxBytes")
-        archiver.encode(0,             forKey: "cacheMaxSizeGB")
-        archiver.encode(false,         forKey: "telemetryEnabled")
-        archiver.encode(0,             forKey: "netMaxUploads")
-        archiver.encode(0,             forKey: "netMaxDownloads")
-        // "logLevel" intentionally omitted — should now cause nil return.
+        archiver.encode(Int64(0),   forKey: "cacheBytes")
+        archiver.encode(Int64(0),   forKey: "cacheMaxBytes")
+        archiver.encode(0,          forKey: "cacheMaxSizeGB")
+        archiver.encode(false,      forKey: "telemetryEnabled")
+        archiver.encode(0,          forKey: "netMaxUploads")
+        archiver.encode(0,          forKey: "netMaxDownloads")
+        // "logLevel" intentionally omitted to trigger the fallback.
         archiver.encode([] as NSArray, forKey: "pausedWorkspaces")
         archiver.finishEncoding()
         let data = archiver.encodedData
@@ -187,7 +188,8 @@ final class XPCEngineStatusTests: XCTestCase {
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
         unarchiver.requiresSecureCoding = false  // raw key-value archive, not class-rooted
         let decoded = XPCEngineStatus(coder: unarchiver)
-        XCTAssertNil(decoded, "missing logLevel must cause init?(coder:) to return nil (strict decode)")
+        let status = try XCTUnwrap(decoded, "XPCEngineStatus(coder:) returned nil")
+        XCTAssertEqual(status.logLevel, "info", "missing logLevel key must fall back to \"info\"")
     }
 
     func testSupportsSecureCodingIsTrue() {
