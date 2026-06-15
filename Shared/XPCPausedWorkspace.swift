@@ -15,7 +15,7 @@
 
 import Foundation
 
-@objc public final class XPCPausedWorkspace: NSObject, NSSecureCoding {
+@objc(XPCPausedWorkspace) public final class XPCPausedWorkspace: NSObject, NSSecureCoding {
     @objc public static var supportsSecureCoding: Bool { true }
 
     @objc public let accountAlias: String

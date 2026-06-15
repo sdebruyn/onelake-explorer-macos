@@ -18,7 +18,7 @@
 
 import Foundation
 
-@objc public final class XPCEngineStatus: NSObject, NSSecureCoding {
+@objc(XPCEngineStatus) public final class XPCEngineStatus: NSObject, NSSecureCoding {
     @objc public static var supportsSecureCoding: Bool { true }
 
     @objc public let cacheBytes: Int64
