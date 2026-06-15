@@ -107,21 +107,32 @@ struct MenuBarView: View {
 
     // MARK: - Preferences
 
-    /// SettingsLink (macOS 14+) is the supported way to open the SwiftUI
-    /// `Settings { … }` scene from anywhere in a SwiftUI tree, including
-    /// a MenuBarExtra dropdown on an LSUIElement app. The Cmd+, shortcut
-    /// matches the system-wide convention.
+    /// Opens (or focuses) the Settings window.
     ///
-    /// Note: `simultaneousGesture` is intentionally absent. With
-    /// `menuBarExtraStyle(.menu)` the content is rendered as NSMenuItems and
-    /// SwiftUI gesture recognisers are not delivered — the gesture was dead
-    /// in practice. Settings activation is handled by the scene machinery.
+    /// Strategy: `NSApp.sendAction(_:to:from:)` with the private
+    /// `showSettingsWindow:` selector is the documented-by-convention way to
+    /// trigger the SwiftUI `Settings` scene. SwiftUI creates the window the
+    /// first time and reuses it on subsequent calls, so this doubles as a
+    /// focus action when the window is already open. Calling
+    /// `NSApp.activate(ignoringOtherApps: true)` afterwards ensures the app
+    /// comes to the foreground even when it is currently in `.accessory`
+    /// policy (LSUIElement) — without this the window appears but stays
+    /// behind other apps.
+    ///
+    /// `SettingsLink` was the previous implementation but it does not
+    /// activate the app on an LSUIElement process, so a window that fell
+    /// behind other apps could not be raised by clicking "Preferences…" again.
     @ViewBuilder
     private var preferencesItem: some View {
-        SettingsLink {
-            Text("Preferences…")
+        Button("Preferences…") {
+            openPreferences()
         }
         .keyboardShortcut(",", modifiers: .command)
+    }
+
+    private func openPreferences() {
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - About
