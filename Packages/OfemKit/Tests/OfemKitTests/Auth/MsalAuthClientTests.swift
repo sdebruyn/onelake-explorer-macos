@@ -268,7 +268,7 @@ struct OfemAuthRefreshCoalescingTests {
 
         // Only ONE underlying MSAL acquireTokenSilent call was made.
         // (All 10 callers shared the single in-flight Task.)
-        let callCount = await mockClient.acquireCallCount
+        let callCount = mockClient.acquireCallCount
         #expect(callCount == 1,
                 "concurrent callers must coalesce onto one refresh Task (auth-01); got \(callCount)")
     }
@@ -321,14 +321,14 @@ struct OfemAuthRefreshCoalescingTests {
 
         // The in-flight entry must have been evicted: a fresh call should start
         // a new Task (one new MSAL call) rather than re-serving the failed task.
-        let callCountBefore = await mockClient.acquireCallCount // should be 1 (the shared call)
+        let callCountBefore = mockClient.acquireCallCount // should be 1 (the shared call)
 
         // Allow the next call to succeed.
         mockClient.stubbedError = nil
         mockClient.stubbedAccessToken = "fresh-token"
         let freshToken = try await auth.tokenForScope(alias: "work", scope: .oneLake)
         #expect(freshToken == "fresh-token", "subsequent call after eviction must return fresh token")
-        let callCountAfter = await mockClient.acquireCallCount
+        let callCountAfter = mockClient.acquireCallCount
         #expect(callCountAfter == callCountBefore + 1,
                 "evicted task must cause a fresh MSAL call on retry (not re-serve the cached failure)")
     }
@@ -362,7 +362,7 @@ struct OfemAuthRefreshCoalescingTests {
         _ = try await auth.tokenForScope(alias: "alice", scope: .oneLake)
         _ = try await auth.tokenForScope(alias: "bob", scope: .oneLake)
 
-        let callCount = await mockClient.acquireCallCount
+        let callCount = mockClient.acquireCallCount
         #expect(callCount == 2, "different aliases must each trigger their own MSAL call")
     }
 }
