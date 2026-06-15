@@ -189,6 +189,9 @@ jobs:
           cp Local.xcconfig.sample Local.xcconfig
           sed -i '' "s/DEVELOPMENT_TEAM =.*/DEVELOPMENT_TEAM = $APPLE_TEAM_ID/" Local.xcconfig
 
+      # NOTE: Write Local.xcconfig (above) MUST run before this step.
+      # xcodegen validates configFiles at generation time; a missing or
+      # placeholder-only Local.xcconfig causes "Invalid config file" and aborts.
       - name: Generate Xcode project
         run: make gen
 
@@ -211,10 +214,14 @@ jobs:
       # host-app logic bundle. Both are fast (seconds) relative to the archive.
       - name: Run OfemKit tests
         working-directory: Packages/OfemKit
-        run: swift test
+        run: |
+          set -euo pipefail
+          swift test
 
       - name: Run host app tests
-        run: make test
+        run: |
+          set -euo pipefail
+          make test
 
       # Stage the Developer ID provisioning profiles for the host app
       # and the File Provider Extension so xcodebuild can match them
