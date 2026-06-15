@@ -14,7 +14,7 @@ import Foundation
 /// NSSecureCoding-conformant account info for XPC transport.
 ///
 /// Used in OfemClientControlProtocol replies that return account data.
-@objc public final class XPCAccountInfo: NSObject, NSSecureCoding {
+@objc(XPCAccountInfo) public final class XPCAccountInfo: NSObject, NSSecureCoding {
     @objc public static var supportsSecureCoding: Bool { true }
 
     @objc public let alias: String
