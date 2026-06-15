@@ -70,19 +70,13 @@ final class DockIconManager {
 
     /// Returns true when at least one visible, ordinary app window exists.
     ///
-    /// Excluded: windows that are not visible (`isVisible == false`), and
-    /// windows belonging to the system's own status-item or popover machinery
-    /// (identified by the private NSStatusBarWindow and _NSPopoverWindow class
-    /// names). In practice the MenuBarExtra `.menu` style does not create any
-    /// NSWindow objects at all, so the exclusion is a belt-and-suspenders guard.
+    /// `canBecomeMain` is `false` for system-private windows (NSStatusBarWindow,
+    /// _NSPopoverWindow) and `true` for all ordinary app windows (Settings,
+    /// About panel, Add Account). This is more robust than matching on private
+    /// class-name substrings, which could accidentally exclude a future Apple
+    /// NSPanel subclass whose name happens to contain "Popover".
     private var hasVisibleAppWindow: Bool {
-        NSApp.windows.contains { win in
-            guard win.isVisible else { return false }
-            let cls = String(describing: type(of: win))
-            // Exclude system-private status-bar and popover windows.
-            if cls.contains("StatusBar") || cls.contains("Popover") { return false }
-            return true
-        }
+        NSApp.windows.contains { $0.isVisible && $0.canBecomeMain }
     }
 
     private func updatePolicy() {
