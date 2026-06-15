@@ -10,10 +10,90 @@
 // ChangeWatcher (moved here from the old ContentView.task).
 //   - applicationDidBecomeActive: re-reconcile so accounts added while
 //     the host was inactive appear in Finder without a restart.
+//
+// Dock icon policy:
+//   DockIconManager observes NSWindow visibility and toggles the activation
+//   policy between .accessory (no Dock icon, normal background state) and
+//   .regular (Dock icon visible, while an app window is open). This lets
+//   users raise buried windows via the Dock, Cmd-Tab, or Mission Control.
 
 import SwiftUI
 import AppKit
 import os.log
+
+// MARK: - DockIconManager
+
+/// Toggles the app's Dock icon based on whether any app window is visible.
+///
+/// When the first app window opens the activation policy switches to `.regular`
+/// so a Dock icon appears and the user can raise buried windows via the Dock,
+/// Cmd-Tab, or Mission Control. When the last app window closes the policy
+/// reverts to `.accessory` so the app remains an icon-less menu-bar agent
+/// during normal background operation.
+///
+/// The MenuBarExtra's native menu is handled by the system menu machinery and
+/// does not appear as an NSWindow, so it is never counted.
+@MainActor
+final class DockIconManager {
+    static let shared = DockIconManager()
+
+    private static let log = Logger(subsystem: ofemSubsystem, category: "dock-icon")
+
+    private var observers: [NSObjectProtocol] = []
+
+    private init() {}
+
+    /// Begin observing window lifecycle events. Call once at launch.
+    func start() {
+        let nc = NotificationCenter.default
+
+        // A window becoming key means it is now visible and in front.
+        observers.append(nc.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.updatePolicy() }
+        })
+
+        // willClose fires before the window is removed from NSApp.windows so
+        // we defer the policy check until after the close completes.
+        observers.append(nc.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // Defer one run-loop turn so NSApp.windows reflects the closure.
+            Task { @MainActor in self?.updatePolicy() }
+        })
+    }
+
+    /// Returns true when at least one visible, ordinary app window exists.
+    ///
+    /// Excluded: windows that are not visible (`isVisible == false`), and
+    /// windows belonging to the system's own status-item or popover machinery
+    /// (identified by the private NSStatusBarWindow and _NSPopoverWindow class
+    /// names). In practice the MenuBarExtra `.menu` style does not create any
+    /// NSWindow objects at all, so the exclusion is a belt-and-suspenders guard.
+    private var hasVisibleAppWindow: Bool {
+        NSApp.windows.contains { win in
+            guard win.isVisible else { return false }
+            let cls = String(describing: type(of: win))
+            // Exclude system-private status-bar and popover windows.
+            if cls.contains("StatusBar") || cls.contains("Popover") { return false }
+            return true
+        }
+    }
+
+    private func updatePolicy() {
+        let target: NSApplication.ActivationPolicy = hasVisibleAppWindow ? .regular : .accessory
+        guard NSApp.activationPolicy() != target else { return }
+        _ = NSApp.setActivationPolicy(target)
+        DockIconManager.log.debug("Activation policy → \(target == .regular ? "regular" : "accessory", privacy: .public)")
+    }
+}
+
+// MARK: - AppDelegate
 
 /// AppDelegate kept around to receive lifecycle callbacks that SwiftUI
 /// scenes do not surface (becomeActive, willTerminate) and to perform
@@ -23,6 +103,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.log.info("OneLake host app did finish launching")
+
+        // Start the Dock-icon manager so window open/close events toggle the
+        // activation policy between .accessory and .regular automatically.
+        DockIconManager.shared.start()
 
         // One-shot login-item bootstrap: register the app as a login item
         // on the very first launch so it opens at login automatically after
