@@ -120,16 +120,33 @@ extension FabricError {
             return .cancelled
         case is CancellationError:           // fabric-02: bare Swift cancellation
             return .cancelled
-        case HTTPClientError.tokenAcquisitionFailed:
-            // fabric-03-fix: token failure = cannot authenticate for this scope.
-            // Must surface as .unauthorized so FPError.classify → .notAuthenticated,
-            // rather than falling through to .httpError → .cannotSynchronize (which
-            // causes the Finder mount to silently show an empty folder).
-            return .unauthorized
+        case let HTTPClientError.tokenAcquisitionFailed(inner):
+            // fabric-03-fix: map token failures to .unauthorized only when the
+            // inner error indicates the user must interactively re-consent.
+            // Transient network errors during silent token refresh
+            // (OfemAuthError.silentTokenFailed) are not consent failures and
+            // must NOT surface as .notAuthenticated; map them to .httpError so
+            // FPError.classify produces .cannotSynchronize rather than prompting
+            // the user to re-authenticate for a transient outage.
+            if let authErr = inner as? OfemAuthError, authErr == .interactionRequired {
+                return .unauthorized
+            }
+            return .httpError(inner)
+        case let HTTPClientError.retriesExhausted(attempts, last):
+            // fabric-04: unwrap the last error so that a retry loop that exits
+            // because token acquisition failed (e.g. MSAL returns
+            // interactionRequired on the 401-refresh path) surfaces as
+            // .unauthorized rather than .retriesExhausted. Without this unwrap
+            // FPError.fabricCode maps .retriesExhausted to .serverUnreachable,
+            // hiding the auth failure behind an offline indicator.
+            if let lastHTTP = last as? HTTPClientError,
+               case let HTTPClientError.tokenAcquisitionFailed(inner) = lastHTTP,
+               let authErr = inner as? OfemAuthError, authErr == .interactionRequired {
+                return .unauthorized
+            }
+            return .retriesExhausted(attempts: attempts)
         case let HTTPClientError.serverError(code):
             return .serverError(code)
-        case let HTTPClientError.retriesExhausted(attempts, _):
-            return .retriesExhausted(attempts: attempts)
         default:
             return .httpError(resolved)
         }

@@ -45,13 +45,14 @@ public enum TokenScope: Sendable {
         "https://analysis.windows.net/powerbi/api/Item.Read.All",
     ]
 
-    /// Scopes used for interactive sign-in.
+    /// Scopes used for the first interactive sign-in browser flow.
     ///
     /// Limited to a SINGLE resource (OneLake / storage). The Microsoft Entra
     /// v2 endpoint rejects an interactive request whose scopes span more than
-    /// one resource with AADSTS28000. The Fabric (Power BI) token is acquired
-    /// silently afterwards from the same refresh token, because the Fabric
-    /// delegated permissions are admin-consented on the OFEM App Registration.
+    /// one resource with AADSTS28000. A second interactive browser flow
+    /// targeting ``fabricScopes`` follows immediately after the OneLake login
+    /// completes, so the user can consent to the Fabric (Power BI) scopes
+    /// themselves — no admin pre-consent is assumed or required.
     public static let loginScopes = oneLakeScopes
 }
 

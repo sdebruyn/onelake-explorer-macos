@@ -7,15 +7,15 @@
 //
 // 1. FabricError.from mis-mapped HTTPClientError.tokenAcquisitionFailed to
 //    .httpError (→ cannotSynchronize) instead of .unauthorized (→ notAuthenticated).
-//    A token failure means the client cannot authenticate for the Fabric
-//    audience and must surface as an auth error so the FPE can signal
-//    NSFileProviderError(.notAuthenticated) rather than silently showing an
-//    empty folder.
+//    Only tokenAcquisitionFailed wrapping OfemAuthError.interactionRequired maps
+//    to .unauthorized; transient failures (silentTokenFailed) map to .httpError.
+//    A consent failure must surface as NSFileProviderError(.notAuthenticated) so
+//    the FPE can prompt re-auth, rather than silently showing an empty folder.
 //
-// 2. SharedOfemAuth.signIn now eagerly warms the Fabric token via a separate
-//    silent MSAL acquisition immediately after the OneLake interactive login
-//    so the first FPE enumeration is a fast cache hit rather than a blocking
-//    (and potentially failing) silent refresh.
+// 2. SharedOfemAuth.signIn now runs a second interactive browser flow for the
+//    Fabric (Power BI) scopes immediately after the OneLake interactive login.
+//    AADSTS28000 prevents combining both resource audiences in one interactive
+//    request; two sequential flows are required. No admin pre-consent is assumed.
 //
 // These tests cover defect 1 (the error-mapping path, which is host-less and
 // unit-testable). They also verify that a FabricClient wired with a
@@ -40,13 +40,31 @@ private struct InteractionRequiredTokenProvider: TokenProvider {
 
 /// A ``TokenProvider`` that sleeps for `delay` before returning a token,
 /// simulating a successful but slow silent MSAL refresh for the Fabric scope.
+///
+/// `expectedScope` guards against `FabricClient` accidentally requesting a
+/// token for the wrong audience (e.g. `.oneLake` instead of `.fabric`).
 private struct DelayedTokenProvider: TokenProvider {
     let delay: Duration
     let token: String
+    var expectedScope: TokenScope = .fabric
 
     func token(alias: String, scope: TokenScope) async throws -> String {
+        guard scope == expectedScope else {
+            throw DelayedTokenProviderError.wrongScope(expected: expectedScope, got: scope)
+        }
         try await Task.sleep(for: delay)
         return token
+    }
+}
+
+private enum DelayedTokenProviderError: Error, CustomStringConvertible {
+    case wrongScope(expected: TokenScope, got: TokenScope)
+
+    var description: String {
+        switch self {
+        case let .wrongScope(expected, got):
+            return "DelayedTokenProvider: expected scope \(expected), got \(got)"
+        }
     }
 }
 
@@ -93,19 +111,21 @@ struct FabricTokenPrewarmTests {
         }
     }
 
-    @Test("tokenAcquisitionFailed(silentTokenFailed) maps to FabricError.unauthorized")
-    func tokenAcquisitionFailedSilentTokenMapsToUnauthorized() {
-        // Covers the other OfemAuthError case that token acquisition can throw:
-        // silentTokenFailed means MSAL's silent refresh failed with a non-interaction
-        // error (e.g. network timeout during the Entra /token call). This is also
-        // an auth-layer failure and must surface as .unauthorized, not .httpError.
+    @Test("tokenAcquisitionFailed(silentTokenFailed) maps to FabricError.httpError, not .unauthorized")
+    func tokenAcquisitionFailedSilentTokenMapsToHttpError() {
+        // OfemAuthError.silentTokenFailed wraps a transient network error during
+        // MSAL's silent refresh (e.g. Entra /token endpoint timeout, DNS failure).
+        // This is NOT a consent/auth failure — mapping it to .unauthorized would
+        // cause the FPE to surface NSFileProviderError(.notAuthenticated) and
+        // prompt the user to re-authenticate during a transient outage.
+        // Correct mapping: .httpError → FPError.cannotSynchronize.
         let inner = OfemAuthError.silentTokenFailed("work")
         let httpErr = HTTPClientError.tokenAcquisitionFailed(inner)
         let mapped = FabricError.from(httpErr)
-        if case .unauthorized = mapped {
-            // Correct.
+        if case .httpError = mapped {
+            // Correct: transient failure, not a consent/auth problem.
         } else {
-            Issue.record("Expected .unauthorized for silentTokenFailed, got \(mapped)")
+            Issue.record("Expected .httpError for silentTokenFailed (transient network error), got \(mapped). Mapping to .unauthorized would prompt re-auth during an outage.")
         }
     }
 
@@ -124,6 +144,62 @@ struct FabricTokenPrewarmTests {
         let code = FPError.classify(fabricErr)
         #expect(code == .notAuthenticated,
                 Comment("Expected .notAuthenticated for Fabric token failure, got \(code). FPError.cannotSynchronize was the pre-fix result that caused the empty Finder mount."))
+    }
+
+    @Test("silentTokenFailed classifies as cannotSynchronize, not notAuthenticated")
+    func silentTokenFailedClassifiesAsCannotSynchronize() {
+        // OfemAuthError.silentTokenFailed is a transient network failure (e.g.
+        // Entra /token endpoint DNS or TCP error). It must NOT reach
+        // FPError.notAuthenticated, which would prompt the user to re-authenticate
+        // during a temporary outage. Correct path:
+        //   silentTokenFailed → tokenAcquisitionFailed → FabricError.httpError
+        //   → FPError.cannotSynchronize
+        let inner = OfemAuthError.silentTokenFailed("work")
+        let httpErr = HTTPClientError.tokenAcquisitionFailed(inner)
+        let fabricErr = FabricError.from(httpErr)
+        let code = FPError.classify(fabricErr)
+        #expect(code == .cannotSynchronize,
+                Comment("Expected .cannotSynchronize for silentTokenFailed (transient), got \(code). .notAuthenticated would prompt re-auth during a transient outage."))
+    }
+
+    // MARK: - retriesExhausted wrapping tokenAcquisitionFailed
+
+    @Test("retriesExhausted(last: tokenAcquisitionFailed(interactionRequired)) maps to .unauthorized")
+    func retriesExhaustedWrappingInteractionRequiredMapsToUnauthorized() {
+        // fabric-04: HTTPClient's 401-refresh path can store tokenAcquisitionFailed
+        // as the `last` error inside retriesExhausted. Without explicit unwrapping,
+        // FabricError.from would match the retriesExhausted arm and return
+        // .retriesExhausted → FPError.serverUnreachable, hiding the auth failure
+        // behind an offline indicator.
+        let authErr = OfemAuthError.interactionRequired
+        let wrapped = HTTPClientError.retriesExhausted(
+            attempts: 3,
+            last: HTTPClientError.tokenAcquisitionFailed(authErr)
+        )
+        let mapped = FabricError.from(wrapped)
+        if case .unauthorized = mapped {
+            // Correct: the auth failure inside retriesExhausted is surfaced.
+        } else {
+            Issue.record("Expected .unauthorized for retriesExhausted(last: tokenAcquisitionFailed(interactionRequired)), got \(mapped). .retriesExhausted → serverUnreachable would hide an auth failure.")
+        }
+    }
+
+    @Test("retriesExhausted(last: tokenAcquisitionFailed(silentTokenFailed)) maps to .retriesExhausted")
+    func retriesExhaustedWrappingTransientTokenFailMapsToRetriesExhausted() {
+        // When the last error is a transient token failure (not consent-required),
+        // the overall retriesExhausted should still map to .retriesExhausted
+        // → FPError.serverUnreachable, not .unauthorized.
+        let authErr = OfemAuthError.silentTokenFailed("work")
+        let wrapped = HTTPClientError.retriesExhausted(
+            attempts: 3,
+            last: HTTPClientError.tokenAcquisitionFailed(authErr)
+        )
+        let mapped = FabricError.from(wrapped)
+        if case .retriesExhausted = mapped {
+            // Correct: transient token failure inside retries → serverUnreachable.
+        } else {
+            Issue.record("Expected .retriesExhausted for retriesExhausted(last: tokenAcquisitionFailed(silentTokenFailed)), got \(mapped).")
+        }
     }
 
     // MARK: - Existing non-auth error mappings remain unchanged
