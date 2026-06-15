@@ -283,7 +283,7 @@ struct ConfigRefactorTests {
 
         struct E: Error {}
         for _ in 0..<5 {
-            try? await store.updateAndSave { _ in throw E() }
+            _ = try? await store.updateAndSave { _ in throw E() }
         }
 
         // Final write must succeed.
