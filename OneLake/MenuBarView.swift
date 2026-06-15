@@ -261,13 +261,32 @@ private struct AccountSubmenu: View {
             model.reSignIn(alias: account.alias, window: window)
         } else {
             // Open the Add Account window so there is an anchor NSWindow for MSAL.
-            // Schedule the reSignIn call after the window has been presented.
+            // Poll briefly for the window to become key; a single run-loop turn is
+            // not guaranteed to be enough because AppKit window creation involves
+            // layout passes and at least one display-link cycle before the window
+            // becomes the key window (see NSWindow.didBecomeKeyNotification).
             openWindow(id: ofemAddAccountWindowID)
-            // Defer until the next run-loop turn so the window has time to appear
-            // and become the key window before we request the MSAL sheet.
+            let alias = account.alias
             Task { @MainActor in
-                if let window = NSApp.keyWindow ?? NSApp.mainWindow {
-                    model.reSignIn(alias: account.alias, window: window)
+                // Bounded poll: try up to ~10 × 50 ms = 500 ms for a key window.
+                var resolved: NSWindow?
+                for _ in 0 ..< 10 {
+                    if let w = NSApp.keyWindow ?? NSApp.mainWindow {
+                        resolved = w
+                        break
+                    }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                if let window = resolved {
+                    model.reSignIn(alias: alias, window: window)
+                } else {
+                    // No presenting window within the timeout. Surface a non-intrusive
+                    // inline error so the user knows the action did not proceed and
+                    // can retry by clicking "Sign In Again…" once more.
+                    Self.log.warning(
+                        "signInAgain: no presentable window after openWindow — surfacing error"
+                    )
+                    model.setSignInWindowError()
                 }
             }
         }

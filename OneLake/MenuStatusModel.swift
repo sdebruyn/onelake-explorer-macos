@@ -463,6 +463,12 @@ final class MenuStatusModel: ObservableObject {
         lastActionError = nil
     }
 
+    /// Surfaces a non-intrusive error when no NSWindow was available to anchor
+    /// the MSAL re-authentication sheet. The user can dismiss by retrying.
+    func setSignInWindowError() {
+        lastActionError = "Sign in could not start: no window is available. Please try again."
+    }
+
     // MARK: - Actions
 
     /// Make `alias` the default account and refresh.
@@ -516,8 +522,6 @@ final class MenuStatusModel: ObservableObject {
             guard let self else { return }
             do {
                 try await reSignInProvider.reSignIn(alias: alias, window: window)
-                // Optimistically clear the needs-sign-in badge for this alias.
-                accountsNeedingSignIn.remove(alias)
                 Self.log.info(
                     "reSignIn: re-auth succeeded for alias=\(alias, privacy: .public); triggering engine reload"
                 )
@@ -525,7 +529,14 @@ final class MenuStatusModel: ObservableObject {
                 // The FPE's setConfig handler always calls reloadEngine() on success,
                 // which clears _needsSignIn so the next enumeration uses the fresh tokens.
                 await signalEngineReload(alias: alias)
+                // Clear the badge only after the engine reload has been acknowledged
+                // so a subsequent poll does not re-add the alias before the FPE has
+                // processed the reload (see review thread on state-clear ordering).
+                accountsNeedingSignIn.remove(alias)
             } catch {
+                // Re-auth failed: keep the needs-sign-in badge set and do NOT signal
+                // an engine reload. Unlike first-time signIn, we never remove the
+                // account record here — the user retries re-auth; the account stays.
                 Self.log.error(
                     "reSignIn failed for alias=\(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
@@ -659,11 +670,19 @@ final class MenuStatusModel: ObservableObject {
     /// benign log-level write. If the current `logLevel` is unknown (""), "info" is
     /// used as a safe default — the FPE accepts any of the four allowed values.
     ///
+    /// The write is serialised under the `.logLevel` fence (same as `setLogLevel`)
+    /// so a concurrent user-initiated log-level change cannot race against this
+    /// reload signal and clobber the user's chosen level.
+    ///
     /// Best-effort: a failure here is logged but does not surface as a UI error —
     /// the FPE's auto-refresh timer will clear `needsSignIn` on the next successful
     /// enumeration cycle.
     private func signalEngineReload(alias: String) async {
         let level = logLevel.isEmpty ? "info" : logLevel
+        beginWrite(.logLevel)
+        defer {
+            Task { @MainActor [weak self] in self?.endWrite(.logLevel) }
+        }
         do {
             try await engineStatusProvider.setConfig(
                 alias: alias,

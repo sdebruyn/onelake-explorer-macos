@@ -34,6 +34,10 @@ public enum InteractiveSignIn {
     ///   - tenantHint: Optional tenant GUID or verified domain (e.g.
     ///     `"contoso.onmicrosoft.com"`). Pass `nil` or `""` to use
     ///     `"organizations"` (home-tenant routing).
+    ///   - loginHint: Optional UPN (e.g. `"user@contoso.com"`) to pre-select the
+    ///     account in the browser prompt. Pass this during re-authentication to
+    ///     pin the identity and prevent the user from accidentally signing in as
+    ///     a different account. `nil` for first-sign-in (no pre-selection).
     ///   - webviewParams: MSAL webview configuration including the parent
     ///     `NSWindow`. Must be constructed on the main thread.
     ///   - cacheStrategy: Token cache backend. Default: `.msalKeychain`.
@@ -46,6 +50,7 @@ public enum InteractiveSignIn {
     public static func acquireToken(
         clientID: String = ofemEntraClientID,
         tenantHint: String? = nil,
+        loginHint: String? = nil,
         webviewParams: MSALWebviewParameters,
         cacheStrategy: TokenCacheStrategy = .msalKeychain,
         fileTokenStore: FileTokenStore? = nil
@@ -93,6 +98,13 @@ public enum InteractiveSignIn {
         // the Microsoft sign-in page and captures the callback to the
         // app's custom scheme; no local web server is involved.
         params.promptType = .selectAccount
+        // When re-authenticating an existing account, pre-select the known
+        // identity to prevent the user from accidentally signing in as a
+        // different UPN. The loginHint narrows the account picker to the
+        // specified UPN but still allows the user to cancel.
+        if let hint = loginHint, !hint.isEmpty {
+            params.loginHint = hint
+        }
 
         let msalResult = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MSALResult, Error>) in
             app.acquireToken(with: params) { result, error in
@@ -145,6 +157,10 @@ public enum InteractiveSignIn {
     ///     ``ofemEntraClientID`` for the built-in registration.
     ///   - tenantID: The user's home tenant GUID, obtained from the first
     ///     interactive result. Must not be empty.
+    ///   - loginHint: Optional UPN to lock the Fabric consent prompt to the
+    ///     same identity used in the OneLake storage flow. Pass the `username`
+    ///     from the Flow 1 result during re-authentication. `nil` for first
+    ///     sign-in (no pre-selection needed).
     ///   - webviewParams: MSAL webview configuration including the parent
     ///     `NSWindow`. Must be constructed on the main thread.
     ///   - cacheStrategy: Token cache backend. Must match the strategy used for
@@ -154,6 +170,7 @@ public enum InteractiveSignIn {
     public static func acquireFabricConsent(
         clientID: String = ofemEntraClientID,
         tenantID: String,
+        loginHint: String? = nil,
         webviewParams: MSALWebviewParameters,
         cacheStrategy: TokenCacheStrategy = .msalKeychain
     ) async throws {
@@ -188,6 +205,12 @@ public enum InteractiveSignIn {
         // the user explicitly sees and accepts the Fabric scopes. Without this,
         // MSAL might skip the browser if it finds an old cached SSO cookie.
         params.promptType = .consent
+        // When re-authenticating, lock the consent prompt to the same identity
+        // used in the OneLake storage flow so mismatched SSO cookies cannot
+        // silently consent as a different UPN.
+        if let hint = loginHint, !hint.isEmpty {
+            params.loginHint = hint
+        }
 
         let msalResult = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MSALResult, Error>) in
             app.acquireToken(with: params) { result, error in
@@ -326,6 +349,11 @@ public enum InteractiveSignInError: Error, CustomStringConvertible {
     case missingFileTokenStore
     case missingTenantID
     case nilResult
+    /// The account returned by the interactive flow does not match the expected
+    /// `homeAccountID`. Thrown by ``SharedOfemAuth.reSignIn`` when the user
+    /// completes the re-auth prompt as a different identity than the one
+    /// registered for the alias.
+    case identityMismatch(expected: String, got: String)
 
     public var description: String {
         switch self {
@@ -337,6 +365,8 @@ public enum InteractiveSignInError: Error, CustomStringConvertible {
             return "InteractiveSignIn: tenantID is required for Fabric consent flow"
         case .nilResult:
             return "InteractiveSignIn: MSAL returned neither a result nor an error"
+        case .identityMismatch(let expected, let got):
+            return "InteractiveSignIn: identity mismatch — expected account '\(expected)' but got '\(got)'. Sign in was rejected to protect the existing account."
         }
     }
 }

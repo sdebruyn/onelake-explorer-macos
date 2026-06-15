@@ -280,6 +280,9 @@ final class SharedOfemAuth {
         let webviewParams = MSALWebviewParameters(authPresentationViewController: parentVC)
         webviewParams.webviewType = .default
 
+        let expectedHomeAccountID = existing.homeAccountID
+        let loginHint = existing.username
+
         Self.log.info(
             "SharedOfemAuth.reSignIn: starting re-auth for alias=\(alias, privacy: .public)"
         )
@@ -287,10 +290,17 @@ final class SharedOfemAuth {
         // ── Flow 1: OneLake (storage) interactive re-auth ─────────────────────
         // acquireToken writes fresh tokens to the shared App Group Keychain.
         // We do NOT call commit/addAccount — the account record already exists.
+        //
+        // loginHint pins the browser prompt to the registered UPN so the user
+        // cannot accidentally sign in as a different identity. After the flow
+        // returns we validate the homeAccountID as a second defence: if they
+        // differ we reject the result and leave the existing account untouched.
+        let storageResult: InteractiveSignInResult
         do {
-            _ = try await InteractiveSignIn.acquireToken(
+            storageResult = try await InteractiveSignIn.acquireToken(
                 clientID: effectiveClientID,
                 tenantHint: tenantID.isEmpty ? nil : tenantID,
+                loginHint: loginHint.isEmpty ? nil : loginHint,
                 webviewParams: webviewParams,
                 cacheStrategy: .msalKeychain
             )
@@ -304,20 +314,50 @@ final class SharedOfemAuth {
             )
             throw nsError
         }
+
+        // Identity guard: reject any result whose homeAccountID differs from the
+        // registered account. This prevents a mismatched SSO cookie (e.g. a second
+        // browser profile) from silently writing tokens for the wrong identity into
+        // the shared Keychain under this alias. We leave the existing account record
+        // intact and do NOT signal an engine reload — the needsSignIn badge stays set
+        // so the user sees the error and can retry.
+        let returnedHomeAccountID = storageResult.account.homeAccountID
+        if !returnedHomeAccountID.isEmpty,
+           !expectedHomeAccountID.isEmpty,
+           returnedHomeAccountID != expectedHomeAccountID {
+            Self.log.error(
+                "SharedOfemAuth.reSignIn: identity mismatch for alias=\(alias, privacy: .public) — expected homeAccountID=\(expectedHomeAccountID, privacy: .private) got=\(returnedHomeAccountID, privacy: .private)"
+            )
+            throw InteractiveSignInError.identityMismatch(
+                expected: expectedHomeAccountID,
+                got: returnedHomeAccountID
+            )
+        }
+
         Self.log.info(
             "SharedOfemAuth.reSignIn: OneLake token refreshed for alias=\(alias, privacy: .public)"
         )
 
         // ── Flow 2: Fabric (Power BI) interactive consent ────────────────────
+        // Pass the same loginHint used in Flow 1 to lock the Fabric consent
+        // prompt to the same identity. This prevents a mismatched SSO cookie from
+        // consenting on behalf of a different UPN between the two flows.
         do {
             try await InteractiveSignIn.acquireFabricConsent(
                 clientID: effectiveClientID,
                 tenantID: tenantID,
+                loginHint: loginHint.isEmpty ? nil : loginHint,
                 webviewParams: webviewParams,
                 cacheStrategy: .msalKeychain
             )
             Self.log.info("SharedOfemAuth.reSignIn: Fabric consent refreshed for alias=\(alias, privacy: .public)")
         } catch {
+            // Fabric consent failure during re-auth: unlike first-time signIn, we do
+            // NOT remove the account. The account record remains in config.toml so
+            // the user can retry re-auth. The fresh storage token from Flow 1 now sits
+            // in the Keychain but the FPE's _needsSignIn flag remains set (the caller
+            // must not signal engine reload). The user will see the error badge and can
+            // retry the complete re-auth to refresh both token audiences.
             Self.log.error(
                 "SharedOfemAuth.reSignIn: Fabric consent failed for alias=\(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
@@ -346,8 +386,15 @@ enum SharedOfemAuthError: Error, CustomStringConvertible {
     case noViewController
 
     /// The Fabric (Power BI) interactive consent flow failed after the
-    /// OneLake storage sign-in succeeded. The committed storage account has
-    /// been rolled back so the user can retry the complete sign-in flow.
+    /// OneLake storage sign-in succeeded.
+    ///
+    /// For first-time `signIn`: the committed storage account is rolled back so
+    /// the user can retry the complete two-step flow from scratch.
+    ///
+    /// For `reSignIn`: the existing account record is NOT removed — it remains
+    /// registered and the needsSignIn badge stays set. The fresh storage token
+    /// from Flow 1 sits in the Keychain but the FPE will not use it until the
+    /// user retries re-auth and both flows succeed. No engine reload is signalled.
     case fabricConsentFailed(Error)
 
     /// The alias passed to `reSignIn(alias:window:)` does not match any
