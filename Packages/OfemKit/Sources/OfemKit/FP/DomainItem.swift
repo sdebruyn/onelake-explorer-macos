@@ -37,6 +37,19 @@ public struct DomainItem: Sendable, Equatable {
         case addSubitems = "add_subitems"
     }
 
+    // MARK: - Capability presets (fp-05)
+
+    /// Named capability-set constants so the policy lives in one place and
+    /// cannot drift between factory helpers.
+    enum CapabilitySet {
+        /// Read-only containers (root, workspaces, Fabric items, stub dirs).
+        static let readOnly: Set<Capability>         = [.read, .enumerate]
+        /// Writable directories (DFS dirs in the cache, synthetic dirs).
+        static let writableDirectory: Set<Capability> = [.read, .write, .delete, .enumerate, .addSubitems]
+        /// Writable files (DFS files in the cache, synthetic files).
+        static let writableFile: Set<Capability>      = [.read, .write, .delete]
+    }
+
     // MARK: - Fields
 
     /// Structured identifier for this item.
@@ -109,9 +122,9 @@ extension DomainItem {
             parentIdentifier: .root,
             filename: "OneLake \u{2014} \(alias)", // em-dash, like OneDrive
             isDirectory: true,
-            contentVersion: fallbackVersion(seed: alias, size: 0, mtime: nil),
-            metadataVersion: fallbackVersion(seed: alias, size: 0, mtime: nil),
-            capabilities: [.read, .enumerate]
+            contentVersion: ContentVersion.fallback(seed: alias, size: 0, mtime: nil),
+            metadataVersion: ContentVersion.fallback(seed: alias, size: 0, mtime: nil),
+            capabilities: CapabilitySet.readOnly
         )
     }
 
@@ -124,9 +137,9 @@ extension DomainItem {
             parentIdentifier: .root,
             filename: workspace.displayName,
             isDirectory: true,
-            contentVersion: fallbackVersion(seed: workspace.id, size: 0, mtime: nil),
-            metadataVersion: fallbackVersion(seed: workspace.displayName, size: 0, mtime: nil),
-            capabilities: [.read, .enumerate]
+            contentVersion: ContentVersion.fallback(seed: workspace.id, size: 0, mtime: nil),
+            metadataVersion: ContentVersion.fallback(seed: workspace.displayName, size: 0, mtime: nil),
+            capabilities: CapabilitySet.readOnly
         )
     }
 
@@ -139,9 +152,9 @@ extension DomainItem {
             parentIdentifier: .workspace(workspaceID: workspaceID),
             filename: fabricItem.displayName,
             isDirectory: true,
-            contentVersion: fallbackVersion(seed: fabricItem.id, size: 0, mtime: nil),
-            metadataVersion: fallbackVersion(seed: fabricItem.displayName, size: 0, mtime: nil),
-            capabilities: [.read, .enumerate]
+            contentVersion: ContentVersion.fallback(seed: fabricItem.id, size: 0, mtime: nil),
+            metadataVersion: ContentVersion.fallback(seed: fabricItem.displayName, size: 0, mtime: nil),
+            capabilities: CapabilitySet.readOnly
         )
     }
 
@@ -153,33 +166,25 @@ extension DomainItem {
             throw FPError.invalidRecord("workspaceID or itemID is empty")
         }
 
-        let identifier: ItemIdentifier
-        let parentIdentifier: ItemIdentifier
+        // Construct the identifier first; derive the parent from it so the
+        // path-splitting logic is owned in exactly one place: ItemIdentifier
+        // (fp-03).
+        let identifier: ItemIdentifier = record.path.isEmpty
+            ? .item(workspaceID: record.workspaceID, itemID: record.itemID)
+            : .path(workspaceID: record.workspaceID, itemID: record.itemID, path: record.path)
 
-        if record.path.isEmpty {
-            identifier = .item(workspaceID: record.workspaceID, itemID: record.itemID)
-            parentIdentifier = .workspace(workspaceID: record.workspaceID)
-        } else {
-            identifier = .path(workspaceID: record.workspaceID, itemID: record.itemID, path: record.path)
-            parentIdentifier = buildParentIdentifier(
-                workspaceID: record.workspaceID,
-                itemID: record.itemID,
-                path: record.path
-            )
-        }
+        let parentIdentifier = identifier.parentIdentifier
 
         // MIME type: prefer the cached value; fall back to UTType inference.
+        // Use record.name (not record.path) as the source for extension lookup
+        // so that the inferred type always matches the displayed filename (fp-06).
         var mimeType = record.contentType
         if mimeType.isEmpty && !record.isDir {
-            let ext = (record.path as NSString).pathExtension
+            let ext = (record.name as NSString).pathExtension
             if !ext.isEmpty, let utType = UTType(filenameExtension: ext) {
                 mimeType = utType.preferredMIMEType ?? ""
             }
         }
-
-        let caps: Set<DomainItem.Capability> = record.isDir
-            ? [.read, .write, .delete, .enumerate, .addSubitems]
-            : [.read, .write, .delete]
 
         return DomainItem(
             identifier: identifier,
@@ -189,9 +194,9 @@ extension DomainItem {
             size: record.contentLength,
             contentType: mimeType,
             modificationDate: record.lastModified,
-            contentVersion: contentVersionFor(record: record),
-            metadataVersion: metadataVersionFor(record: record),
-            capabilities: caps
+            contentVersion: ContentVersion.content(for: record),
+            metadataVersion: ContentVersion.metadata(for: record),
+            capabilities: record.isDir ? CapabilitySet.writableDirectory : CapabilitySet.writableFile
         )
     }
 
@@ -209,9 +214,9 @@ extension DomainItem {
             parentIdentifier: parentIdentifier,
             filename: name,
             isDirectory: true,
-            contentVersion: fallbackVersion(seed: name, size: 0, mtime: nil),
-            metadataVersion: fallbackVersion(seed: name, size: 0, mtime: nil),
-            capabilities: [.read, .enumerate]
+            contentVersion: ContentVersion.fallback(seed: name, size: 0, mtime: nil),
+            metadataVersion: ContentVersion.fallback(seed: name, size: 0, mtime: nil),
+            capabilities: CapabilitySet.readOnly
         )
     }
 
@@ -224,121 +229,124 @@ extension DomainItem {
         name: String,
         isDirectory: Bool
     ) -> DomainItem {
-        let caps: Set<DomainItem.Capability> = isDirectory
-            ? [.read, .write, .delete, .enumerate, .addSubitems]
-            : [.read, .write, .delete]
-
-        return DomainItem(
+        DomainItem(
             identifier: identifier,
             parentIdentifier: parentIdentifier,
             filename: name,
             isDirectory: isDirectory,
-            contentVersion: fallbackVersion(seed: name, size: 0, mtime: nil),
-            metadataVersion: fallbackVersion(seed: name, size: 0, mtime: nil),
-            capabilities: caps
+            contentVersion: ContentVersion.fallback(seed: name, size: 0, mtime: nil),
+            metadataVersion: ContentVersion.fallback(seed: name, size: 0, mtime: nil),
+            capabilities: isDirectory ? CapabilitySet.writableDirectory : CapabilitySet.writableFile
         )
     }
 }
 
-// MARK: - Version helpers
+// MARK: - Version helpers (fp-04)
 
-/// Computes the content version token.
+/// Content-addressing helpers for File Provider change detection.
 ///
-/// When an etag is present it is base64-encoded directly; otherwise the token
-/// is computed from `(path, contentLength, lastModified)` via FNV-1a-64.
-func contentVersionFor(record: MetadataRecord) -> Data {
-    if !record.etag.isEmpty {
-        return Data(record.etag.utf8).base64EncodedData()
-    }
-    return fallbackVersion(
-        seed: record.path,
-        size: record.contentLength,
-        mtime: record.lastModified
-    )
-}
+/// Gathered from file-level globals into a cohesive type so the concern is
+/// clearly scoped, the module namespace is not polluted, and the FNV hasher
+/// is accessible to tests via a single well-known path (fp-04, fp-09).
+enum ContentVersion {
 
-/// Computes the metadata version token from name + etag + size + mtime via
-/// FNV-1a-64.
-func metadataVersionFor(record: MetadataRecord) -> Data {
-    var h = FNV64a()
-    h.combine(record.name)
-    h.combine("\0")
-    h.combine(record.etag)
-    h.combine("\0")
-    h.combine(String(record.contentLength))
-    h.combine("\0")
-    if let mtime = record.lastModified {
-        h.combine(rfc3339(mtime))
-    }
-    return Data(h.digest().bigEndian.bytes).base64EncodedData()
-}
+    // MARK: - Public API
 
-/// Computes an FNV-1a-64 fallback version token from `(seed, size, mtime)`.
-func fallbackVersion(seed: String, size: Int64, mtime: Date?) -> Data {
-    var h = FNV64a()
-    h.combine(seed)
-    h.combine("\0")
-    h.combine(String(size))
-    h.combine("\0")
-    if let m = mtime {
-        h.combine(rfc3339(m))
-    }
-    return Data(h.digest().bigEndian.bytes).base64EncodedData()
-}
-
-/// `ISO8601DateFormatter` is thread-safe; caching it as a `static let` avoids
-/// allocating one per `rfc3339(_:)` call — enumerating a 1,000-item page
-/// previously allocated ~2,000 formatters (sync-20).
-private func rfc3339(_ date: Date) -> String {
-    rfc3339Formatter.string(from: date)
-}
-
-// `ISO8601DateFormatter` is not `Sendable` but is safe to use from any
-// thread after construction — its configuration (formatOptions) is set
-// once and never mutated. `nonisolated(unsafe)` suppresses the Swift 6
-// diagnostic for this read-only global pattern (sync-20).
-nonisolated(unsafe) private let rfc3339Formatter: ISO8601DateFormatter = {
-    let fmt = ISO8601DateFormatter()
-    fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return fmt
-}()
-
-// MARK: - Parent identifier helper
-
-/// Reconstructs the parent ``ItemIdentifier`` for a record with a non-empty
-/// path.
-private func buildParentIdentifier(workspaceID: String, itemID: String, path: String) -> ItemIdentifier {
-    if let slashIdx = path.lastIndex(of: "/") {
-        let parentPath = String(path[path.startIndex..<slashIdx])
-        return .path(workspaceID: workspaceID, itemID: itemID, path: parentPath)
-    }
-    return .item(workspaceID: workspaceID, itemID: itemID)
-}
-
-// MARK: - FNV-1a 64-bit hasher
-
-/// Minimal FNV-1a 64-bit hasher used for version tokens.
-///
-/// Matches the `hash/fnv` Go package's `fnv.New64a()` byte-level behaviour.
-private struct FNV64a {
-    private static let offset: UInt64 = 14_695_981_039_346_656_037
-    private static let prime:  UInt64 = 1_099_511_628_211
-
-    private var value: UInt64 = FNV64a.offset
-
-    mutating func combine(_ s: String) {
-        for byte in s.utf8 {
-            value ^= UInt64(byte)
-            value &*= FNV64a.prime
+    /// Computes the content version token for a cache record.
+    ///
+    /// When an etag is present it is base64-encoded directly; otherwise the
+    /// token is derived from `(path, contentLength, lastModified)` via
+    /// FNV-1a-64.
+    static func content(for record: MetadataRecord) -> Data {
+        if !record.etag.isEmpty {
+            return Data(record.etag.utf8).base64EncodedData()
         }
+        return fallback(seed: record.path, size: record.contentLength, mtime: record.lastModified)
     }
 
-    func digest() -> UInt64 { value }
+    /// Computes the metadata version token from name + etag + size + mtime
+    /// via FNV-1a-64.
+    static func metadata(for record: MetadataRecord) -> Data {
+        var h = FNV64a()
+        h.combine(record.name)
+        h.combine("\0")
+        h.combine(record.etag)
+        h.combine("\0")
+        h.combine(String(record.contentLength))
+        h.combine("\0")
+        if let mtime = record.lastModified {
+            h.combine(rfc3339(mtime))
+        }
+        return Data(h.digest().bigEndian.bytes).base64EncodedData()
+    }
+
+    /// Computes an FNV-1a-64 fallback version token from `(seed, size, mtime)`.
+    static func fallback(seed: String, size: Int64, mtime: Date?) -> Data {
+        var h = FNV64a()
+        h.combine(seed)
+        h.combine("\0")
+        h.combine(String(size))
+        h.combine("\0")
+        if let m = mtime {
+            h.combine(rfc3339(m))
+        }
+        return Data(h.digest().bigEndian.bytes).base64EncodedData()
+    }
+
+    // MARK: - FNV-1a 64-bit hasher (fp-09: internal so tests can verify the digest)
+
+    /// Minimal FNV-1a 64-bit hasher used for version tokens.
+    ///
+    /// Byte-level behaviour matches `fnv.New64a()` from the standard Go
+    /// `hash/fnv` package.
+    struct FNV64a {
+        private static let offset: UInt64 = 14_695_981_039_346_656_037
+        private static let prime:  UInt64 = 1_099_511_628_211
+
+        private var value: UInt64 = FNV64a.offset
+
+        mutating func combine(_ s: String) {
+            for byte in s.utf8 {
+                value ^= UInt64(byte)
+                value &*= FNV64a.prime
+            }
+        }
+
+        func digest() -> UInt64 { value }
+    }
+
+    // MARK: - Private utilities
+
+    /// `ISO8601DateFormatter` is thread-safe; caching it as a `static let`
+    /// avoids allocating one per call — enumerating a 1,000-item page
+    /// previously allocated ~2,000 formatters (sync-20).
+    // `ISO8601DateFormatter` is not `Sendable` but is safe to use from any
+    // thread after construction — its `formatOptions` are set once and never
+    // mutated.  `nonisolated(unsafe)` suppresses the Swift 6 diagnostic for
+    // this read-only-global pattern (sync-20).
+    nonisolated(unsafe) private static let formatter: ISO8601DateFormatter = {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fmt
+    }()
+
+    private static func rfc3339(_ date: Date) -> String {
+        formatter.string(from: date)
+    }
+}
+
+/// Free-function alias of ``ContentVersion/fallback(seed:size:mtime:)``
+/// retained for binary/source compatibility with existing callers (fp-04).
+///
+/// Tests in `DomainItemTests` already call this; keep it `internal` so
+/// `@testable` imports can reach it without adding a new public symbol.
+func fallbackVersion(seed: String, size: Int64, mtime: Date?) -> Data {
+    ContentVersion.fallback(seed: seed, size: size, mtime: mtime)
 }
 
 // MARK: - UInt64 → big-endian bytes helper
 
-private extension UInt64 {
+extension UInt64 {
     var bytes: [UInt8] {
         withUnsafeBytes(of: self.bigEndian, Array.init)
     }

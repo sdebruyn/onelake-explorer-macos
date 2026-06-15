@@ -2,23 +2,43 @@ import Foundation
 
 /// Runtime identity for the running OFEM binary.
 ///
-/// `version` is read from `CFBundleShortVersionString` in `Bundle.main` at
-/// runtime, so Xcode-built releases automatically pick up the CalVer string
+/// `version` is the single canonical CalVer source (engine-05).  It is read
+/// from `CFBundleShortVersionString` in `Bundle.main` at runtime, so
+/// Xcode-built releases automatically pick up the CalVer string
 /// (e.g. `"2026.05.1"`) injected by `xcodebuild MARKETING_VERSION=…` on the
-/// release tag. The `"0.0.0-dev"` fallback is used in unit-test contexts where
-/// `Bundle.main` is the `xctest` runner which carries no version key.
+/// release tag.  The `"0.0.0-dev"` fallback is returned in unit-test contexts
+/// where `Bundle.main` is the `xctest` runner which carries no version key.
+///
+/// ## Testability (engine-06)
+///
+/// The bundle read is isolated in ``version(from:)`` so the parsing + fallback
+/// logic can be exercised in unit tests against a synthetic `Bundle`.  The
+/// top-level ``version`` property is a convenience that calls
+/// ``version(from:)`` with `Bundle.main`.
 public enum BuildInfo {
     // MARK: - Version
 
     /// The CalVer release string (e.g. `"2026.05.1"`).
     ///
-    /// Read from `CFBundleShortVersionString` in `Bundle.main`. Falls back
-    /// to `"0.0.0-dev"` when the key is absent (xctest, command-line tool
-    /// builds, or un-versioned debug builds).
-    public static let version: String = {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+    /// Reads `CFBundleShortVersionString` from `Bundle.main`. Falls back to
+    /// `"0.0.0-dev"` when the key is absent (xctest, command-line tool builds,
+    /// or un-versioned debug builds).
+    ///
+    /// This is the **single canonical version source** for the entire package
+    /// (engine-05).  Do not introduce additional version constants.
+    public static let version: String = version(from: .main)
+
+    /// Returns the CalVer string from the given bundle, or `"0.0.0-dev"`.
+    ///
+    /// Exposed for testing so the parse + fallback path can be exercised
+    /// with a synthetic `Bundle` (engine-06).
+    ///
+    /// - Parameter bundle: The bundle to read `CFBundleShortVersionString` from.
+    /// - Returns: The version string, or `"0.0.0-dev"` if the key is absent.
+    public static func version(from bundle: Bundle) -> String {
+        bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString")
             as? String ?? "0.0.0-dev"
-    }()
+    }
 
     // MARK: - Telemetry
 

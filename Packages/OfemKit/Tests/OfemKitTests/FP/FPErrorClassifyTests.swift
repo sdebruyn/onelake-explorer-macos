@@ -127,6 +127,47 @@ struct FPErrorClassifyTests {
         #expect(FPError.classify(FabricError.notFound) == .noSuchItem)
     }
 
+    // MARK: - fp-07: previously default: → explicit cases
+
+    // HTTPClientError — newly explicit
+    @Test func httpTokenAcquisitionFailedMapsToNotAuthenticated() {
+        #expect(FPError.classify(HTTPClientError.tokenAcquisitionFailed(URLError(.badURL))) == .notAuthenticated)
+    }
+
+    @Test func httpCancelledMapsToServerUnreachable() {
+        #expect(FPError.classify(HTTPClientError.cancelled) == .serverUnreachable)
+    }
+
+    // OneLakeError — newly explicit
+    @Test func oneLakeGoneMapsToNoSuchItem() {
+        #expect(FPError.classify(OneLakeError.gone) == .noSuchItem)
+    }
+
+    @Test func oneLakeRateLimitedMapsToServerBusy() {
+        #expect(FPError.classify(OneLakeError.rateLimited) == .serverBusy)
+    }
+
+    @Test func oneLakeCancelledMapsToServerUnreachable() {
+        #expect(FPError.classify(OneLakeError.cancelled) == .serverUnreachable)
+    }
+
+    // FabricError — newly explicit
+    @Test func fabricGoneMapsToNoSuchItem() {
+        #expect(FPError.classify(FabricError.gone) == .noSuchItem)
+    }
+
+    @Test func fabricRateLimitedMapsToServerBusy() {
+        #expect(FPError.classify(FabricError.rateLimited) == .serverBusy)
+    }
+
+    @Test func fabricCancelledMapsToServerUnreachable() {
+        #expect(FPError.classify(FabricError.cancelled) == .serverUnreachable)
+    }
+
+    @Test func fabricRetriesExhaustedMapsToServerUnreachable() {
+        #expect(FPError.classify(FabricError.retriesExhausted(attempts: 2)) == .serverUnreachable)
+    }
+
     // MARK: - Unknown error falls back to cannotSynchronize
 
     @Test func unknownErrorMapsToCannotSynchronize() {

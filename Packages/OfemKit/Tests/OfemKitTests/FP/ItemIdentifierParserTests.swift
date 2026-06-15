@@ -108,4 +108,100 @@ struct ItemIdentifierParserTests {
             try ItemIdentifierParser.parse("ws-abc//Files")
         }
     }
+
+    // MARK: - fp-02: segment content validation (control chars, whitespace, backslash)
+
+    @Test func rejectsNulByteInWorkspaceSegment() {
+        // NUL byte inside a workspace GUID is a control character (U+0000).
+        #expect(throws: (any Error).self) {
+            try ItemIdentifierParser.parse("ws\0bad")
+        }
+    }
+
+    @Test func rejectsNewlineInWorkspaceSegment() {
+        // Newline (U+000A) is a control character.
+        #expect(throws: (any Error).self) {
+            try ItemIdentifierParser.parse("ws\ninjected")
+        }
+    }
+
+    @Test func rejectsCrlfInItemSegment() {
+        // CRLF inside an item ID would allow header injection when used in URLs.
+        #expect(throws: (any Error).self) {
+            try ItemIdentifierParser.parse("ws-abc/item\r\ninjected")
+        }
+    }
+
+    @Test func rejectsBackslashInWorkspaceSegment() {
+        // Backslash is a Windows path separator and is illegal inside any segment.
+        #expect(throws: (any Error).self) {
+            try ItemIdentifierParser.parse("ws\\backslash")
+        }
+    }
+
+    @Test func rejectsBackslashInItemSegment() {
+        #expect(throws: (any Error).self) {
+            try ItemIdentifierParser.parse("ws-abc/item\\bad")
+        }
+    }
+
+    @Test func rejectsBackslashInPathSegment() {
+        #expect(throws: (any Error).self) {
+            try ItemIdentifierParser.parse("ws-abc/item-xyz/Files\\bad.csv")
+        }
+    }
+
+    @Test func rejectsLeadingWhitespaceInWorkspaceSegment() {
+        // Leading space is canonically invalid — identifiers must not have whitespace.
+        #expect(throws: (any Error).self) {
+            try ItemIdentifierParser.parse(" ws-abc")
+        }
+    }
+
+    @Test func rejectsTrailingWhitespaceInItemSegment() {
+        #expect(throws: (any Error).self) {
+            try ItemIdentifierParser.parse("ws-abc/item-xyz ")
+        }
+    }
+
+    @Test func rejectsLeadingWhitespaceInPathComponent() {
+        #expect(throws: (any Error).self) {
+            try ItemIdentifierParser.parse("ws-abc/item-xyz/ Files/doc.txt")
+        }
+    }
+
+    @Test func rejectsDotDotTraversalInWorkspaceSegment() {
+        // ".." does not contain a control character but the test verifies that
+        // benign-looking traversal inputs that do not contain a slash are
+        // currently accepted at the parser level (path safety is enforced by the
+        // DFS client); this is a documentation test, not a rejection.
+        // NOTE: ".." alone has no control chars/backslash/whitespace, so it is
+        // NOT rejected by the content validator.  Callers must not trust that
+        // segment content is semantically valid — only syntactically clean.
+        let result = try? ItemIdentifierParser.parse("..")
+        // Parser accepts it as a workspace segment (no control chars/whitespace).
+        #expect(result == .workspace(workspaceID: ".."))
+    }
+
+    @Test func rejectsTabInPathSegment() {
+        // Tab (U+0009) is ASCII whitespace and a control character.
+        #expect(throws: (any Error).self) {
+            try ItemIdentifierParser.parse("ws-abc/item-xyz/Files\t/doc.txt")
+        }
+    }
+
+    @Test func rejectsDelCharInWorkspaceSegment() {
+        // DEL (U+007F) is a control character.
+        #expect(throws: (any Error).self) {
+            try ItemIdentifierParser.parse("ws\u{7F}bad")
+        }
+    }
+
+    @Test func acceptsGUIDFormattedSegments() throws {
+        // Real workspace/item IDs are GUIDs — verify they still parse.
+        let guid1 = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        let guid2 = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+        let id = try ItemIdentifierParser.parse("\(guid1)/\(guid2)/Files/report.csv")
+        #expect(id == .path(workspaceID: guid1, itemID: guid2, path: "Files/report.csv"))
+    }
 }

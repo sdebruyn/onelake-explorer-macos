@@ -754,4 +754,122 @@ struct DomainItemTests {
         // Non-empty and re-encodable from raw bytes: just check it's 12 bytes (8 raw → base64 → 12).
         #expect(v.count == 12)
     }
+
+    // MARK: - fp-03: parent identifier derived from ItemIdentifier.parentIdentifier
+
+    @Test func fromRecordParentMatchesIdentifierDotParent() throws {
+        // Verify that the parent identifier produced by DomainItem.from(record:)
+        // equals the one you get by calling .parentIdentifier on the constructed
+        // identifier directly — confirming the single-implementation rule (fp-03).
+        let record = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "item-2",
+            path: "Files/sub/doc.txt", parentPath: "Files/sub", name: "doc.txt",
+            isDir: false, contentLength: 100, etag: ""
+        )
+        let item = try DomainItem.from(record: record)
+        let expectedParent = item.identifier.parentIdentifier
+        #expect(item.parentIdentifier == expectedParent)
+    }
+
+    @Test func fromRecordSingleLevelParentMatchesIdentifierDotParent() throws {
+        let record = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "item-2",
+            path: "Files", parentPath: "", name: "Files",
+            isDir: true, contentLength: 0, etag: ""
+        )
+        let item = try DomainItem.from(record: record)
+        let expectedParent = item.identifier.parentIdentifier
+        #expect(item.parentIdentifier == expectedParent)
+    }
+
+    @Test func fromRecordEmptyPathParentMatchesIdentifierDotParent() throws {
+        // path == "" → identifier is .item; parentIdentifier must be .workspace
+        let record = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "item-2",
+            path: "", parentPath: "", name: "Lakehouse",
+            isDir: true, contentLength: 0, etag: ""
+        )
+        let item = try DomainItem.from(record: record)
+        let expectedParent = item.identifier.parentIdentifier
+        #expect(item.parentIdentifier == expectedParent)
+    }
+
+    // MARK: - fp-05: capability presets
+
+    @Test func capabilityPresetsMatchReadOnly() {
+        // readOnly must be exactly {.read, .enumerate}.
+        #expect(DomainItem.CapabilitySet.readOnly == [.read, .enumerate])
+    }
+
+    @Test func capabilityPresetsMatchWritableDirectory() {
+        #expect(DomainItem.CapabilitySet.writableDirectory == [.read, .write, .delete, .enumerate, .addSubitems])
+    }
+
+    @Test func capabilityPresetsMatchWritableFile() {
+        #expect(DomainItem.CapabilitySet.writableFile == [.read, .write, .delete])
+    }
+
+    @Test func rootUsesReadOnlyPreset() {
+        let item = DomainItem.root(alias: "work")
+        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
+    @Test func workspaceUsesReadOnlyPreset() {
+        let ws = Workspace(id: "ws-1", displayName: "W", type: "Workspace")
+        let item = DomainItem.from(workspace: ws)
+        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
+    @Test func fabricItemUsesReadOnlyPreset() {
+        let fi = Item(id: "item-1", displayName: "LH", type: "Lakehouse", workspaceID: "ws-1")
+        let item = DomainItem.from(fabricItem: fi, workspaceID: "ws-1")
+        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
+    @Test func stubDirectoryUsesReadOnlyPreset() {
+        let id = ItemIdentifier.item(workspaceID: "ws-1", itemID: "i")
+        let pid = ItemIdentifier.workspace(workspaceID: "ws-1")
+        let stub = DomainItem.stubDirectory(identifier: id, parentIdentifier: pid, name: "X")
+        #expect(stub.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
+    @Test func syntheticDirectoryUsesWritableDirectoryPreset() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Dir")
+        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
+        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "Dir", isDirectory: true)
+        #expect(synth.capabilities == DomainItem.CapabilitySet.writableDirectory)
+    }
+
+    @Test func syntheticFileUsesWritableFilePreset() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "f.txt")
+        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
+        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false)
+        #expect(synth.capabilities == DomainItem.CapabilitySet.writableFile)
+    }
+
+    // MARK: - fp-06: MIME inferred from record.name, not record.path
+
+    @Test func mimeTypeInferredFromNameNotPath() throws {
+        // path has a .csv extension but name has .txt — MIME must come from name.
+        let record = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "item-2",
+            path: "Files/archive.csv", parentPath: "Files", name: "data.txt",
+            isDir: false, contentLength: 0, etag: "", contentType: ""
+        )
+        let item = try DomainItem.from(record: record)
+        // Name is "data.txt" → MIME must be text/plain, not text/csv.
+        #expect(item.contentType.lowercased().contains("text/plain") || item.contentType.isEmpty,
+                "MIME should come from name (.txt), not path (.csv); got: \(item.contentType)")
+    }
+
+    @Test func mimeTypeWhenNameAndPathExtensionAgree() throws {
+        let record = MetadataRecord(
+            accountAlias: "work", workspaceID: "ws-1", itemID: "item-2",
+            path: "Files/report.csv", parentPath: "Files", name: "report.csv",
+            isDir: false, contentLength: 0, etag: "", contentType: ""
+        )
+        let item = try DomainItem.from(record: record)
+        // Both agree → CSV MIME expected.
+        #expect(!item.contentType.isEmpty)
+    }
 }
