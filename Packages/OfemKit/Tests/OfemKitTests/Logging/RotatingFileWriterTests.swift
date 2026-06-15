@@ -134,14 +134,18 @@ struct RotatingFileWriterTests {
 
     // MARK: - Flush-on-write (logging-10)
 
-    /// Verifies that log lines are readable from disk immediately after
-    /// `write(_:)` returns — without calling `close()` first.
+    /// Verifies that a written line is readable from disk without calling
+    /// `close()` first.
     ///
-    /// The FPE engine is short-lived (built per enumeration, torn down after
-    /// the enumeration completes).  If writes were buffered and only flushed
-    /// on `close()` / `deinit`, a fast teardown would leave `ofem.log` empty.
-    /// `RotatingFileWriter.write(_:)` calls `FileHandle.synchronize()` after
-    /// each append to prevent this.
+    /// On macOS (APFS), `FileHandle.write(contentsOf:)` places data in the
+    /// kernel page cache, which is immediately visible to any other fd reading
+    /// the same path — so this test will pass whether or not `synchronize()`
+    /// is present.  What it *does* confirm is that `write(_:)` does not require
+    /// an explicit `close()` to make the line visible to a reader: the line is
+    /// in the page cache and readable as soon as `write(_:)` returns.  SIGKILL
+    /// durability (fsync-to-disk) is exercised by the `synchronize()` call
+    /// inside `write(_:)`, but cannot be verified from within the same process
+    /// because the page cache is always coherent within a process.
     @Test("write flushes to disk immediately — readable without close() (logging-10)")
     func writeFlushesImmediately() throws {
         try withTempDir { dir in
@@ -149,7 +153,7 @@ struct RotatingFileWriterTests {
             writer.write("flushed line")
 
             // Read the file WITHOUT calling writer.close() to confirm the line
-            // was flushed to the OS page cache by write(_:) itself.
+            // is in the page cache and visible without close().
             let logFile = dir.appending(path: "ofem.log", directoryHint: .notDirectory)
             let content = try String(contentsOf: logFile, encoding: .utf8)
             #expect(content.contains("flushed line"),

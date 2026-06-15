@@ -1,5 +1,4 @@
 import Foundation
-import os.log
 
 // MARK: - OfemEngine
 
@@ -91,11 +90,6 @@ public actor OfemEngine {
     }
 
     private let subsystemOwnership: SubsystemOwnership
-
-    // Used only for messages that fire before per-alias `logger` is available
-    // (i.e. during the static initialisation phase).  All lifecycle messages
-    // that fire after `start()` use `self.logger` so they reach the file sink.
-    private static let log = Logger(subsystem: OfemPaths.bundleID, category: "OfemEngine")
 
     /// Default Fabric REST base URL. Named constant eliminates both the
     /// force-unwrap and the magic-string duplication (fp-01, engine-04).
@@ -251,7 +245,7 @@ public actor OfemEngine {
         started = true
         await telemetry.start()
         // Use self.logger so the "started" line reaches the RotatingFileWriter
-        // file sink (and not only os_log).  Self.log would bypass the file writer.
+        // file sink (and not only os_log).
         logger.info("OfemEngine: started")
     }
 
