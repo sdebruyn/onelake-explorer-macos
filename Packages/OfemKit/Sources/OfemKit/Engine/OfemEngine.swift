@@ -81,11 +81,13 @@ public actor OfemEngine {
     /// - `shared`: the shared subsystems were injected by the caller
     ///   (`FPEEngineHost`).  `shutdown()` must **not** tear them down —
     ///   `FPEEngineHost.shutdownSharedSubsystems()` is responsible.
-    /// - `owned(cache:telemetry:)`: the standalone init constructed these
-    ///   subsystems; `shutdown()` closes every one of them.
+    /// - `owned(telemetry:)`: the standalone init constructed these
+    ///   subsystems; `shutdown()` tears down the owned `TelemetryClient`.
+    ///   The owned `CacheStore` is already held by `self.cache` (ARC) and
+    ///   is released — and closed by GRDB — when the engine is deallocated.
     private enum SubsystemOwnership {
         case shared
-        case owned(cache: CacheStore, telemetry: TelemetryClient)
+        case owned(telemetry: TelemetryClient)
     }
 
     private let subsystemOwnership: SubsystemOwnership
@@ -229,7 +231,10 @@ public actor OfemEngine {
         self.auth = perAlias.auth
         self.sync = perAlias.sync
         // Standalone init owns every subsystem it created (engine-03).
-        self.subsystemOwnership = .owned(cache: ownedCache, telemetry: ownedTelemetry)
+        // CacheStore is already held by self.cache (ARC); no need to store
+        // it again in the ownership enum — it will be released (and closed
+        // by GRDB) when the engine is deallocated after shutdown().
+        self.subsystemOwnership = .owned(telemetry: ownedTelemetry)
     }
 
     // MARK: - Lifecycle
@@ -254,22 +259,22 @@ public actor OfemEngine {
     /// all domains have been torn down.
     ///
     /// **Standalone init:** closes the owned `TelemetryClient` (final flush +
-    /// timer cancel) and the owned `CacheStore` (SQLite connection + file-handle
-    /// release).  The `HTTPGateRegistry` holds no persistent resources, so no
-    /// explicit close is needed.
+    /// timer cancel).  The owned `CacheStore` is held by `self.cache` via ARC
+    /// and is released — and closed by GRDB on deinit — when the engine is
+    /// deallocated after `shutdown()` returns.  The `HTTPGateRegistry` holds
+    /// no persistent resources, so no explicit close is needed.
     public func shutdown() async {
         switch subsystemOwnership {
         case .shared:
             // Shared subsystems stay alive for other engines — do not touch them.
             break
-        case .owned(_, let ownedTelemetry):
+        case .owned(let ownedTelemetry):
             // Telemetry: final flush + cancel flush timer.
             await ownedTelemetry.shutdown()
-            // CacheStore (GRDB DatabasePool) releases its SQLite connection
-            // when the actor is deallocated after this engine is released by
-            // its caller.  No explicit close method is needed — actor isolation
-            // guarantees no new reads/writes can start after shutdown() returns
-            // because callers release their engine reference at that point.
+            // CacheStore: held by self.cache (ARC).  GRDB DatabasePool closes
+            // its SQLite connection when the engine is deallocated after
+            // shutdown() returns.  Actor isolation guarantees no new reads/
+            // writes can start after this point.
         }
         Self.log.info("OfemEngine: shutdown complete")
     }

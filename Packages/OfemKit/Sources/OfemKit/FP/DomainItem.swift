@@ -41,7 +41,7 @@ public struct DomainItem: Sendable, Equatable {
 
     /// Named capability-set constants so the policy lives in one place and
     /// cannot drift between factory helpers.
-    enum CapabilitySet {
+    internal enum CapabilitySet {
         /// Read-only containers (root, workspaces, Fabric items, stub dirs).
         static let readOnly: Set<Capability>         = [.read, .enumerate]
         /// Writable directories (DFS dirs in the cache, synthetic dirs).

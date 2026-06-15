@@ -116,8 +116,12 @@ public enum ItemIdentifierParser {
     /// - Backslash (`\`) — a path separator on Windows; illegal inside a
     ///   OneLake path segment regardless of platform
     private static func validateSegment(_ segment: String, label: String, raw: String) throws {
-        if segment.hasPrefix(" ") || segment.hasSuffix(" ")
-            || segment.hasPrefix("\t") || segment.hasSuffix("\t") {
+        // Reject leading/trailing space (U+0020).  All other ASCII whitespace
+        // (tab U+0009, CR U+000D, LF U+000A, etc.) is already caught by the
+        // control-character gate below (v < 0x20), so they need no separate
+        // check here.  Non-ASCII whitespace (e.g. U+00A0 NBSP) is outside the
+        // stated ASCII scope and is not rejected.
+        if segment.hasPrefix(" ") || segment.hasSuffix(" ") {
             throw FPError.invalidIdentifier(
                 "\(label) segment has leading/trailing whitespace in \"\(raw)\""
             )

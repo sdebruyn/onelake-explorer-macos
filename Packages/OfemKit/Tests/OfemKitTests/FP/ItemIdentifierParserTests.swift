@@ -170,7 +170,7 @@ struct ItemIdentifierParserTests {
         }
     }
 
-    @Test func rejectsDotDotTraversalInWorkspaceSegment() {
+    @Test func dotDotWithoutSlashIsAcceptedAsWorkspaceSegment() {
         // ".." does not contain a control character but the test verifies that
         // benign-looking traversal inputs that do not contain a slash are
         // currently accepted at the parser level (path safety is enforced by the
