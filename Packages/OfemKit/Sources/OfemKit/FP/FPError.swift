@@ -25,12 +25,16 @@ public enum FPError: Error, Sendable, CustomStringConvertible {
     // MARK: - Error code
 
     /// The stable error code the FPE switches on.
+    ///
+    /// Raw values are synthesized automatically by Swift (case name == raw
+    /// value for `String` enums), so they are not spelled out explicitly
+    /// (fp-08).
     public enum Code: String, Sendable {
-        case noSuchItem        = "noSuchItem"
-        case notAuthenticated  = "notAuthenticated"
-        case serverBusy        = "serverBusy"
-        case serverUnreachable = "serverUnreachable"
-        case cannotSynchronize = "cannotSynchronize"
+        case noSuchItem
+        case notAuthenticated
+        case serverBusy
+        case serverUnreachable
+        case cannotSynchronize
     }
 
     // MARK: - Classification
@@ -94,18 +98,23 @@ public enum FPError: Error, Sendable, CustomStringConvertible {
 }
 
 // MARK: - Private HTTP → FPError.Code helpers
+//
+// fp-07: exhaustive switches so adding a new error case forces a deliberate
+// classification decision rather than silently falling into `cannotSynchronize`.
 
 private func httpCode(for error: HTTPClientError) -> FPError.Code {
     switch error {
-    case .unauthorized, .forbidden:
+    case .unauthorized, .forbidden, .tokenAcquisitionFailed:
         return .notAuthenticated
     case .notFound, .gone:
         return .noSuchItem
     case .throttled:
         return .serverBusy
-    case .transport, .retriesExhausted:
+    case .transport, .retriesExhausted, .cancelled:
         return .serverUnreachable
-    default:
+    case .conflict, .preconditionFailed, .payloadTooLarge, .unsupportedMediaType,
+         .rangeNotSatisfiable, .unprocessableEntity, .serverError, .apiError,
+         .responseTooLarge:
         return .cannotSynchronize
     }
 }
@@ -114,10 +123,12 @@ private func oneLakeCode(for error: OneLakeError) -> FPError.Code {
     switch error {
     case .unauthorized, .forbidden:
         return .notAuthenticated
-    case .notFound:
+    case .notFound, .gone:
         return .noSuchItem
-    case .retriesExhausted:
+    case .retriesExhausted, .cancelled:
         return .serverUnreachable
+    case .rateLimited:
+        return .serverBusy
     case .httpError(let inner):
         // Unwrap the wrapped HTTPClientError so that throttling (429) is
         // correctly classified as serverBusy (sync-12).
@@ -125,7 +136,9 @@ private func oneLakeCode(for error: OneLakeError) -> FPError.Code {
             return httpCode(for: httpErr)
         }
         return .cannotSynchronize
-    default:
+    case .missingArgument, .shortRead, .paginationExceeded, .conflict,
+         .preconditionFailed, .payloadTooLarge, .rangeNotSatisfiable,
+         .serverError, .decodeFailed:
         return .cannotSynchronize
     }
 }
@@ -134,9 +147,15 @@ private func fabricCode(for error: FabricError) -> FPError.Code {
     switch error {
     case .unauthorized, .forbidden:
         return .notAuthenticated
-    case .notFound:
+    case .notFound, .gone:
         return .noSuchItem
-    default:
+    case .rateLimited:
+        return .serverBusy
+    case .retriesExhausted, .cancelled:
+        return .serverUnreachable
+    case .missingArgument, .paginationExceeded, .payloadTooLarge,
+         .rangeNotSatisfiable, .serverError, .httpError, .decodeFailed,
+         .loopingPagination, .continuationURIHostMismatch:
         return .cannotSynchronize
     }
 }

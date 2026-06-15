@@ -74,15 +74,30 @@ public actor OfemEngine {
 
     private var started = false
 
-    /// `true` when this engine constructed its own `TelemetryClient`,
-    /// `CacheStore`, and `HTTPGateRegistry` (standalone init path).
-    /// `false` when those were injected from the process-wide container
-    /// (FPE shared-subsystem path) — in that case `shutdown()` must NOT
-    /// tear down the shared client or the flush timer will be cancelled for
-    /// all still-live engines in the process.
-    private let ownsSharedSubsystems: Bool
+    /// Describes whether this engine owns the shared subsystems it holds
+    /// references to, and if so, bundles the owned instances for teardown
+    /// (engine-02, engine-03).
+    ///
+    /// - `shared`: the shared subsystems were injected by the caller
+    ///   (`FPEEngineHost`).  `shutdown()` must **not** tear them down —
+    ///   `FPEEngineHost.shutdownSharedSubsystems()` is responsible.
+    /// - `owned(telemetry:)`: the standalone init constructed these
+    ///   subsystems; `shutdown()` tears down the owned `TelemetryClient`.
+    ///   The owned `CacheStore` is already held by `self.cache` (ARC) and
+    ///   is released — and closed by GRDB — when the engine is deallocated.
+    private enum SubsystemOwnership {
+        case shared
+        case owned(telemetry: TelemetryClient)
+    }
 
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "OfemEngine")
+    private let subsystemOwnership: SubsystemOwnership
+
+    private static let log = Logger(subsystem: OfemPaths.bundleID, category: "OfemEngine")
+
+    /// Default Fabric REST base URL. Named constant eliminates both the
+    /// force-unwrap and the magic-string duplication (fp-01, engine-04).
+    private static let defaultFabricBaseURL = URL(string: "https://api.fabric.microsoft.com")
+        .unsafelyUnwrapped  // static literal — always valid
 
     // MARK: - Initialisers
 
@@ -124,7 +139,12 @@ public actor OfemEngine {
         sharedGateRegistry: HTTPGateRegistry,
         httpBaseURLs: (oneLake: URL, fabric: URL)? = nil
     ) throws {
+        // Read the config snapshot exactly once so all subsystems see the same
+        // generation (engine-01).
+        let cfg = configStore.snapshot()
+
         let perAlias = try OfemEngine.buildPerAliasSubsystems(
+            cfg: cfg,
             configStore: configStore,
             paths: paths,
             cache: sharedCache,
@@ -138,8 +158,8 @@ public actor OfemEngine {
         self.telemetry = sharedTelemetry
         self.auth = perAlias.auth
         self.sync = perAlias.sync
-        // Injected init does NOT own the shared subsystems.
-        self.ownsSharedSubsystems = false
+        // Injected init does NOT own the shared subsystems (engine-03).
+        self.subsystemOwnership = .shared
     }
 
     /// Builds all subsystems autonomously — constructs its own cache, telemetry,
@@ -196,6 +216,7 @@ public actor OfemEngine {
         let ownedGates = HTTPGateRegistry.makeDefault()
 
         let perAlias = try OfemEngine.buildPerAliasSubsystems(
+            cfg: cfg,
             configStore: configStore,
             paths: paths,
             cache: ownedCache,
@@ -209,8 +230,11 @@ public actor OfemEngine {
         self.telemetry = ownedTelemetry
         self.auth = perAlias.auth
         self.sync = perAlias.sync
-        // Standalone init owns all subsystems it created.
-        self.ownsSharedSubsystems = true
+        // Standalone init owns every subsystem it created (engine-03).
+        // CacheStore is already held by self.cache (ARC); no need to store
+        // it again in the ownership enum — it will be released (and closed
+        // by GRDB) when the engine is deallocated after shutdown().
+        self.subsystemOwnership = .owned(telemetry: ownedTelemetry)
     }
 
     // MARK: - Lifecycle
@@ -226,21 +250,31 @@ public actor OfemEngine {
         Self.log.info("OfemEngine: started")
     }
 
-    /// Stops per-alias background tasks and, when this engine owns the
-    /// `TelemetryClient`, performs a final telemetry flush and cancels the
-    /// flush timer.
+    /// Stops per-alias background tasks and, when this engine owns the shared
+    /// subsystems, tears them all down (engine-02).
     ///
-    /// When using a **shared** `TelemetryClient` (injected init), this method
-    /// does **not** call `telemetry.shutdown()`.  The flush timer keeps running
-    /// for all surviving engines in the process.  Call
-    /// `FPEEngineHost.shutdownSharedSubsystems()` once all domains have been
-    /// torn down to perform the final flush.
+    /// **Shared-subsystem (injected) init:** this method does **not** shut down
+    /// the cache, telemetry, or gate registry — those are owned by
+    /// `FPEEngineHost`.  Call `FPEEngineHost.shutdownSharedSubsystems()` once
+    /// all domains have been torn down.
     ///
-    /// When using a **standalone** `TelemetryClient` (standalone init), this
-    /// method shuts down the client as before.
+    /// **Standalone init:** closes the owned `TelemetryClient` (final flush +
+    /// timer cancel).  The owned `CacheStore` is held by `self.cache` via ARC
+    /// and is released — and closed by GRDB on deinit — when the engine is
+    /// deallocated after `shutdown()` returns.  The `HTTPGateRegistry` holds
+    /// no persistent resources, so no explicit close is needed.
     public func shutdown() async {
-        if ownsSharedSubsystems {
-            await telemetry.shutdown()
+        switch subsystemOwnership {
+        case .shared:
+            // Shared subsystems stay alive for other engines — do not touch them.
+            break
+        case .owned(let ownedTelemetry):
+            // Telemetry: final flush + cancel flush timer.
+            await ownedTelemetry.shutdown()
+            // CacheStore: held by self.cache (ARC).  GRDB DatabasePool closes
+            // its SQLite connection when the engine is deallocated after
+            // shutdown() returns.  Actor isolation guarantees no new reads/
+            // writes can start after this point.
         }
         Self.log.info("OfemEngine: shutdown complete")
     }
@@ -259,7 +293,11 @@ public actor OfemEngine {
     ///
     /// Extracted so both initialisers share identical wiring logic and future
     /// changes (e.g. WP-G SyncEngine updates) only need to be applied once.
+    ///
+    /// The `cfg` parameter must be the snapshot already read by the caller
+    /// so that both inits read the config exactly once (engine-01).
     private static func buildPerAliasSubsystems(
+        cfg: OfemConfig,
         configStore: OfemConfigStore,
         paths: OfemPaths,
         cache: CacheStore,
@@ -267,7 +305,6 @@ public actor OfemEngine {
         gateRegistry: HTTPGateRegistry,
         httpBaseURLs: (oneLake: URL, fabric: URL)?
     ) throws -> PerAliasSubsystems {
-        let cfg = configStore.snapshot()
 
         // 1. Logger (per-alias).
         // store-14: wire RotatingFileWriter so on-disk logs are produced.
@@ -276,7 +313,7 @@ public actor OfemEngine {
         let logLevel: LogLevel = LogLevel(string: cfg.log.level) ?? .info
         let fileWriter = RotatingFileWriter(logDirectory: paths.logDir)
         let logConfig = LogConfiguration(
-            subsystem: "dev.debruyn.ofem",
+            subsystem: OfemPaths.bundleID,
             category: "engine",
             level: logLevel,
             fileWriter: fileWriter
@@ -291,7 +328,7 @@ public actor OfemEngine {
         let http = HTTPClient(gateRegistry: gateRegistry)
 
         let oneLakeURL = httpBaseURLs?.oneLake ?? OneLakeClient.defaultBaseURL
-        let fabricURL  = httpBaseURLs?.fabric  ?? URL(string: "https://api.fabric.microsoft.com")!
+        let fabricURL  = httpBaseURLs?.fabric  ?? OfemEngine.defaultFabricBaseURL
 
         let tokenProvider = TokenProviderAdapter(auth: auth)
         let onelake = OneLakeClient(http: http, tokenProvider: tokenProvider, baseURL: oneLakeURL)
