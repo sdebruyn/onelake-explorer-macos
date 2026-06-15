@@ -105,7 +105,7 @@ jobs:
         with:
           path: |
             Packages/OfemKit/.build
-            ~/Library/Developer/Xcode/DerivedData/SourcePackages
+            build/Release/SourcePackages
           key: spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
           restore-keys: |
             spm-${{ runner.os }}-
