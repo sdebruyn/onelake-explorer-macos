@@ -241,7 +241,8 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                     netMaxUploads: cfg.net.maxConcurrentUploadsPerAccount,
                     netMaxDownloads: cfg.net.maxConcurrentDownloadsPerAccount,
                     logLevel: cfg.log.level,
-                    pausedWorkspaces: pausedWorkspaces
+                    pausedWorkspaces: pausedWorkspaces,
+                    needsSignIn: engineHost.needsSignIn
                 )
                 replyOnce(status, nil)
             } catch {

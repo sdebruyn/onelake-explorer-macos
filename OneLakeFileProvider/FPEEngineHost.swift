@@ -75,6 +75,28 @@ protocol EngineProviding: AnyObject, Sendable {
 
     /// Permanently shuts the engine down. Subsequent `engine()` calls throw.
     func shutdown() async
+
+    /// True when a recent enumeration failed with `notAuthenticated`, meaning
+    /// the account's token can no longer be acquired silently. Cleared
+    /// automatically by `reloadEngine()` (which is called after a successful
+    /// re-authentication writes fresh tokens to the shared Keychain cache).
+    var needsSignIn: Bool { get }
+
+    /// Records that an enumeration failed with a `notAuthenticated` code so
+    /// the host-app menu can surface a "Sign-in required" indicator.
+    func markNeedsSignIn()
+}
+
+// MARK: - EngineProviding default implementations
+
+/// Default no-op implementations of the auth-state members so that
+/// test doubles (e.g. `MockEngineHost`) that were written before this
+/// extension do not need to be updated. Production hosts override
+/// `needsSignIn` and `markNeedsSignIn()` with the tracking behaviour
+/// below.
+extension EngineProviding {
+    var needsSignIn: Bool { false }
+    func markNeedsSignIn() {}
 }
 
 /// Per-domain engine container.
@@ -284,6 +306,11 @@ final class FPEEngineHost: EngineProviding {
     /// Set to `true` by `shutdown()` once teardown begins.
     /// After this point `engine()` always throws rather than rebuilding.
     private nonisolated(unsafe) var _invalidated: Bool = false
+    /// Set to `true` by `markNeedsSignIn()` when an enumeration fails with
+    /// `notAuthenticated`. Cleared by `reloadEngine()` so a fresh sign-in
+    /// (which writes tokens to the shared Keychain) takes effect without
+    /// restarting the process.
+    private nonisolated(unsafe) var _needsSignIn: Bool = false
     /// In-flight build Task. Allows concurrent `engine()` callers to await the
     /// same build rather than racing to construct separate engines. Cleared
     /// (to nil) once the task finishes — successfully or not.
@@ -343,6 +370,27 @@ final class FPEEngineHost: EngineProviding {
     /// skip the blob-bytes query when the engine is not yet warm.
     func existingEngine() -> OfemEngine? {
         lock.withLock { _engine }
+    }
+
+    // MARK: - Auth-error tracking
+
+    /// True when a recent enumeration call failed with `notAuthenticated`.
+    ///
+    /// Thread-safe: read under `lock` so concurrent calls cannot observe
+    /// a torn write.
+    var needsSignIn: Bool {
+        lock.withLock { _needsSignIn }
+    }
+
+    /// Records that an enumeration failed because the account's token
+    /// could not be acquired silently. Subsequent calls are idempotent.
+    ///
+    /// Thread-safe: the flag is set under `lock`.
+    func markNeedsSignIn() {
+        lock.withLock { _needsSignIn = true }
+        Self.log.notice(
+            "FPEEngineHost[\(self.alias, privacy: .public)]: marked needsSignIn — interactive re-authentication required"
+        )
     }
 
     /// Returns the engine, building it on first call.
@@ -440,6 +488,11 @@ final class FPEEngineHost: EngineProviding {
             _lastBuildErrorUptimeNs = 0
             _buildTask?.cancel()
             _buildTask = nil
+            // Clear the auth-error flag so the next enumeration gets a fresh
+            // shot at silent token acquisition (new tokens written to Keychain
+            // by the host-app re-auth flow are visible to the FPE immediately
+            // via the shared App Group Keychain cache).
+            _needsSignIn = false
             return (e, st)
         }
         if let e = existing {

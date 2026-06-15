@@ -137,6 +137,9 @@ final class MenuStatusModel: ObservableObject {
     @Published private(set) var accounts: [AccountInfo] = []
     @Published private(set) var defaultAccount: String = ""
     @Published private(set) var telemetryEnabled: Bool = true
+    /// Aliases for accounts whose token can no longer be acquired silently.
+    /// Each entry is the account alias. Empty when all accounts are healthy.
+    @Published private(set) var accountsNeedingSignIn: Set<String> = []
 
     /// Max parallel uploads per account (Settings → Network).
     @Published private(set) var netMaxUploads: Int = 0
@@ -158,14 +161,26 @@ final class MenuStatusModel: ObservableObject {
     var hasAccounts: Bool { !accounts.isEmpty }
 
     /// Icon state for the menu-bar label. Priority: not-running > paused > normal.
+    /// Auth errors (`accountsNeedingSignIn` non-empty) are surfaced in the
+    /// header label and per-account submenu rather than changing the icon state.
     var menuIconState: MenuIconState {
         if accounts.isEmpty { return .notRunning }
         if pausedCount > 0 { return .paused }
         return .normal
     }
 
+    /// Returns true when the given account alias requires interactive sign-in.
+    func accountNeedsSignIn(alias: String) -> Bool {
+        accountsNeedingSignIn.contains(alias)
+    }
+
     var headerLabel: String {
         guard hasAccounts else { return "○ Not running" }
+        if !accountsNeedingSignIn.isEmpty {
+            let count = accountsNeedingSignIn.count
+            let noun = count == 1 ? "account requires" : "accounts require"
+            return "⚠ \(count) \(noun) sign-in"
+        }
         if pausedCount > 0 {
             let noun = pausedCount == 1 ? "workspace" : "workspaces"
             return "⏸ \(pausedCount) paused \(noun)"
@@ -316,6 +331,14 @@ final class MenuStatusModel: ObservableObject {
         // freshly booted system before the FPE process has started).
         guard let firstAlias = nativeAccounts.first?.alias else { return }
 
+        // Collect auth state across all accounts. The first account is queried
+        // as part of the shared-config pass; remaining accounts are queried
+        // separately because `needsSignIn` is per-domain (per-alias).
+        // Best-effort: a domain not yet loaded is silently skipped (not an
+        // auth error). Sequential to avoid hammering the XPC pool on a long
+        // account list (typical installations have 1–3 accounts).
+        var needsSignInSet: Set<String> = []
+
         do {
             let status = try await engineStatusProvider.getEngineStatus(alias: firstAlias)
 
@@ -360,12 +383,35 @@ final class MenuStatusModel: ObservableObject {
                     probedAt: nil
                 )
             }
+
+            // Capture auth state from the first account's status reply.
+            if status.needsSignIn {
+                needsSignInSet.insert(firstAlias)
+            }
         } catch {
             // FPE not yet reachable — fields stay at last-known values or defaults.
             Self.log.debug(
                 "Engine status fetch skipped (FPE not reachable): \(error.localizedDescription, privacy: .public)"
             )
         }
+
+        // Query remaining accounts for their per-domain auth state.
+        for acc in nativeAccounts.dropFirst() {
+            guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
+            do {
+                let s = try await engineStatusProvider.getEngineStatus(alias: acc.alias)
+                if s.needsSignIn {
+                    needsSignInSet.insert(acc.alias)
+                }
+            } catch {
+                Self.log.debug(
+                    "needsSignIn check skipped for \(acc.alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+
+        guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
+        accountsNeedingSignIn = needsSignInSet
     }
 
     // MARK: - XPC version mismatch surfacing (xpc-06)

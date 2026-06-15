@@ -191,6 +191,11 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 Self.log.error(
                     "OfemFPEEnumerator failed for \(aliasCopy, privacy: .public)/\(identifierCopy.identifierString, privacy: .public): \(error.localizedDescription, privacy: .public) (code=\(code.rawValue, privacy: .public))"
                 )
+                // Surface auth-error state so the host-app menu bar can show
+                // a "Sign-in required" indicator for this account.
+                if code == .notAuthenticated {
+                    hostCopy.markNeedsSignIn()
+                }
                 observer.finishEnumeratingWithError(nsFileProviderError(for: code))
             }
         }
