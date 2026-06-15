@@ -18,9 +18,8 @@ updates:
         patterns:
           - "*"
 
-  # GitHub Actions — keeps the SHA-pinned `uses:` entries current (and
-  # updates the trailing `# vX.Y.Z` version comment) so pinning to a SHA
-  # does not mean silently running stale, unpatched actions.
+  # GitHub Actions — keeps the version-tag-pinned `uses:` entries current
+  # so the workflows do not silently run stale, unpatched actions.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
