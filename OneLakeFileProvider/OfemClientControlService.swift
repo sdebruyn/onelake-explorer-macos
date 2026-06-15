@@ -5,12 +5,13 @@
 // "dev.debruyn.ofem.control". The host app connects to this service
 // via NSFileProviderManager.service(name:for:) and obtains an
 // NSXPCConnection that it uses to call OfemClientControlProtocol
-// methods (getEngineStatus, setConfig, clearCache).
+// methods (getProtocolVersion, getEngineStatus, setConfig, clearCache).
 //
 // Account management (add / remove) is handled in the host process via
 // SharedOfemAuth and DomainSyncManager and does not cross the XPC boundary.
 //
 // XPC methods exposed:
+//   - getProtocolVersion(reply:)  — version handshake; called on every new connection
 //   - getEngineStatus(reply:)     — cache stats + config snapshot
 //   - setConfig(key:value:reply:) — write one config field, persist and trigger engine reload
 //   - clearCache(reply:)          — wipe all cached blobs; reply carries freed byte count
@@ -174,6 +175,12 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
     init(engineHost: any EngineProviding) {
         self.engineHost = engineHost
         super.init()
+    }
+
+    // MARK: - getProtocolVersion
+
+    func getProtocolVersion(reply: @escaping (Int) -> Void) {
+        reply(ofemControlProtocolVersion)
     }
 
     // MARK: - getEngineStatus
