@@ -20,25 +20,12 @@ private func stub(status: Int, body: String = "", headers: [String: String] = [:
     )
 }
 
-// tests-04: use the seeded initialiser so the gate is registered synchronously
-// before any execute() call — a Task{}-based registration races the first request.
-private func makeGate() -> HTTPGateRegistry {
-    let gate = HTTPGate(
-        host: "onelake.dfs.fabric.microsoft.com",
-        maxConcurrent: 8,
-        tokensPerSecond: 100,
-        burst: 100
-    )
-    return HTTPGateRegistry(
-        defaults: HTTPGateDefaults(maxConcurrent: 8, tokensPerSecond: 100, burst: 100),
-        seeded: [gate]
-    )
-}
+// tests-04 / tests-15: makeGate(host:) is shared in NetTestHelpers.swift.
 
 private func makeClient(session: MockURLSession, maxAttempts: Int = 1) -> OneLakeClient {
     let http = HTTPClient(
         session: session,
-        gateRegistry: makeGate(),
+        gateRegistry: makeGate(host: "onelake.dfs.fabric.microsoft.com"),
         retryPolicy: HTTPRetryPolicy(maxAttempts: maxAttempts, initialBackoff: .milliseconds(10), maxBackoff: .milliseconds(50))
     )
     return OneLakeClient(http: http, tokenProvider: MockTokenProvider(token: "test-tok"), baseURL: baseURL)

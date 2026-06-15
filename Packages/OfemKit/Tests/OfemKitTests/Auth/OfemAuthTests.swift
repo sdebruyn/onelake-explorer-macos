@@ -13,28 +13,8 @@ import Foundation
 @Suite("OfemAuth account management")
 struct OfemAuthTests {
     // MARK: - Helpers
-
-    /// Creates a fresh temp dir + `OfemPaths` + `OfemConfigStore`.
-    private func makeStore() throws -> (store: OfemConfigStore, root: URL) {
-        let tmp = FileManager.default.temporaryDirectory
-            .appending(path: "OfemAuthTests-\(UUID().uuidString)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
-        let paths = OfemPaths(root: tmp)
-        let store = try OfemConfigStore(paths: paths)
-        return (store, tmp)
-    }
-
-    private func makeAccount(alias: String, tenantID: String = "tenant-\(UUID().uuidString)") -> Account {
-        Account(
-            alias: alias,
-            tenantID: tenantID,
-            tenantName: nil,
-            homeAccountID: "home-\(UUID().uuidString)",
-            username: "\(alias)@contoso.com",
-            addedAt: ISO8601DateFormatter().string(from: Date()),
-            clientID: nil
-        )
-    }
+    // tests-15: makeStore(label:) and makeAccount(alias:tenantID:homeAccountID:)
+    // live in AuthTestHelpers.swift and are shared across all Auth suites.
 
     // MARK: - listAccounts
 
@@ -266,27 +246,8 @@ struct OfemAuthTests {
 @Suite("OfemAuth token acquisition")
 struct OfemAuthTokenTests {
     // MARK: - Helpers
-
-    private func makeStore() throws -> (store: OfemConfigStore, root: URL) {
-        let tmp = FileManager.default.temporaryDirectory
-            .appending(path: "OfemAuthTokenTests-\(UUID().uuidString)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
-        let paths = OfemPaths(root: tmp)
-        let store = try OfemConfigStore(paths: paths)
-        return (store, tmp)
-    }
-
-    private func makeAccount(alias: String, tenantID: String, homeAccountID: String) -> Account {
-        Account(
-            alias: alias,
-            tenantID: tenantID,
-            tenantName: nil,
-            homeAccountID: homeAccountID,
-            username: "\(alias)@contoso.com",
-            addedAt: ISO8601DateFormatter().string(from: Date()),
-            clientID: nil
-        )
-    }
+    // tests-15: makeStore(label:) and makeAccount(alias:tenantID:homeAccountID:)
+    // live in AuthTestHelpers.swift and are shared across all Auth suites.
 
     // MARK: - Token cache hit
 
