@@ -108,16 +108,14 @@ public actor CacheStore {
         try m.migrate(dbPool)
 
         // Kick off the orphan sweep asynchronously so that init never blocks
-        // the calling thread on a directory walk + db.read.
+        // the calling thread on a directory walk + db write.
         //
         // The sweep logs warnings on failure rather than discarding them with
         // try? — errors are surfaced to the log but do not abort the actor.
-        // A concurrent storeBlob cannot race the sweep: the sweep asks the DB
-        // which SHAs are referenced *after* the enumerator walk, so any blob
-        // whose row was committed before the sweep's DB read is protected.
-        // The only residual race is a blob written concurrently with the sweep's
-        // enumerator walk; that case is safe because the new row will be in the
-        // DB by the time the sweep queries references.
+        // The sweep uses a write transaction to query referenced SHAs, which
+        // serialises it against any in-flight storeBlob/storeBlobFromURL write
+        // transaction — ensuring a blob whose disk file was written but whose
+        // DB UPDATE has not yet committed is never mistaken for an orphan.
         let blobsCapture = blobs
         let dbCapture = dbPool
         Task { [blobsCapture, dbCapture] in
@@ -995,7 +993,16 @@ public actor CacheStore {
         guard !onDisk.isEmpty else { return }
 
         // Ask the DB which of those are actually referenced.
-        let referenced: Set<String> = try dbPool.read { db in
+        //
+        // Use a write transaction (not a snapshot read) so that a concurrent
+        // storeBlob that has already written the blob file but not yet committed
+        // its DB UPDATE is guaranteed to finish before this query runs.  A
+        // snapshot read would see stale DB state — it would miss the just-written
+        // SHA and incorrectly identify the blob as an orphan, deleting it while
+        // storeBlob is still mid-execution.  The write serialiser blocks here
+        // until any in-flight storeBlob/storeBlobFromURL write transaction commits,
+        // matching the same pattern used by deleteUnreferencedBlobs.
+        let referenced: Set<String> = try dbPool.write { db in
             let rows = try String.fetchAll(db, sql: """
                 SELECT DISTINCT blob_sha256 FROM path_metadata WHERE blob_sha256 != ''
                 """)
