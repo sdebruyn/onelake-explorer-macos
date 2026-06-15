@@ -35,6 +35,8 @@ jobs:
     runs-on: macos-15
     environment: integration
     timeout-minutes: 45
+    env:
+      HOMEBREW_NO_ENV_HINTS: "1"
     steps:
       # SECURITY: always check out the BASE ref, never the PR head.
       # On pull_request_target the default ref IS the base, but we pin
@@ -110,6 +112,8 @@ jobs:
           OFEM_TEST_WH_TABLE: ${{ vars.OFEM_TEST_WH_TABLE }}
         run: |
           set -euo pipefail
+          # Remove unused pre-installed taps to silence the untrusted-taps warning.
+          brew untap aws/tap azure/bicep 2>/dev/null || true
           brew list sqlcmd &>/dev/null || brew install sqlcmd
           # Reference the Homebrew-managed binary directly: a pre-existing
           # mssql-tools symlink can shadow it in PATH on the runner.

@@ -147,7 +147,7 @@ struct GateSlotLeakRegressionTests {
         task.cancel()
 
         do {
-            try await task.value
+            _ = try await task.value
             Issue.record("Expected cancellation error")
         } catch {
             // Expected — cancelled or retriesExhausted both mean the task ended.
@@ -349,7 +349,6 @@ struct TokenRefundClampTests {
         // Now a second acquire will: get a token (fast path), see cap is full,
         // refund the token. Before net-08, this could push availableTokens above burst.
         // We prime the bucket to burst and verify it never goes over.
-        let s1 = await gate.state()
         // After the first acquire, availableTokens should be burst-1 = 1.0 (we took 1).
         // Release to restore and then verify the bucket doesn't exceed burst.
         await gate.release()
@@ -539,7 +538,7 @@ struct GatePenaltyCapTests {
 
         // Advance clock past the capped penalty and let the request succeed.
         clock.advance(by: httpGateMaxPenaltyDuration + .seconds(1))
-        try await execTask.value
+        _ = try await execTask.value
     }
 }
 

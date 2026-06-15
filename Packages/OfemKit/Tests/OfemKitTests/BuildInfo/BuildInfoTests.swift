@@ -88,7 +88,7 @@ struct FNV64aTests {
     /// Offset basis = 14695981039346656037 (0xcbf29ce484222325).
     @Test("empty string digest is the FNV offset basis")
     func emptyStringIsOffsetBasis() {
-        var h = ContentVersion.FNV64a()
+        let h = ContentVersion.FNV64a()
         #expect(h.digest() == 14_695_981_039_346_656_037)
     }
 
