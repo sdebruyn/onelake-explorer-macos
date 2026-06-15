@@ -14,7 +14,10 @@
 // - netMaxDownloads — max parallel downloads per account
 // - logLevel — "debug" | "info" | "warn" | "error"
 // - pausedWorkspaces — workspaces whose Fabric capacity is currently paused;
-// empty array = no workspaces paused.
+//   empty array = no workspaces paused.
+// - needsSignIn — true when a recent enumeration failed with notAuthenticated,
+//   meaning the account's token can no longer be acquired silently and the user
+//   must sign in again. False by default (backward-compatible decode).
 
 import Foundation
 
@@ -30,6 +33,10 @@ import Foundation
     @objc public let logLevel: String
     /// Workspaces whose Fabric capacity is currently paused. Empty when none.
     @objc public let pausedWorkspaces: [XPCPausedWorkspace]
+    /// True when the account's token cannot be acquired silently and
+    /// interactive sign-in is required. Decoded as false when the key is
+    /// absent (backward-compatible with FPE builds that predate this field).
+    @objc public let needsSignIn: Bool
 
     // MARK: - Init
 
@@ -41,7 +48,8 @@ import Foundation
         netMaxUploads: Int,
         netMaxDownloads: Int,
         logLevel: String,
-        pausedWorkspaces: [XPCPausedWorkspace] = []
+        pausedWorkspaces: [XPCPausedWorkspace] = [],
+        needsSignIn: Bool = false
     ) {
         self.cacheBytes = cacheBytes
         self.cacheMaxBytes = cacheMaxBytes
@@ -51,6 +59,7 @@ import Foundation
         self.netMaxDownloads = netMaxDownloads
         self.logLevel = logLevel
         self.pausedWorkspaces = pausedWorkspaces
+        self.needsSignIn = needsSignIn
         super.init()
     }
 
@@ -62,6 +71,7 @@ import Foundation
         case netMaxUploads, netMaxDownloads
         case logLevel
         case pausedWorkspaces
+        case needsSignIn
     }
 
     @objc public func encode(with coder: NSCoder) {
@@ -73,6 +83,7 @@ import Foundation
         coder.encode(netMaxDownloads, forKey: Keys.netMaxDownloads.rawValue)
         coder.encode(logLevel, forKey: Keys.logLevel.rawValue)
         coder.encode(pausedWorkspaces as NSArray, forKey: Keys.pausedWorkspaces.rawValue)
+        coder.encode(needsSignIn, forKey: Keys.needsSignIn.rawValue)
     }
 
     @objc public required init?(coder: NSCoder) {
@@ -88,6 +99,8 @@ import Foundation
             forKey: Keys.pausedWorkspaces.rawValue
         ) as? [XPCPausedWorkspace]
         pausedWorkspaces = decoded ?? []
+        // Default false for archives written before this field was added.
+        needsSignIn = coder.decodeBool(forKey: Keys.needsSignIn.rawValue)
         super.init()
     }
 }

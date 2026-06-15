@@ -169,6 +169,16 @@ private struct AccountSubmenu: View {
     private static let log = Logger(subsystem: ofemSubsystem, category: "menubar-view")
 
     var body: some View {
+        // Show an auth-error callout when this account's token cannot be
+        // acquired silently. Displayed above the action buttons so it is
+        // the first thing the user reads when opening the per-account submenu.
+        if model.accountNeedsSignIn(alias: account.alias) {
+            Text("Sign-in required")
+                .foregroundStyle(.orange)
+                .disabled(true)
+            Divider()
+        }
+
         Button("Open in Finder") {
             openInFinder()
         }
@@ -196,6 +206,7 @@ private struct AccountSubmenu: View {
             await Self.revealDomain(domain, log: Self.log)
         }
     }
+
 
     /// Resolves the Finder-visible URL for `domain` via the File Provider
     /// framework and reveals it in Finder. Runs asynchronously; silently

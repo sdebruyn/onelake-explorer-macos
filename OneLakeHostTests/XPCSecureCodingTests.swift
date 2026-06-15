@@ -105,6 +105,66 @@ final class XPCEngineStatusTests: XCTestCase {
         XCTAssertEqual(decoded.netMaxDownloads, original.netMaxDownloads)
         XCTAssertEqual(decoded.logLevel, original.logLevel)
         XCTAssertTrue(decoded.pausedWorkspaces.isEmpty)
+        // needsSignIn defaults to false when omitted from the init.
+        XCTAssertFalse(decoded.needsSignIn)
+    }
+
+    func testRoundTripNeedsSignInTrue() throws {
+        let original = XPCEngineStatus(
+            cacheBytes: 0,
+            cacheMaxBytes: 0,
+            cacheMaxSizeGB: 0,
+            telemetryEnabled: false,
+            netMaxUploads: 1,
+            netMaxDownloads: 1,
+            logLevel: "info",
+            needsSignIn: true
+        )
+        let decoded = try roundTrip(original)
+        XCTAssertTrue(decoded.needsSignIn,
+                      "needsSignIn=true must survive the encode/decode round-trip")
+    }
+
+    func testRoundTripNeedsSignInFalse() throws {
+        let original = XPCEngineStatus(
+            cacheBytes: 0,
+            cacheMaxBytes: 0,
+            cacheMaxSizeGB: 0,
+            telemetryEnabled: false,
+            netMaxUploads: 1,
+            netMaxDownloads: 1,
+            logLevel: "info",
+            needsSignIn: false
+        )
+        let decoded = try roundTrip(original)
+        XCTAssertFalse(decoded.needsSignIn,
+                       "needsSignIn=false must survive the encode/decode round-trip")
+    }
+
+    func testNeedsSignInFallsBackToFalseWhenKeyMissing() throws {
+        // Verify the backward-compat default (false) when decoding an archive
+        // produced by a FPE build that predates the needsSignIn field.
+        // The unarchiver is configured with requiresSecureCoding = true to match
+        // the production XPC channel, which always operates in secure mode.
+        let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+        archiver.encode(Int64(0),   forKey: "cacheBytes")
+        archiver.encode(Int64(0),   forKey: "cacheMaxBytes")
+        archiver.encode(0,          forKey: "cacheMaxSizeGB")
+        archiver.encode(false,      forKey: "telemetryEnabled")
+        archiver.encode(0,          forKey: "netMaxUploads")
+        archiver.encode(0,          forKey: "netMaxDownloads")
+        archiver.encode("info" as NSString, forKey: "logLevel")
+        archiver.encode([] as NSArray, forKey: "pausedWorkspaces")
+        // "needsSignIn" intentionally omitted — simulates an older FPE archive.
+        archiver.finishEncoding()
+        let data = archiver.encodedData
+
+        let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
+        unarchiver.requiresSecureCoding = true  // matches production XPC security boundary
+        let decoded = XPCEngineStatus(coder: unarchiver)
+        let status = try XCTUnwrap(decoded, "XPCEngineStatus(coder:) returned nil")
+        XCTAssertFalse(status.needsSignIn,
+                       "missing needsSignIn key must decode as false (backward compat)")
     }
 
     func testRoundTripTelemetryDisabled() throws {
@@ -186,7 +246,7 @@ final class XPCEngineStatusTests: XCTestCase {
         let data = archiver.encodedData
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
-        unarchiver.requiresSecureCoding = false  // raw key-value archive, not class-rooted
+        unarchiver.requiresSecureCoding = true  // matches production XPC security boundary
         let decoded = XPCEngineStatus(coder: unarchiver)
         let status = try XCTUnwrap(decoded, "XPCEngineStatus(coder:) returned nil")
         XCTAssertEqual(status.logLevel, "info", "missing logLevel key must fall back to \"info\"")

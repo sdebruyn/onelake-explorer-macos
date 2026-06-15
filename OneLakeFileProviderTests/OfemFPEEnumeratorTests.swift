@@ -114,6 +114,152 @@ final class OfemFPEEnumeratorTests: XCTestCase {
                        "finishEnumeratingChanges must NOT fire when the engine errors")
     }
 
+    // MARK: - enumerateChanges: notAuthenticated error sets markNeedsSignIn (OfemFPEEnumerator)
+
+    func testEnumerateChanges_notAuthenticatedError_setsMarkNeedsSignIn() async throws {
+        // A token-acquisition failure in the change-observation path must call
+        // markNeedsSignIn() so the host-app menu bar shows "Sign-in required".
+        // This is the key path for detecting token expiry in steady state.
+        let host = MockEngineHost(alias: "auth-changes-test")
+        // NSFileProviderError(.notAuthenticated) classifies to .notAuthenticated via
+        // FPError.classify (it falls through to cannotSynchronize as a generic
+        // NSFileProviderError, but for the test we inject a direct auth error through
+        // the engine() call, which the enumerator catches in its generic error handler
+        // and classifies). Use HTTPClientError.tokenAcquisitionFailed to produce a
+        // definitive .notAuthenticated classification.
+        host.engineResult = .failure(HTTPClientError.tokenAcquisitionFailed(
+            NSError(domain: "test", code: -1)
+        ))
+
+        let id = NSFileProviderItemIdentifier(ItemIdentifier.rootContainerString)
+        let enumerator = OfemFPEEnumerator(
+            containerItemIdentifier: id,
+            identifier: .root,
+            alias: "auth-changes-test",
+            engineHost: host
+        )
+
+        let changeObserver = SpyChangeObserver()
+        enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
+
+        for _ in 0..<50 {
+            if changeObserver.finished || changeObserver.finishedWithError { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertTrue(changeObserver.finishedWithError,
+                      "Observer should receive an error on token-acquisition failure")
+        XCTAssertTrue(host.markedNeedsSignIn,
+                      "markNeedsSignIn must be called when enumerateChanges fails with notAuthenticated")
+        XCTAssertGreaterThanOrEqual(host.markNeedsSignInCallCount, 1,
+                                    "markNeedsSignIn should have been called at least once")
+    }
+
+    // MARK: - enumerateChanges: non-auth error does NOT set markNeedsSignIn (OfemFPEEnumerator)
+
+    func testEnumerateChanges_nonAuthError_doesNotSetMarkNeedsSignIn() async throws {
+        let host = MockEngineHost(alias: "non-auth-changes-test")
+        host.engineResult = .failure(NSFileProviderError(.serverUnreachable))
+
+        let id = NSFileProviderItemIdentifier(ItemIdentifier.rootContainerString)
+        let enumerator = OfemFPEEnumerator(
+            containerItemIdentifier: id,
+            identifier: .root,
+            alias: "non-auth-changes-test",
+            engineHost: host
+        )
+
+        let changeObserver = SpyChangeObserver()
+        enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
+
+        for _ in 0..<50 {
+            if changeObserver.finished || changeObserver.finishedWithError { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertTrue(changeObserver.finishedWithError)
+        XCTAssertFalse(host.markedNeedsSignIn,
+                       "markNeedsSignIn must NOT be called for non-auth errors in enumerateChanges")
+    }
+
+    // MARK: - enumerateChanges: notAuthenticated error sets markNeedsSignIn (OfemWorkingSetEnumerator)
+
+    func testWorkingSetEnumerateChanges_notAuthenticatedError_setsMarkNeedsSignIn() async throws {
+        // Mirror of the OfemFPEEnumerator test above, but for the working-set
+        // enumerator. Token expiry must surface auth failures from both
+        // change-observation paths.
+        let host = MockEngineHost(alias: "ws-auth-changes-test")
+        host.engineResult = .failure(HTTPClientError.tokenAcquisitionFailed(
+            NSError(domain: "test", code: -1)
+        ))
+
+        let enumerator = OfemWorkingSetEnumerator(alias: "ws-auth-changes-test", engineHost: host)
+
+        let changeObserver = SpyChangeObserver()
+        enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
+
+        for _ in 0..<50 {
+            if changeObserver.finished || changeObserver.finishedWithError { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertTrue(changeObserver.finishedWithError,
+                      "WorkingSetEnumerator: observer should receive error on token-acquisition failure")
+        XCTAssertTrue(host.markedNeedsSignIn,
+                      "WorkingSetEnumerator: markNeedsSignIn must be called on notAuthenticated in enumerateChanges")
+    }
+
+    // MARK: - enumerateChanges: non-auth error does NOT set markNeedsSignIn (OfemWorkingSetEnumerator)
+
+    func testWorkingSetEnumerateChanges_nonAuthError_doesNotSetMarkNeedsSignIn() async throws {
+        let host = MockEngineHost(alias: "ws-non-auth-test")
+        host.engineResult = .failure(NSFileProviderError(.serverUnreachable))
+
+        let enumerator = OfemWorkingSetEnumerator(alias: "ws-non-auth-test", engineHost: host)
+
+        let changeObserver = SpyChangeObserver()
+        enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
+
+        for _ in 0..<50 {
+            if changeObserver.finished || changeObserver.finishedWithError { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertTrue(changeObserver.finishedWithError)
+        XCTAssertFalse(host.markedNeedsSignIn,
+                       "WorkingSetEnumerator: markNeedsSignIn must NOT be called for non-auth errors")
+    }
+
+    // MARK: - enumerateItems: notAuthenticated error sets markNeedsSignIn
+
+    func testEnumerateItems_notAuthenticatedError_setsMarkNeedsSignIn() async throws {
+        // Confirms the existing enumerateItems path still sets the flag (regression guard).
+        let host = MockEngineHost(alias: "items-auth-test")
+        host.engineResult = .failure(HTTPClientError.tokenAcquisitionFailed(
+            NSError(domain: "test", code: -1)
+        ))
+
+        let id = NSFileProviderItemIdentifier(ItemIdentifier.rootContainerString)
+        let enumerator = OfemFPEEnumerator(
+            containerItemIdentifier: id,
+            identifier: .root,
+            alias: "items-auth-test",
+            engineHost: host
+        )
+
+        let observer = SpyEnumerationObserver()
+        enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage.initialPageSortedByName as NSFileProviderPage)
+
+        for _ in 0..<50 {
+            if observer.finishEnumeratingWithErrorCalled || observer.finishEnumeratingCalled { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertTrue(observer.finishEnumeratingWithErrorCalled)
+        XCTAssertTrue(host.markedNeedsSignIn,
+                      "enumerateItems: markNeedsSignIn must be called on notAuthenticated (regression guard)")
+    }
+
     // MARK: - parseOfemItemIdentifier: root container parses to .root
 
     func testParseRootContainer() throws {

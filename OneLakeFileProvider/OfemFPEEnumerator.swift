@@ -191,6 +191,11 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 Self.log.error(
                     "OfemFPEEnumerator failed for \(aliasCopy, privacy: .public)/\(identifierCopy.identifierString, privacy: .public): \(error.localizedDescription, privacy: .public) (code=\(code.rawValue, privacy: .public))"
                 )
+                // Surface auth-error state so the host-app menu bar can show
+                // a "Sign-in required" indicator for this account.
+                if code == .notAuthenticated {
+                    hostCopy.markNeedsSignIn()
+                }
                 observer.finishEnumeratingWithError(nsFileProviderError(for: code))
             }
         }
@@ -293,6 +298,13 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 Self.log.error(
                     "OfemFPEEnumerator: enumerateChanges failed for \(aliasCopy, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
+                // Surface auth-error state so the host-app menu bar can show
+                // a "Sign-in required" indicator. Token expiry in steady state
+                // surfaces here, not in enumerateItems, so this is the critical
+                // path for detecting post-initial-enumeration auth failures.
+                if code == .notAuthenticated {
+                    hostCopy.markNeedsSignIn()
+                }
                 observer.finishEnumeratingWithError(nsFileProviderError(for: code))
             }
         }
@@ -497,6 +509,11 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 Self.log.error(
                     "WorkingSet: enumerateChanges failed for \(aliasCopy, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
+                // Mirror OfemFPEEnumerator.enumerateChanges: surface auth failures
+                // so the host-app menu bar can show "Sign-in required".
+                if code == .notAuthenticated {
+                    hostCopy.markNeedsSignIn()
+                }
                 observer.finishEnumeratingWithError(nsFileProviderError(for: code))
             }
         }
