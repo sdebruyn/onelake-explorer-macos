@@ -9,9 +9,14 @@
 // never opened.
 //
 // Thread safety: `FPEEngineHost` uses an NSLock to serialise mutations
-// to `_engine` and `_buildError`. `buildEngine()` is a throwing
-// synchronous function; concurrent callers race to a single-flight Task
-// so the engine is built exactly once even under concurrent pressure.
+// to `_engine`, `_buildError`, and `_startTask`. `buildEngine()` is a
+// throwing synchronous function; concurrent callers race to a single-flight
+// Task so the engine is built exactly once even under concurrent pressure.
+//
+// Engine start task: after buildEngine() stores a new engine, it also spawns
+// a start Task and stores it in `_startTask`. `shutdown()` and `reloadEngine()`
+// await `_startTask` before calling `engine.shutdown()`, ensuring start() has
+// finished (or been cancelled) before teardown begins.
 //
 // Process-wide config store: all FPEEngineHost instances in the same
 // FPE process share ONE OfemConfigStore via `FPEEngineHost.sharedConfigStore`.
@@ -31,12 +36,10 @@
 //     believed it could use the full cap independently).
 //
 // Telemetry ownership: because the TelemetryClient is shared, individual
-// OfemEngine.shutdown() calls do NOT stop the flush timer — only the owning
-// container does.  After the last FPEEngineHost.shutdown() returns, call
-// FPEEngineHost.shutdownSharedSubsystems() to flush remaining events and
-// cancel the flush timer.  In normal FPE operation the OS terminates the
-// process immediately after the last domain is invalidated, so this acts as
-// a belt-and-suspenders process-exit hook.
+// OfemEngine.shutdown() calls do NOT stop the flush timer. The last
+// FPEEngineHost to shut down (tracked via _activeHostCount) calls
+// shutdownSharedSubsystems() automatically so the final telemetry batch
+// is flushed before the FPE process exits.
 
 import FileProvider
 import Foundation
@@ -133,6 +136,16 @@ final class FPEEngineHost: EngineProviding {
     private static nonisolated(unsafe) var _sharedTelemetry: TelemetryClient?
     private static nonisolated(unsafe) var _sharedGateRegistry: HTTPGateRegistry?
 
+    // MARK: - Active host reference count (fpe-14)
+
+    // Tracks how many FPEEngineHost instances are live in this process.
+    // The counter is incremented in init() and decremented in shutdown().
+    // When it reaches zero, shutdownSharedSubsystems() is called automatically
+    // so the final telemetry batch is always flushed, regardless of how many
+    // domains were active.
+    private static let activeHostLock = NSLock()
+    private static nonisolated(unsafe) var _activeHostCount: Int = 0
+
     /// Returns (or lazily creates) the process-wide CacheStore.
     ///
     /// The first call constructs the store from the default `OfemPaths.cacheDir`
@@ -213,21 +226,16 @@ final class FPEEngineHost: EngineProviding {
         }
     }
 
-    /// Shuts down the process-wide shared subsystems and performs a final
-    /// telemetry flush.
+    /// Flushes and tears down the process-wide shared subsystems.
     ///
-    /// Call this once, after **all** per-alias engines and their
-    /// `FPEEngineHost` containers have been shut down (i.e. after the last
-    /// `FPEEngineHost.shutdown()` completes).  In normal FPE operation the
-    /// OS terminates the extension process after the last domain is
-    /// invalidated, so this method acts as a belt-and-suspenders process-exit
-    /// hook that guarantees the final telemetry batch is flushed before the
-    /// process exits.
+    /// Called automatically when the last `FPEEngineHost` shuts down
+    /// (tracked via `_activeHostCount`). Exposed as `internal` so tests can
+    /// call it directly without creating a full host instance.
     ///
-    /// This is distinct from `OfemEngine.shutdown()` for injected-subsystem
-    /// engines: individual engine shutdown does **not** stop the shared
-    /// `TelemetryClient` so that the flush timer keeps running while other
-    /// domains are still active.
+    /// Individual `OfemEngine.shutdown()` calls do NOT stop the shared
+    /// `TelemetryClient` — that is intentional so the flush timer keeps
+    /// running while other domains remain active. This method is the single
+    /// tear-down point that runs when no domains are left.
     static func shutdownSharedSubsystems() async {
         let telemetry = sharedSubsystemsLock.withLock { _sharedTelemetry }
         if let t = telemetry {
@@ -245,10 +253,9 @@ final class FPEEngineHost: EngineProviding {
     /// revert to the N-pools bug for any engine rebuilt after the reset.
     #if DEBUG
     static func resetSharedSubsystems() {
-        // Acquire both locks in a consistent order (subsystems first, then
-        // store) so the reset is atomic with respect to concurrent
-        // sharedCache() / sharedTelemetry() calls that also nest
-        // sharedSubsystemsLock → sharedStoreLock.
+        // Acquire locks in a consistent order (subsystems first, then store,
+        // then activeHost) so the reset is atomic with respect to concurrent
+        // sharedCache() / sharedTelemetry() calls.
         sharedSubsystemsLock.withLock {
             sharedStoreLock.withLock {
                 _sharedConfigStore = nil
@@ -257,6 +264,7 @@ final class FPEEngineHost: EngineProviding {
             _sharedTelemetry = nil
             _sharedGateRegistry = nil
         }
+        activeHostLock.withLock { _activeHostCount = 0 }
     }
     #endif
 
@@ -280,6 +288,10 @@ final class FPEEngineHost: EngineProviding {
     /// same build rather than racing to construct separate engines. Cleared
     /// (to nil) once the task finishes — successfully or not.
     private nonisolated(unsafe) var _buildTask: Task<OfemEngine, Error>?
+    /// In-flight engine.start() Task (fpe-12). Stored so that shutdown() and
+    /// reloadEngine() can await it before calling engine.shutdown(), preventing
+    /// a race where shutdown reaches the engine before start() has completed.
+    private nonisolated(unsafe) var _startTask: Task<Void, Never>?
 
     /// Back-off window (in nanoseconds) before retrying after a build failure.
     /// 5 seconds covers the most common transient causes (Keychain momentarily
@@ -302,6 +314,9 @@ final class FPEEngineHost: EngineProviding {
     init(alias: String, domain: NSFileProviderDomain) {
         self.alias = alias
         self.domain = domain
+        // Register this host instance in the process-wide reference count so
+        // the last shutdown() can call shutdownSharedSubsystems() automatically.
+        Self.activeHostLock.withLock { Self._activeHostCount += 1 }
     }
 
     // MARK: - Config store access
@@ -416,40 +431,68 @@ final class FPEEngineHost: EngineProviding {
     /// This is intentional: the shared-subsystem design eliminates N-pools,
     /// and recreating them on every reload would re-introduce that hazard.
     func reloadEngine() async {
-        let existing: OfemEngine? = lock.withLock {
+        let (existing, startTask): (OfemEngine?, Task<Void, Never>?) = lock.withLock {
             let e = _engine
+            let st = _startTask
             _engine = nil
+            _startTask = nil
             _buildError = nil
             _lastBuildErrorUptimeNs = 0
             _buildTask?.cancel()
             _buildTask = nil
-            return e
+            return (e, st)
         }
         if let e = existing {
+            // Await the start task (if any) before shutting the engine down so
+            // start() has a chance to finish (or be cancelled) before teardown.
+            startTask?.cancel()
+            await startTask?.value
             await e.shutdown()
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine reloaded after config change")
         }
     }
 
-    /// Shuts down the engine if it was started.
+    /// Shuts down the engine permanently.
     ///
     /// After this call, any concurrent or future `engine()` call will throw
     /// ``NSFileProviderError(.cannotSynchronize)`` rather than rebuild the
-    /// engine (fpe-11).
+    /// engine. When this is the last active host in the process,
+    /// `shutdownSharedSubsystems()` is called automatically to flush the
+    /// final telemetry batch.
     func shutdown() async {
         // Set _invalidated before taking the engine reference so any concurrent
         // engine() call that sees _invalidated=true fast-fails rather than
-        // spawning a new build. Also cancel any in-flight build task.
-        let e: OfemEngine? = lock.withLock {
+        // spawning a new build. Also cancel any in-flight build and start tasks.
+        let (e, startTask): (OfemEngine?, Task<Void, Never>?) = lock.withLock {
             _invalidated = true
             _buildTask?.cancel()
             _buildTask = nil
-            return _engine
+            let e = _engine
+            let st = _startTask
+            _startTask = nil
+            return (e, st)
         }
-        guard let e else { return }
-        await e.shutdown()
-        lock.withLock { _engine = nil }
-        Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine shut down")
+
+        if let e {
+            // Await the start task before shutting the engine down so start()
+            // cannot race engine.shutdown() (fpe-12).
+            startTask?.cancel()
+            await startTask?.value
+            await e.shutdown()
+            lock.withLock { _engine = nil }
+            Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine shut down")
+        }
+
+        // Decrement the process-wide host count. When the last host exits,
+        // flush and stop the shared telemetry so the final batch is not lost
+        // (fpe-14).
+        let shouldShutdownShared = Self.activeHostLock.withLock { () -> Bool in
+            Self._activeHostCount -= 1
+            return Self._activeHostCount == 0
+        }
+        if shouldShutdownShared {
+            await Self.shutdownSharedSubsystems()
+        }
     }
 
     // MARK: - Private
@@ -498,9 +541,20 @@ final class FPEEngineHost: EngineProviding {
             )
             lock.withLock { _engine = engine }
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine built")
-            // Start background tasks (telemetry flush timer). start() is
+            // Start background tasks (telemetry flush timer). Store the Task so
+            // shutdown() / reloadEngine() can await it before tearing down the
+            // engine, preventing a start/shutdown race (fpe-12). start() is
             // idempotent so this is safe when called for a shared telemetry client.
-            Task { await engine.start() }
+            let startTask = Task { [weak self, weak engine] in
+                guard let engine else { return }
+                await engine.start()
+                if let self {
+                    Self.log.debug(
+                        "FPEEngineHost[\(self.alias, privacy: .public)]: engine started"
+                    )
+                }
+            }
+            lock.withLock { _startTask = startTask }
             return engine
         } catch {
             lock.withLock {

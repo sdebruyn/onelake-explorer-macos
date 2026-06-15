@@ -538,6 +538,68 @@ public actor CacheStore {
         return blobs.fileURL(sha256: record.blobSHA256)
     }
 
+    // MARK: - Blob: handoff (hardlink)
+
+    /// Hands the cached blob for `key` to the caller without a full copy.
+    ///
+    /// Creates a hard link from the blob file to `destURL`. Because hard links
+    /// share the same inode, the FPE can hand `destURL` to the File Provider
+    /// framework while the cache entry remains valid on disk — evicting the
+    /// cache entry after the handoff only removes the cache shard's directory
+    /// entry but leaves the inode reachable via `destURL` until the system
+    /// releases it.
+    ///
+    /// Falls back to `copyItem` when the hard link fails (e.g. cross-volume,
+    /// permission error, or the blob was evicted between the metadata fetch and
+    /// the link call). Throws `CacheError.notFound` only when the metadata row
+    /// has no blob at all AND the copy fallback also fails.
+    ///
+    /// Safety: hard-linking an immutable content-addressed blob is safe because
+    /// neither the FPE nor the cache mutates blob files in place. The cache uses
+    /// an atomic write-then-rename strategy, and eviction removes the shard
+    /// directory entry but the inode survives until all hard links (including
+    /// the caller's `destURL`) are released, so the FPE's path remains valid.
+    ///
+    /// - Parameters:
+    ///   - key: Identifies the cached blob.
+    ///   - destURL: Target path for the link (or copy on fallback). Must not
+    ///     already exist; callers should remove it before calling.
+    /// - Returns: `true` when a hard link was created, `false` on copy fallback.
+    /// - Throws: `CacheError.notFound` when the row has no blob or the blob
+    ///   file cannot be accessed AND the copy fallback also fails.
+    @discardableResult
+    public func handoffBlob(key: CacheKey, to destURL: URL) async throws -> Bool {
+        try validateKey(key)
+        let record = try await fetch(key: key)
+        guard !record.blobSHA256.isEmpty else {
+            throw CacheError.notFound("blob for \(key.path)")
+        }
+        guard let srcURL = blobs.fileURL(sha256: record.blobSHA256) else {
+            throw CacheError.notFound("blob file for \(record.blobSHA256)")
+        }
+
+        // Attempt hard link first (zero-copy, same-volume).
+        do {
+            try FileManager.default.linkItem(at: srcURL, to: destURL)
+            // Touch so LRU eviction knows this blob was recently accessed.
+            try? await touch(key: key)
+            return true
+        } catch {
+            // Fall through to copy fallback for cross-volume or permission errors.
+            Self.log.debug(
+                "CacheStore: hardlink fallback for \(key.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+        }
+
+        // Copy fallback: re-resolve the source URL in case the blob moved.
+        guard let fallbackSrc = blobs.fileURL(sha256: record.blobSHA256) else {
+            throw CacheError.notFound("blob file for \(record.blobSHA256) (post-hardlink-fail)")
+        }
+        try FileManager.default.copyItem(at: fallbackSrc, to: destURL)
+        try? await touch(key: key)
+        return false
+    }
+
     // MARK: - Blob: storeBlobFromURL
 
     /// Hashes the file at `sourceURL`, moves/copies it into the blob store, and

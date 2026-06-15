@@ -82,9 +82,19 @@ func decodeSyncAnchor(_ anchor: NSFileProviderSyncAnchor) -> Int64 {
 
 /// Engine-backed enumerator for one container in one FPE domain.
 ///
-/// Thread-safety for `inFlightTask`: mutations are guarded by `taskLock`, so
-/// concurrent `enumerateItems` / `invalidate` calls from the framework
-/// (arriving on arbitrary queues) do not data-race.
+/// Thread-safety: `taskLock` serialises mutations to all three task handles
+/// (`inFlightTask`, `inFlightChangesTask`, `inFlightAnchorTask`) so that
+/// concurrent `enumerateItems` / `enumerateChanges` / `currentSyncAnchor` /
+/// `invalidate` calls from the framework (arriving on arbitrary queues) do
+/// not data-race.
+///
+/// Task ownership:
+/// - `inFlightTask` — the current items enumeration Task.
+/// - `inFlightChangesTask` — the current `enumerateChanges` Task (fpe-15).
+/// - `inFlightAnchorTask` — the current `currentSyncAnchor` Task (fpe-15).
+///
+/// `invalidate()` cancels all three handles synchronously without awaiting,
+/// honouring the `NSFileProviderEnumerator.invalidate()` synchronous contract.
 final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
@@ -96,9 +106,14 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
     let alias: String
     let engineHost: any EngineProviding
 
-    /// Guards mutations to `inFlightTask`.
+    /// Guards mutations to all in-flight task handles.
     private let taskLock = NSLock()
+    /// The current items-enumeration Task (started by enumerateItems).
     private nonisolated(unsafe) var inFlightTask: Task<Void, Never>?
+    /// The current change-observation Task (started by enumerateChanges, fpe-15).
+    private nonisolated(unsafe) var inFlightChangesTask: Task<Void, Never>?
+    /// The current sync-anchor query Task (started by currentSyncAnchor, fpe-15).
+    private nonisolated(unsafe) var inFlightAnchorTask: Task<Void, Never>?
 
     init(
         containerItemIdentifier: NSFileProviderItemIdentifier,
@@ -130,9 +145,15 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
     }
 
     func invalidate() {
+        // Cancel all tracked tasks synchronously — invalidate() is synchronous
+        // per the NSFileProviderEnumerator contract; do NOT await here.
         taskLock.withLock {
             inFlightTask?.cancel()
             inFlightTask = nil
+            inFlightChangesTask?.cancel()
+            inFlightChangesTask = nil
+            inFlightAnchorTask?.cancel()
+            inFlightAnchorTask = nil
         }
         Self.log.debug("OfemFPEEnumerator[\(self.alias, privacy: .public)]: invalidated")
     }
@@ -204,8 +225,9 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
 
         // Change-observation tasks are independent from items tasks.
         // We do NOT cancel inFlightTask here (avoids aborting an ongoing items
-        // enumeration for an unrelated change observer).
-        Task {
+        // enumeration for an unrelated change observer). Store the new task in
+        // inFlightChangesTask so invalidate() can cancel it (fpe-15).
+        let changesTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
                 let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
@@ -274,12 +296,17 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 observer.finishEnumeratingWithError(nsFileProviderError(for: code))
             }
         }
+        taskLock.withLock {
+            inFlightChangesTask?.cancel()
+            inFlightChangesTask = changesTask
+        }
     }
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
         let aliasCopy = alias
         let hostCopy = engineHost
-        Task {
+        // Store the task so invalidate() can cancel it (fpe-15).
+        let anchorTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
                 let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
@@ -289,6 +316,10 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 // gets a full diff rather than an opaque failure.
                 completionHandler(encodeSyncAnchor(0))
             }
+        }
+        taskLock.withLock {
+            inFlightAnchorTask?.cancel()
+            inFlightAnchorTask = anchorTask
         }
     }
 
@@ -349,6 +380,9 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
 /// recents list. `enumerateItems` returns an empty page; `enumerateChanges`
 /// drives a real cache diff: changed records since the anchor are surfaced
 /// as `didUpdate` calls instead of always answering "no changes".
+///
+/// Task ownership: `taskLock` guards `inFlightChangesTask` and
+/// `inFlightAnchorTask`. `invalidate()` cancels both synchronously (fpe-15).
 final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
@@ -358,6 +392,11 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
     private let alias: String
     private let engineHost: any EngineProviding
 
+    /// Guards mutations to task handles.
+    private let taskLock = NSLock()
+    private nonisolated(unsafe) var inFlightChangesTask: Task<Void, Never>?
+    private nonisolated(unsafe) var inFlightAnchorTask: Task<Void, Never>?
+
     init(alias: String, engineHost: any EngineProviding) {
         self.alias = alias
         self.engineHost = engineHost
@@ -365,6 +404,14 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
     }
 
     func invalidate() {
+        // Cancel tracked tasks synchronously — invalidate() is synchronous
+        // per the NSFileProviderEnumerator contract (fpe-15).
+        taskLock.withLock {
+            inFlightChangesTask?.cancel()
+            inFlightChangesTask = nil
+            inFlightAnchorTask?.cancel()
+            inFlightAnchorTask = nil
+        }
         OfemWorkingSetEnumerator.log.debug(
             "Invalidate working set enumerator for \(self.alias, privacy: .public)"
         )
@@ -395,7 +442,8 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
         let hostCopy = engineHost
         let previousNs = decodeSyncAnchor(anchor)
 
-        Task {
+        // Store the task so invalidate() can cancel it (fpe-15).
+        let changesTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
                 let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
@@ -446,6 +494,10 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 observer.finishEnumeratingWithError(nsFileProviderError(for: code))
             }
         }
+        taskLock.withLock {
+            inFlightChangesTask?.cancel()
+            inFlightChangesTask = changesTask
+        }
     }
 
     func currentSyncAnchor(
@@ -453,7 +505,8 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
     ) {
         let aliasCopy = alias
         let hostCopy = engineHost
-        Task {
+        // Store the task so invalidate() can cancel it (fpe-15).
+        let anchorTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
                 let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
@@ -461,6 +514,10 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
             } catch {
                 completionHandler(encodeSyncAnchor(0))
             }
+        }
+        taskLock.withLock {
+            inFlightAnchorTask?.cancel()
+            inFlightAnchorTask = anchorTask
         }
     }
 }
