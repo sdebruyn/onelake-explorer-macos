@@ -25,10 +25,17 @@ private func requestBody(_ request: URLRequest) -> Data? {
 /// A `URLProtocol` subclass that returns a pre-configured stub response
 /// without hitting the network.
 ///
-/// The handler is stored in a lock-protected dictionary keyed by the
-/// URLSession's ObjectIdentifier, and each test creates its own session.
-/// The HTTP suite is serialized (via `@Suite(.serialized)`) so only one
-/// test's handler is active at a time.
+/// **Global-handler scope (tests-05):** `currentHandler` is a process-global
+/// mutable static. A second suite that also registered `StubURLProtocol` on
+/// its own `URLSession` would clobber this handler. Currently `StubURLProtocol`
+/// is only used by `AppInsightsSinkHTTPTests`; no other suite in this package
+/// registers it. `AppInsightsSinkHTTPTests` is annotated `@Suite(.serialized)`
+/// to prevent intra-suite handler races. If a future suite also needs this
+/// stub, migrate to the per-instance queue pattern used by
+/// `MockStreamURLProtocol` in `OneLakeStreamingTests.swift`.
+///
+/// Call `reset()` at the start of each test to clear stale handler state left
+/// by a previous test.
 final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var currentHandler: ((URLRequest) -> (Data, HTTPURLResponse))?
     static let lock = NSLock()
@@ -49,6 +56,12 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+
+    /// Clears the current handler, resetting state between tests so that stale
+    /// state from a prior test cannot leak into the next one.
+    static func reset() {
+        lock.withLock { currentHandler = nil }
+    }
 
     /// Creates a `URLSession` backed by this protocol and sets the response stub.
     static func makeSession(statusCode: Int, body: String = "") -> URLSession {
@@ -328,6 +341,10 @@ struct AppInsightsEnvelopeTests {
 
 @Suite("AppInsightsSink — HTTP status handling", .serialized)
 struct AppInsightsSinkHTTPTests {
+
+    /// Reset any stale handler before each test so prior-test state cannot
+    /// leak forward (tests-05: per-test handler reset).
+    init() { StubURLProtocol.reset() }
 
     @Test("200 OK completes without throwing")
     func status200() async throws {
