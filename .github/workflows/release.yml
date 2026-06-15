@@ -486,6 +486,13 @@ jobs:
             -e "s/{{ \.DMGSHA256 }}/$DMG_SHA256/g" \
             homebrew/Casks/ofem.rb.tmpl > /tmp/ofem.rb
 
+          # Validate the rendered cask for syntax and structural correctness
+          # before touching the tap. brew style checks Ruby style; brew audit
+          # --cask --strict validates the DSL structure and required fields.
+          # Both must pass or the step fails here, keeping the tap clean.
+          brew style /tmp/ofem.rb
+          brew audit --cask --strict /tmp/ofem.rb
+
           # Clone the tap, commit the new cask, push.
           git clone \
             "https://x-access-token:$HOMEBREW_TAP_GH_TOKEN@github.com/sdebruyn/homebrew-ofem.git" \
@@ -499,8 +506,21 @@ jobs:
           git config user.email "noreply@debruyn.dev"
           git add Casks/ofem.rb
           git commit -m "chore(cask): bump ofem to v$VERSION"
-          git pull --rebase origin main
-          git push
+
+          # Retry loop: a concurrent push to the tap's main between our rebase
+          # and push would otherwise fail the release after the DMG is already
+          # public. Re-fetch and rebase on each attempt; give up after 5 tries.
+          max_attempts=5
+          attempt=0
+          until git pull --rebase origin main && git push; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "ERROR: tap push failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            echo "Push attempt $attempt/$max_attempts failed; retrying in 10s..."
+            sleep 10
+          done
 
       - name: Clean up keychain
         if: always()
