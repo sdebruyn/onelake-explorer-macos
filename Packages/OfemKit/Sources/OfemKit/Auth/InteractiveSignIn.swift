@@ -120,7 +120,15 @@ public enum InteractiveSignIn {
 
     // MARK: - Private helpers
 
+    /// Shared `ISO8601DateFormatter` instance. `ISO8601DateFormatter` is
+    /// expensive to allocate; reusing a `static let` follows the standard
+    /// Apple guideline for date formatters. All callers of `accountFromMSALResult`
+    /// are `@MainActor`, so the formatter is always accessed on the main actor.
+    @MainActor
+    private static let iso8601Formatter = ISO8601DateFormatter()
+
     /// Builds an `OfemConfig.Account` from an `MSALResult`.
+    @MainActor
     private static func accountFromMSALResult(_ result: MSALResult) -> Account {
         Account(
             alias: "", // Caller assigns the alias via commit(alias:to:).
@@ -128,15 +136,21 @@ public enum InteractiveSignIn {
             tenantName: nil,
             homeAccountID: result.account.identifier ?? "",
             username: result.account.username ?? "",
-            addedAt: ISO8601DateFormatter().string(from: Date()),
+            addedAt: iso8601Formatter.string(from: Date()),
             clientID: nil
         )
     }
 
     /// Returns a unique temporary alias used as the scratch key in the
     /// file-backed cache during interactive login.
-    private static func temporaryAlias() -> String {
-        ".ofem-login-tmp-\(Int(Date().timeIntervalSince1970 * 1_000_000))-\(UUID().uuidString.prefix(8).lowercased())"
+    ///
+    /// Uses a UUID alone (without a timestamp prefix) — the UUID is already
+    /// collision-safe and the timestamp adds no value. The leading `.` is a
+    /// deliberate internal-only key marker not intended to pass user-facing
+    /// `AccountAlias.validate`, so it is kept separate from the real alias
+    /// validation path.
+    static func temporaryAlias() -> String {
+        ".ofem-login-tmp-\(UUID().uuidString.lowercased())"
     }
 }
 
@@ -184,14 +198,14 @@ public struct InteractiveSignInResult: Sendable {
         if let scratch = scratchAlias, let store = fileTokenStore {
             do {
                 let data = try store.read(alias: scratch)
-                try store.write(alias: alias, data: data)
+                try await store.write(alias: alias, data: data)
             } catch {
                 // Clean up the scratch blob even if the transfer failed.
-                try? store.delete(alias: scratch)
+                try? await store.delete(alias: scratch)
                 throw error
             }
             // Delete the scratch blob after a successful transfer.
-            try? store.delete(alias: scratch)
+            try? await store.delete(alias: scratch)
         }
 
         // Persist the account. If addAccount throws (e.g. duplicateAlias or
@@ -201,7 +215,7 @@ public struct InteractiveSignInResult: Sendable {
             try await auth.addAccount(finalAccount)
         } catch {
             if let store = fileTokenStore {
-                try? store.delete(alias: alias)
+                try? await store.delete(alias: alias)
             }
             throw error
         }
@@ -211,9 +225,9 @@ public struct InteractiveSignInResult: Sendable {
     ///
     /// Call when the user cancels the account-naming step after a successful
     /// sign-in, to avoid leaving orphaned refresh-token blobs on disk.
-    public func discard() {
+    public func discard() async {
         if let scratch = scratchAlias, let store = fileTokenStore {
-            try? store.delete(alias: scratch)
+            try? await store.delete(alias: scratch)
         }
     }
 }

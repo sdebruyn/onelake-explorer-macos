@@ -135,11 +135,7 @@ public final class MsalAuthClient: MsalAuthClientProtocol {
 
     public func removeAccount(homeAccountID: String) throws {
         let account = try findAccount(homeAccountID: homeAccountID)
-        do {
-            try inner.remove(account)
-        } catch {
-            throw error
-        }
+        try inner.remove(account)
     }
 
     // MARK: - Private helpers
@@ -246,6 +242,12 @@ enum MsalApplicationConfig {
 /// per-alias `fcntl` cross-process lock and the intra-process serial queue
 /// for the full duration. This prevents a concurrent host-app or FPE write
 /// from slipping between the read and the write.
+///
+/// Async bridging: `FileTokenStore.atomicUpdate` is `async` (uses
+/// `F_SETLKW` on a dedicated thread). Since MSAL calls these delegate
+/// methods synchronously on its own internal non-cooperative thread, we
+/// bridge via `DispatchSemaphore.wait()` — blocking MSAL's thread (which is
+/// not a Swift cooperative-pool thread) while the async operation completes.
 final class FileTokenStoreCacheDelegate: NSObject, MSALSerializedADALCacheProviderDelegate, @unchecked Sendable {
     private let store: FileTokenStore
     private let alias: String
@@ -258,7 +260,7 @@ final class FileTokenStoreCacheDelegate: NSObject, MSALSerializedADALCacheProvid
 
     func willAccessCache(_ cache: MSALSerializedADALCacheProvider) {
         // Load the latest cached bytes into the in-memory MSAL representation
-        // before MSAL performs a cache lookup.
+        // before MSAL performs a cache lookup. `read` is synchronous (no lock).
         do {
             let data = try store.read(alias: alias)
             try cache.deserialize(data)
@@ -288,26 +290,56 @@ final class FileTokenStoreCacheDelegate: NSObject, MSALSerializedADALCacheProvid
         // write it back — all while holding the per-alias cross-process lock.
         // Failures are logged explicitly rather than swallowed — a silent
         // failure here would lose the freshly minted refresh token.
-        do {
-            try store.atomicUpdate(alias: alias) { existingData in
-                // Merge any on-disk changes into the MSAL in-memory cache
-                // before serialising, so we never overwrite a fresher token
-                // written by another process between our last read and now.
-                if !existingData.isEmpty {
-                    do {
-                        try cache.deserialize(existingData)
-                    } catch {
-                        Self.log.error(
-                            "FileTokenStoreCacheDelegate: didWriteCache deserialize failed for alias=\(self.alias, privacy: .public): \(error)"
-                        )
-                        // Proceed without merging rather than losing the new token.
+        //
+        // Thread model (deadlock analysis):
+        //   1. MSAL calls didWriteCache on its own internal thread (neither a
+        //      Swift cooperative-pool thread nor the main actor thread).
+        //   2. `sema.wait()` blocks MSAL's thread. The Swift cooperative pool
+        //      is never blocked here — safe. ✓
+        //   3. The unstructured `Task {}` runs on the cooperative pool and
+        //      calls `acquireAliasLockAsync`, which spawns a *dedicated* OS
+        //      thread for the blocking `F_SETLKW` syscall. The cooperative-pool
+        //      thread is released at the `await` suspension point. ✓
+        //   4. After `F_SETLKW` succeeds, the continuation resumes on the
+        //      cooperative pool and calls `serialQueue.sync`. This DOES block
+        //      the cooperative-pool thread for the duration of the file write
+        //      (typically microseconds to low milliseconds). Under simultaneous
+        //      writes for N accounts, N cooperative-pool threads may be briefly
+        //      blocked — not a deadlock, but it reduces pool availability. With
+        //      OFEM's typical 1–3 accounts the practical impact is negligible.
+        //   5. On Task completion, `sema.signal()` unblocks MSAL's thread.
+        //   No deadlock path exists: the blocked MSAL thread is entirely
+        //   unrelated to the Swift cooperative pool that the Task runs on.
+        //   Do NOT restructure this into a sync call on MSAL's thread — that
+        //   would block `F_SETLKW` on a cooperative-pool thread and risk
+        //   starvation under high load.
+        let sema = DispatchSemaphore(value: 0)
+        let capturedAlias = alias
+        let capturedStore = store
+        Task {
+            do {
+                try await capturedStore.atomicUpdate(alias: capturedAlias) { existingData in
+                    // Merge any on-disk changes into the MSAL in-memory cache
+                    // before serialising, so we never overwrite a fresher token
+                    // written by another process between our last read and now.
+                    if !existingData.isEmpty {
+                        do {
+                            try cache.deserialize(existingData)
+                        } catch {
+                            Self.log.error(
+                                "FileTokenStoreCacheDelegate: didWriteCache deserialize failed for alias=\(capturedAlias, privacy: .public): \(error)"
+                            )
+                            // Proceed without merging rather than losing the new token.
+                        }
                     }
+                    return try cache.serializeData()
                 }
-                return try cache.serializeData()
+            } catch {
+                Self.log.error("FileTokenStoreCacheDelegate: didWriteCache persist failed for alias=\(capturedAlias, privacy: .public): \(error)")
             }
-        } catch {
-            Self.log.error("FileTokenStoreCacheDelegate: didWriteCache persist failed for alias=\(self.alias, privacy: .public): \(error)")
+            sema.signal()
         }
+        sema.wait()
     }
 }
 

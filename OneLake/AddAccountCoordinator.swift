@@ -176,7 +176,8 @@ final class AddAccountCoordinator: ObservableObject {
             case .duplicateAlias(let a): return "Account '\(a)' already exists."
             case .unknownAlias(let a): return "Account '\(a)' not found."
             case .emptyScopes: return "Internal error: no scopes configured."
-            case .silentTokenFailed(_, let e): return "Token error: \(e.localizedDescription)"
+            case .silentTokenFailed(let alias): return "Token error for '\(alias)' — please sign in again."
+            case .msalRemoveFailed(let alias, _): return "Sign-out error for '\(alias)' — refresh token may not have been cleared."
             }
         }
         return error.localizedDescription
