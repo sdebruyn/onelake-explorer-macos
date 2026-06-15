@@ -177,6 +177,33 @@ final class SharedOfemAuth {
             "SharedOfemAuth.signIn: signed in alias=\(trimmedAlias, privacy: .public) user=\(account.username, privacy: .private)"
         )
 
+        // Eagerly warm the Fabric (Power BI) token via a separate silent
+        // acquisition immediately after the OneLake interactive login.
+        //
+        // Why: the interactive sign-in uses TokenScope.loginScopes (OneLake
+        // only) because Entra AADSTS28000 rejects a single interactive request
+        // spanning more than one resource. The Fabric token therefore does not
+        // exist in MSAL's Keychain after interactive sign-in. On the first FPE
+        // enumeration, FabricClient calls tokenForScope(.fabric), which would
+        // start a silent acquisition from the FPE process — this takes several
+        // seconds (a round-trip to Entra's /token endpoint) and if it throws
+        // (e.g. the Fabric permission hasn't been admin-consented yet) the root
+        // enumeration fails with cannotSynchronize, leaving the Finder mount empty.
+        //
+        // Pre-warming here — in the host process, right after the interactive
+        // OneLake login — avoids the per-enumeration token latency: MSAL stores
+        // the resulting access token in the shared App Group Keychain so the FPE's
+        // first tokenForScope(.fabric) call is a fast cache hit.  Failure is
+        // intentionally swallowed: if the Fabric permission hasn't been consented
+        // the host-app's sign-in still completes (the user gets the OneLake mount)
+        // and the FPE will retry the silent acquisition on each enumeration.
+        do {
+            _ = try await auth.tokenForScope(alias: trimmedAlias, scope: .fabric)
+            Self.log.info("SharedOfemAuth.signIn: Fabric token pre-warmed for alias=\(trimmedAlias, privacy: .public)")
+        } catch {
+            Self.log.info("SharedOfemAuth.signIn: Fabric token pre-warm failed (will retry on enumeration): \(error.localizedDescription, privacy: .public)")
+        }
+
         return XPCAccountInfo(
             alias: trimmedAlias,
             username: account.username,

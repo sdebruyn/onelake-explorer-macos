@@ -81,6 +81,12 @@ extension FabricError {
     ///   the inner sentinel, mirroring `OneLakeError.from` (fabric-01).
     /// - Maps bare ``CancellationError`` (Swift Concurrency cancellation) to
     ///   `.cancelled` (fabric-02).
+    /// - Maps ``HTTPClientError/tokenAcquisitionFailed(_:)`` to `.unauthorized`
+    ///   (fabric-03-fix): a token failure means the client cannot authenticate
+    ///   for the Fabric audience and must surface as an auth error, not as a
+    ///   generic sync failure. Previously this fell through to `.httpError`,
+    ///   which ``FPError/classify(_:)`` then mapped to `.cannotSynchronize`,
+    ///   causing the Finder mount to show an empty folder with no auth prompt.
     static func from(_ error: any Error) -> FabricError {
         // fabric-01: unwrap apiError wrapper to reach the sentinel first,
         // mirroring OneLakeError.from — without this, a retriesExhausted(last:
@@ -114,6 +120,12 @@ extension FabricError {
             return .cancelled
         case is CancellationError:           // fabric-02: bare Swift cancellation
             return .cancelled
+        case HTTPClientError.tokenAcquisitionFailed:
+            // fabric-03-fix: token failure = cannot authenticate for this scope.
+            // Must surface as .unauthorized so FPError.classify → .notAuthenticated,
+            // rather than falling through to .httpError → .cannotSynchronize (which
+            // causes the Finder mount to silently show an empty folder).
+            return .unauthorized
         case let HTTPClientError.serverError(code):
             return .serverError(code)
         case let HTTPClientError.retriesExhausted(attempts, _):
