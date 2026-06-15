@@ -64,13 +64,15 @@ build-ci: gen ## Compile app + .appex unsigned (CI gate)
 		build
 
 # Run unit tests:
-#   OfemKit          — engine logic + identifier-grammar contract (swift test)
-#   OneLakeHostTests — host-app pure logic (write fence, icon state,
-#                      mount-path helper, sign-in coordinator,
-#                      domain identifier composition)
-test: gen ## Run Swift unit tests (OfemKit + host-app logic)
+#   OfemKit                   — engine logic + identifier-grammar contract (swift test)
+#   OneLakeHostTests          — host-app pure logic (write fence, icon state,
+#                               mount-path helper, sign-in coordinator,
+#                               domain identifier composition)
+#   OneLakeFileProviderTests  — FPE callback logic (error mapping, anchor encode/
+#                               decode, engine lifecycle, XPC service side)
+test: gen ## Run Swift unit tests (OfemKit + host-app logic + FPE logic)
 	cd Packages/OfemKit && swift test
-	rm -rf DerivedData/HostTests.xcresult
+	rm -rf DerivedData/HostTests.xcresult DerivedData/FPETests.xcresult
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLakeHostTests \
 		-configuration Debug \
@@ -78,6 +80,15 @@ test: gen ## Run Swift unit tests (OfemKit + host-app logic)
 		-derivedDataPath DerivedData \
 		-enableCodeCoverage YES \
 		-resultBundlePath DerivedData/HostTests.xcresult \
+		$(APPLE_UNSIGNED) \
+		test
+	xcodebuild -project $(XCODE_PROJECT) \
+		-scheme OneLakeFileProviderTests \
+		-configuration Debug \
+		-destination 'platform=macOS,arch=arm64' \
+		-derivedDataPath DerivedData \
+		-enableCodeCoverage YES \
+		-resultBundlePath DerivedData/FPETests.xcresult \
 		$(APPLE_UNSIGNED) \
 		test
 

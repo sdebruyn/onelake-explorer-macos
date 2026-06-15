@@ -9,17 +9,16 @@
 // never opened.
 //
 // Thread safety: `FPEEngineHost` uses an NSLock to serialise mutations
-// to `_engine` and `_buildError`. `buildEngine()` is a nonisolated throwing
-// function; `OfemEngine.init` no longer requires @MainActor now that `OfemAuth`
-// is a Swift actor rather than a @MainActor class.
+// to `_engine` and `_buildError`. `buildEngine()` is a throwing
+// synchronous function; concurrent callers race to a single-flight Task
+// so the engine is built exactly once even under concurrent pressure.
 //
 // Process-wide config store: all FPEEngineHost instances in the same
 // FPE process share ONE OfemConfigStore via `FPEEngineHost.sharedConfigStore`.
 // This guarantees that concurrent XPC handlers for different domains
-// (different aliases) read and write the same in-memory snapshot, so
-// an updateAndSave from one domain does not clobber fields that another
-// domain's handler just wrote. OfemClientControlService accesses the
-// store via `engineHost.configStore()` which returns this shared instance.
+// (different aliases) read and write the same in-memory snapshot.
+// OfemClientControlService accesses the store via `engineHost.configStore()`
+// which returns this shared instance.
 //
 // Process-wide shared subsystems (arch-04): all FPEEngineHost instances also
 // share one CacheStore, one TelemetryClient, and one HTTPGateRegistry via the
@@ -38,29 +37,48 @@
 // cancel the flush timer.  In normal FPE operation the OS terminates the
 // process immediately after the last domain is invalidated, so this acts as
 // a belt-and-suspenders process-exit hook.
-//
-// fpe-10 fix: a transient build failure is not cached permanently.
-//   A failed build stores `_buildError` plus the timestamp of the
-//   failure. `engine()` retries after a short back-off window
-//   (`buildErrorBackoff`, default 5 s) instead of throwing the cached
-//   error forever.
-//
-// fpe-11 fix: `invalidate()` sets `_invalidated = true` before spawning
-//   the shutdown task. Any concurrent or later `engine()` call that races
-//   with shutdown sees the flag and throws `.cannotSynchronize` immediately
-//   rather than silently rebuilding a fresh engine inside an already-torn-
-//   down extension instance.
 
 import FileProvider
 import Foundation
 import OfemKit
 import os.log
 
+// MARK: - EngineProviding
+
+/// The testability seam between the FPE callbacks and the engine.
+///
+/// `FileProviderExtension`, `OfemFPEEnumerator`, and `OfemClientControlService`
+/// depend on this protocol rather than on the concrete `FPEEngineHost`. Tests
+/// inject a `MockEngineHost` that conforms to this protocol, allowing the
+/// callback logic to be verified without a live `fileproviderd` or a real
+/// `OfemEngine`.
+protocol EngineProviding: AnyObject, Sendable {
+    /// The account alias this provider serves.
+    var alias: String { get }
+
+    /// Returns the engine, building it on first call.
+    ///
+    /// Throws if the host has been shut down or if the build fails.
+    func engine() async throws -> OfemEngine
+
+    /// Returns the engine if it is already built, without triggering a build.
+    func existingEngine() -> OfemEngine?
+
+    /// Returns the process-wide config store.
+    func configStore() throws -> OfemConfigStore
+
+    /// Shuts down the current engine and rebuilds it on next access.
+    func reloadEngine() async
+
+    /// Permanently shuts the engine down. Subsequent `engine()` calls throw.
+    func shutdown() async
+}
+
 /// Per-domain engine container.
 ///
 /// Constructed once per `FileProviderExtension` instance (one per alias).
 /// The `OfemEngine` inside is built lazily on the first call that needs it.
-final class FPEEngineHost: Sendable {
+final class FPEEngineHost: EngineProviding {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
         category: "engine-host"
@@ -246,20 +264,29 @@ final class FPEEngineHost: Sendable {
 
     private let lock = NSLock()
     private nonisolated(unsafe) var _engine: OfemEngine?
-    /// Most-recent build error.  Cleared after `buildErrorBackoff` seconds so
-    /// the next `engine()` call retries (fpe-10).
+    /// Most-recent build error.  Cleared after `buildErrorBackoff` nanoseconds so
+    /// the next `engine()` call retries.
     private nonisolated(unsafe) var _buildError: Error?
-    /// Wall-clock time of the last failed build attempt (nanoseconds).
+    /// Monotonic uptime nanoseconds of the last failed build attempt.
     private nonisolated(unsafe) var _buildErrorTimestampNs: UInt64 = 0
-    /// Set to `true` by `shutdown()` / `invalidate()` once teardown begins.
-    /// After this point `engine()` always throws rather than rebuilding (fpe-11).
+    /// Set to `true` by `shutdown()` once teardown begins.
+    /// After this point `engine()` always throws rather than rebuilding.
     private nonisolated(unsafe) var _invalidated: Bool = false
+    /// In-flight build Task. Allows concurrent `engine()` callers to await the
+    /// same build rather than racing to construct separate engines. Cleared
+    /// (to nil) once the task finishes — successfully or not.
+    private nonisolated(unsafe) var _buildTask: Task<OfemEngine, Error>?
 
     /// Back-off window (in nanoseconds) before retrying after a build failure.
     /// 5 seconds covers the most common transient causes (Keychain momentarily
     /// locked, TOML file mid-write) while allowing recovery in a single macOS
     /// re-enumeration cycle.
-    private static let buildErrorBackoffNs: UInt64 = 5_000_000_000
+    ///
+    /// Declared `internal` (rather than `private`) intentionally so that
+    /// `FPEEngineHostTests` can assert the constant is positive via
+    /// `@testable import`. Do not narrow back to `private` without moving
+    /// the test assertion or removing it.
+    static let buildErrorBackoffNs: UInt64 = 5_000_000_000
 
     // MARK: - Init
 
@@ -299,32 +326,31 @@ final class FPEEngineHost: Sendable {
     /// Building the engine involves loading the config, wiring up the HTTP
     /// clients, and constructing the per-alias subsystems — all safe to do
     /// in the FPE's process. The shared CacheStore, TelemetryClient, and
-    /// HTTPGateRegistry are obtained from process-wide singletons. Construction
-    /// is serialised by a lock so concurrent callers do not race to create
-    /// multiple engines.
+    /// HTTPGateRegistry are obtained from process-wide singletons.
+    ///
+    /// Concurrent callers share a single in-flight build Task so the engine
+    /// is always constructed at most once, even under concurrent pressure.
     ///
     /// - Throws:
-    ///   - `NSFileProviderError(.cannotSynchronize)` once ``shutdown()`` or
-    ///     ``invalidate()`` has been called (fpe-11): the extension instance is
-    ///     shutting down and must not resurrect the engine.
-    ///   - The last build error when within the back-off window (fpe-10). The
-    ///     error is cleared after the window expires so the next call retries.
+    ///   - `NSFileProviderError(.cannotSynchronize)` once ``shutdown()`` has
+    ///     been called: the extension instance is shutting down and must not
+    ///     resurrect the engine.
+    ///   - The last build error when within the back-off window. The error is
+    ///     cleared after the window expires so the next call retries.
     func engine() async throws -> OfemEngine {
         // Fast path — engine already built.
         if let e = lock.withLock({ _engine }) {
             return e
         }
 
-        // fpe-11: refuse to build / rebuild after invalidation.
+        // Refuse to build / rebuild after invalidation.
         if lock.withLock({ _invalidated }) {
             throw NSFileProviderError(.cannotSynchronize)
         }
 
-        // fpe-10: honour a cached build error only within the back-off window.
-        // After the window expires, clear the cached error and try again.
-        // C2: capture both _buildError and _buildErrorTimestampNs inside one
-        // lock.withLock closure to avoid reading _buildErrorTimestampNs outside
-        // the critical section.
+        // Honour a cached build error only within the back-off window.
+        // Capture both fields in a single lock closure to avoid reading
+        // _buildErrorTimestampNs outside the critical section.
         let cachedError: (Error, UInt64)? = lock.withLock {
             guard let err = _buildError else { return nil }
             return (err, _buildErrorTimestampNs)
@@ -341,7 +367,26 @@ final class FPEEngineHost: Sendable {
             }
         }
 
-        return try await buildEngine()
+        // Single-flight: reuse an in-flight build Task if one already exists.
+        // This prevents two concurrent callers from each constructing their own
+        // engine and then having one silently overwrite the other.
+        let task: Task<OfemEngine, Error> = lock.withLock {
+            if let existing = _buildTask { return existing }
+            let newTask = Task<OfemEngine, Error> { [weak self] in
+                guard let self else { throw NSFileProviderError(.cannotSynchronize) }
+                return try self.buildEngine()
+            }
+            _buildTask = newTask
+            return newTask
+        }
+        do {
+            let engine = try await task.value
+            lock.withLock { _buildTask = nil }
+            return engine
+        } catch {
+            lock.withLock { _buildTask = nil }
+            throw error
+        }
     }
 
     /// Shuts down the current engine and clears the cached instance so the
@@ -367,6 +412,8 @@ final class FPEEngineHost: Sendable {
             _engine = nil
             _buildError = nil
             _buildErrorTimestampNs = 0
+            _buildTask?.cancel()
+            _buildTask = nil
             return e
         }
         if let e = existing {
@@ -381,8 +428,13 @@ final class FPEEngineHost: Sendable {
     /// ``NSFileProviderError(.cannotSynchronize)`` rather than rebuild the
     /// engine (fpe-11).
     func shutdown() async {
+        // Set _invalidated before taking the engine reference so any concurrent
+        // engine() call that sees _invalidated=true fast-fails rather than
+        // spawning a new build. Also cancel any in-flight build task.
         let e: OfemEngine? = lock.withLock {
             _invalidated = true
+            _buildTask?.cancel()
+            _buildTask = nil
             return _engine
         }
         guard let e else { return }
@@ -394,14 +446,15 @@ final class FPEEngineHost: Sendable {
     // MARK: - Private
 
     private func buildEngine() throws -> OfemEngine {
-        // Re-check after the actor hop (another Task may have built it or shut
-        // it down while we were waiting for the main actor).
+        // Called from a single-flight Task; by the time we run, another Task
+        // may have already completed a build (racing tasks that both missed the
+        // fast path both land here).  Re-check under the lock before building.
         if lock.withLock({ _invalidated }) {
             throw NSFileProviderError(.cannotSynchronize)
         }
         if let e = lock.withLock({ _engine }) { return e }
-        // C2: capture both fields inside one lock.withLock to avoid reading
-        // _buildErrorTimestampNs outside the critical section.
+
+        // Honour a still-fresh cached build error.
         let cachedErr: (Error, UInt64)? = lock.withLock {
             guard let e = _buildError else { return nil }
             return (e, _buildErrorTimestampNs)
@@ -436,7 +489,8 @@ final class FPEEngineHost: Sendable {
             )
             lock.withLock { _engine = engine }
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine built")
-            // Fire-and-forget start (telemetry flush timer start is idempotent).
+            // Start background tasks (telemetry flush timer). start() is
+            // idempotent so this is safe when called for a shared telemetry client.
             Task { await engine.start() }
             return engine
         } catch {

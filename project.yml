@@ -131,6 +131,28 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem.host-tests
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGNING_ALLOWED: NO
+  # FPE unit-test bundle: compiles FPE source files + Shared/ so the callback
+  # logic (error mapping, anchor encode/decode, engine lifecycle, XPC service)
+  # can be tested without a live fileproviderd or a real OfemEngine.
+  # @testable import OneLakeFileProviderTests is used inside the test files.
+  OneLakeFileProviderTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: OneLakeFileProviderTests
+      - path: OneLakeFileProvider
+        excludes:
+          - "**/*.xcconfig"
+          - "**/Info.plist"
+          - "**/*.entitlements"
+      - path: Shared
+    dependencies:
+      - package: OfemKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.debruyn.ofem.fpe-tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
 schemes:
   OneLake:
     build:
@@ -139,6 +161,7 @@ schemes:
     test:
       targets:
         - OneLakeHostTests
+        - OneLakeFileProviderTests
   OneLakeHostTests:
     build:
       targets:
@@ -146,3 +169,10 @@ schemes:
     test:
       targets:
         - OneLakeHostTests
+  OneLakeFileProviderTests:
+    build:
+      targets:
+        OneLakeFileProviderTests: all
+    test:
+      targets:
+        - OneLakeFileProviderTests
