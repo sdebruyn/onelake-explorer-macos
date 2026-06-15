@@ -18,25 +18,18 @@ cask "ofem" do
   homepage "https://ofem.debruyn.dev"
 
   livecheck do
-    # Skip until the first stable CalVer release tag is pushed. Once
-    # v2026.MM.PATCH is live, replace with:
-    #   url :url
-    #   strategy :github_releases
-    #   regex(/^v(\d+\.\d+\.\d+)$/i)
-    skip "pre-release — no stable tag yet"
+    url :url
+    strategy :github_releases
+    regex(/^v(\d+\.\d+\.\d+)$/i)
   end
 
+  # The app registers itself as a Login Item on first interactive launch.
+  # Auto-opening on unattended `brew upgrade` is intrusive and unnecessary.
+  auto_updates false
   depends_on macos: :sonoma
   depends_on arch: :arm64
 
   app "OneLake.app"
-
-  # Open the app post-install so the first launch happens immediately,
-  # registering the login item and starting the File Provider Extension
-  # without requiring the user to manually launch the app first.
-  postflight do
-    system_command "/usr/bin/open", args: ["-a", "OneLake"]
-  end
 
   uninstall quit: "dev.debruyn.ofem"
 

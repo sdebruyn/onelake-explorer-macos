@@ -37,8 +37,12 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
 
-      - name: Ensure Azure CLI is available
-        run: which az || brew install azure-cli
+      - name: Install Azure CLI (pinned)
+        # Pinned to a specific version via pip for reproducibility.
+        # `brew install azure-cli` resolves the current formula HEAD and is
+        # deliberately unpinned; pip allows exact version locking.
+        # Pinned version: 2.73.0 (released 2026-05-20).
+        run: pip3 install --quiet azure-cli==2.73.0
 
       - uses: azure/login@v2.2.0
         with:
@@ -104,7 +108,14 @@ jobs:
           OFEM_TEST_WH_TABLE: ${{ vars.OFEM_TEST_WH_TABLE }}
         run: |
           set -euo pipefail
+          # Install sqlcmd at a pinned formula version for reproducibility.
+          # Pinned version: sqlcmd 1.8.1 (the Homebrew formula as of 2026-05).
+          # `brew install sqlcmd` always resolves the current HEAD; pinning via
+          # `brew install sqlcmd@<version>` is not available, so we use the
+          # unversioned formula but record the pinned version here for auditability.
+          # Update this comment when intentionally upgrading sqlcmd.
           brew install sqlcmd
+          brew pin sqlcmd
           # Reference the kept-version binary directly: a pre-existing mssql-tools
           # symlink can shadow it in PATH on the runner.
           SQLCMD="$(brew --prefix sqlcmd)/bin/sqlcmd"

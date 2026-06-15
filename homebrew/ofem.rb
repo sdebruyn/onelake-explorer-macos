@@ -20,17 +20,16 @@ cask "ofem" do
   homepage "https://ofem.debruyn.dev"
 
   livecheck do
-    skip "reference dummy — see homebrew/Casks/ofem.rb.tmpl for the canonical cask"
+    url :url
+    strategy :github_releases
+    regex(/^v(\d+\.\d+\.\d+)$/i)
   end
 
+  auto_updates false
   depends_on macos: :sonoma
   depends_on arch: :arm64
 
   app "OneLake.app"
-
-  postflight do
-    system_command "/usr/bin/open", args: ["-a", "OneLake"]
-  end
 
   uninstall quit: "dev.debruyn.ofem"
 

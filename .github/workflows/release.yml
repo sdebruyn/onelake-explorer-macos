@@ -98,6 +98,18 @@ jobs:
           restore-keys: |
             brew-${{ runner.os }}-release-tools-
 
+      - name: Cache SwiftPM build artifacts
+        # Cache .build and Xcode SourcePackages so MSAL, GRDB, and TOMLKit are
+        # not re-resolved on every release run. Keyed on Package.resolved.
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            Packages/OfemKit/.build
+            ~/Library/Developer/Xcode/DerivedData/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
       - name: Install tools (xcodegen, create-dmg)
         run: brew install xcodegen create-dmg
 

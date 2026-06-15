@@ -11,6 +11,12 @@
 XCODE_PROJECT := OneLake.xcodeproj
 APPLE_CONFIG  := Local.xcconfig
 
+# Prevent concurrent runs of the test/build targets from contending on the
+# SwiftPM build lock. `make -j` can invoke multiple recipe lines in parallel
+# within a target; .NOTPARALLEL disables that for the entire Makefile so the
+# OfemKit `swift test` and host `xcodebuild` invocations always serialize.
+.NOTPARALLEL:
+
 .PHONY: app bootstrap gen build build-ci test test-integration clean help
 
 # Build the signed macOS app. This is THE single build to run after pulling main.
@@ -33,16 +39,31 @@ bootstrap: ## Write Local.xcconfig from the sample (first-time setup)
 		echo "$(APPLE_CONFIG) already exists. Nothing to do."; \
 	fi
 
-# Regenerate the .xcodeproj from project.yml. Run after touching project.yml.
+# FILE target: regenerate the .xcodeproj only when project.yml is newer than
+# project.pbxproj. A clean CI checkout has no .xcodeproj, so the target always
+# fires there (file missing → make considers it stale).
+# This avoids the unconditional xcodegen run on every build/test invocation
+# that the old phony-gen prerequisite caused (build-23).
+# Note: bootstrap must be called before this target so Local.xcconfig exists
+# (xcodegen requires the config files referenced in project.yml at generation
+# time). The build/build-ci/test targets list bootstrap + this file target as
+# separate prerequisites in the correct order.
+#
 # --project-root . lets the spec reference source paths from the repo root
 # (e.g. "OneLake") while --project . drops the generated .xcodeproj at the
 # repo root, next to the spec.
-gen: bootstrap ## Regenerate OneLake.xcodeproj from project.yml
+OneLake.xcodeproj/project.pbxproj: project.yml
+	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: make bootstrap && brew install xcodegen"; exit 1; }
+	xcodegen generate --spec project.yml --project-root . --project .
+
+# Phony alias — forces regeneration regardless of timestamps. Useful for
+# `make gen` after adding new source files or editing project.yml explicitly.
+gen: bootstrap ## Regenerate OneLake.xcodeproj from project.yml (force)
 	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: make bootstrap && brew install xcodegen"; exit 1; }
 	xcodegen generate --spec project.yml --project-root . --project .
 
 # Build the OneLake.app target (Debug, arm64) for local dogfooding.
-build: gen ## Build OneLake.app (Debug, signed) for local use
+build: bootstrap OneLake.xcodeproj/project.pbxproj ## Build OneLake.app (Debug, signed) for local use
 	@if grep -q 'REPLACE_WITH_YOUR_TEAM_ID' $(APPLE_CONFIG) 2>/dev/null; then \
 		echo "ERROR: $(APPLE_CONFIG) still has the placeholder DEVELOPMENT_TEAM."; \
 		echo "       Edit it and set your real Apple Developer Team ID."; \
@@ -59,7 +80,7 @@ build: gen ## Build OneLake.app (Debug, signed) for local use
 # round-trip). This is the CI build gate: it catches Swift compile
 # regressions on every PR without needing a Developer ID. The product is
 # not runnable.
-build-ci: gen ## Compile app + .appex unsigned (CI gate)
+build-ci: bootstrap OneLake.xcodeproj/project.pbxproj ## Compile app + .appex unsigned (CI gate)
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLake \
 		-configuration Debug \
@@ -75,9 +96,15 @@ build-ci: gen ## Compile app + .appex unsigned (CI gate)
 #                               domain identifier composition)
 #   OneLakeFileProviderTests  — FPE callback logic (error mapping, anchor encode/
 #                               decode, engine lifecycle, XPC service side)
-test: gen ## Run Swift unit tests (OfemKit + host-app logic + FPE logic)
-	cd Packages/OfemKit && swift test
-	rm -rf DerivedData/HostTests.xcresult DerivedData/FPETests.xcresult
+test: bootstrap OneLake.xcodeproj/project.pbxproj ## Run Swift unit tests (OfemKit + host-app logic + FPE logic)
+	@# Run all three suites in a single shell with set -e so any failure fails the
+	@# target immediately. OfemKit (swift test) and the two xcodebuild suites must
+	@# run sequentially — .NOTPARALLEL above prevents make -j from interleaving
+	@# them, which would contend on the SwiftPM build lock (build-10).
+	@set -e; \
+	cd Packages/OfemKit && swift test; \
+	cd "$(CURDIR)"; \
+	rm -rf DerivedData/HostTests.xcresult DerivedData/FPETests.xcresult; \
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLakeHostTests \
 		-configuration Debug \
@@ -86,7 +113,7 @@ test: gen ## Run Swift unit tests (OfemKit + host-app logic + FPE logic)
 		-enableCodeCoverage YES \
 		-resultBundlePath DerivedData/HostTests.xcresult \
 		$(APPLE_UNSIGNED) \
-		test
+		test; \
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLakeFileProviderTests \
 		-configuration Debug \
