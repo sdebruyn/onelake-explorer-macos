@@ -176,15 +176,31 @@ final class MenuStatusModel: ObservableObject {
 
     var headerLabel: String {
         guard hasAccounts else { return "○ Not running" }
+
+        let signInFragment: String?
         if !accountsNeedingSignIn.isEmpty {
             let count = accountsNeedingSignIn.count
             let noun = count == 1 ? "account requires" : "accounts require"
-            return "⚠ \(count) \(noun) sign-in"
+            signInFragment = "⚠ \(count) \(noun) sign-in"
+        } else {
+            signInFragment = nil
         }
+
+        let pausedFragment: String?
         if pausedCount > 0 {
             let noun = pausedCount == 1 ? "workspace" : "workspaces"
-            return "⏸ \(pausedCount) paused \(noun)"
+            pausedFragment = "⏸ \(pausedCount) paused \(noun)"
+        } else {
+            pausedFragment = nil
         }
+
+        // When both conditions hold, surface both so neither is silently dropped.
+        if let sf = signInFragment, let pf = pausedFragment {
+            return "\(sf) · \(pf)"
+        }
+        if let sf = signInFragment { return sf }
+        if let pf = pausedFragment { return pf }
+
         if let cache = formattedCache {
             return "● Running · \(cache) cached"
         }

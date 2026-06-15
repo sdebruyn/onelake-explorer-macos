@@ -285,6 +285,80 @@ final class MenuStatusModelExtendedTests: XCTestCase {
                        "Fence must be released on cancel for netMaxDownloads")
     }
 
+    // MARK: - headerLabel: sign-in + paused both visible when both conditions hold
+
+    func testHeaderLabel_signInAndPaused_showsBoth() async {
+        // When both needsSignIn and pausedWorkspaces are set, the header must
+        // surface both fragments rather than silently suppressing the paused count.
+        let pw = XPCPausedWorkspace(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            reason: "capacity_paused",
+            detectedAtSec: 1_700_000_000
+        )
+        let status = XPCEngineStatus(
+            cacheBytes: 0,
+            cacheMaxBytes: 0,
+            cacheMaxSizeGB: 0,
+            telemetryEnabled: true,
+            netMaxUploads: 1,
+            netMaxDownloads: 1,
+            logLevel: "info",
+            pausedWorkspaces: [pw],
+            needsSignIn: true
+        )
+        accountProvider.accounts = [makeAccount(alias: "work")]
+        engineProvider.statusToReturn = status
+
+        let exp = expectation(description: "accountsNeedingSignIn populated")
+        model.$accountsNeedingSignIn.dropFirst().sink { set in
+            if !set.isEmpty { exp.fulfill() }
+        }.store(in: &cancellables)
+
+        model.refresh()
+        await fulfillment(of: [exp], timeout: 2)
+
+        let label = model.headerLabel
+        XCTAssertTrue(
+            label.contains("sign-in"),
+            "headerLabel must include sign-in fragment when needsSignIn=true; got: \(label)"
+        )
+        XCTAssertTrue(
+            label.contains("paused"),
+            "headerLabel must include paused fragment when pausedWorkspaces non-empty; got: \(label)"
+        )
+    }
+
+    func testHeaderLabel_signInOnly_noMentionOfPaused() async {
+        let status = XPCEngineStatus(
+            cacheBytes: 0,
+            cacheMaxBytes: 0,
+            cacheMaxSizeGB: 0,
+            telemetryEnabled: true,
+            netMaxUploads: 1,
+            netMaxDownloads: 1,
+            logLevel: "info",
+            pausedWorkspaces: [],
+            needsSignIn: true
+        )
+        accountProvider.accounts = [makeAccount(alias: "work")]
+        engineProvider.statusToReturn = status
+
+        let exp = expectation(description: "accountsNeedingSignIn populated")
+        model.$accountsNeedingSignIn.dropFirst().sink { set in
+            if !set.isEmpty { exp.fulfill() }
+        }.store(in: &cancellables)
+
+        model.refresh()
+        await fulfillment(of: [exp], timeout: 2)
+
+        let label = model.headerLabel
+        XCTAssertTrue(label.contains("sign-in"),
+                      "headerLabel must mention sign-in when only needsSignIn=true; got: \(label)")
+        XCTAssertFalse(label.contains("paused"),
+                       "headerLabel must not mention paused when no workspaces are paused; got: \(label)")
+    }
+
     // MARK: - Config key constants (host-05)
 
     func testConfigKeys_matchExpectedLiterals() {

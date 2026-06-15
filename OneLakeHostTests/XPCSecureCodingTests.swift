@@ -144,6 +144,8 @@ final class XPCEngineStatusTests: XCTestCase {
     func testNeedsSignInFallsBackToFalseWhenKeyMissing() throws {
         // Verify the backward-compat default (false) when decoding an archive
         // produced by a FPE build that predates the needsSignIn field.
+        // The unarchiver is configured with requiresSecureCoding = true to match
+        // the production XPC channel, which always operates in secure mode.
         let archiver = NSKeyedArchiver(requiringSecureCoding: true)
         archiver.encode(Int64(0),   forKey: "cacheBytes")
         archiver.encode(Int64(0),   forKey: "cacheMaxBytes")
@@ -158,7 +160,7 @@ final class XPCEngineStatusTests: XCTestCase {
         let data = archiver.encodedData
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
-        unarchiver.requiresSecureCoding = false  // raw key-value archive, not class-rooted
+        unarchiver.requiresSecureCoding = true  // matches production XPC security boundary
         let decoded = XPCEngineStatus(coder: unarchiver)
         let status = try XCTUnwrap(decoded, "XPCEngineStatus(coder:) returned nil")
         XCTAssertFalse(status.needsSignIn,
@@ -244,7 +246,7 @@ final class XPCEngineStatusTests: XCTestCase {
         let data = archiver.encodedData
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
-        unarchiver.requiresSecureCoding = false  // raw key-value archive, not class-rooted
+        unarchiver.requiresSecureCoding = true  // matches production XPC security boundary
         let decoded = XPCEngineStatus(coder: unarchiver)
         let status = try XCTUnwrap(decoded, "XPCEngineStatus(coder:) returned nil")
         XCTAssertEqual(status.logLevel, "info", "missing logLevel key must fall back to \"info\"")

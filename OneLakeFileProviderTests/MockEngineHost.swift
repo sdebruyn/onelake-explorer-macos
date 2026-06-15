@@ -66,4 +66,26 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
     func shutdown() async {
         isShutDown = true
     }
+
+    // MARK: - Auth-error tracking
+
+    /// Guards both auth-state fields so concurrent calls from async Tasks are safe.
+    private let signInLock = NSLock()
+    private var _markedNeedsSignIn = false
+    private var _markNeedsSignInCallCount = 0
+
+    /// Whether `markNeedsSignIn()` has been called at least once.
+    var markedNeedsSignIn: Bool { signInLock.withLock { _markedNeedsSignIn } }
+
+    /// The number of times `markNeedsSignIn()` was called.
+    var markNeedsSignInCallCount: Int { signInLock.withLock { _markNeedsSignInCallCount } }
+
+    var needsSignIn: Bool { markedNeedsSignIn }
+
+    func markNeedsSignIn() {
+        signInLock.withLock {
+            _markNeedsSignInCallCount += 1
+            _markedNeedsSignIn = true
+        }
+    }
 }
