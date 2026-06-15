@@ -528,6 +528,10 @@ final class FPEEngineHost: EngineProviding {
             let cs = try configStore()
             let paths = OfemPaths()
 
+            // Ensure log/, cache/, and tokens/ exist before constructing any
+            // subsystem (CacheStore, RotatingFileWriter) that expects them.
+            try paths.ensureDirectories()
+
             // Obtain (or lazily create) the process-wide shared subsystems.
             // All engines in this FPE process share the same CacheStore,
             // TelemetryClient, and HTTPGateRegistry (arch-04).

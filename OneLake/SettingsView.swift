@@ -373,9 +373,15 @@ private struct AdvancedSettingsTab: View {
     }
 
     private func openLogsFolder() {
-        let logDir = OfemPaths().logDir
-        if NSWorkspace.shared.open(logDir) { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(logDir.path(percentEncoded: false), forType: .string)
+        let paths = OfemPaths()
+        let logDir = paths.logDir
+        // Create the log directory (and siblings) if it doesn't exist yet so
+        // the reveal always succeeds even before the engine has written its first
+        // log entry.
+        try? paths.ensureDirectories()
+        // activateFileViewerSelecting is the reliable way to open and select a
+        // specific directory in Finder; open() returns false when the directory
+        // was absent at call time, which is the root cause of the silent no-op.
+        NSWorkspace.shared.activateFileViewerSelecting([logDir])
     }
 }
