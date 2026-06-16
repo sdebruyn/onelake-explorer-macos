@@ -137,9 +137,6 @@ final class ReSignInTests: XCTestCase {
 
     func testReSignIn_success_clearsAccountsNeedingSignIn() async {
         // Seed the model so the "work" alias is in accountsNeedingSignIn.
-        // We do this by publishing directly since the field is private(set) —
-        // call refresh() with a faked status that reports needsSignIn=true,
-        // then verify reSignIn clears it.
         accountProvider.accounts = [makeTestAccount(alias: "work")]
         engineProvider.statusToReturn = XPCEngineStatus(
             cacheBytes: 0,
@@ -153,32 +150,33 @@ final class ReSignInTests: XCTestCase {
             needsSignIn: true
         )
 
-        // Refresh to populate accountsNeedingSignIn.
-        // Use a generous timeout: accountsNeedingSignIn is set at the END of
-        // doRefresh(), after all getEngineStatus awaits, so it takes longer than
-        // properties set early in the refresh chain (e.g. accounts).
-        let refreshDone = expectation(description: "initial refresh sets needsSignIn")
-        model.$accountsNeedingSignIn.dropFirst().sink { set in
-            if set.contains("work") { refreshDone.fulfill() }
+        // Refresh to populate accountsNeedingSignIn. Wait on `accounts` (fast)
+        // then sleep briefly so the later-published accountsNeedingSignIn settles.
+        let initialRefreshDone = expectation(description: "initial refresh accounts")
+        model.$accounts.dropFirst().sink { accs in
+            if !accs.isEmpty { initialRefreshDone.fulfill() }
         }.store(in: &cancellables)
         model.refresh()
-        await fulfillment(of: [refreshDone], timeout: 10)
+        await fulfillment(of: [initialRefreshDone], timeout: 5)
+        // Let accountsNeedingSignIn (published after accounts in doRefresh) settle.
+        try? await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(model.accountNeedsSignIn(alias: "work"),
-                      "Pre-condition: work should need sign-in")
+                      "Pre-condition: work should need sign-in after refresh with needsSignIn=true")
 
         // Now re-auth succeeds — the badge should clear.
-        // Also clear the seeded needsSignIn status so the post-reSignIn refresh
+        // Reset the engine to needsSignIn=false so the post-reSignIn refresh
         // does not immediately re-set the flag.
         reSignInProvider.behaviour = .succeed
         engineProvider.statusToReturn = defaultStatus
 
-        let cleared = expectation(description: "accountsNeedingSignIn cleared")
-        model.$accountsNeedingSignIn.dropFirst().sink { set in
-            if !set.contains("work") { cleared.fulfill() }
-        }.store(in: &cancellables)
-
+        // Wait for the post-reSignIn refresh to complete via `accounts` (fast proxy),
+        // then assert the badge was cleared (by remove() before refresh or by refresh).
+        let postReAuthRefreshDone = expectation(description: "post-reSignIn refresh")
+        model.$accounts.dropFirst().sink { _ in postReAuthRefreshDone.fulfill() }.store(in: &cancellables)
         model.reSignIn(alias: "work", window: NSWindow())
-        await fulfillment(of: [cleared], timeout: 10)
+        await fulfillment(of: [postReAuthRefreshDone], timeout: 5)
+        // Allow accountsNeedingSignIn to settle after the refresh completes.
+        try? await Task.sleep(for: .milliseconds(100))
 
         XCTAssertFalse(model.accountNeedsSignIn(alias: "work"),
                        "After reSignIn success, work must no longer need sign-in")
@@ -274,14 +272,10 @@ final class ReSignInTests: XCTestCase {
     func testReSignIn_failure_doesNotClearAccountsNeedingSignIn() async {
         // Verifies the needs-sign-in badge is NOT cleared on re-auth failure.
         //
-        // Strategy: prime the badge with needsSignIn=true, then set the engine
-        // to return needsSignIn=false so that if the model incorrectly cleared
-        // the badge and the post-failure refresh() ran with this status, the badge
-        // would disappear. We then fail re-auth and wait for the error to surface.
-        // After the error, we assert the badge is STILL set — because the failure
-        // path never calls accountsNeedingSignIn.remove(), it can only have been
-        // preserved or re-established by the post-failure refresh (which uses
-        // needsSignIn=true set back after the fail).
+        // Strategy: prime the badge, then fail re-auth while keeping the engine
+        // in needsSignIn=true so the post-failure refresh re-establishes it.
+        // The critical property under test: the failure path must NOT call
+        // accountsNeedingSignIn.remove(), so the badge cannot be gone after failure.
         accountProvider.accounts = [makeTestAccount(alias: "work")]
         let needsSignInTrue = XPCEngineStatus(
             cacheBytes: 0, cacheMaxBytes: 0, cacheMaxSizeGB: 10,
@@ -289,24 +283,22 @@ final class ReSignInTests: XCTestCase {
             logLevel: "info", pausedWorkspaces: [], needsSignIn: true
         )
 
-        // Prime the needs-sign-in state.
+        // Prime: wait for accounts to publish (fast), then let accountsNeedingSignIn settle.
         engineProvider.statusToReturn = needsSignInTrue
-        let primed = expectation(description: "work needs sign-in")
-        model.$accountsNeedingSignIn.dropFirst().sink { set in
-            if set.contains("work") { primed.fulfill() }
+        let initialRefreshDone = expectation(description: "initial refresh accounts")
+        model.$accounts.dropFirst().sink { accs in
+            if !accs.isEmpty { initialRefreshDone.fulfill() }
         }.store(in: &cancellables)
         model.refresh()
-        await fulfillment(of: [primed], timeout: 10)
+        await fulfillment(of: [initialRefreshDone], timeout: 5)
+        try? await Task.sleep(for: .milliseconds(100))
+        // Pre-condition: badge must be set after the initial refresh.
+        XCTAssertTrue(model.accountNeedsSignIn(alias: "work"),
+                      "Pre-condition: work needs sign-in after initial refresh")
 
-        // Set the engine to return needsSignIn=false so a stale post-failure
-        // refresh() would NOT re-add the badge. Then immediately switch back to
-        // true before calling reSignIn, so the actual post-failure refresh does
-        // re-establish it. This makes the test pass for the right reason: the
-        // badge survives because neither the failure path clears it, AND the
-        // refresh sees needsSignIn=true.
-        engineProvider.statusToReturn = defaultStatus       // needsSignIn=false (brief)
+        // Fail the re-auth.
         reSignInProvider.behaviour = .fail(ReSignInFakeError.cancelled)
-        engineProvider.statusToReturn = needsSignInTrue     // needsSignIn=true again
+        // Keep needsSignIn=true so the post-failure refresh re-establishes the badge.
 
         let errSet = expectation(description: "error surfaced after failure")
         model.$lastActionError.dropFirst().compactMap { $0 }.sink { _ in
@@ -315,16 +307,12 @@ final class ReSignInTests: XCTestCase {
         model.reSignIn(alias: "work", window: NSWindow())
         await fulfillment(of: [errSet], timeout: 5)
 
-        // After the error, wait for the post-failure refresh to settle, then
-        // check the badge. Using accounts as a fast-completion proxy: accounts is
-        // published early in doRefresh(), so when it fires the refresh has started.
-        // Then assert the badge is still present.
+        // Wait for the post-failure refresh to settle via accounts (fast proxy),
+        // then allow accountsNeedingSignIn to settle.
         let refreshSettled = expectation(description: "post-failure refresh settled")
         model.$accounts.dropFirst().sink { _ in refreshSettled.fulfill() }.store(in: &cancellables)
         await fulfillment(of: [refreshSettled], timeout: 5)
-
-        // Allow accountsNeedingSignIn (published later in doRefresh) to settle.
-        try? await Task.sleep(for: .milliseconds(200))
+        try? await Task.sleep(for: .milliseconds(100))
 
         XCTAssertTrue(model.accountNeedsSignIn(alias: "work"),
                       "needsSignIn must remain set after a failed reSignIn")
@@ -337,24 +325,21 @@ final class ReSignInTests: XCTestCase {
         // identity does not match the registered homeAccountID (items 1 & 2 fix).
         accountProvider.accounts = [makeTestAccount(alias: "work")]
 
-        // Prime the needs-sign-in badge.
+        // Prime the needs-sign-in badge via accounts (fast) + sleep for settle.
         engineProvider.statusToReturn = XPCEngineStatus(
-            cacheBytes: 0,
-            cacheMaxBytes: 0,
-            cacheMaxSizeGB: 10,
-            telemetryEnabled: true,
-            netMaxUploads: 4,
-            netMaxDownloads: 8,
-            logLevel: "info",
-            pausedWorkspaces: [],
-            needsSignIn: true
+            cacheBytes: 0, cacheMaxBytes: 0, cacheMaxSizeGB: 10,
+            telemetryEnabled: true, netMaxUploads: 4, netMaxDownloads: 8,
+            logLevel: "info", pausedWorkspaces: [], needsSignIn: true
         )
-        let primed = expectation(description: "work needs sign-in")
-        model.$accountsNeedingSignIn.dropFirst().sink { set in
-            if set.contains("work") { primed.fulfill() }
+        let initialRefreshDone = expectation(description: "initial refresh accounts")
+        model.$accounts.dropFirst().sink { accs in
+            if !accs.isEmpty { initialRefreshDone.fulfill() }
         }.store(in: &cancellables)
         model.refresh()
-        await fulfillment(of: [primed], timeout: 10)
+        await fulfillment(of: [initialRefreshDone], timeout: 5)
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(model.accountNeedsSignIn(alias: "work"),
+                      "Pre-condition: badge set after refresh with needsSignIn=true")
 
         // The provider throws an identity mismatch error (simulating what
         // SharedOfemAuth.reSignIn throws when homeAccountIDs differ).
@@ -376,20 +361,19 @@ final class ReSignInTests: XCTestCase {
         XCTAssertTrue(model.lastActionError?.contains("Sign in failed") == true,
                       "Error must surface as a sign-in failure; got: \(model.lastActionError ?? "(nil)")")
 
-        // Badge must still be set — no engine reload should have been sent.
-        // Allow the post-failure refresh to settle before asserting.
-        let refreshSettled = expectation(description: "post-failure refresh settled")
-        model.$accounts.dropFirst().sink { _ in refreshSettled.fulfill() }.store(in: &cancellables)
-        await fulfillment(of: [refreshSettled], timeout: 5)
-        try? await Task.sleep(for: .milliseconds(200))
-
-        XCTAssertTrue(model.accountNeedsSignIn(alias: "work"),
-                      "needsSignIn must remain set after an identity-mismatch rejection")
-
         // No setConfig call should have been sent because signalEngineReload
         // must not fire when re-auth fails.
         XCTAssertTrue(engineProvider.configSets.isEmpty,
                       "signalEngineReload must NOT be called when re-auth fails due to identity mismatch")
+
+        // Wait for the post-failure refresh to settle, then assert badge is still set.
+        let refreshSettled = expectation(description: "post-failure refresh settled")
+        model.$accounts.dropFirst().sink { _ in refreshSettled.fulfill() }.store(in: &cancellables)
+        await fulfillment(of: [refreshSettled], timeout: 5)
+        try? await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertTrue(model.accountNeedsSignIn(alias: "work"),
+                      "needsSignIn must remain set after an identity-mismatch rejection")
     }
 
     // MARK: - accountNeedsSignIn helper
