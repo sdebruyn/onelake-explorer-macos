@@ -25,6 +25,7 @@
 // Dependencies injected via protocols (host-13) so tests can verify
 // refresh, fence, and action logic without a live FPE/config stack.
 
+import AppKit
 import FileProvider
 import Foundation
 import OfemKit
@@ -65,6 +66,15 @@ protocol EngineStatusProvider {
     func clearCache(alias: String) async throws -> Int64
 }
 
+/// Provides interactive re-authentication for an existing account.
+/// Implemented by SharedOfemAuth; faked in tests.
+/// The provider must run the same two sequential interactive flows as the
+/// first-sign-in path (OneLake storage + Fabric Power BI) so both token
+/// audiences are refreshed in the shared App Group Keychain.
+protocol ReSignInProvider {
+    func reSignIn(alias: String, window: NSWindow) async throws
+}
+
 /// Provides domain management (add/remove).
 /// Implemented by DomainSyncManager; faked in tests.
 protocol DomainManager {
@@ -78,6 +88,8 @@ extension OfemAuth: AccountProvider {}
 extension OfemFPEClient: EngineStatusProvider {}
 
 extension DomainSyncManager: DomainManager {}
+
+extension SharedOfemAuth: ReSignInProvider {}
 
 // MARK: - MenuStatusModel
 
@@ -108,6 +120,7 @@ final class MenuStatusModel: ObservableObject {
     private let accountProvider: any AccountProvider
     private let engineStatusProvider: any EngineStatusProvider
     private let domainManager: any DomainManager
+    private let reSignInProvider: any ReSignInProvider
 
     // MARK: Init
 
@@ -116,11 +129,13 @@ final class MenuStatusModel: ObservableObject {
     init(
         accountProvider: (any AccountProvider)? = nil,
         engineStatusProvider: (any EngineStatusProvider)? = nil,
-        domainManager: (any DomainManager)? = nil
+        domainManager: (any DomainManager)? = nil,
+        reSignInProvider: (any ReSignInProvider)? = nil
     ) {
         self.accountProvider = accountProvider ?? SharedOfemAuth.shared.auth
         self.engineStatusProvider = engineStatusProvider ?? OfemFPEClient.shared
         self.domainManager = domainManager ?? DomainSyncManager.shared
+        self.reSignInProvider = reSignInProvider ?? SharedOfemAuth.shared
     }
 
     // MARK: Published
@@ -448,6 +463,12 @@ final class MenuStatusModel: ObservableObject {
         lastActionError = nil
     }
 
+    /// Surfaces a non-intrusive error when no NSWindow was available to anchor
+    /// the MSAL re-authentication sheet. The user can dismiss by retrying.
+    func setSignInWindowError() {
+        lastActionError = "Sign in could not start: no window is available. Please try again."
+    }
+
     // MARK: - Actions
 
     /// Make `alias` the default account and refresh.
@@ -476,6 +497,50 @@ final class MenuStatusModel: ObservableObject {
             } catch {
                 Self.log.error("removeAccount failed: \(error.localizedDescription, privacy: .public)")
                 lastActionError = "Could not sign out '\(alias)': \(error.localizedDescription)"
+            }
+            refresh()
+        }
+    }
+
+    /// Re-run the interactive two-step sign-in flow for an existing account.
+    ///
+    /// Runs the same OneLake + Fabric sequential browser flows used at first sign-in so
+    /// both token audiences are refreshed in the shared App Group Keychain. On success:
+    ///
+    /// 1. The optimistic in-memory badge (`accountsNeedingSignIn`) is cleared immediately
+    ///    so the menu bar reflects the resolved state without waiting for the next poll.
+    /// 2. A `setConfig` round-trip triggers `reloadEngine()` in the FPE, which clears the
+    ///    FPE's internal `needsSignIn` flag and lets the next enumeration start fresh with
+    ///    the newly cached tokens.
+    ///
+    /// - Parameters:
+    ///   - alias:  The existing account alias to re-authenticate.
+    ///   - window: The NSWindow that anchors the MSAL ASWebAuthenticationSession sheet.
+    func reSignIn(alias: String, window: NSWindow) {
+        lastActionError = nil
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await reSignInProvider.reSignIn(alias: alias, window: window)
+                Self.log.info(
+                    "reSignIn: re-auth succeeded for alias=\(alias, privacy: .public); triggering engine reload"
+                )
+                // Trigger a reloadEngine() in the FPE by sending a no-op setConfig.
+                // The FPE's setConfig handler always calls reloadEngine() on success,
+                // which clears _needsSignIn so the next enumeration uses the fresh tokens.
+                await signalEngineReload(alias: alias)
+                // Clear the badge only after the engine reload has been acknowledged
+                // so a subsequent poll does not re-add the alias before the FPE has
+                // processed the reload (see review thread on state-clear ordering).
+                accountsNeedingSignIn.remove(alias)
+            } catch {
+                // Re-auth failed: keep the needs-sign-in badge set and do NOT signal
+                // an engine reload. Unlike first-time signIn, we never remove the
+                // account record here — the user retries re-auth; the account stays.
+                Self.log.error(
+                    "reSignIn failed for alias=\(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                lastActionError = "Sign in failed: \(error.localizedDescription)"
             }
             refresh()
         }
@@ -596,6 +661,41 @@ final class MenuStatusModel: ObservableObject {
     }
 
     // MARK: - Private helpers
+
+    /// Sends a `setConfig` call to the FPE to trigger `reloadEngine()`.
+    ///
+    /// The FPE's `setConfig` handler always calls `reloadEngine()` on success, which
+    /// clears `_needsSignIn` so the next enumeration gets fresh Keychain tokens. We
+    /// reuse the existing XPC surface (no new protocol method needed) by sending a
+    /// benign log-level write. If the current `logLevel` is unknown (""), "info" is
+    /// used as a safe default — the FPE accepts any of the four allowed values.
+    ///
+    /// The write is serialised under the `.logLevel` fence (same as `setLogLevel`)
+    /// so a concurrent user-initiated log-level change cannot race against this
+    /// reload signal and clobber the user's chosen level. Unlike the debounced
+    /// setters (which use a Task-based defer for the endWrite), we call endWrite
+    /// directly here because `signalEngineReload` is itself `async` and always
+    /// runs on the main actor — no secondary dispatch is needed.
+    ///
+    /// Best-effort: a failure here is logged but does not surface as a UI error —
+    /// the FPE's auto-refresh timer will clear `needsSignIn` on the next successful
+    /// enumeration cycle.
+    private func signalEngineReload(alias: String) async {
+        let level = logLevel.isEmpty ? "info" : logLevel
+        beginWrite(.logLevel)
+        do {
+            try await engineStatusProvider.setConfig(
+                alias: alias,
+                key: OfemConfigKey.logLevel,
+                value: level
+            )
+        } catch {
+            Self.log.warning(
+                "signalEngineReload(\(alias, privacy: .public)) setConfig failed (non-fatal): \(error.localizedDescription, privacy: .public)"
+            )
+        }
+        endWrite(.logLevel)
+    }
 
     /// Writes a config key/value pair through the first available FPE domain.
     ///

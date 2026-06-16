@@ -178,6 +178,7 @@ private struct AccountSubmenu: View {
     // The singleton lives for the process lifetime but the semantics are
     // safer and change observation works correctly with @ObservedObject.
     @ObservedObject var model: MenuStatusModel
+    @Environment(\.openWindow) private var openWindow
 
     private static let log = Logger(subsystem: ofemSubsystem, category: "menubar-view")
 
@@ -197,6 +198,14 @@ private struct AccountSubmenu: View {
         }
 
         Divider()
+
+        // "Sign in again" refreshes the MSAL tokens for this account via the
+        // same two-step interactive browser flow used at first sign-in. Always
+        // shown (harmless when the account is healthy — it just refreshes consent)
+        // to avoid menu-state churn from showing/hiding it based on needsSignIn.
+        Button("Sign In Again…") {
+            signInAgain()
+        }
 
         // "Set as Default" is hidden (replaced by the checkmark in the
         // parent label) when this account is already the default.
@@ -245,6 +254,54 @@ private struct AccountSubmenu: View {
         }
         if !NSWorkspace.shared.open(url) {
             NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
+
+    private func signInAgain() {
+        // Bring the app to the foreground so the MSAL browser sheet appears
+        // in front (LSUIElement apps do not activate automatically).
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        // Resolve the presenting window. MSAL's ASWebAuthenticationSession
+        // needs a contentViewController from an NSWindow to anchor its sheet.
+        // When no window is currently open (typical for a menu-bar-only app),
+        // open the Add Account window as an anchor — the MSAL sheet will
+        // overlay it immediately, so the user only sees the browser prompt.
+        //
+        // We try keyWindow first (e.g. Settings or About is already open),
+        // then fall back to opening the Add Account window.
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+            model.reSignIn(alias: account.alias, window: window)
+        } else {
+            // Open the Add Account window so there is an anchor NSWindow for MSAL.
+            // Poll briefly for the window to become key; a single run-loop turn is
+            // not guaranteed to be enough because AppKit window creation involves
+            // layout passes and at least one display-link cycle before the window
+            // becomes the key window (see NSWindow.didBecomeKeyNotification).
+            openWindow(id: ofemAddAccountWindowID)
+            let alias = account.alias
+            Task { @MainActor in
+                // Bounded poll: try up to ~10 × 50 ms = 500 ms for a key window.
+                var resolved: NSWindow?
+                for _ in 0 ..< 10 {
+                    if let w = NSApp.keyWindow ?? NSApp.mainWindow {
+                        resolved = w
+                        break
+                    }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                if let window = resolved {
+                    model.reSignIn(alias: alias, window: window)
+                } else {
+                    // No presenting window within the timeout. Surface a non-intrusive
+                    // inline error so the user knows the action did not proceed and
+                    // can retry by clicking "Sign In Again…" once more.
+                    Self.log.warning(
+                        "signInAgain: no presentable window after openWindow — surfacing error"
+                    )
+                    model.setSignInWindowError()
+                }
+            }
         }
     }
 
