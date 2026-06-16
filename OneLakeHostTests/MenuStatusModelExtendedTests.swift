@@ -359,6 +359,173 @@ final class MenuStatusModelExtendedTests: XCTestCase {
                        "headerLabel must not mention paused when no workspaces are paused; got: \(label)")
     }
 
+    // MARK: - accountStatusLabel / accountNeedsSignIn gating (issue-273)
+
+    func testAccountStatusLabel_healthy_returnsRunning() async {
+        // A healthy account (not in accountsNeedingSignIn) must report "Running"
+        // so the per-account submenu status row matches the global header state.
+        await MainActor.run {
+            let model = MenuStatusModel()
+            XCTAssertEqual(
+                model.accountStatusLabel(alias: "work"),
+                "Running",
+                "Healthy account must show 'Running' status label"
+            )
+        }
+    }
+
+    func testAccountStatusLabel_needsSignIn_returnsSignInRequired() async {
+        // When an alias is in accountsNeedingSignIn the status label must convey
+        // the auth error so the submenu header row makes the problem visible
+        // without the user reading the orange callout text.
+        let status = XPCEngineStatus(
+            cacheBytes: 0,
+            cacheMaxBytes: 0,
+            cacheMaxSizeGB: 0,
+            telemetryEnabled: true,
+            netMaxUploads: 1,
+            netMaxDownloads: 1,
+            logLevel: "info",
+            pausedWorkspaces: [],
+            needsSignIn: true
+        )
+        accountProvider.accounts = [makeAccount(alias: "work")]
+        engineProvider.statusToReturn = status
+
+        let exp = expectation(description: "accountsNeedingSignIn populated")
+        model.$accountsNeedingSignIn.dropFirst().sink { set in
+            if !set.isEmpty { exp.fulfill() }
+        }.store(in: &cancellables)
+
+        model.refresh()
+        await fulfillment(of: [exp], timeout: 2)
+
+        XCTAssertEqual(
+            model.accountStatusLabel(alias: "work"),
+            "Sign-in required",
+            "Account needing sign-in must show 'Sign-in required' status label"
+        )
+    }
+
+    func testAccountNeedsSignIn_healthyAlias_returnsFalse() async {
+        // "Sign In Again…" must be hidden for a healthy account. Verify the gate
+        // condition returns false when the alias is not in accountsNeedingSignIn.
+        await MainActor.run {
+            let model = MenuStatusModel()
+            XCTAssertFalse(
+                model.accountNeedsSignIn(alias: "work"),
+                "accountNeedsSignIn must be false for an alias not in the needs-sign-in set"
+            )
+        }
+    }
+
+    func testAccountNeedsSignIn_aliasInSet_returnsTrue() async {
+        // Verify the gate condition returns true so "Sign In Again…" is visible.
+        let status = XPCEngineStatus(
+            cacheBytes: 0,
+            cacheMaxBytes: 0,
+            cacheMaxSizeGB: 0,
+            telemetryEnabled: true,
+            netMaxUploads: 1,
+            netMaxDownloads: 1,
+            logLevel: "info",
+            pausedWorkspaces: [],
+            needsSignIn: true
+        )
+        accountProvider.accounts = [makeAccount(alias: "corp")]
+        engineProvider.statusToReturn = status
+
+        let exp = expectation(description: "accountsNeedingSignIn populated")
+        model.$accountsNeedingSignIn.dropFirst().sink { set in
+            if set.contains("corp") { exp.fulfill() }
+        }.store(in: &cancellables)
+
+        model.refresh()
+        await fulfillment(of: [exp], timeout: 2)
+
+        XCTAssertTrue(
+            model.accountNeedsSignIn(alias: "corp"),
+            "accountNeedsSignIn must return true so 'Sign In Again…' is shown for corp"
+        )
+    }
+
+    func testAccountStatusLabel_multiAccount_correctPerAlias() async {
+        // With two accounts where only one needs sign-in, the status labels must
+        // be independent: the auth-error alias shows "Sign-in required" while the
+        // healthy alias shows "Running".
+        let statusNeedsSignIn = XPCEngineStatus(
+            cacheBytes: 0,
+            cacheMaxBytes: 0,
+            cacheMaxSizeGB: 0,
+            telemetryEnabled: true,
+            netMaxUploads: 1,
+            netMaxDownloads: 1,
+            logLevel: "info",
+            pausedWorkspaces: [],
+            needsSignIn: true
+        )
+        let statusHealthy = XPCEngineStatus(
+            cacheBytes: 0,
+            cacheMaxBytes: 0,
+            cacheMaxSizeGB: 0,
+            telemetryEnabled: true,
+            netMaxUploads: 1,
+            netMaxDownloads: 1,
+            logLevel: "info",
+            pausedWorkspaces: [],
+            needsSignIn: false
+        )
+
+        // Use a custom EngineStatusProvider that returns per-alias status.
+        @MainActor
+        final class PerAliasEngineProvider: EngineStatusProvider, @unchecked Sendable {
+            func getEngineStatus(alias: String) async throws -> XPCEngineStatus {
+                let needsSignIn = alias == "corp"
+                return XPCEngineStatus(
+                    cacheBytes: 0, cacheMaxBytes: 0, cacheMaxSizeGB: 0,
+                    telemetryEnabled: true, netMaxUploads: 1, netMaxDownloads: 1,
+                    logLevel: "info", pausedWorkspaces: [], needsSignIn: needsSignIn
+                )
+            }
+            func setConfig(alias: String, key: String, value: String) async throws {}
+            func clearCache(alias: String) async throws -> Int64 { 0 }
+        }
+
+        let perAliasProvider = PerAliasEngineProvider()
+        let localAccountProvider = FakeAccountProvider()
+        localAccountProvider.accounts = [makeAccount(alias: "corp"), makeAccount(alias: "personal")]
+        let localModel = MenuStatusModel(
+            accountProvider: localAccountProvider,
+            engineStatusProvider: perAliasProvider,
+            domainManager: FakeDomainManager()
+        )
+
+        let exp = expectation(description: "accountsNeedingSignIn updated")
+        var cancellable: AnyCancellable?
+        cancellable = localModel.$accountsNeedingSignIn.dropFirst().sink { set in
+            // Wait until both accounts have been queried (corp must be in the set,
+            // personal must not be).
+            if set.contains("corp") && !set.contains("personal") {
+                exp.fulfill()
+                cancellable?.cancel()
+            }
+        }
+
+        localModel.refresh()
+        await fulfillment(of: [exp], timeout: 3)
+
+        XCTAssertEqual(
+            localModel.accountStatusLabel(alias: "corp"),
+            "Sign-in required",
+            "corp (needs sign-in) must show 'Sign-in required'"
+        )
+        XCTAssertEqual(
+            localModel.accountStatusLabel(alias: "personal"),
+            "Running",
+            "personal (healthy) must show 'Running'"
+        )
+    }
+
     // MARK: - Config key constants (host-05)
 
     func testConfigKeys_matchExpectedLiterals() {
