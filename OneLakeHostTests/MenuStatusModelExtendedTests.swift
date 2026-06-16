@@ -364,14 +364,35 @@ final class MenuStatusModelExtendedTests: XCTestCase {
     func testAccountStatusLabel_healthy_returnsRunning() async {
         // A healthy account (not in accountsNeedingSignIn) must report "Running"
         // so the per-account submenu status row matches the global header state.
-        await MainActor.run {
-            let model = MenuStatusModel()
-            XCTAssertEqual(
-                model.accountStatusLabel(alias: "work"),
-                "Running",
-                "Healthy account must show 'Running' status label"
-            )
-        }
+        // Registers a real account with needsSignIn: false so the test covers
+        // the post-refresh healthy path, not just the trivial empty-model default.
+        let status = XPCEngineStatus(
+            cacheBytes: 0,
+            cacheMaxBytes: 0,
+            cacheMaxSizeGB: 0,
+            telemetryEnabled: true,
+            netMaxUploads: 1,
+            netMaxDownloads: 1,
+            logLevel: "info",
+            pausedWorkspaces: [],
+            needsSignIn: false
+        )
+        accountProvider.accounts = [makeAccount(alias: "work")]
+        engineProvider.statusToReturn = status
+
+        let exp = expectation(description: "refresh completes with work account")
+        model.$accounts.dropFirst().sink { accounts in
+            if !accounts.isEmpty { exp.fulfill() }
+        }.store(in: &cancellables)
+
+        model.refresh()
+        await fulfillment(of: [exp], timeout: 2)
+
+        XCTAssertEqual(
+            model.accountStatusLabel(alias: "work"),
+            "Running",
+            "Healthy account must show 'Running' status label"
+        )
     }
 
     func testAccountStatusLabel_needsSignIn_returnsSignInRequired() async {
@@ -407,16 +428,14 @@ final class MenuStatusModelExtendedTests: XCTestCase {
         )
     }
 
-    func testAccountNeedsSignIn_healthyAlias_returnsFalse() async {
+    func testAccountNeedsSignIn_healthyAlias_returnsFalse() {
         // "Sign In Again…" must be hidden for a healthy account. Verify the gate
         // condition returns false when the alias is not in accountsNeedingSignIn.
-        await MainActor.run {
-            let model = MenuStatusModel()
-            XCTAssertFalse(
-                model.accountNeedsSignIn(alias: "work"),
-                "accountNeedsSignIn must be false for an alias not in the needs-sign-in set"
-            )
-        }
+        // The class is @MainActor so no MainActor.run hop is needed.
+        XCTAssertFalse(
+            model.accountNeedsSignIn(alias: "work"),
+            "accountNeedsSignIn must be false for an alias not in the needs-sign-in set"
+        )
     }
 
     func testAccountNeedsSignIn_aliasInSet_returnsTrue() async {

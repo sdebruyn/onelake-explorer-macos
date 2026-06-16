@@ -188,7 +188,7 @@ private struct AccountSubmenu: View {
         // rendered so the submenu has a consistent status row regardless of auth
         // state.
         let needsSignIn = model.accountNeedsSignIn(alias: account.alias)
-        Text(model.accountStatusLabel(alias: account.alias))
+        Text(needsSignIn ? "Sign-in required" : "Running")
             .foregroundStyle(needsSignIn ? .orange : .secondary)
             .disabled(true)
 
@@ -197,6 +197,8 @@ private struct AccountSubmenu: View {
         Button("Open in Finder") {
             openInFinder()
         }
+
+        Divider()
 
         // "Sign In Again…" is only shown when this account's token cannot be
         // acquired silently. Hidden for healthy accounts to avoid confusion.
