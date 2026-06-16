@@ -82,11 +82,27 @@ extension FabricError {
     /// - Maps bare ``CancellationError`` (Swift Concurrency cancellation) to
     ///   `.cancelled` (fabric-02).
     /// - Maps ``HTTPClientError/tokenAcquisitionFailed(_:)`` to `.unauthorized`
-    ///   (fabric-03-fix): a token failure means the client cannot authenticate
-    ///   for the Fabric audience and must surface as an auth error, not as a
-    ///   generic sync failure. Previously this fell through to `.httpError`,
-    ///   which ``FPError/classify(_:)`` then mapped to `.cannotSynchronize`,
-    ///   causing the Finder mount to show an empty folder with no auth prompt.
+    ///   (fabric-03-fix-272): ANY token-acquisition failure means the process
+    ///   cannot authenticate for the Fabric audience and must surface as an auth
+    ///   error, not as a generic sync failure. This covers both MSAL
+    ///   interaction-required responses and local MSAL configuration errors
+    ///   (e.g. FPE bundle-ID mismatch, -42011) that would otherwise produce a
+    ///   silent empty Finder mount with no auth prompt.
+    ///
+    ///   Transient-outage tradeoff: by the time an error reaches this mapper as
+    ///   `tokenAcquisitionFailed`, ``OfemAuth`` has already stripped the
+    ///   underlying MSAL error down to ``OfemAuthError/silentTokenFailed(_:)``,
+    ///   which makes transient network failures (Entra DNS timeout, TLS reset
+    ///   during silent refresh) indistinguishable from local config errors
+    ///   (MSAL -42011). Mapping both to `.unauthorized` means a transient outage
+    ///   surfaces a "Sign-in required" indicator in Finder instead of a
+    ///   recoverable "cannot synchronise" state — contradicting the project
+    ///   preference for silent retry. This is a known tradeoff: `.unauthorized`
+    ///   is still strictly better than the previous `.httpError` path that
+    ///   silently emptied the Finder mount with no user-visible signal at all.
+    ///   The correct long-term fix is to distinguish `interactionRequired` from
+    ///   transient failures inside ``OfemAuth`` before the error is stripped
+    ///   (tracked as a follow-up).
     static func from(_ error: any Error) -> FabricError {
         // fabric-01: unwrap apiError wrapper to reach the sentinel first,
         // mirroring OneLakeError.from — without this, a retriesExhausted(last:
@@ -120,28 +136,25 @@ extension FabricError {
             return .cancelled
         case is CancellationError:           // fabric-02: bare Swift cancellation
             return .cancelled
-        case let HTTPClientError.tokenAcquisitionFailed(inner):
-            // fabric-03-fix: map token failures to .unauthorized only when the
-            // inner error indicates the user must interactively re-consent.
-            // Transient network errors during silent token refresh
-            // (OfemAuthError.silentTokenFailed) are not consent failures and
-            // must NOT surface as .notAuthenticated; map them to .httpError so
-            // FPError.classify produces .cannotSynchronize rather than prompting
-            // the user to re-authenticate for a transient outage.
-            if let authErr = inner as? OfemAuthError, authErr == .interactionRequired {
-                return .unauthorized
-            }
-            return .httpError(inner)
+        case HTTPClientError.tokenAcquisitionFailed:
+            // fabric-03-fix-272: map ALL token-acquisition failures to
+            // .unauthorized. Any failure here means the process could not
+            // obtain a Fabric access token — whether because the refresh token
+            // has expired (.interactionRequired), Conditional Access fired, or
+            // a local MSAL configuration error prevented even the silent call
+            // from starting (e.g. FPE bundle-ID mismatch, MSAL -42011).
+            // In every case the correct surface is .unauthorized →
+            // FPError.notAuthenticated so Finder shows an auth-required
+            // indicator rather than a silent empty folder.
+            return .unauthorized
         case let HTTPClientError.retriesExhausted(attempts, last):
             // fabric-04: unwrap the last error so that a retry loop that exits
-            // because token acquisition failed (e.g. MSAL returns
-            // interactionRequired on the 401-refresh path) surfaces as
-            // .unauthorized rather than .retriesExhausted. Without this unwrap
-            // FPError.fabricCode maps .retriesExhausted to .serverUnreachable,
-            // hiding the auth failure behind an offline indicator.
+            // because token acquisition failed surfaces as .unauthorized rather
+            // than .retriesExhausted. Without this unwrap FPError.fabricCode
+            // maps .retriesExhausted to .serverUnreachable, hiding the auth
+            // failure behind an offline indicator.
             if let lastHTTP = last as? HTTPClientError,
-               case let HTTPClientError.tokenAcquisitionFailed(inner) = lastHTTP,
-               let authErr = inner as? OfemAuthError, authErr == .interactionRequired {
+               case HTTPClientError.tokenAcquisitionFailed = lastHTTP {
                 return .unauthorized
             }
             return .retriesExhausted(attempts: attempts)
