@@ -160,11 +160,16 @@ public final class MsalAuthClient: MsalAuthClientProtocol {
 
 /// Single factory for `MSALPublicClientApplicationConfig`.
 ///
-/// Both ``MsalAuthClient`` (silent acquisition) and ``InteractiveSignIn``
-/// (interactive flow) must use byte-identical configuration — any mismatch in
-/// redirect URI or Keychain group silently breaks token sharing between the
-/// two code paths. This factory is the single source of truth for
-/// security-sensitive MSAL config.
+/// ``MsalAuthClient`` (silent acquisition) and ``InteractiveSignIn``
+/// (interactive flow) must use a **Keychain-identical** configuration so the
+/// FPE and host app share the same token cache. The redirect URI is
+/// intentionally per-process: MSAL validates the redirect URI's bundle-ID
+/// component against the running process locally before any network call, so
+/// the FPE (`dev.debruyn.ofem.fileprovider`) and the host app
+/// (`dev.debruyn.ofem`) each require their own URI. The Keychain access group
+/// (`OfemPaths.appGroupIdentifier`) remains identical across both processes
+/// and is the property that actually governs token-cache sharing.
+/// This factory is the single source of truth for security-sensitive MSAL config.
 enum MsalApplicationConfig {
     /// Builds a `MSALPublicClientApplicationConfig` ready for use by either
     /// ``MsalAuthClient`` or ``InteractiveSignIn``.
@@ -175,6 +180,11 @@ enum MsalApplicationConfig {
     ///   - cacheStrategy: `.msalKeychain` or `.fileBackedFallback`.
     ///   - fileTokenStore: Required when `cacheStrategy == .fileBackedFallback`.
     ///   - alias: Account alias, required when `cacheStrategy == .fileBackedFallback`.
+    ///   - bundleIdentifier: Override the redirect URI bundle-ID component.
+    ///     Pass `nil` (default) to derive it from `Bundle.main.bundleIdentifier`
+    ///     with `OfemPaths.bundleID` as a fallback. Pass an explicit value in
+    ///     unit tests to exercise the FPE redirect-URI path without needing a
+    ///     real FPE process (where `Bundle.main.bundleIdentifier` would be `nil`).
     /// - Returns: Configured `MSALPublicClientApplicationConfig`.
     /// - Throws: ``MsalAuthClientError`` on validation or MSAL init failure.
     static func make(
@@ -182,7 +192,8 @@ enum MsalApplicationConfig {
         tenantID: String,
         cacheStrategy: TokenCacheStrategy,
         fileTokenStore: FileTokenStore?,
-        alias: String?
+        alias: String?,
+        bundleIdentifier: String? = nil
     ) throws -> MSALPublicClientApplicationConfig {
         let authorityURL = try EntraAuthorityResolver.authority(tenantID: tenantID)
         let authority = try MSALAADAuthority(url: authorityURL)
@@ -204,7 +215,7 @@ enum MsalApplicationConfig {
         // `OfemPaths.bundleID` is intentionally unchanged — it is correct for
         // app-group container, Keychain group, and file paths; only the MSAL
         // redirect URI must be per-process.
-        let processBundleID = Bundle.main.bundleIdentifier ?? OfemPaths.bundleID
+        let processBundleID = bundleIdentifier ?? Bundle.main.bundleIdentifier ?? OfemPaths.bundleID
         let config = MSALPublicClientApplicationConfig(
             clientId: clientID,
             redirectUri: "msauth.\(processBundleID)://auth",

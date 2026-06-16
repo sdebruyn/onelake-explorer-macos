@@ -88,6 +88,21 @@ extension FabricError {
     ///   interaction-required responses and local MSAL configuration errors
     ///   (e.g. FPE bundle-ID mismatch, -42011) that would otherwise produce a
     ///   silent empty Finder mount with no auth prompt.
+    ///
+    ///   Transient-outage tradeoff: by the time an error reaches this mapper as
+    ///   `tokenAcquisitionFailed`, ``OfemAuth`` has already stripped the
+    ///   underlying MSAL error down to ``OfemAuthError/silentTokenFailed(_:)``,
+    ///   which makes transient network failures (Entra DNS timeout, TLS reset
+    ///   during silent refresh) indistinguishable from local config errors
+    ///   (MSAL -42011). Mapping both to `.unauthorized` means a transient outage
+    ///   surfaces a "Sign-in required" indicator in Finder instead of a
+    ///   recoverable "cannot synchronise" state — contradicting the project
+    ///   preference for silent retry. This is a known tradeoff: `.unauthorized`
+    ///   is still strictly better than the previous `.httpError` path that
+    ///   silently emptied the Finder mount with no user-visible signal at all.
+    ///   The correct long-term fix is to distinguish `interactionRequired` from
+    ///   transient failures inside ``OfemAuth`` before the error is stripped
+    ///   (tracked as a follow-up).
     static func from(_ error: any Error) -> FabricError {
         // fabric-01: unwrap apiError wrapper to reach the sentinel first,
         // mirroring OneLakeError.from — without this, a retriesExhausted(last:

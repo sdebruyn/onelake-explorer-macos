@@ -390,4 +390,25 @@ struct FabricErrorTests {
         if case .unauthorized = result { /* correct */ }
         else { Issue.record("retriesExhausted(last: tokenAcquisitionFailed) must map to .unauthorized, got \(result)") }
     }
+
+    // MARK: - Transient-outage tradeoff (fabric-03-fix-272 comment regression)
+
+    @Test("from(.tokenAcquisitionFailed(silentTokenFailed)) → .unauthorized: tradeoff regression guard")
+    func fromTokenAcquisitionFailedTransientOutageTradeoff() {
+        // Regression guard for the transient-outage tradeoff documented in
+        // FabricError.from's comment: OfemAuth strips the underlying MSAL error
+        // into OfemAuthError.silentTokenFailed before it reaches this mapper, so
+        // transient network failures (Entra DNS timeout, TLS reset) and local
+        // MSAL config errors (bundle-ID mismatch, -42011) both arrive here as
+        // tokenAcquisitionFailed(silentTokenFailed). The broad .unauthorized
+        // mapping is intentional — a false "Sign-in required" prompt is strictly
+        // better than the previous silent empty Finder mount (.httpError path).
+        // This test documents the chosen behaviour; if the inner-error distinction
+        // is ever added, update this test to reflect the narrowed mapping.
+        let result = FabricError.from(
+            HTTPClientError.tokenAcquisitionFailed(OfemAuthError.silentTokenFailed("work"))
+        )
+        if case .unauthorized = result { /* correct — broad mapping is intentional */ }
+        else { Issue.record("tokenAcquisitionFailed(silentTokenFailed) must map to .unauthorized (tradeoff); got \(result)") }
+    }
 }

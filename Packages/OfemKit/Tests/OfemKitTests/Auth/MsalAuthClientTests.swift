@@ -67,6 +67,26 @@ struct MsalApplicationConfigTests {
                 "redirect URI must contain a non-empty bundle ID component")
     }
 
+    @Test("redirect URI uses injected FPE bundle ID when bundleIdentifier is supplied")
+    func redirectURIUsesInjectedFPEBundleID() throws {
+        // Fix #272 — FPE path: in the real FPE process Bundle.main.bundleIdentifier
+        // returns "dev.debruyn.ofem.fileprovider". In the test runner it is nil, so
+        // MsalApplicationConfig.make accepts an explicit bundleIdentifier override so
+        // we can exercise the FPE redirect-URI path without a live FPE process.
+        let fpeBundleID = "dev.debruyn.ofem.fileprovider"
+        let config = try MsalApplicationConfig.make(
+            clientID: "test-client-id",
+            tenantID: "test-tenant-id",
+            cacheStrategy: .msalKeychain,
+            fileTokenStore: nil,
+            alias: nil,
+            bundleIdentifier: fpeBundleID
+        )
+        let expected = "msauth.\(fpeBundleID)://auth"
+        #expect(config.redirectUri == expected,
+                "FPE redirect URI must use dev.debruyn.ofem.fileprovider (fix #272)")
+    }
+
     // MARK: - Keychain sharing group
 
     @Test("keychain sharing group is the OFEM App Group identifier")
