@@ -672,7 +672,10 @@ final class MenuStatusModel: ObservableObject {
     ///
     /// The write is serialised under the `.logLevel` fence (same as `setLogLevel`)
     /// so a concurrent user-initiated log-level change cannot race against this
-    /// reload signal and clobber the user's chosen level.
+    /// reload signal and clobber the user's chosen level. Unlike the debounced
+    /// setters (which use a Task-based defer for the endWrite), we call endWrite
+    /// directly here because `signalEngineReload` is itself `async` and always
+    /// runs on the main actor — no secondary dispatch is needed.
     ///
     /// Best-effort: a failure here is logged but does not surface as a UI error —
     /// the FPE's auto-refresh timer will clear `needsSignIn` on the next successful
@@ -680,9 +683,6 @@ final class MenuStatusModel: ObservableObject {
     private func signalEngineReload(alias: String) async {
         let level = logLevel.isEmpty ? "info" : logLevel
         beginWrite(.logLevel)
-        defer {
-            Task { @MainActor [weak self] in self?.endWrite(.logLevel) }
-        }
         do {
             try await engineStatusProvider.setConfig(
                 alias: alias,
@@ -694,6 +694,7 @@ final class MenuStatusModel: ObservableObject {
                 "signalEngineReload(\(alias, privacy: .public)) setConfig failed (non-fatal): \(error.localizedDescription, privacy: .public)"
             )
         }
+        endWrite(.logLevel)
     }
 
     /// Writes a config key/value pair through the first available FPE domain.
