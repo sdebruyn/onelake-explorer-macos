@@ -99,6 +99,9 @@ struct FabricErrorTransportClassificationTests {
         if case FabricError.notFound = mapped {
             Issue.record("URLError(.cancelled) must NOT map to FabricError.notFound (issue-268). Transport errors must never produce a synthetic .notFound.")
         }
+        if case FabricError.httpError = mapped { /* correct */ } else {
+            Issue.record("URLError(.cancelled) wrapped in transport must map to FabricError.httpError, got \(mapped)")
+        }
     }
 
     @Test("HTTPClientError.cancelled maps to FabricError.cancelled, NOT .notFound (issue-268)")
@@ -210,17 +213,21 @@ struct FabricClientNotFoundRequiresRoundTripTests {
 
     @Test("listAllWorkspaces with no stubs and failing token throws FabricError.unauthorized, NOT .notFound (issue-268)")
     func noRequestNoNotFound() async throws {
-        // Without any stubs, any error that occurs must come from token acquisition
-        // or the HTTP layer — not from a URLCache entry.  The error must be
-        // .unauthorized (tokenAcquisitionFailed → interactionRequired) or .httpError,
-        // never .notFound (which requires a real HTTP 404 round-trip).
-        let session = MockURLSession(stubs: []) // No stubs — any HTTP call would crash.
+        // Without any HTTP stubs, any error that occurs must come from token
+        // acquisition — not from a URLCache entry.  The error must be .unauthorized
+        // (tokenAcquisitionFailed → interactionRequired), never .notFound (which
+        // requires a real HTTP 404 round-trip).
+        // NoRequestSession is used instead of MockURLSession(stubs: []) so that an
+        // accidental HTTP request produces a clean failing test (via Issue.record)
+        // rather than a process-crashing precondition() that would abort all
+        // subsequent tests in the suite.
+        let session = NoRequestSession()
         let http = HTTPClient(
             session: session,
             gateRegistry: makeGate(host: "api.fabric.microsoft.com"),
             retryPolicy: HTTPRetryPolicy(maxAttempts: 1, initialBackoff: .milliseconds(5), maxBackoff: .milliseconds(20))
         )
-        let failingProvider = InteractionRequiredTokenProvider268()
+        let failingProvider = InteractionRequiredTokenProvider()
         let client = FabricClient(http: http, tokenProvider: failingProvider, baseURL: fabricBase)
 
         do {
@@ -234,8 +241,8 @@ struct FabricClientNotFoundRequiresRoundTripTests {
             // Any other error (e.g. .httpError for transient failures) is acceptable —
             // as long as it is not .notFound.
         }
-        // No HTTP request should have been made.
-        #expect(session.requests.isEmpty,
+        // No HTTP request should have been made (token acquisition fails first).
+        #expect(session.requestCount == 0,
                 Comment("Zero HTTP requests expected when token acquisition fails before the request is sent (issue-268)"))
     }
 }
@@ -243,10 +250,22 @@ struct FabricClientNotFoundRequiresRoundTripTests {
 // MARK: - Private helpers for this test file
 
 /// A TokenProvider that always throws OfemAuthError.interactionRequired.
-/// Named with a _268 suffix to avoid redeclaration conflicts with the
-/// private struct in FabricTokenPrewarmTests.swift.
-private struct InteractionRequiredTokenProvider268: TokenProvider {
+private struct InteractionRequiredTokenProvider: TokenProvider {
     func token(alias: String, scope: TokenScope) async throws -> String {
         throw OfemAuthError.interactionRequired
+    }
+}
+
+/// A URLSessionProtocol that fails with a clean XCTest-style assertion if
+/// any HTTP request is made. Replaces `MockURLSession(stubs: [])` in tests
+/// where no HTTP round-trip is expected — a process-crashing `precondition()`
+/// is replaced by a failing (but non-crashing) Issue.record so that subsequent
+/// tests in the suite still run after a regression.
+private final class NoRequestSession: URLSessionProtocol, @unchecked Sendable {
+    private(set) var requestCount: Int = 0
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        requestCount += 1
+        Issue.record("NoRequestSession: unexpected HTTP request to \(request.url?.absoluteString ?? "(nil)") — no HTTP round-trip should occur in this test")
+        throw URLError(.unsupportedURL)
     }
 }

@@ -140,7 +140,12 @@ public final class HTTPClient: Sendable {
     ) {
         self.session = session
         // When no separate stream session is provided, fall back to the
-        // buffered session if it also conforms, otherwise use the default.
+        // buffered session if it also conforms to URLSessionStreamProtocol.
+        // In production URLSession always conforms (via the extension below),
+        // so the else branch is only reached by test mocks that implement
+        // only URLSessionProtocol; in that case the shared default is used as
+        // a safe fallback (download() is never exercised without an explicit
+        // streamSession: in those tests).
         if let ss = streamSession {
             self.streamSession = ss
         } else if let ss = session as? any URLSessionStreamProtocol {
@@ -796,7 +801,13 @@ extension URLSession {
     /// can be returned in <3 ms — making `FabricClient` appear to fail with
     /// `HTTPClientError.notFound` before CFNetwork even opens a connection
     /// (issue-268).
-    public static var ofemDefault: URLSession {
+    ///
+    /// Declared as a `static let` so the `URLSession` (and its underlying
+    /// `URLSessionConfiguration`) is created exactly once per process. A
+    /// computed `var` would allocate a fresh configuration + session object
+    /// on every access, which is both wasteful and incorrect because
+    /// `URLSession` is designed to be long-lived.
+    public static let ofemDefault: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = .infinity
@@ -806,7 +817,7 @@ extension URLSession {
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: config)
-    }
+    }()
 }
 
 // MARK: - HTTPURLResponse convenience
