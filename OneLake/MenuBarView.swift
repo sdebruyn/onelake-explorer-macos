@@ -27,6 +27,7 @@ struct MenuBarView: View {
     // NOT take ownership — lifetime is managed by OneLakeApp.
     @ObservedObject var model: MenuStatusModel
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     private static let log = Logger(subsystem: ofemSubsystem, category: "menubar-view")
 
@@ -109,19 +110,19 @@ struct MenuBarView: View {
 
     /// Opens (or focuses) the Settings window.
     ///
-    /// Strategy: `NSApp.sendAction(_:to:from:)` with the private
-    /// `showSettingsWindow:` selector is the documented-by-convention way to
-    /// trigger the SwiftUI `Settings` scene. SwiftUI creates the window the
-    /// first time and reuses it on subsequent calls, so this doubles as a
-    /// focus action when the window is already open. Calling
-    /// `NSApp.activate(ignoringOtherApps: true)` afterwards ensures the app
-    /// comes to the foreground even when it is currently in `.accessory`
-    /// policy (LSUIElement) — without this the window appears but stays
-    /// behind other apps.
+    /// Strategy: `openSettings` (available from macOS 14) is the correct
+    /// SwiftUI primitive for triggering the `Settings { }` scene. It creates
+    /// the window on first use and reuses (focuses) it on subsequent calls,
+    /// which satisfies both the "open" and "re-focus existing" requirements.
     ///
-    /// `SettingsLink` was the previous implementation but it does not
-    /// activate the app on an LSUIElement process, so a window that fell
-    /// behind other apps could not be raised by clicking "Preferences…" again.
+    /// `NSApp.sendAction(Selector("showSettingsWindow:"), …)` is unreliable in
+    /// LSUIElement (menu-bar-only) processes: the app has no regular activation
+    /// context and the action is swallowed before the Settings window is created.
+    ///
+    /// After calling `openSettings` we explicitly activate the app so the window
+    /// comes to the foreground. `DockIconManager` picks up the resulting
+    /// `NSWindow.didBecomeKeyNotification` and switches the activation policy to
+    /// `.regular`, showing the Dock icon while the window is open.
     @ViewBuilder
     private var preferencesItem: some View {
         Button("Preferences…") {
@@ -131,7 +132,7 @@ struct MenuBarView: View {
     }
 
     private func openPreferences() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        openSettings()
         NSApp.activate(ignoringOtherApps: true)
     }
 
