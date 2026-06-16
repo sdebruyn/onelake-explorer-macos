@@ -140,7 +140,12 @@ public final class HTTPClient: Sendable {
     ) {
         self.session = session
         // When no separate stream session is provided, fall back to the
-        // buffered session if it also conforms, otherwise use the default.
+        // buffered session if it also conforms to URLSessionStreamProtocol.
+        // In production URLSession always conforms (via the extension below),
+        // so the else branch is only reached by test mocks that implement
+        // only URLSessionProtocol; in that case the shared default is used as
+        // a safe fallback (download() is never exercised without an explicit
+        // streamSession: in those tests).
         if let ss = streamSession {
             self.streamSession = ss
         } else if let ss = session as? any URLSessionStreamProtocol {
@@ -619,17 +624,40 @@ public final class HTTPClient: Sendable {
             authorised.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
         }
 
+        #if DEBUG
+        // net-21: log the absolute request URL and the raw transport outcome
+        // before any status-code classification.  .public in DEBUG so the URL
+        // is visible in unredacted log streams; in Release the message is not
+        // emitted at all (compile-time elimination).
+        Self.log.debug(
+            "HTTPClient[D]: → \(authorised.httpMethod ?? "?", privacy: .public) \(authorised.url?.absoluteString ?? "(nil)", privacy: .public)"
+        )
+        #endif
+
         let data: Data
         let urlResponse: URLResponse
         do {
             (data, urlResponse) = try await session.data(for: authorised)
         } catch {
+            #if DEBUG
+            Self.log.debug(
+                "HTTPClient[D]: ← transport error \(String(describing: error), privacy: .public)"
+            )
+            #endif
             return (nil, nil, error)
         }
 
         guard let httpResponse = urlResponse as? HTTPURLResponse else {
             return (nil, nil, URLError(.badServerResponse))
         }
+
+        #if DEBUG
+        // net-21: log the HTTP status so a fast non-network response (e.g.
+        // served from URLCache) is distinguishable from a live round-trip.
+        Self.log.debug(
+            "HTTPClient[D]: ← HTTP \(httpResponse.statusCode, privacy: .public) \(authorised.url?.absoluteString ?? "(nil)", privacy: .public)"
+        )
+        #endif
 
         // net-19: enforce the response-size limit only for successful (2xx)
         // responses — those are the bodies the caller actually wants to keep.
@@ -764,12 +792,32 @@ extension URLSession {
     /// no overall `timeoutIntervalForResource` limit so large downloads are
     /// not killed mid-body. Callers control the overall deadline via
     /// Swift Concurrency task cancellation / `withTimeout`.
-    public static var ofemDefault: URLSession {
+    ///
+    /// URL caching is explicitly disabled (`urlCache = nil`,
+    /// `requestCachePolicy = .reloadIgnoringLocalCacheData`) so that a
+    /// stale or negative (404) entry in `URLCache.shared` can never be
+    /// served to the FPE without a live network round-trip.  Without this,
+    /// a previously cached 404 from `api.fabric.microsoft.com/v1/workspaces`
+    /// can be returned in <3 ms — making `FabricClient` appear to fail with
+    /// `HTTPClientError.notFound` before CFNetwork even opens a connection
+    /// (issue-268).
+    ///
+    /// Declared as a `static let` so the `URLSession` (and its underlying
+    /// `URLSessionConfiguration`) is created exactly once per process. A
+    /// computed `var` would allocate a fresh configuration + session object
+    /// on every access, which is both wasteful and incorrect because
+    /// `URLSession` is designed to be long-lived.
+    public static let ofemDefault: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = .infinity
+        // net-20: disable the shared URL cache so stale or negative entries
+        // (e.g. a previously cached 404 for the Fabric workspaces endpoint)
+        // are never served without a real network round-trip.
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: config)
-    }
+    }()
 }
 
 // MARK: - HTTPURLResponse convenience

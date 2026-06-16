@@ -292,6 +292,17 @@ public final class FabricClient: Sendable {
                 idempotent: true // All Fabric reads are idempotent.
             )
         } catch {
+            // fabric-05: log the raw HTTPClientError (or transport error) before
+            // classification so a fast failure — e.g. a cached 404 served by
+            // URLSession without a real network round-trip — is observable in
+            // unredacted DEBUG streams.  The message is compile-time eliminated
+            // in Release builds; alias is .public (not PII), error is .public in
+            // DEBUG only.
+            #if DEBUG
+            Self.log.debug(
+                "FabricClient[D]: raw error before FabricError.from alias=\(alias, privacy: .public) error=\(String(describing: error), privacy: .public)"
+            )
+            #endif
             throw FabricError.from(error)
         }
     }
