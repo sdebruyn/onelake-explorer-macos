@@ -4,7 +4,8 @@
 // The dropdown is the "accounts surface" — pick an account, open it in
 // Finder, sign out, add one. Global configuration knobs (cache size,
 // telemetry, open at login, log level, parallel network) all live in
-// the Settings window now, opened via SettingsLink in this menu.
+// the Settings window now, opened via @Environment(\.openSettings) in
+// openPreferences().
 //
 // What used to live here and was moved to the Settings window:
 //   • Cache submenu (storage limit Stepper, Clear Cache)
@@ -133,7 +134,18 @@ struct MenuBarView: View {
 
     private func openPreferences() {
         openSettings()
-        NSApp.activate(ignoringOtherApps: true)
+        // Defer activation so it fires after SwiftUI has had a chance to
+        // create and display the Settings window. On first open, openSettings()
+        // posts through the scene machinery and returns before the window
+        // exists; activating immediately would bring the app to the foreground
+        // with no ordinary window visible yet. Deferring one main-actor turn
+        // gives the window time to appear, ensuring it lands in front.
+        // On subsequent calls (window already exists) the behavior is identical
+        // to the synchronous form — the window is already visible and the Task
+        // body runs at the very next opportunity.
+        Task { @MainActor in
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     // MARK: - About

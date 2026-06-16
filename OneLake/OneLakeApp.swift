@@ -197,8 +197,8 @@ struct OneLakeApp: App {
         // SwiftUI generates the Preferences… menu item under the app
         // menu automatically; LSUIElement apps don't have an app menu,
         // so MenuBarView surfaces its own "Preferences…" entry via
-        // SettingsLink — the macOS 14+ primitive that opens this scene
-        // from anywhere in a SwiftUI tree, including a MenuBarExtra.
+        // @Environment(\.openSettings) — the macOS 14+ primitive that
+        // opens this scene from anywhere in a SwiftUI tree.
         Settings {
             SettingsView()
         }
