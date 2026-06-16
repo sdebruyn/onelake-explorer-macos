@@ -619,17 +619,40 @@ public final class HTTPClient: Sendable {
             authorised.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
         }
 
+        #if DEBUG
+        // net-21: log the absolute request URL and the raw transport outcome
+        // before any status-code classification.  .public in DEBUG so the URL
+        // is visible in unredacted log streams; in Release the message is not
+        // emitted at all (compile-time elimination).
+        Self.log.debug(
+            "HTTPClient[D]: → \(authorised.httpMethod ?? "?", privacy: .public) \(authorised.url?.absoluteString ?? "(nil)", privacy: .public)"
+        )
+        #endif
+
         let data: Data
         let urlResponse: URLResponse
         do {
             (data, urlResponse) = try await session.data(for: authorised)
         } catch {
+            #if DEBUG
+            Self.log.debug(
+                "HTTPClient[D]: ← transport error \(String(describing: error), privacy: .public)"
+            )
+            #endif
             return (nil, nil, error)
         }
 
         guard let httpResponse = urlResponse as? HTTPURLResponse else {
             return (nil, nil, URLError(.badServerResponse))
         }
+
+        #if DEBUG
+        // net-21: log the HTTP status so a fast non-network response (e.g.
+        // served from URLCache) is distinguishable from a live round-trip.
+        Self.log.debug(
+            "HTTPClient[D]: ← HTTP \(httpResponse.statusCode, privacy: .public) \(authorised.url?.absoluteString ?? "(nil)", privacy: .public)"
+        )
+        #endif
 
         // net-19: enforce the response-size limit only for successful (2xx)
         // responses — those are the bodies the caller actually wants to keep.
@@ -764,10 +787,24 @@ extension URLSession {
     /// no overall `timeoutIntervalForResource` limit so large downloads are
     /// not killed mid-body. Callers control the overall deadline via
     /// Swift Concurrency task cancellation / `withTimeout`.
+    ///
+    /// URL caching is explicitly disabled (`urlCache = nil`,
+    /// `requestCachePolicy = .reloadIgnoringLocalCacheData`) so that a
+    /// stale or negative (404) entry in `URLCache.shared` can never be
+    /// served to the FPE without a live network round-trip.  Without this,
+    /// a previously cached 404 from `api.fabric.microsoft.com/v1/workspaces`
+    /// can be returned in <3 ms — making `FabricClient` appear to fail with
+    /// `HTTPClientError.notFound` before CFNetwork even opens a connection
+    /// (issue-268).
     public static var ofemDefault: URLSession {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = .infinity
+        // net-20: disable the shared URL cache so stale or negative entries
+        // (e.g. a previously cached 404 for the Fabric workspaces endpoint)
+        // are never served without a real network round-trip.
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: config)
     }
 }
