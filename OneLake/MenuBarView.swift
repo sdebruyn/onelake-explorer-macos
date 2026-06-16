@@ -183,15 +183,16 @@ private struct AccountSubmenu: View {
     private static let log = Logger(subsystem: ofemSubsystem, category: "menubar-view")
 
     var body: some View {
-        // Show an auth-error callout when this account's token cannot be
-        // acquired silently. Displayed above the action buttons so it is
-        // the first thing the user reads when opening the per-account submenu.
-        if model.accountNeedsSignIn(alias: account.alias) {
-            Text("Sign-in required")
-                .foregroundStyle(.orange)
-                .disabled(true)
-            Divider()
-        }
+        // Per-account status line: shows "Running" when healthy or "Sign-in
+        // required" (orange) when the token cannot be acquired silently. Always
+        // rendered so the submenu has a consistent status row regardless of auth
+        // state.
+        let needsSignIn = model.accountNeedsSignIn(alias: account.alias)
+        Text(needsSignIn ? "Sign-in required" : "Running")
+            .foregroundStyle(needsSignIn ? .orange : .secondary)
+            .disabled(true)
+
+        Divider()
 
         Button("Open in Finder") {
             openInFinder()
@@ -199,12 +200,12 @@ private struct AccountSubmenu: View {
 
         Divider()
 
-        // "Sign in again" refreshes the MSAL tokens for this account via the
-        // same two-step interactive browser flow used at first sign-in. Always
-        // shown (harmless when the account is healthy — it just refreshes consent)
-        // to avoid menu-state churn from showing/hiding it based on needsSignIn.
-        Button("Sign In Again…") {
-            signInAgain()
+        // "Sign In Again…" is only shown when this account's token cannot be
+        // acquired silently. Hidden for healthy accounts to avoid confusion.
+        if needsSignIn {
+            Button("Sign In Again…") {
+                signInAgain()
+            }
         }
 
         // "Set as Default" is hidden (replaced by the checkmark in the
