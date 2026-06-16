@@ -25,6 +25,24 @@
 	     in project.yml) and embeds it automatically in the built bundle. A
 	     duplicate hardcoded value here creates drift risk if the floor is ever
 	     bumped. -->
+	<!-- MSAL requires the redirect URI's custom scheme to be registered in
+	     the running bundle's Info.plist. The FPE uses its own bundle ID
+	     (dev.debruyn.ofem.fileprovider) for silent token acquisition, so it
+	     needs its own msauth.<bundleID> URL scheme entry. Without this,
+	     MSAL's local bundle-ID validation fails with -42011 before any
+	     network call and every silent token acquisition returns an error,
+	     leaving the Finder mount empty. Mirrors the entry in OneLake/Info.plist. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.debruyn.ofem.fileprovider</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>msauth.dev.debruyn.ofem.fileprovider</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>

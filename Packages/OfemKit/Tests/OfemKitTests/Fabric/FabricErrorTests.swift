@@ -324,4 +324,70 @@ struct FabricErrorTests {
         if case .cancelled = result { /* correct */ }
         else { Issue.record("expected .cancelled for CancellationError (fabric-02), got \(result)") }
     }
+
+    // MARK: - Fix #272: tokenAcquisitionFailed always maps to .unauthorized
+
+    @Test("from(.tokenAcquisitionFailed(interactionRequired)) → .unauthorized (#272 regression)")
+    func fromTokenAcquisitionFailedInteractionRequired() {
+        // Regression for #272: previously only the interactionRequired inner
+        // case mapped to .unauthorized; all other inner errors fell through to
+        // .httpError, causing silent empty Finder mounts.
+        let result = FabricError.from(HTTPClientError.tokenAcquisitionFailed(OfemAuthError.interactionRequired))
+        if case .unauthorized = result { /* correct */ }
+        else { Issue.record("expected .unauthorized for tokenAcquisitionFailed(interactionRequired), got \(result)") }
+    }
+
+    @Test("from(.tokenAcquisitionFailed(silentTokenFailed)) → .unauthorized (#272 regression: MSAL config error path)")
+    func fromTokenAcquisitionFailedSilentTokenFailed() {
+        // Regression for #272: the FPE bundle-ID mismatch (MSAL -42011) causes
+        // silentToken to throw OfemAuthError.silentTokenFailed, which becomes
+        // tokenAcquisitionFailed(silentTokenFailed). This MUST map to .unauthorized
+        // so Finder shows an auth-required indicator rather than a silent empty folder.
+        let result = FabricError.from(HTTPClientError.tokenAcquisitionFailed(OfemAuthError.silentTokenFailed("test")))
+        if case .unauthorized = result { /* correct */ }
+        else { Issue.record("expected .unauthorized for tokenAcquisitionFailed(silentTokenFailed), got \(result)") }
+    }
+
+    @Test("from(.tokenAcquisitionFailed(arbitrary error)) → .unauthorized (#272 regression: any token failure)")
+    func fromTokenAcquisitionFailedArbitraryError() {
+        // Regression for #272: any tokenAcquisitionFailed, including wrapping an
+        // arbitrary NSError (e.g. raw MSAL -42011), must map to .unauthorized.
+        struct ArbitraryError: Error {}
+        let result = FabricError.from(HTTPClientError.tokenAcquisitionFailed(ArbitraryError()))
+        if case .unauthorized = result { /* correct */ }
+        else { Issue.record("expected .unauthorized for tokenAcquisitionFailed(arbitrary), got \(result)") }
+    }
+
+    @Test("from(.tokenAcquisitionFailed) does NOT map to .notFound (#272: misclassification regression)")
+    func fromTokenAcquisitionFailedNotNotFound() {
+        // Regression for #272: tokenAcquisitionFailed must NEVER map to .notFound.
+        // Prior to the fix the silentTokenFailed path fell through to .httpError;
+        // this test ensures the .notFound case is never reached for auth failures.
+        let result = FabricError.from(HTTPClientError.tokenAcquisitionFailed(OfemAuthError.silentTokenFailed("alias")))
+        if case .notFound = result {
+            Issue.record("tokenAcquisitionFailed must NOT map to .notFound (#272 misclassification)")
+        }
+        // Any case other than .notFound is acceptable; .unauthorized is expected.
+    }
+
+    @Test("from(.notFound) still maps to .notFound after #272 fix (genuine 404 unaffected)")
+    func fromNotFoundUnchangedAfter272Fix() {
+        // Regression guard: the #272 fix must not affect genuine HTTP 404 mapping.
+        let result = FabricError.from(HTTPClientError.notFound)
+        if case .notFound = result { /* correct */ }
+        else { Issue.record("genuine .notFound must still map to .notFound, got \(result)") }
+    }
+
+    @Test("from(.retriesExhausted with tokenAcquisitionFailed last) → .unauthorized (#272: broadened fabric-04)")
+    func fromRetriesExhaustedWithTokenAcquisitionFailed() {
+        // fabric-04 broadened by #272: a retry loop whose last error is ANY
+        // tokenAcquisitionFailed (not just interactionRequired) must surface as
+        // .unauthorized. Covers the FPE bundle-ID mismatch case where every
+        // attempt in the retry loop fails with the same MSAL -42011 error.
+        struct ArbitraryTokenError: Error {}
+        let lastErr = HTTPClientError.tokenAcquisitionFailed(ArbitraryTokenError())
+        let result = FabricError.from(HTTPClientError.retriesExhausted(attempts: 3, last: lastErr))
+        if case .unauthorized = result { /* correct */ }
+        else { Issue.record("retriesExhausted(last: tokenAcquisitionFailed) must map to .unauthorized, got \(result)") }
+    }
 }

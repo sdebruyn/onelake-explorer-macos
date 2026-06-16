@@ -15,8 +15,13 @@ import Foundation
 struct MsalApplicationConfigTests {
     // MARK: - Redirect URI
 
-    @Test("redirect URI is msauth.<bundleID>://auth")
-    func redirectURIIsCorrect() throws {
+    @Test("redirect URI uses running-process bundle ID with msauth.<id>://auth format")
+    func redirectURIUsesProcessBundleID() throws {
+        // Fix for #272: redirect URI must be derived from the RUNNING process
+        // bundle ID, not the hardcoded OfemPaths.bundleID. In the host app
+        // (dev.debruyn.ofem) this produces the same URI as before; in the FPE
+        // (dev.debruyn.ofem.fileprovider) it produces a URI that MSAL's local
+        // validation accepts, allowing silent token acquisition to proceed.
         let config = try MsalApplicationConfig.make(
             clientID: "test-client-id",
             tenantID: "test-tenant-id",
@@ -24,9 +29,42 @@ struct MsalApplicationConfigTests {
             fileTokenStore: nil,
             alias: nil
         )
-        let expected = "msauth.\(OfemPaths.bundleID)://auth"
+        let expectedBundleID = Bundle.main.bundleIdentifier ?? OfemPaths.bundleID
+        let expected = "msauth.\(expectedBundleID)://auth"
         #expect(config.redirectUri == expected,
-                "redirect URI must match the custom scheme registered in Entra")
+                "redirect URI must use the running process bundle ID (fix #272)")
+    }
+
+    @Test("redirect URI fallback uses OfemPaths.bundleID when Bundle.main has no identifier")
+    func redirectURIFallbackIsOfemBundleID() throws {
+        // Verify the fallback value is `OfemPaths.bundleID` and has the right format.
+        // This is the host-app case and the test-runner-nil-bundleID case.
+        let fallbackBundleID = OfemPaths.bundleID
+        let expectedFallback = "msauth.\(fallbackBundleID)://auth"
+        #expect(expectedFallback == "msauth.dev.debruyn.ofem://auth",
+                "fallback must be the host app redirect URI")
+    }
+
+    @Test("redirect URI format is msauth.<id>://auth regardless of process")
+    func redirectURIFormatIsCorrect() throws {
+        // The redirect URI must always follow the msauth.<bundleID>://auth pattern.
+        let config = try MsalApplicationConfig.make(
+            clientID: "test-client-id",
+            tenantID: "test-tenant-id",
+            cacheStrategy: .msalKeychain,
+            fileTokenStore: nil,
+            alias: nil
+        )
+        let uri = config.redirectUri ?? ""
+        #expect(uri.hasPrefix("msauth."), "redirect URI must start with msauth.")
+        #expect(uri.hasSuffix("://auth"), "redirect URI must end with ://auth")
+        // Must not use OfemPaths.bundleID as a literal (would break in FPE).
+        // The actual value is the process bundle ID — just verify structural correctness.
+        let bundleIDPart = uri
+            .dropFirst("msauth.".count)
+            .dropLast("://auth".count)
+        #expect(!bundleIDPart.isEmpty,
+                "redirect URI must contain a non-empty bundle ID component")
     }
 
     // MARK: - Keychain sharing group

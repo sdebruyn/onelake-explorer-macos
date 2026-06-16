@@ -192,9 +192,22 @@ enum MsalApplicationConfig {
         // http/https schemes are rejected by ASWebAuthenticationSession
         // as invalid custom callback schemes. The Entra App Registration
         // must list this URI under "Mobile and desktop applications".
+        //
+        // Per-process bundle ID: MSAL validates that the redirect URI's
+        // bundle-ID component matches the RUNNING process's bundle ID (local
+        // check, no network). Using the hardcoded `OfemPaths.bundleID`
+        // (= "dev.debruyn.ofem") worked for the host app but caused an
+        // immediate -42011 failure in the FPE (bundle ID
+        // "dev.debruyn.ofem.fileprovider") so every silent token call
+        // failed before reaching the network — emptying the Finder mount.
+        // Fix: derive the redirect URI from the running process's bundle ID.
+        // `OfemPaths.bundleID` is intentionally unchanged — it is correct for
+        // app-group container, Keychain group, and file paths; only the MSAL
+        // redirect URI must be per-process.
+        let processBundleID = Bundle.main.bundleIdentifier ?? OfemPaths.bundleID
         let config = MSALPublicClientApplicationConfig(
             clientId: clientID,
-            redirectUri: "msauth.\(OfemPaths.bundleID)://auth",
+            redirectUri: "msauth.\(processBundleID)://auth",
             authority: authority
         )
 

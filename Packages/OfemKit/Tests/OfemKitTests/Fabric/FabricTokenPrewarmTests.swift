@@ -1,27 +1,29 @@
 // FabricTokenPrewarmTests.swift
-// Regression tests for issue #260: root enumeration fast-fails with
-// FabricError before the HTTP response arrives because the Fabric (Power BI)
-// token is not in MSAL's cache after an OneLake-only interactive login.
+// Regression tests for issue #260 and issue #272.
 //
-// Two defects were fixed:
+// Issue #260: root enumeration fast-failed with FabricError before the HTTP
+// response arrived because the Fabric (Power BI) token was not in MSAL's
+// cache after an OneLake-only interactive login.
+//
+// Two defects were fixed in #260:
 //
 // 1. FabricError.from mis-mapped HTTPClientError.tokenAcquisitionFailed to
 //    .httpError (→ cannotSynchronize) instead of .unauthorized (→ notAuthenticated).
-//    Only tokenAcquisitionFailed wrapping OfemAuthError.interactionRequired maps
-//    to .unauthorized; transient failures (silentTokenFailed) map to .httpError.
-//    A consent failure must surface as NSFileProviderError(.notAuthenticated) so
-//    the FPE can prompt re-auth, rather than silently showing an empty folder.
 //
 // 2. SharedOfemAuth.signIn now runs a second interactive browser flow for the
 //    Fabric (Power BI) scopes immediately after the OneLake interactive login.
 //    AADSTS28000 prevents combining both resource audiences in one interactive
 //    request; two sequential flows are required. No admin pre-consent is assumed.
 //
-// These tests cover defect 1 (the error-mapping path, which is host-less and
-// unit-testable). They also verify that a FabricClient wired with a
-// TokenProvider that resolves after a short delay correctly awaits the token
-// and returns workspaces — ensuring the enumerate path does not fast-fail
-// before token resolution.
+// Issue #272: the #260 fix only mapped interactionRequired to .unauthorized;
+// other inner errors (including silentTokenFailed, which wraps MSAL -42011 local
+// bundle-ID config errors in the FPE) still fell through to .httpError →
+// cannotSynchronize, leaving the Finder mount silently empty. Fix: ALL
+// tokenAcquisitionFailed variants map to .unauthorized regardless of inner error.
+//
+// These tests cover the error-mapping path (host-less, unit-testable) and verify
+// that a FabricClient wired with a delayed TokenProvider correctly awaits the
+// token and returns workspaces — ensuring the enumerate path does not fast-fail.
 
 import Foundation
 import Testing
@@ -111,21 +113,27 @@ struct FabricTokenPrewarmTests {
         }
     }
 
-    @Test("tokenAcquisitionFailed(silentTokenFailed) maps to FabricError.httpError, not .unauthorized")
-    func tokenAcquisitionFailedSilentTokenMapsToHttpError() {
-        // OfemAuthError.silentTokenFailed wraps a transient network error during
-        // MSAL's silent refresh (e.g. Entra /token endpoint timeout, DNS failure).
-        // This is NOT a consent/auth failure — mapping it to .unauthorized would
-        // cause the FPE to surface NSFileProviderError(.notAuthenticated) and
-        // prompt the user to re-authenticate during a transient outage.
-        // Correct mapping: .httpError → FPError.cannotSynchronize.
+    @Test("tokenAcquisitionFailed(silentTokenFailed) maps to FabricError.unauthorized (#272: all token failures → .unauthorized)")
+    func tokenAcquisitionFailedSilentTokenMapsToUnauthorized() {
+        // Issue #272: OfemAuthError.silentTokenFailed is now also mapped to
+        // .unauthorized. This covers the FPE bundle-ID mismatch case (MSAL -42011)
+        // where MSAL rejects the redirect URI locally — it surfaces as silentTokenFailed
+        // but is a permanent configuration error, not a transient network failure.
+        // Mapping all tokenAcquisitionFailed variants to .unauthorized ensures Finder
+        // shows an auth-required indicator rather than a silent empty folder.
+        //
+        // Note: the previous behavior (silentTokenFailed → .httpError → cannotSynchronize)
+        // was intended to avoid prompting re-auth during transient network outages. However,
+        // the -42011 MSAL local validation failure is indistinguishable from a transient
+        // MSAL network failure at this layer, and surfacing .unauthorized (which Finder
+        // renders as an auth prompt) is always preferable to a silent empty folder.
         let inner = OfemAuthError.silentTokenFailed("work")
         let httpErr = HTTPClientError.tokenAcquisitionFailed(inner)
         let mapped = FabricError.from(httpErr)
-        if case .httpError = mapped {
-            // Correct: transient failure, not a consent/auth problem.
+        if case .unauthorized = mapped {
+            // Correct: all token acquisition failures surface as .unauthorized (#272).
         } else {
-            Issue.record("Expected .httpError for silentTokenFailed (transient network error), got \(mapped). Mapping to .unauthorized would prompt re-auth during an outage.")
+            Issue.record("Expected .unauthorized for tokenAcquisitionFailed(silentTokenFailed) after #272 fix, got \(mapped).")
         }
     }
 
@@ -146,20 +154,21 @@ struct FabricTokenPrewarmTests {
                 Comment("Expected .notAuthenticated for Fabric token failure, got \(code). FPError.cannotSynchronize was the pre-fix result that caused the empty Finder mount."))
     }
 
-    @Test("silentTokenFailed classifies as cannotSynchronize, not notAuthenticated")
-    func silentTokenFailedClassifiesAsCannotSynchronize() {
-        // OfemAuthError.silentTokenFailed is a transient network failure (e.g.
-        // Entra /token endpoint DNS or TCP error). It must NOT reach
-        // FPError.notAuthenticated, which would prompt the user to re-authenticate
-        // during a temporary outage. Correct path:
-        //   silentTokenFailed → tokenAcquisitionFailed → FabricError.httpError
-        //   → FPError.cannotSynchronize
+    @Test("silentTokenFailed classifies as notAuthenticated (#272: all token failures → notAuthenticated)")
+    func silentTokenFailedClassifiesAsNotAuthenticated() {
+        // Issue #272: silentTokenFailed now maps to .unauthorized → notAuthenticated.
+        // This covers the FPE bundle-ID mismatch (MSAL -42011) which surfaces as
+        // silentTokenFailed. An auth indicator in Finder is always preferable to a
+        // silent empty folder, even if the underlying cause is a transient failure.
+        // Correct path after #272:
+        //   silentTokenFailed → tokenAcquisitionFailed → FabricError.unauthorized
+        //   → FPError.notAuthenticated
         let inner = OfemAuthError.silentTokenFailed("work")
         let httpErr = HTTPClientError.tokenAcquisitionFailed(inner)
         let fabricErr = FabricError.from(httpErr)
         let code = FPError.classify(fabricErr)
-        #expect(code == .cannotSynchronize,
-                Comment("Expected .cannotSynchronize for silentTokenFailed (transient), got \(code). .notAuthenticated would prompt re-auth during a transient outage."))
+        #expect(code == .notAuthenticated,
+                Comment("Expected .notAuthenticated for silentTokenFailed after #272 fix, got \(code)."))
     }
 
     // MARK: - retriesExhausted wrapping tokenAcquisitionFailed
@@ -184,21 +193,22 @@ struct FabricTokenPrewarmTests {
         }
     }
 
-    @Test("retriesExhausted(last: tokenAcquisitionFailed(silentTokenFailed)) maps to .retriesExhausted")
-    func retriesExhaustedWrappingTransientTokenFailMapsToRetriesExhausted() {
-        // When the last error is a transient token failure (not consent-required),
-        // the overall retriesExhausted should still map to .retriesExhausted
-        // → FPError.serverUnreachable, not .unauthorized.
+    @Test("retriesExhausted(last: tokenAcquisitionFailed(silentTokenFailed)) maps to .unauthorized (#272)")
+    func retriesExhaustedWrappingTransientTokenFailMapsToUnauthorized() {
+        // Issue #272 broadens fabric-04: ANY tokenAcquisitionFailed wrapped as the
+        // last error inside retriesExhausted must map to .unauthorized, not
+        // .retriesExhausted. This covers the FPE bundle-ID mismatch (MSAL -42011)
+        // where every retry attempt fails with the same local MSAL config error.
         let authErr = OfemAuthError.silentTokenFailed("work")
         let wrapped = HTTPClientError.retriesExhausted(
             attempts: 3,
             last: HTTPClientError.tokenAcquisitionFailed(authErr)
         )
         let mapped = FabricError.from(wrapped)
-        if case .retriesExhausted = mapped {
-            // Correct: transient token failure inside retries → serverUnreachable.
+        if case .unauthorized = mapped {
+            // Correct: any token failure inside retriesExhausted → .unauthorized (#272).
         } else {
-            Issue.record("Expected .retriesExhausted for retriesExhausted(last: tokenAcquisitionFailed(silentTokenFailed)), got \(mapped).")
+            Issue.record("Expected .unauthorized for retriesExhausted(last: tokenAcquisitionFailed(silentTokenFailed)) after #272 fix, got \(mapped).")
         }
     }
 
