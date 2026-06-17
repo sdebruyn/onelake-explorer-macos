@@ -1,0 +1,73 @@
+# Safety-net workflow: force-pauses the ofemci Fabric capacity once a week.
+# The integration workflow suspends the capacity after every run, but a crashed
+# or cancelled runner (or a manual resume) can leave it Active and billing.
+# This job acts as a backstop, ensuring the capacity is Paused every Monday.
+
+name: Pause CI Fabric capacity
+
+on:
+  # Runs Monday at 00:00 UTC (GitHub cron schedules are always UTC).
+  schedule:
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+# Share the same concurrency group as the integration suite so this job never
+# races a live integration run for the capacity state.
+concurrency:
+  group: integration-tests
+  cancel-in-progress: false
+
+jobs:
+  pause-capacity:
+    runs-on: ubuntu-latest
+    environment: integration
+    timeout-minutes: 15
+    steps:
+      - uses: azure/login@v3.0.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify Azure login
+        run: az account show -o none
+
+      - name: Suspend Fabric capacity
+        run: |
+          set -euo pipefail
+          CAPACITY_ID="${{ vars.OFEM_TEST_CAPACITY_ID }}"
+
+          # Wait for the capacity to leave any transitional state, up to 5 min
+          for _ in {1..30}; do
+            STATE=$(az resource show --ids "$CAPACITY_ID" --query 'properties.state' -o tsv 2>/dev/null || echo "Unknown")
+            echo "Pre-suspend state: $STATE"
+            case "$STATE" in
+              Paused)  echo "Already Paused, skipping suspend"; exit 0 ;;
+              Active)  break ;;
+              *)       sleep 10 ;;
+            esac
+          done
+
+          # Issue suspend, but tolerate transient BadRequest
+          for attempt in {1..6}; do
+            if az resource invoke-action --ids "$CAPACITY_ID" --action suspend; then
+              break
+            fi
+            echo "Suspend attempt $attempt failed (likely transient), waiting 15s..."
+            sleep 15
+          done
+
+          # Poll until Paused, max 5 min
+          for _ in {1..30}; do
+            STATE=$(az resource show --ids "$CAPACITY_ID" --query 'properties.state' -o tsv)
+            echo "Post-suspend state: $STATE"
+            [[ "$STATE" == "Paused" ]] && exit 0
+            sleep 10
+          done
+
+          echo "Capacity did not reach Paused state within 5 minutes" >&2
+          exit 1
