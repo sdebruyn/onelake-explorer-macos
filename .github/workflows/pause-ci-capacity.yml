@@ -33,9 +33,6 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Verify Azure login
-        run: az account show -o none
-
       - name: Suspend Fabric capacity
         run: |
           set -euo pipefail
@@ -53,17 +50,23 @@ jobs:
           done
 
           # Issue suspend, but tolerate transient BadRequest
+          suspended=false
           for attempt in {1..6}; do
             if az resource invoke-action --ids "$CAPACITY_ID" --action suspend; then
+              suspended=true
               break
             fi
             echo "Suspend attempt $attempt failed (likely transient), waiting 15s..."
             sleep 15
           done
+          if [[ "$suspended" != "true" ]]; then
+            echo "Suspend action failed after all retries" >&2
+            exit 1
+          fi
 
           # Poll until Paused, max 5 min
           for _ in {1..30}; do
-            STATE=$(az resource show --ids "$CAPACITY_ID" --query 'properties.state' -o tsv)
+            STATE=$(az resource show --ids "$CAPACITY_ID" --query 'properties.state' -o tsv 2>/dev/null || echo "Unknown")
             echo "Post-suspend state: $STATE"
             [[ "$STATE" == "Paused" ]] && exit 0
             sleep 10
