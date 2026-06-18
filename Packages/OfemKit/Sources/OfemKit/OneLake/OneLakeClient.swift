@@ -50,6 +50,7 @@ public final class OneLakeClient: Sendable {
     private let http: HTTPClient
     private let tokenProvider: any TokenProvider
     private let baseURL: URL
+    private let logger: OfemLogger
     /// Effective chunk size for append operations. Overridable in tests.
     let chunkSize: Int
 
@@ -65,16 +66,21 @@ public final class OneLakeClient: Sendable {
     /// - baseURL: DFS endpoint. Default: ``defaultBaseURL``.
     /// - chunkSize: Maximum bytes per append PATCH. Defaults to 4 MiB.
     ///   Override in tests to exercise multi-chunk paths with small payloads.
+    /// - logger: Structured logger for debug request/pagination traces.
+    ///   Defaults to an ``OfemLogger`` with default ``LogConfiguration`` so
+    ///   existing call sites compile unchanged.
     public init(
         http: HTTPClient,
         tokenProvider: any TokenProvider,
         baseURL: URL = OneLakeClient.defaultBaseURL,
-        chunkSize: Int = 4 * 1024 * 1024
+        chunkSize: Int = 4 * 1024 * 1024,
+        logger: OfemLogger = OfemLogger()
     ) {
         self.http = http
         self.tokenProvider = tokenProvider
         self.baseURL = baseURL
         self.chunkSize = chunkSize
+        self.logger = logger
     }
 
     // MARK: - ListPath
@@ -115,6 +121,8 @@ public final class OneLakeClient: Sendable {
             }
 
             let url = try buildURL { try oneLakeListURL(base: baseURL, workspaceGUID: workspaceGUID, query: queryItems) }
+            let requestPath = url.path
+            logger.debug("onelake request", metadata: ["method": "GET", "path": requestPath])
             let (data, response) = try await doRequest(
                 alias: alias,
                 method: "GET",
@@ -123,6 +131,7 @@ public final class OneLakeClient: Sendable {
                 extraHeaders: nil,
                 idempotent: true
             )
+            logger.debug("onelake response", metadata: ["method": "GET", "path": requestPath, "status": "\(response.statusCode)"])
 
             let body: RawListBody
             do {
@@ -135,13 +144,27 @@ public final class OneLakeClient: Sendable {
             logRejectedHeaders(response)
 
             let nextCont = response.value(forHTTPHeaderField: "x-ms-continuation")
+            let beforeCount = out.count
             for raw in body.paths ?? [] {
                 // onelake-12: strip the itemGUID prefix so consumers get an
                 // item-relative name rather than the raw workspace-rooted string.
                 out.append(convertRawEntry(raw, itemGUID: itemGUID))
             }
+            let pageItems = out.count - beforeCount
 
             guard let next = nextCont, !next.isEmpty else {
+                logger.debug("onelake list page", metadata: [
+                    "path": requestPath,
+                    "page": "\(page + 1)",
+                    "itemsThisPage": "\(pageItems)",
+                    "totalSoFar": "\(out.count)",
+                    "hasContinuation": "false",
+                ])
+                logger.debug("onelake list complete", metadata: [
+                    "path": requestPath,
+                    "totalPages": "\(page + 1)",
+                    "totalItems": "\(out.count)",
+                ])
                 return ListResult(entries: out)
             }
             // onelake-11: detect any cycle (not just immediately adjacent tokens).
@@ -151,6 +174,13 @@ public final class OneLakeClient: Sendable {
             seenContinuations.insert(next)
             continuation = next
             Self.log.debug("OneLakeClient: list page \(page + 1, privacy: .public), \(out.count, privacy: .public) entries so far")
+            logger.debug("onelake list page", metadata: [
+                "path": requestPath,
+                "page": "\(page + 1)",
+                "itemsThisPage": "\(pageItems)",
+                "totalSoFar": "\(out.count)",
+                "hasContinuation": "true",
+            ])
         }
         throw OneLakeError.paginationExceeded(Self.maxPaginationPages)
     }

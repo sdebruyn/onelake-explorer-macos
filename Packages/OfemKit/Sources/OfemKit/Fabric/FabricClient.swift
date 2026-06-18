@@ -45,6 +45,7 @@ public final class FabricClient: Sendable {
     private let http: HTTPClient
     private let tokenProvider: any TokenProvider
     private let baseURL: URL
+    private let logger: OfemLogger
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "FabricClient")
 
@@ -56,14 +57,19 @@ public final class FabricClient: Sendable {
     /// - http: Shared ``HTTPClient`` (carries gate registry + retry policy).
     /// - tokenProvider: Supplies bearer tokens for account aliases.
     /// - baseURL: Fabric REST endpoint. Default: `https://api.fabric.microsoft.com`.
+    /// - logger: Structured logger for debug request/pagination traces.
+    ///   Defaults to an ``OfemLogger`` with default ``LogConfiguration`` so
+    ///   existing call sites compile unchanged.
     public init(
         http: HTTPClient,
         tokenProvider: any TokenProvider,
-        baseURL: URL = fabricDefaultBaseURL
+        baseURL: URL = fabricDefaultBaseURL,
+        logger: OfemLogger = OfemLogger()
     ) {
         self.http = http
         self.tokenProvider = tokenProvider
         self.baseURL = baseURL
+        self.logger = logger
     }
 
     // MARK: - Workspace operations
@@ -282,15 +288,19 @@ public final class FabricClient: Sendable {
         url: URL
     ) async throws -> (Data, HTTPURLResponse) {
         let req = fabricRequest(method: method, url: url)
-        Self.log.debug("FabricClient: \(method, privacy: .public) \(url.path, privacy: .public)")
+        let path = url.path
+        Self.log.debug("FabricClient: \(method, privacy: .public) \(path, privacy: .public)")
+        logger.debug("fabric request", metadata: ["method": method, "path": path])
         do {
-            return try await http.execute(
+            let (data, response) = try await http.execute(
                 req,
                 tokenProvider: tokenProvider,
                 alias: alias,
                 scope: .fabric,
                 idempotent: true // All Fabric reads are idempotent.
             )
+            logger.debug("fabric response", metadata: ["method": method, "path": path, "status": "\(response.statusCode)"])
+            return (data, response)
         } catch {
             // fabric-05: log the raw HTTPClientError (or transport error) before
             // classification so a fast failure — e.g. a cached 404 served by
@@ -334,7 +344,8 @@ public final class FabricClient: Sendable {
                 throw FabricError.decodeFailed(error)
             }
 
-            all.append(contentsOf: pr.value.compactMap(convert))
+            let pageItems = pr.value.compactMap(convert)
+            all.append(contentsOf: pageItems)
 
             // Determine how to advance (token branch or URI branch).
             //
@@ -357,6 +368,13 @@ public final class FabricClient: Sendable {
                 seenURIs.removeAll()
                 nextURL = try fabricListURL(base: baseURL, path: path, continuationToken: tok)
                 Self.log.debug("FabricClient: following continuationToken, page \(page + 1, privacy: .public), \(all.count, privacy: .public) items so far")
+                logger.debug("fabric list page", metadata: [
+                    "path": path,
+                    "page": "\(page + 1)",
+                    "itemsThisPage": "\(pageItems.count)",
+                    "totalSoFar": "\(all.count)",
+                    "hasContinuation": "true",
+                ])
             } else if let uriString = pr.continuationUri, !uriString.isEmpty {
                 // net-12: a continuationUri-only response means more pages exist.
                 if seenURIs.contains(uriString) {
@@ -368,8 +386,27 @@ public final class FabricClient: Sendable {
                 seenTokens.removeAll()
                 nextURL = try resolveContinuationURI(uriString, base: baseURL)
                 Self.log.debug("FabricClient: following continuationUri, page \(page + 1, privacy: .public), \(all.count, privacy: .public) items so far")
+                logger.debug("fabric list page", metadata: [
+                    "path": path,
+                    "page": "\(page + 1)",
+                    "itemsThisPage": "\(pageItems.count)",
+                    "totalSoFar": "\(all.count)",
+                    "hasContinuation": "true",
+                ])
             } else {
                 // No continuation — last page.
+                logger.debug("fabric list page", metadata: [
+                    "path": path,
+                    "page": "\(page + 1)",
+                    "itemsThisPage": "\(pageItems.count)",
+                    "totalSoFar": "\(all.count)",
+                    "hasContinuation": "false",
+                ])
+                logger.debug("fabric list complete", metadata: [
+                    "path": path,
+                    "totalPages": "\(page + 1)",
+                    "totalItems": "\(all.count)",
+                ])
                 return all
             }
         }
