@@ -193,7 +193,7 @@ final class MenuStatusModel: ObservableObject {
     ///
     /// When the account needs sign-in the label reflects the auth-error state
     /// ("Sign-in required") so the submenu header conveys the problem even before
-    /// the user reads the orange callout. A healthy account shows "Running".
+    /// the user reads the warning row. A healthy account shows "Running".
     func accountStatusLabel(alias: String) -> String {
         accountNeedsSignIn(alias: alias) ? "Sign-in required" : "Running"
     }
