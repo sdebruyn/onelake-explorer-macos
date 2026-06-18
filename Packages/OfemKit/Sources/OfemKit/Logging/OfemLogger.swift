@@ -50,6 +50,21 @@ public struct OfemLogger: Sendable {
         )
     }
 
+    // MARK: - Level check
+
+    /// Returns `true` when the configured level is `.debug`.
+    ///
+    /// Use this at call sites on hot paths to skip metadata allocation when
+    /// debug logging is off:
+    /// ```swift
+    /// if logger.isDebugEnabled {
+    ///     logger.debug("cache fetch", metadata: [...])
+    /// }
+    /// ```
+    public var isDebugEnabled: Bool {
+        configuration.level <= .debug
+    }
+
     // MARK: - Logging methods
 
     /// Logs a debug-level message.
