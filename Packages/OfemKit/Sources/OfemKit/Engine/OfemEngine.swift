@@ -333,8 +333,8 @@ public actor OfemEngine {
         let fabricURL  = httpBaseURLs?.fabric  ?? OfemEngine.defaultFabricBaseURL
 
         let tokenProvider = TokenProviderAdapter(auth: auth)
-        let onelake = OneLakeClient(http: http, tokenProvider: tokenProvider, baseURL: oneLakeURL)
-        let fabric  = FabricClient(http: http, tokenProvider: tokenProvider, baseURL: fabricURL)
+        let onelake = OneLakeClient(http: http, tokenProvider: tokenProvider, baseURL: oneLakeURL, logger: logger)
+        let fabric  = FabricClient(http: http, tokenProvider: tokenProvider, baseURL: fabricURL, logger: logger)
 
         // 4. Sync engine (per-alias).
         let scratchBase = paths.cacheDir.appendingPathComponent("partials")
