@@ -167,38 +167,23 @@ extension DomainItem {
         }
 
         // Sentinel rows written by SyncEngine.listWorkspaces use VirtualIDs.workspaceID
-        // for both workspaceID and itemID. Map them to the identifiers that the dedicated
-        // constructors (root(alias:) and from(workspace:)) produce so that delta consumers
-        // receive identically-shaped items regardless of which code path built the DomainItem.
+        // for both workspaceID and itemID. The generic .item / .path branch below would
+        // embed the sentinel into the identifier, so handle them explicitly here.
         if record.workspaceID == VirtualIDs.workspaceID {
             if record.path.isEmpty {
-                // Root-container sentinel row (path == ""):
-                // Map to .root / .root — same shape as DomainItem.root(alias:).
-                // Delta consumers (e.g. enumerateChanges) may encounter this row;
-                // returning it as .root is the least-surprising handling.
-                return DomainItem(
-                    identifier: .root,
-                    parentIdentifier: .root,
-                    filename: record.name,
-                    isDirectory: true,
-                    contentVersion: ContentVersion.fallback(seed: record.name, size: 0, mtime: nil),
-                    metadataVersion: ContentVersion.fallback(seed: record.name, size: 0, mtime: nil),
-                    capabilities: CapabilitySet.readOnly
-                )
-            } else {
-                // Workspace sentinel row (path == <workspace-GUID>):
-                // Map to .workspace / .root — identical to DomainItem.from(workspace:).
-                let wsID = record.path
-                return DomainItem(
-                    identifier: .workspace(workspaceID: wsID),
-                    parentIdentifier: .root,
-                    filename: record.name,
-                    isDirectory: true,
-                    contentVersion: ContentVersion.fallback(seed: wsID, size: 0, mtime: nil),
-                    metadataVersion: ContentVersion.fallback(seed: record.name, size: 0, mtime: nil),
-                    capabilities: CapabilitySet.readOnly
-                )
+                // The root-container sentinel row (path == ""). The root item itself is
+                // never an *enumerated child* — it is the container, produced by
+                // DomainItem.root(alias:) on demand. SyncEngine re-upserts this row with
+                // a fresh syncedAtNs on every listWorkspaces, so it would otherwise land
+                // in every delta batch and feed `.rootContainer` into didUpdate, which is
+                // not a supported use of the change API. Throw so enumeration and delta
+                // consumers (which already skip un-decodable rows) ignore it.
+                throw FPError.invalidRecord("root-container sentinel row is not an enumerable item")
             }
+            // Workspace sentinel row: path holds the workspace GUID. Delegate to
+            // from(workspace:) so the identifier/parent/version shape can never drift
+            // from the dedicated constructor. type is irrelevant to the produced item.
+            return DomainItem.from(workspace: Workspace(id: record.path, displayName: record.name, type: ""))
         }
 
         // Construct the identifier first; derive the parent from it so the

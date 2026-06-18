@@ -876,9 +876,9 @@ struct DomainItemTests {
     // MARK: - #280: sentinel-row mapping in from(record:)
 
     /// Workspace sentinel row (workspaceID == VirtualIDs.workspaceID, path == <GUID>):
-    /// from(record:) must produce the same identifier and parentIdentifier
-    /// as from(workspace:) for the same workspace.
-    @Test func workspaceSentinelRowRoundTripsToWorkspaceIdentifier() throws {
+    /// from(record:) must produce an item equal field-for-field to from(workspace:)
+    /// for the same workspace — the two code paths must never drift.
+    @Test func workspaceSentinelRowRoundTripsToWorkspaceItem() throws {
         let wsGUID = "11111111-2222-3333-4444-555555555555"
         let displayName = "Prod Analytics"
 
@@ -899,19 +899,20 @@ struct DomainItemTests {
 
         let fromRecord = try DomainItem.from(record: record)
 
-        #expect(fromRecord.identifier == reference.identifier,
-                "identifier must equal .workspace(workspaceID: wsGUID)")
-        #expect(fromRecord.parentIdentifier == reference.parentIdentifier,
-                "parentIdentifier must be .root")
+        // Equatable equality covers identifier, parentIdentifier, filename,
+        // isDirectory, size, capabilities, and the version tokens — so this
+        // guards against any field drifting from from(workspace:).
+        #expect(fromRecord == reference)
         #expect(fromRecord.identifier == ItemIdentifier.workspace(workspaceID: wsGUID))
         #expect(fromRecord.parentIdentifier == ItemIdentifier.root)
-        #expect(fromRecord.isDirectory)
-        #expect(fromRecord.capabilities == DomainItem.CapabilitySet.readOnly)
+        #expect(fromRecord.filename == displayName)
     }
 
     /// Root sentinel row (workspaceID == VirtualIDs.workspaceID, path == ""):
-    /// from(record:) must return an item whose identifier and parentIdentifier are .root.
-    @Test func rootSentinelRowMapsToRootIdentifier() throws {
+    /// from(record:) must throw so enumeration / delta consumers skip it. The
+    /// root container is produced on demand by DomainItem.root(alias:) and is
+    /// never an enumerated child, so it must not flow into didUpdate.
+    @Test func rootSentinelRowThrows() {
         let record = MetadataRecord(
             accountAlias: "work",
             workspaceID: VirtualIDs.workspaceID,
@@ -921,12 +922,33 @@ struct DomainItemTests {
             name: "work",
             isDir: true
         )
+        #expect(throws: (any Error).self) {
+            try DomainItem.from(record: record)
+        }
+    }
 
-        let item = try DomainItem.from(record: record)
-        #expect(item.identifier == ItemIdentifier.root)
-        #expect(item.parentIdentifier == ItemIdentifier.root)
-        #expect(item.isDirectory)
-        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+    /// The root-sentinel row throws specifically FPError.invalidRecord, so
+    /// delta consumers classify the skip consistently.
+    @Test func rootSentinelRowThrowsInvalidRecord() {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: VirtualIDs.workspaceID,
+            itemID: VirtualIDs.workspaceID,
+            path: "",
+            parentPath: "",
+            name: "work",
+            isDir: true
+        )
+        do {
+            _ = try DomainItem.from(record: record)
+            Issue.record("Expected an error to be thrown")
+        } catch {
+            if case FPError.invalidRecord = error {
+                // correct
+            } else {
+                Issue.record("Expected FPError.invalidRecord, got \(error)")
+            }
+        }
     }
 
     /// Regression: normal item rows (path == "") must still map to .item / .workspace.
