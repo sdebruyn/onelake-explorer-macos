@@ -166,6 +166,26 @@ extension DomainItem {
             throw FPError.invalidRecord("workspaceID or itemID is empty")
         }
 
+        // Sentinel rows written by SyncEngine.listWorkspaces use VirtualIDs.workspaceID
+        // for both workspaceID and itemID. The generic .item / .path branch below would
+        // embed the sentinel into the identifier, so handle them explicitly here.
+        if record.workspaceID == VirtualIDs.workspaceID {
+            if record.path.isEmpty {
+                // The root-container sentinel row (path == ""). The root item itself is
+                // never an *enumerated child* — it is the container, produced by
+                // DomainItem.root(alias:) on demand. SyncEngine re-upserts this row with
+                // a fresh syncedAtNs on every listWorkspaces, so it would otherwise land
+                // in every delta batch and feed `.rootContainer` into didUpdate, which is
+                // not a supported use of the change API. Throw so enumeration and delta
+                // consumers (which already skip un-decodable rows) ignore it.
+                throw FPError.invalidRecord("root-container sentinel row is not an enumerable item")
+            }
+            // Workspace sentinel row: path holds the workspace GUID. Delegate to
+            // from(workspace:) so the identifier/parent/version shape can never drift
+            // from the dedicated constructor. type is irrelevant to the produced item.
+            return DomainItem.from(workspace: Workspace(id: record.path, displayName: record.name, type: ""))
+        }
+
         // Construct the identifier first; derive the parent from it so the
         // path-splitting logic is owned in exactly one place: ItemIdentifier
         // (fp-03).
