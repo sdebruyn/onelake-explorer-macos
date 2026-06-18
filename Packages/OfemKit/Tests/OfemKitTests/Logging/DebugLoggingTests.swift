@@ -26,24 +26,50 @@ private func makeCapturingLogger(directory: URL) -> OfemLogger {
 }
 
 /// Reads all JSON log lines from `directory/ofem.log` and returns them as
-/// `[String: String]` dictionaries (best-effort; lines that fail to parse are
-/// skipped; non-string values are converted via String(describing:)).
+/// `[String: String]` dictionaries. Non-string values are converted via
+/// `String(describing:)`. Throws `CaptureError.malformedJSON` when any line
+/// is non-empty but fails JSON parsing, so a logger format regression surfaces
+/// immediately rather than silently returning a partial result.
 private func capturedLines(directory: URL) throws -> [[String: String]] {
     let logURL = directory.appendingPathComponent("ofem.log")
     guard FileManager.default.fileExists(atPath: logURL.path) else { return [] }
     let raw = try String(contentsOf: logURL, encoding: .utf8)
-    return raw
-        .split(separator: "\n", omittingEmptySubsequences: true)
-        .compactMap { line -> [String: String]? in
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { return nil }
-            // Flatten every value to a String so assertions stay simple.
-            return obj.mapValues { v -> String in
+    var result: [[String: String]] = []
+    for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
+        let lineStr = String(line)
+        guard let data = lineStr.data(using: .utf8) else {
+            throw CaptureError.invalidUTF8(lineStr)
+        }
+        do {
+            let parsed = try JSONSerialization.jsonObject(with: data)
+            guard let obj = parsed as? [String: Any] else {
+                throw CaptureError.malformedJSON(lineStr)
+            }
+            result.append(obj.mapValues { v -> String in
                 if let s = v as? String { return s }
                 return String(describing: v)
-            }
+            })
+        } catch let err as CaptureError {
+            throw err
+        } catch {
+            throw CaptureError.malformedJSON(lineStr)
         }
+    }
+    return result
+}
+
+private enum CaptureError: Error, CustomStringConvertible {
+    case invalidUTF8(String)
+    case malformedJSON(String)
+
+    var description: String {
+        switch self {
+        case .invalidUTF8(let line):
+            return "capturedLines: line is not valid UTF-8: \(line)"
+        case .malformedJSON(let line):
+            return "capturedLines: line failed JSON parsing — logger format regression? Line: \(line)"
+        }
+    }
 }
 
 /// Creates a temporary directory, passes its URL to `body`, then removes the
@@ -132,20 +158,20 @@ struct FabricClientDebugLoggingTests {
 
             let lines = try capturedLines(directory: dir)
 
-            // There must be a "fabric request" line.
+            // There must be a "fabric request" line with a static endpoint label
+            // (passes the scrubber) instead of a raw URL path (which would be redacted).
             let requestLines = lines.filter { $0["msg"] == "fabric request" }
             #expect(!requestLines.isEmpty, "expected at least one 'fabric request' log line")
             if let req = requestLines.first {
                 #expect(req["method"] == "GET")
-                // path contains '/' so Privacy.scrubLogValue redacts it — key
-                // must be present but value is "redacted".
-                #expect(req["path"] != nil)
+                #expect(req["endpoint"] == "listWorkspaces")
             }
 
             // There must be a "fabric response" line with status code.
             let responseLines = lines.filter { $0["msg"] == "fabric response" }
             #expect(!responseLines.isEmpty, "expected at least one 'fabric response' log line")
             if let resp = responseLines.first {
+                #expect(resp["endpoint"] == "listWorkspaces")
                 #expect(resp["status"] == "200")
             }
 
@@ -155,6 +181,7 @@ struct FabricClientDebugLoggingTests {
             let pageLines = lines.filter { $0["msg"] == "fabric list page" }
             #expect(!pageLines.isEmpty, "expected at least one 'fabric list page' log line")
             if let pg = pageLines.first {
+                #expect(pg["endpoint"] == "listWorkspaces")
                 #expect(pg["page"] == "1")
                 #expect(pg["hasContinuation"] == "false")
             }
@@ -163,6 +190,7 @@ struct FabricClientDebugLoggingTests {
             let completeLines = lines.filter { $0["msg"] == "fabric list complete" }
             #expect(!completeLines.isEmpty, "expected a 'fabric list complete' log line")
             if let comp = completeLines.first {
+                #expect(comp["endpoint"] == "listWorkspaces")
                 #expect(comp["totalPages"] == "1")
                 #expect(comp["totalItems"] == "1")
             }
@@ -240,20 +268,24 @@ struct OneLakeClientDebugLoggingTests {
 
             let lines = try capturedLines(directory: dir)
 
-            // Request line.
+            // Request line — endpoint label and GUIDs survive the scrubber verbatim;
+            // raw URL paths would be redacted (they contain '/').
             let requestLines = lines.filter { $0["msg"] == "onelake request" }
             #expect(!requestLines.isEmpty, "expected at least one 'onelake request' log line")
             if let req = requestLines.first {
                 #expect(req["method"] == "GET")
-                // path contains '/' so Privacy.scrubLogValue redacts it — key
-                // must be present but value is "redacted".
-                #expect(req["path"] != nil)
+                #expect(req["endpoint"] == "listPath")
+                #expect(req["workspaceId"] == "ws-guid")
+                #expect(req["itemId"] == "item-guid-test")
             }
 
             // Response line with status code.
             let responseLines = lines.filter { $0["msg"] == "onelake response" }
             #expect(!responseLines.isEmpty, "expected at least one 'onelake response' log line")
             if let resp = responseLines.first {
+                #expect(resp["endpoint"] == "listPath")
+                #expect(resp["workspaceId"] == "ws-guid")
+                #expect(resp["itemId"] == "item-guid-test")
                 #expect(resp["status"] == "200")
             }
 
@@ -263,6 +295,9 @@ struct OneLakeClientDebugLoggingTests {
             let pageLines = lines.filter { $0["msg"] == "onelake list page" }
             #expect(!pageLines.isEmpty, "expected at least one 'onelake list page' log line")
             if let pg = pageLines.first {
+                #expect(pg["endpoint"] == "listPath")
+                #expect(pg["workspaceId"] == "ws-guid")
+                #expect(pg["itemId"] == "item-guid-test")
                 #expect(pg["page"] == "1")
                 #expect(pg["hasContinuation"] == "false")
                 #expect(pg["itemsThisPage"] == "1")
@@ -272,6 +307,9 @@ struct OneLakeClientDebugLoggingTests {
             let completeLines = lines.filter { $0["msg"] == "onelake list complete" }
             #expect(!completeLines.isEmpty, "expected an 'onelake list complete' log line")
             if let comp = completeLines.first {
+                #expect(comp["endpoint"] == "listPath")
+                #expect(comp["workspaceId"] == "ws-guid")
+                #expect(comp["itemId"] == "item-guid-test")
                 #expect(comp["totalPages"] == "1")
                 #expect(comp["totalItems"] == "1")
             }
@@ -305,9 +343,12 @@ struct OneLakeClientDebugLoggingTests {
 
             let lines = try capturedLines(directory: dir)
 
-            // Two request / response pairs.
+            // Two request / response pairs — each carries the GUID keys verbatim.
             let requestLines = lines.filter { $0["msg"] == "onelake request" }
             #expect(requestLines.count == 2, "expected 2 'onelake request' lines, got \(requestLines.count)")
+            #expect(requestLines.allSatisfy { $0["endpoint"] == "listPath" })
+            #expect(requestLines.allSatisfy { $0["workspaceId"] == "ws-guid" })
+            #expect(requestLines.allSatisfy { $0["itemId"] == "item-guid" })
 
             // Two page lines.
             let pageLines = lines.filter { $0["msg"] == "onelake list page" }
@@ -316,16 +357,22 @@ struct OneLakeClientDebugLoggingTests {
             let page1Line = pageLines.first(where: { $0["page"] == "1" })
             #expect(page1Line?["hasContinuation"] == "true")
             #expect(page1Line?["itemsThisPage"] == "2")
+            #expect(page1Line?["workspaceId"] == "ws-guid")
+            #expect(page1Line?["itemId"] == "item-guid")
 
             let page2Line = pageLines.first(where: { $0["page"] == "2" })
             #expect(page2Line?["hasContinuation"] == "false")
             #expect(page2Line?["itemsThisPage"] == "1")
 
-            // Complete line.
+            // Complete line — find it by msg and then assert each field value.
             let completeLines = lines.filter { $0["msg"] == "onelake list complete" }
-            #expect(completeLines.count == 1)
-            #expect(completeLines.first?["totalPages"] == "2")
-            #expect(completeLines.first?["totalItems"] == "3")
+            let completeLine = completeLines.first(where: { $0["totalPages"] != nil })
+            #expect(completeLine != nil, "expected an 'onelake list complete' log line with totalPages")
+            #expect(completeLine?["endpoint"] == "listPath")
+            #expect(completeLine?["workspaceId"] == "ws-guid")
+            #expect(completeLine?["itemId"] == "item-guid")
+            #expect(completeLine?["totalPages"] == "2")
+            #expect(completeLine?["totalItems"] == "3")
         }
     }
 }

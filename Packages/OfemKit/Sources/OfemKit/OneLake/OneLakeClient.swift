@@ -121,8 +121,16 @@ public final class OneLakeClient: Sendable {
             }
 
             let url = try buildURL { try oneLakeListURL(base: baseURL, workspaceGUID: workspaceGUID, query: queryItems) }
-            let requestPath = url.path
-            logger.debug("onelake request", metadata: ["method": "GET", "path": requestPath])
+            // Count the non-empty path segments (excluding the workspaceGUID prefix)
+            // as a safe, non-PII proxy for "how deep into the item are we listing".
+            let pathSegments = dir.split(separator: "/").count
+            logger.debug("onelake request", metadata: [
+                "method": "GET",
+                "endpoint": "listPath",
+                "workspaceId": workspaceGUID,
+                "itemId": itemGUID,
+                "segments": "\(pathSegments)",
+            ])
             let (data, response) = try await doRequest(
                 alias: alias,
                 method: "GET",
@@ -131,7 +139,13 @@ public final class OneLakeClient: Sendable {
                 extraHeaders: nil,
                 idempotent: true
             )
-            logger.debug("onelake response", metadata: ["method": "GET", "path": requestPath, "status": "\(response.statusCode)"])
+            logger.debug("onelake response", metadata: [
+                "method": "GET",
+                "endpoint": "listPath",
+                "workspaceId": workspaceGUID,
+                "itemId": itemGUID,
+                "status": "\(response.statusCode)",
+            ])
 
             let body: RawListBody
             do {
@@ -154,14 +168,18 @@ public final class OneLakeClient: Sendable {
 
             guard let next = nextCont, !next.isEmpty else {
                 logger.debug("onelake list page", metadata: [
-                    "path": requestPath,
+                    "endpoint": "listPath",
+                    "workspaceId": workspaceGUID,
+                    "itemId": itemGUID,
                     "page": "\(page + 1)",
                     "itemsThisPage": "\(pageItems)",
                     "totalSoFar": "\(out.count)",
                     "hasContinuation": "false",
                 ])
                 logger.debug("onelake list complete", metadata: [
-                    "path": requestPath,
+                    "endpoint": "listPath",
+                    "workspaceId": workspaceGUID,
+                    "itemId": itemGUID,
                     "totalPages": "\(page + 1)",
                     "totalItems": "\(out.count)",
                 ])
@@ -175,7 +193,9 @@ public final class OneLakeClient: Sendable {
             continuation = next
             Self.log.debug("OneLakeClient: list page \(page + 1, privacy: .public), \(out.count, privacy: .public) entries so far")
             logger.debug("onelake list page", metadata: [
-                "path": requestPath,
+                "endpoint": "listPath",
+                "workspaceId": workspaceGUID,
+                "itemId": itemGUID,
                 "page": "\(page + 1)",
                 "itemsThisPage": "\(pageItems)",
                 "totalSoFar": "\(out.count)",
