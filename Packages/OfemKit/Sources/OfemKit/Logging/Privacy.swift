@@ -18,10 +18,13 @@ import Foundation
 ///
 /// ### Log metadata redaction
 ///
-/// Metadata key–value pairs attached to log calls pass through
-/// `scrubLogValue(_:)`.  Values that pass the safe-charset test are written
-/// verbatim; everything else (paths, UPNs, workspace names) is collapsed to
-/// `"redacted"`.
+/// Metadata key–value pairs attached to log calls are routed through
+/// `scrubLogValue(_:)` before the JSON file sink writes them **in release
+/// builds only**.  In DEBUG builds the file sink writes values verbatim so
+/// developers can inspect real paths, UPNs, and workspace names locally.
+/// Values that pass the safe-charset test are written verbatim in both
+/// configurations; values that fail (paths, UPNs, workspace names) are
+/// collapsed to `"redacted"` in release builds.
 public enum Privacy {
 
     // MARK: - Constants

@@ -146,6 +146,16 @@ public struct OfemLogger: Sendable {
 
     // MARK: - Formatting
 
+    /// Returns `value` verbatim when `redact` is `false`, or the result of
+    /// `Privacy.scrubLogValue(_:)` when `redact` is `true`.
+    ///
+    /// Centralising the redaction decision here keeps `jsonLine` to a single
+    /// loop and makes the scrub path testable in DEBUG (CI) builds: pass
+    /// `redact: true` to exercise the release code path in any configuration.
+    static func metadataValue(_ value: String, redact: Bool) -> String {
+        redact ? Privacy.scrubLogValue(value) : value
+    }
+
     /// Builds a single JSON log line.
     ///
     /// Reserved keys (`time`, `level`, `msg`) always win over same-named
@@ -165,16 +175,15 @@ public struct OfemLogger: Sendable {
         //
         // DEBUG builds write metadata verbatim for local development;
         // release builds scrub values through Privacy.scrubLogValue(_:).
-        var dict: [String: Any] = [:]
         #if DEBUG
-        for (k, v) in metadata {
-            dict[k] = v
-        }
+        let redact = false
         #else
-        for (k, v) in metadata {
-            dict[k] = Privacy.scrubLogValue(v)
-        }
+        let redact = true
         #endif
+        var dict: [String: Any] = [:]
+        for (k, v) in metadata {
+            dict[k] = Self.metadataValue(v, redact: redact)
+        }
         dict["time"] = Self.isoTimestamp()
         dict["level"] = Self.levelLabel(level)
         dict["msg"] = message

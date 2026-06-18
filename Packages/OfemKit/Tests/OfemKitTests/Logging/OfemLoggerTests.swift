@@ -222,41 +222,30 @@ struct OfemLoggerTests {
         #endif
     }
 
-    // MARK: - DEBUG verbatim write (new behaviour)
+    // MARK: - metadataValue helper
 
-    @Test("OfemLogger writes path-like metadata values verbatim in DEBUG builds")
-    func fileWriterWritesVerbatimInDebug() throws {
-        // This test proves the new behaviour: a value that WOULD be scrubbed in
-        // release (contains '/' and space, outside the safe charset) is written
-        // verbatim to the JSON file in a DEBUG build.
-        //
-        // In release this test is skipped at compile-time; the corresponding
-        // redaction guarantee is locked by Privacy.scrubLogValue unit tests in
-        // TelemetryRedactionTests.
-        #if DEBUG
-        let dir = FileManager.default.temporaryDirectory
-            .appending(path: "ofem-log-verbatim-\(UUID().uuidString)", directoryHint: .isDirectory)
-        defer { try? FileManager.default.removeItem(at: dir) }
+    @Test("OfemLogger.metadataValue: redact:true scrubs unsafe values")
+    func metadataValueRedactTrue() {
+        // "a/b c" contains '/' and ' ' — outside the safe charset.
+        // With redact:true the helper must return "redacted".
+        #expect(OfemLogger.metadataValue("a/b c", redact: true) == "redacted",
+                "unsafe value must be scrubbed when redact is true")
+    }
 
-        let writer = RotatingFileWriter(logDirectory: dir)
-        let config = LogConfiguration(level: .debug, fileWriter: writer)
-        let logger = OfemLogger(configuration: config)
+    @Test("OfemLogger.metadataValue: redact:false preserves unsafe values verbatim")
+    func metadataValueRedactFalse() {
+        // The same value must pass through unchanged when redact is false.
+        #expect(OfemLogger.metadataValue("a/b c", redact: false) == "a/b c",
+                "value must be returned verbatim when redact is false")
+    }
 
-        // "a/b c" contains '/' and ' ' — both outside the safe charset — so it
-        // would be scrubbed to "redacted" in a release build.
-        logger.info("verbatim test", metadata: ["path": "a/b c"])
-        writer.close()
-
-        let logFile = dir.appending(path: "ofem.log", directoryHint: .notDirectory)
-        let content = try String(contentsOf: logFile, encoding: .utf8)
-        let firstLine = content.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
-        let data = try #require(firstLine.data(using: .utf8))
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-
-        #expect(json?["path"] as? String == "a/b c",
-                "DEBUG build must write metadata value verbatim, not 'redacted'")
-        #expect(json?["msg"] as? String == "verbatim test")
-        #endif
+    @Test("OfemLogger.metadataValue: safe-charset values pass through regardless of redact flag")
+    func metadataValueSafeCharset() {
+        let guid = "9064c167-4885-40ef-9f34-1853218aea86"
+        #expect(OfemLogger.metadataValue(guid, redact: true) == guid,
+                "safe-charset value must pass through even when redact is true")
+        #expect(OfemLogger.metadataValue(guid, redact: false) == guid,
+                "safe-charset value must pass through when redact is false")
     }
 
     // MARK: - Named constants (logging-07)
