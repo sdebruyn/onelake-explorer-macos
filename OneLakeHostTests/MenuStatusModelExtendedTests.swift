@@ -429,7 +429,7 @@ final class MenuStatusModelExtendedTests: XCTestCase {
     }
 
     func testAccountNeedsSignIn_healthyAlias_returnsFalse() {
-        // "Sign In Again…" must be hidden for a healthy account. Verify the gate
+        // "Sign In…" must be hidden for a healthy account. Verify the gate
         // condition returns false when the alias is not in accountsNeedingSignIn.
         // The class is @MainActor so no MainActor.run hop is needed.
         XCTAssertFalse(
@@ -439,7 +439,7 @@ final class MenuStatusModelExtendedTests: XCTestCase {
     }
 
     func testAccountNeedsSignIn_aliasInSet_returnsTrue() async {
-        // Verify the gate condition returns true so "Sign In Again…" is visible.
+        // Verify the gate condition returns true so "Sign In…" is visible.
         let status = XPCEngineStatus(
             cacheBytes: 0,
             cacheMaxBytes: 0,
@@ -464,7 +464,7 @@ final class MenuStatusModelExtendedTests: XCTestCase {
 
         XCTAssertTrue(
             model.accountNeedsSignIn(alias: "corp"),
-            "accountNeedsSignIn must return true so 'Sign In Again…' is shown for corp"
+            "accountNeedsSignIn must return true so 'Sign In…' is shown for corp"
         )
     }
 

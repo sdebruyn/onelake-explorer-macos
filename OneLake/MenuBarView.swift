@@ -183,14 +183,26 @@ private struct AccountSubmenu: View {
     private static let log = Logger(subsystem: ofemSubsystem, category: "menubar-view")
 
     var body: some View {
-        // Per-account status line: shows "Running" when healthy or "Sign-in
-        // required" (orange) when the token cannot be acquired silently. Always
-        // rendered so the submenu has a consistent status row regardless of auth
-        // state.
+        // Per-account status line: shows "Running" when healthy or a warning
+        // label when the token cannot be acquired silently. Always rendered so
+        // the submenu has a consistent status row regardless of auth state.
+        // The warning state uses a leading SF Symbol glyph + primary color so
+        // it remains legible in both light and dark mode and on both normal and
+        // highlighted/selected rows.
+        //
+        // .allowsHitTesting(false) is used instead of .disabled(true): disabled
+        // items in a MenuBarExtra(.menu) are rendered by AppKit which applies its
+        // own dimming on selected rows regardless of the SwiftUI foreground style,
+        // defeating the legibility fix. .allowsHitTesting(false) suppresses
+        // interaction without triggering AppKit's disabled-item dimming, so
+        // .primary/.secondary are respected on highlighted rows too.
         let needsSignIn = model.accountNeedsSignIn(alias: account.alias)
-        Text(needsSignIn ? "Sign-in required" : "Running")
-            .foregroundStyle(needsSignIn ? .orange : .secondary)
-            .disabled(true)
+        Label(
+            model.accountStatusLabel(alias: account.alias),
+            systemImage: needsSignIn ? "exclamationmark.triangle" : ""
+        )
+        .foregroundStyle(needsSignIn ? .primary : .secondary)
+        .allowsHitTesting(false)
 
         Divider()
 
@@ -200,10 +212,11 @@ private struct AccountSubmenu: View {
 
         Divider()
 
-        // "Sign In Again…" is only shown when this account's token cannot be
+        // "Sign In…" is only shown when this account's token cannot be
         // acquired silently. Hidden for healthy accounts to avoid confusion.
+        // The ellipsis signals that the action opens an interactive browser flow.
         if needsSignIn {
-            Button("Sign In Again…") {
+            Button("Sign In…") {
                 signInAgain()
             }
         }
@@ -296,7 +309,7 @@ private struct AccountSubmenu: View {
                 } else {
                     // No presenting window within the timeout. Surface a non-intrusive
                     // inline error so the user knows the action did not proceed and
-                    // can retry by clicking "Sign In Again…" once more.
+                    // can retry by clicking "Sign In…" once more.
                     Self.log.warning(
                         "signInAgain: no presentable window after openWindow — surfacing error"
                     )
