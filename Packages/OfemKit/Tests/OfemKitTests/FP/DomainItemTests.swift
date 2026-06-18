@@ -872,4 +872,95 @@ struct DomainItemTests {
         // Both agree → CSV MIME expected.
         #expect(!item.contentType.isEmpty)
     }
+
+    // MARK: - #280: sentinel-row mapping in from(record:)
+
+    /// Workspace sentinel row (workspaceID == VirtualIDs.workspaceID, path == <GUID>):
+    /// from(record:) must produce the same identifier and parentIdentifier
+    /// as from(workspace:) for the same workspace.
+    @Test func workspaceSentinelRowRoundTripsToWorkspaceIdentifier() throws {
+        let wsGUID = "11111111-2222-3333-4444-555555555555"
+        let displayName = "Prod Analytics"
+
+        // Row exactly as SyncEngine.listWorkspaces constructs it.
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: VirtualIDs.workspaceID,
+            itemID: VirtualIDs.workspaceID,
+            path: wsGUID,
+            parentPath: "",
+            name: displayName,
+            isDir: true
+        )
+
+        // Reference item from the dedicated constructor.
+        let ws = Workspace(id: wsGUID, displayName: displayName, type: "Workspace")
+        let reference = DomainItem.from(workspace: ws)
+
+        let fromRecord = try DomainItem.from(record: record)
+
+        #expect(fromRecord.identifier == reference.identifier,
+                "identifier must equal .workspace(workspaceID: wsGUID)")
+        #expect(fromRecord.parentIdentifier == reference.parentIdentifier,
+                "parentIdentifier must be .root")
+        #expect(fromRecord.identifier == ItemIdentifier.workspace(workspaceID: wsGUID))
+        #expect(fromRecord.parentIdentifier == ItemIdentifier.root)
+        #expect(fromRecord.isDirectory)
+        #expect(fromRecord.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
+    /// Root sentinel row (workspaceID == VirtualIDs.workspaceID, path == ""):
+    /// from(record:) must return an item whose identifier and parentIdentifier are .root.
+    @Test func rootSentinelRowMapsToRootIdentifier() throws {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: VirtualIDs.workspaceID,
+            itemID: VirtualIDs.workspaceID,
+            path: "",
+            parentPath: "",
+            name: "work",
+            isDir: true
+        )
+
+        let item = try DomainItem.from(record: record)
+        #expect(item.identifier == ItemIdentifier.root)
+        #expect(item.parentIdentifier == ItemIdentifier.root)
+        #expect(item.isDirectory)
+        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
+    /// Regression: normal item rows (path == "") must still map to .item / .workspace.
+    @Test func normalItemRowStillMapsToItemIdentifier() throws {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "",
+            parentPath: "",
+            name: "Lakehouse",
+            isDir: true
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.identifier == ItemIdentifier.item(workspaceID: "ws-1", itemID: "item-2"))
+        #expect(item.parentIdentifier == ItemIdentifier.workspace(workspaceID: "ws-1"))
+    }
+
+    /// Regression: normal file/path rows must still map to .path.
+    @Test func normalPathRowStillMapsToPathIdentifier() throws {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "Files/data.csv",
+            parentPath: "Files",
+            name: "data.csv",
+            isDir: false,
+            contentLength: 42
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.identifier == ItemIdentifier.path(workspaceID: "ws-1", itemID: "item-2", path: "Files/data.csv"))
+        #expect(item.parentIdentifier == ItemIdentifier.path(workspaceID: "ws-1", itemID: "item-2", path: "Files"))
+        #expect(!item.isDirectory)
+        #expect(item.size == 42)
+    }
 }

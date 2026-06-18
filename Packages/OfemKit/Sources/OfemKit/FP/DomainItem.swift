@@ -166,6 +166,41 @@ extension DomainItem {
             throw FPError.invalidRecord("workspaceID or itemID is empty")
         }
 
+        // Sentinel rows written by SyncEngine.listWorkspaces use VirtualIDs.workspaceID
+        // for both workspaceID and itemID. Map them to the identifiers that the dedicated
+        // constructors (root(alias:) and from(workspace:)) produce so that delta consumers
+        // receive identically-shaped items regardless of which code path built the DomainItem.
+        if record.workspaceID == VirtualIDs.workspaceID {
+            if record.path.isEmpty {
+                // Root-container sentinel row (path == ""):
+                // Map to .root / .root — same shape as DomainItem.root(alias:).
+                // Delta consumers (e.g. enumerateChanges) may encounter this row;
+                // returning it as .root is the least-surprising handling.
+                return DomainItem(
+                    identifier: .root,
+                    parentIdentifier: .root,
+                    filename: record.name,
+                    isDirectory: true,
+                    contentVersion: ContentVersion.fallback(seed: record.name, size: 0, mtime: nil),
+                    metadataVersion: ContentVersion.fallback(seed: record.name, size: 0, mtime: nil),
+                    capabilities: CapabilitySet.readOnly
+                )
+            } else {
+                // Workspace sentinel row (path == <workspace-GUID>):
+                // Map to .workspace / .root — identical to DomainItem.from(workspace:).
+                let wsID = record.path
+                return DomainItem(
+                    identifier: .workspace(workspaceID: wsID),
+                    parentIdentifier: .root,
+                    filename: record.name,
+                    isDirectory: true,
+                    contentVersion: ContentVersion.fallback(seed: wsID, size: 0, mtime: nil),
+                    metadataVersion: ContentVersion.fallback(seed: record.name, size: 0, mtime: nil),
+                    capabilities: CapabilitySet.readOnly
+                )
+            }
+        }
+
         // Construct the identifier first; derive the parent from it so the
         // path-splitting logic is owned in exactly one place: ItemIdentifier
         // (fp-03).
