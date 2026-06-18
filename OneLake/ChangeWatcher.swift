@@ -10,11 +10,10 @@
 // stopped.
 //
 // Additionally, ChangeWatcher runs a repeating loop that periodically signals
-// the root container for every registered domain. This ensures the workspace
-// list in Finder stays current: newly created or renamed Fabric workspaces
-// appear without waiting for macOS's own infrequent re-enumeration schedule.
-// The FPE responds to a root-container signal by expiring the sync anchor,
-// which forces a fresh enumerateItems(.root) → listWorkspaces call.
+// the working set for every registered domain. The FPE's working-set
+// enumerateChanges refreshes the workspace list from Fabric (throttled) and
+// then reports the cache delta so newly created, removed, or renamed Fabric
+// workspaces appear in Finder without user action.
 //
 // This class is @MainActor because NSFileProviderManager calls are documented
 // as main-thread-only.
@@ -29,12 +28,12 @@ final class ChangeWatcher {
 
     private static let log = Logger(subsystem: ofemSubsystem, category: "change-watcher")
 
-    /// How often the root container is signalled to refresh the workspace list.
-    static let rootRefreshInterval: Duration = .seconds(90)
+    /// How often the working set is signalled to refresh the workspace list.
+    static let workingSetRefreshInterval: Duration = .seconds(90)
 
-    /// Handle for the periodic root-refresh loop. Stored so a second `start()`
-    /// call can cancel the previous loop before launching a new one.
-    private var rootRefreshTask: Task<Void, Never>?
+    /// Handle for the periodic working-set refresh loop. Stored so a second
+    /// `start()` call can cancel the previous loop before launching a new one.
+    private var workingSetRefreshTask: Task<Void, Never>?
 
     private init() {}
 
@@ -42,83 +41,64 @@ final class ChangeWatcher {
 
     /// Emit a one-shot full-resync signal to all registered domains so
     /// Finder re-enumerates after app launch, then start the periodic
-    /// root-container refresh loop. Safe to call multiple times; each call
+    /// working-set refresh loop. Safe to call multiple times; each call
     /// cancels any previous loop and starts a fresh one.
     func start() {
         Task { [weak self] in
-            // Signal the working set first (existing one-shot resync), then
-            // immediately signal the root container so any workspaces created
-            // or renamed while the host was stopped are visible without
-            // waiting for the first periodic tick.
+            // One-shot launch resync: signal the working set so the FPE
+            // re-checks workspace changes that accumulated while the host
+            // was stopped.
             await self?.signal(container: .workingSet)
-            await self?.signal(container: .rootContainer)
         }
         Self.log.info("ChangeWatcher: one-shot launch resync triggered (FPE-owned change signaling)")
 
-        startRootRefreshLoop()
+        startWorkingSetRefreshLoop()
     }
 
-    // MARK: - Periodic root refresh
+    // MARK: - Periodic working-set refresh
 
-    /// Starts (or restarts) the repeating loop that signals the root container
-    /// for every registered domain at `rootRefreshInterval` intervals.
+    /// Starts (or restarts) the repeating loop that signals the working set
+    /// for every registered domain at `workingSetRefreshInterval` intervals.
     ///
     /// Cancels any previously running loop so calling `start()` twice does not
     /// stack two concurrent loops.
-    private func startRootRefreshLoop() {
-        rootRefreshTask?.cancel()
-        rootRefreshTask = Task { [weak self] in
+    private func startWorkingSetRefreshLoop() {
+        workingSetRefreshTask?.cancel()
+        workingSetRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: Self.rootRefreshInterval)
+                try? await Task.sleep(for: Self.workingSetRefreshInterval)
                 guard !Task.isCancelled else { break }
-                // Each tick signals rootContainer for every registered domain,
-                // causing the FPE to expire the sync anchor and call
-                // listWorkspaces (one Fabric REST call per domain). At 1–3
-                // accounts the cost is negligible; acceptable at current scale.
-                await self?.signal(container: .rootContainer)
+                // Each tick signals the working set for every registered domain.
+                // The FPE's OfemWorkingSetEnumerator.enumerateChanges refreshes
+                // the workspace list from Fabric (throttled to at most once per
+                // OfemWorkingSetEnumerator.workspaceRefreshInterval) and then
+                // reports the cache delta so Finder reflects added/removed/
+                // renamed workspaces.
+                await self?.signal(container: .workingSet)
             }
         }
         Self.log.info(
-            "ChangeWatcher: periodic root refresh started (interval=\(Self.rootRefreshInterval, privacy: .public))"
+            "ChangeWatcher: periodic working-set refresh started (interval=\(Self.workingSetRefreshInterval, privacy: .public))"
         )
     }
 
     // MARK: - Signaling
 
     /// Signals `container` for every currently registered domain.
-    ///
-    /// - Parameters:
-    ///   - container: The container identifier to signal (e.g. `.workingSet`,
-    ///     `.rootContainer`). Each container type uses its own log level:
-    ///     `.rootContainer` logs at `.debug`/`.warning`; `.workingSet` at
-    ///     `.info`/`.error`.
     private func signal(container: NSFileProviderItemIdentifier) async {
         let containerId = container.rawValue
-        let isRoot = container == .rootContainer
         do {
             let domains = try await ofemGetAllDomains()
             for domain in domains {
                 await signalContainer(domain: domain, containerId: containerId)
             }
-            if isRoot {
-                Self.log.debug(
-                    "ChangeWatcher: root-container refresh signal sent to \(domains.count, privacy: .public) domain(s)"
-                )
-            } else {
-                Self.log.info(
-                    "ChangeWatcher: resync signal sent to \(domains.count, privacy: .public) domain(s)"
-                )
-            }
+            Self.log.info(
+                "ChangeWatcher: resync signal sent to \(domains.count, privacy: .public) domain(s)"
+            )
         } catch {
-            if isRoot {
-                Self.log.warning(
-                    "ChangeWatcher: could not list domains for root refresh: \(error.localizedDescription, privacy: .public)"
-                )
-            } else {
-                Self.log.error(
-                    "ChangeWatcher: could not list domains for resync: \(error.localizedDescription, privacy: .public)"
-                )
-            }
+            Self.log.error(
+                "ChangeWatcher: could not list domains for resync: \(error.localizedDescription, privacy: .public)"
+            )
         }
     }
 

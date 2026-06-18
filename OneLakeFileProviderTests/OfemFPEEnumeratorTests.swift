@@ -84,11 +84,6 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         // finishEnumeratingWithError — the decode-failure path in production
         // follows the same structure (error logged, anchor advanced) as
         // documented in the code comment and guarded by the do/catch loop.
-        //
-        // We use a workspace-level identifier here, not .root, because the root
-        // container now expires the anchor immediately (before engine() is called).
-        // The workspace delta path exercises the actual engine-failure propagation
-        // logic this test is designed to cover.
         let host = MockEngineHost(alias: "decode-fail-test")
         host.engineResult = .failure(NSFileProviderError(.cannotSynchronize))
 
@@ -129,11 +124,6 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         // A token-acquisition failure in the change-observation path must call
         // markNeedsSignIn() so the host-app menu bar shows "Sign-in required".
         // This is the key path for detecting token expiry in steady state.
-        //
-        // Note: we use a workspace-level identifier here, not .root. The root
-        // container now expires the anchor immediately (before engine() is called)
-        // so the auth error path is never reached for .root — that is intentional.
-        // The workspace path exercises the existing do/catch error handler.
         let host = MockEngineHost(alias: "auth-changes-test")
         // NSFileProviderError(.notAuthenticated) classifies to .notAuthenticated via
         // FPError.classify (it falls through to cannotSynchronize as a generic
@@ -176,10 +166,6 @@ final class OfemFPEEnumeratorTests: XCTestCase {
     // MARK: - enumerateChanges: non-auth error does NOT set markNeedsSignIn (OfemFPEEnumerator)
 
     func testEnumerateChanges_nonAuthError_doesNotSetMarkNeedsSignIn() async throws {
-        // Uses a workspace-level identifier so that engine() is actually called
-        // and the error-classification guard in the non-root catch block is exercised.
-        // The root container now short-circuits before engine() is reached, which
-        // would make this test pass for the wrong reason if .root were used here.
         let host = MockEngineHost(alias: "non-auth-changes-test")
         host.engineResult = .failure(NSFileProviderError(.serverUnreachable))
 
@@ -286,23 +272,20 @@ final class OfemFPEEnumeratorTests: XCTestCase {
                       "enumerateItems: markNeedsSignIn must be called on notAuthenticated (regression guard)")
     }
 
-    // MARK: - enumerateChanges: root identifier expires anchor immediately (issue-279)
+    // MARK: - OfemWorkingSetEnumerator: workspace refresh throttle
 
-    /// When the root container receives an enumerateChanges call, the enumerator
-    /// must expire the sync anchor immediately. The cache delta path cannot
-    /// correctly map workspace rows; expiring forces a full enumerateItems(.root)
-    /// which calls listWorkspaces and maps via DomainItem.from(workspace:).
-    func testEnumerateChanges_rootIdentifier_expiresSyncAnchor() async throws {
-        let host = MockEngineHost(alias: "root-expire-test")
-        // Engine result does not matter for this path — the early exit fires
-        // before engine() is called. Set success to confirm it is never reached.
-        let id = NSFileProviderItemIdentifier(ItemIdentifier.rootContainerString)
-        let enumerator = OfemFPEEnumerator(
-            containerItemIdentifier: id,
-            identifier: .root,
-            alias: "root-expire-test",
-            engineHost: host
-        )
+    /// The first `enumerateChanges` call must arm the throttle by recording a
+    /// non-nil `lastWorkspaceRefresh` timestamp. This confirms the throttle
+    /// state is correctly initialised on the first invocation.
+    func testWorkingSetEnumerateChanges_firstCall_armsThrottle() async throws {
+        let host = MockEngineHost(alias: "throttle-arm-test")
+        // engine() throws so we never reach listWorkspaces, but the throttle
+        // timestamp is set BEFORE engine() is awaited (under the lock).
+        host.engineResult = .failure(NSFileProviderError(.cannotSynchronize))
+
+        let enumerator = OfemWorkingSetEnumerator(alias: "throttle-arm-test", engineHost: host)
+        XCTAssertNil(enumerator.lastWorkspaceRefresh,
+                     "Throttle must start unarmed (nil) before any call")
 
         let changeObserver = SpyChangeObserver()
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
@@ -312,51 +295,72 @@ final class OfemFPEEnumeratorTests: XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
 
-        XCTAssertTrue(
-            changeObserver.finishedWithError,
-            "Root-container enumerateChanges must call finishEnumeratingWithError"
-        )
-        XCTAssertFalse(
-            changeObserver.finished,
-            "Root-container enumerateChanges must NOT call finishEnumeratingChanges"
+        XCTAssertNotNil(enumerator.lastWorkspaceRefresh,
+                        "Throttle timestamp must be set after the first enumerateChanges call")
+    }
+
+    /// A second `enumerateChanges` call within the throttle window must NOT
+    /// update `lastWorkspaceRefresh` — the timestamp should remain from the
+    /// first call, proving the throttle prevented a second refresh attempt.
+    func testWorkingSetEnumerateChanges_rapidSecondCall_throttled() async throws {
+        let host = MockEngineHost(alias: "throttle-window-test")
+        host.engineResult = .failure(NSFileProviderError(.cannotSynchronize))
+
+        let enumerator = OfemWorkingSetEnumerator(
+            alias: "throttle-window-test", engineHost: host
         )
 
-        // Verify the error is specifically syncAnchorExpired.
-        let fpError = changeObserver.lastError as? NSError
-        XCTAssertEqual(
-            fpError?.domain, NSFileProviderErrorDomain,
-            "Error domain must be NSFileProviderErrorDomain"
-        )
-        XCTAssertEqual(
-            fpError?.code, NSFileProviderError.syncAnchorExpired.rawValue,
-            "Error code must be syncAnchorExpired"
-        )
+        // First call — arms the throttle.
+        let obs1 = SpyChangeObserver()
+        enumerator.enumerateChanges(for: obs1, from: encodeSyncAnchor(0))
+        for _ in 0..<50 {
+            if obs1.finished || obs1.finishedWithError { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
 
-        // The early exit fires before engine() is called.
+        let firstTimestamp = enumerator.lastWorkspaceRefresh
+        XCTAssertNotNil(firstTimestamp, "First call must arm the throttle")
+
+        // Second call immediately — must be within the throttle window.
+        let obs2 = SpyChangeObserver()
+        enumerator.enumerateChanges(for: obs2, from: encodeSyncAnchor(0))
+        for _ in 0..<50 {
+            if obs2.finished || obs2.finishedWithError { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        // The timestamp must not have advanced — the throttle suppressed refresh.
         XCTAssertEqual(
-            host.engineCallCount, 0,
-            "engine() must not be called for root-container enumerateChanges"
+            enumerator.lastWorkspaceRefresh, firstTimestamp,
+            "Throttle must prevent a second workspace refresh within the window"
         )
     }
 
-    /// Non-root identifiers must continue to use the existing delta path and
-    /// must NOT expire the anchor on their own. We verify this by confirming
-    /// that a workspace-level enumerateChanges still reaches engine() (i.e. it
-    /// does not short-circuit like the root path does).
-    func testEnumerateChanges_nonRootIdentifier_doesNotExpireAnchorEarly() async throws {
-        let host = MockEngineHost(alias: "non-root-test")
-        host.engineResult = .failure(NSFileProviderError(.serverUnreachable))
+    // MARK: - OfemWorkingSetEnumerator: workspace refresh fail-soft
 
-        // Use a workspace identifier (non-root) to verify non-root behaviour.
-        // Workspace identifiers are plain GUIDs with no leading slash.
-        let workspaceGUID = UUID().uuidString
-        let id = NSFileProviderItemIdentifier(workspaceGUID)
-        let identifier = try parseOfemItemIdentifier(workspaceGUID)
-        let enumerator = OfemFPEEnumerator(
-            containerItemIdentifier: id,
-            identifier: identifier,
-            alias: "non-root-test",
-            engineHost: host
+    /// When `listWorkspaces` fails with a non-auth error, the working-set
+    /// enumeration must NOT fail — it should proceed and finish normally
+    /// (even if the cache delta is empty). This mirrors the fail-soft policy:
+    /// transient Fabric errors should not block Finder change delivery.
+    ///
+    /// Since we cannot inject a real engine that lets listWorkspaces fail
+    /// independently (the test sandbox has no live OfemEngine), we verify the
+    /// observable contract at the engine() level: an engine() failure does NOT
+    /// trigger markNeedsSignIn for non-auth errors (existing coverage), and the
+    /// fail-soft path for listWorkspaces is exercised in integration tests.
+    /// Here we cover the auth-fail-soft variant where the outcome IS observable.
+    func testWorkingSetEnumerateChanges_refreshAuthError_failsEnumerationAndSignsIn() async throws {
+        // When listWorkspaces throws an auth error, the working-set enumerator
+        // must call markNeedsSignIn AND finish with an error. Because engine()
+        // itself throws an auth error (the closest proxy available in the test
+        // sandbox), the outer catch block handles it — same observable contract.
+        let host = MockEngineHost(alias: "ws-refresh-auth-test")
+        host.engineResult = .failure(HTTPClientError.tokenAcquisitionFailed(
+            NSError(domain: "test", code: -1)
+        ))
+
+        let enumerator = OfemWorkingSetEnumerator(
+            alias: "ws-refresh-auth-test", engineHost: host
         )
 
         let changeObserver = SpyChangeObserver()
@@ -367,19 +371,12 @@ final class OfemFPEEnumeratorTests: XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
 
-        // The non-root path reaches engine() (which returns serverUnreachable),
-        // so finishedWithError is set — but NOT via syncAnchorExpired.
-        XCTAssertTrue(changeObserver.finishedWithError, "Non-root enumerateChanges must complete")
-        XCTAssertGreaterThanOrEqual(
-            host.engineCallCount, 1,
-            "Non-root enumerateChanges must call engine() (not short-circuit like the root path)"
-        )
-        // If the error happened to be syncAnchorExpired that would be a bug.
-        let fpError = changeObserver.lastError as? NSError
-        XCTAssertNotEqual(
-            fpError?.code, NSFileProviderError.syncAnchorExpired.rawValue,
-            "Non-root error must not be syncAnchorExpired (that is root-only behaviour)"
-        )
+        XCTAssertTrue(changeObserver.finishedWithError,
+                      "Auth error in working-set enumerateChanges must call finishEnumeratingWithError")
+        XCTAssertFalse(changeObserver.finished,
+                       "finishEnumeratingChanges must NOT fire on auth error")
+        XCTAssertTrue(host.markedNeedsSignIn,
+                      "markNeedsSignIn must be called when workspace refresh fails with auth error")
     }
 
     // MARK: - parseOfemItemIdentifier: root container parses to .root

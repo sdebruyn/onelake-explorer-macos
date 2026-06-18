@@ -33,10 +33,13 @@
 //   Good records in the same batch ARE delivered. This matches the project's
 //   "observable failure, not silent loss" philosophy.
 //
-// - Working set: `OfemWorkingSetEnumerator.enumerateChanges` drives a real
-//   cache diff: it computes changed items since the anchor and calls `didUpdate`
-//   for the affected identifiers. This means `signalEnumerator(for: .workingSet)`
-//   produces an actual delta.
+// - Working set: `OfemWorkingSetEnumerator.enumerateChanges` refreshes the
+//   workspace list from Fabric (throttled, at most once per
+//   `OfemWorkingSetEnumerator.workspaceRefreshInterval`) before computing the
+//   cache diff. This means `signalEnumerator(for: .workingSet)` both populates
+//   the workspace cache and surfaces the delta to Finder. The host's
+//   ChangeWatcher signals `.workingSet` periodically so newly added, removed,
+//   or renamed Fabric workspaces appear in Finder without user action.
 //
 // - inFlightTask safety: `inFlightTask` mutations are serialised by an NSLock
 //   so concurrent `enumerateItems` / `invalidate` calls from the framework
@@ -210,8 +213,8 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
     ///
     /// Decodes the anchor (max `synced_at_ns` from the last poll), queries the
     /// cache for rows that changed after that timestamp, and reports the deltas.
-    /// If the anchor is empty or no longer decodable (DB was reset) we fall back
-    /// to expiry so the framework can restart from scratch.
+    /// If the anchor is ahead of the cache (DB was reset) we expire it so the
+    /// framework performs a full re-enumeration.
     ///
     /// Anchor advancement: the anchor is advanced unconditionally at the end of
     /// each batch, even when individual records failed to decode. Holding the
@@ -233,21 +236,6 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
         // enumeration for an unrelated change observer). Store the new task in
         // inFlightChangesTask so invalidate() can cancel it (fpe-15).
         let changesTask = Task<Void, Never> {
-            // Root-container changes cannot be served from the cache delta path:
-            // the cache stores file/folder rows keyed by path, not workspace
-            // metadata rows, so DomainItem.from(record:) mis-maps workspace rows
-            // and produces incorrect items. The only reliable source of truth for
-            // workspaces is a fresh enumerateItems(.root) → listWorkspaces call.
-            // Expire the anchor immediately so the framework performs that full
-            // re-enumeration instead of relying on the broken delta path.
-            if case .root = identifierCopy {
-                observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
-                Self.log.debug(
-                    "OfemFPEEnumerator: root-container enumerateChanges — anchor expired to force full re-enum for \(aliasCopy, privacy: .public)"
-                )
-                return
-            }
-
             do {
                 let engine = try await hostCopy.engine()
                 let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
@@ -408,6 +396,15 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
 /// drives a real cache diff: changed records since the anchor are surfaced
 /// as `didUpdate` calls instead of always answering "no changes".
 ///
+/// Workspace refresh: before computing the cache delta, `enumerateChanges`
+/// calls `engine.sync.listWorkspaces(alias:)` to refresh the SQLite workspace
+/// cache (adds new workspaces, tombstones removed ones, advances `synced_at`).
+/// This refresh is throttled to at most once per `workspaceRefreshInterval` so
+/// a frequently signalled working set does not spam `GET /v1/workspaces`. If
+/// the refresh fails (transient error or auth), the failure is logged and the
+/// enumeration proceeds with the existing cache — only auth failures also call
+/// `markNeedsSignIn` and stop the enumeration.
+///
 /// Task ownership: `taskLock` guards `inFlightChangesTask` and
 /// `inFlightAnchorTask`. `invalidate()` cancels both synchronously (fpe-15).
 final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
@@ -416,13 +413,24 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
         category: "working-set"
     )
 
+    /// At most one workspace-list refresh per this interval per enumerator
+    /// instance. Prevents spamming `GET /v1/workspaces` when the working set
+    /// is signalled frequently (e.g. Finder polling at high frequency).
+    static let workspaceRefreshInterval: Duration = .seconds(60)
+
     private let alias: String
     private let engineHost: any EngineProviding
 
-    /// Guards mutations to task handles.
+    /// Guards mutations to task handles and the refresh timestamp.
     private let taskLock = NSLock()
     private nonisolated(unsafe) var inFlightChangesTask: Task<Void, Never>?
     private nonisolated(unsafe) var inFlightAnchorTask: Task<Void, Never>?
+
+    /// Monotonic clock instant of the last attempted workspace refresh.
+    /// `nil` means no refresh has been attempted yet (forces refresh on first
+    /// call). Guarded by `taskLock`. Exposed as `internal` so unit tests can
+    /// inspect the throttle state without going through the network.
+    nonisolated(unsafe) var lastWorkspaceRefresh: ContinuousClock.Instant? = nil
 
     init(alias: String, engineHost: any EngineProviding) {
         self.alias = alias
@@ -457,10 +465,11 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
 
     /// Reports real cache deltas since `anchor` for the working set.
     ///
-    /// `signalEnumerator(for: .workingSet)` causes macOS to call here. Instead
-    /// of always answering "no changes" (which made that signal a no-op), we
-    /// look up all records updated since the anchor and report them so Finder
-    /// badge / recents lists stay current.
+    /// `signalEnumerator(for: .workingSet)` causes macOS to call here. Before
+    /// computing the cache delta, this method refreshes the workspace list from
+    /// Fabric (throttled to `workspaceRefreshInterval`) so newly created,
+    /// removed, or renamed workspaces populate the cache before the delta is
+    /// computed. The delta is then reported via `didUpdate`/`didDeleteItems`.
     func enumerateChanges(
         for observer: NSFileProviderChangeObserver,
         from anchor: NSFileProviderSyncAnchor
@@ -469,10 +478,52 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
         let hostCopy = engineHost
         let previousNs = decodeSyncAnchor(anchor)
 
+        // Capture and advance the refresh timestamp under the lock so that
+        // concurrent enumerateChanges calls (possible if the framework fires
+        // rapidly) see the same throttle window.
+        let now = ContinuousClock.now
+        let shouldRefresh = taskLock.withLock { () -> Bool in
+            if let last = lastWorkspaceRefresh,
+               now - last < Self.workspaceRefreshInterval
+            {
+                return false
+            }
+            lastWorkspaceRefresh = now
+            return true
+        }
+
         // Store the task so invalidate() can cancel it (fpe-15).
         let changesTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
+
+                // Throttled workspace-list refresh: populate or update the
+                // SQLite cache with fresh data from Fabric before computing
+                // the delta. Fail-soft: a transient error only logs; the
+                // enumeration continues with the existing cache rows.
+                if shouldRefresh {
+                    do {
+                        _ = try await engine.sync.listWorkspaces(alias: aliasCopy)
+                        Self.log.debug(
+                            "WorkingSet: refreshed workspace list for \(aliasCopy, privacy: .public)"
+                        )
+                    } catch {
+                        let code = FPError.classify(error)
+                        Self.log.warning(
+                            "WorkingSet: workspace refresh failed for \(aliasCopy, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                        )
+                        if code == .notAuthenticated {
+                            // Auth failure: surface to host UI and abort — the
+                            // cache is likely stale in a way that a delta would
+                            // not recover from without fresh tokens.
+                            hostCopy.markNeedsSignIn()
+                            observer.finishEnumeratingWithError(nsFileProviderError(for: code))
+                            return
+                        }
+                        // Non-auth errors: proceed with the existing cache.
+                    }
+                }
+
                 let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
 
                 // Propagate SQLite errors; report deletions.
