@@ -84,13 +84,20 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         // finishEnumeratingWithError — the decode-failure path in production
         // follows the same structure (error logged, anchor advanced) as
         // documented in the code comment and guarded by the do/catch loop.
+        //
+        // We use a workspace-level identifier here, not .root, because the root
+        // container now expires the anchor immediately (before engine() is called).
+        // The workspace delta path exercises the actual engine-failure propagation
+        // logic this test is designed to cover.
         let host = MockEngineHost(alias: "decode-fail-test")
         host.engineResult = .failure(NSFileProviderError(.cannotSynchronize))
 
-        let id = NSFileProviderItemIdentifier(ItemIdentifier.rootContainerString)
+        let workspaceGUID = UUID().uuidString
+        let id = NSFileProviderItemIdentifier(workspaceGUID)
+        let identifier = try parseOfemItemIdentifier(workspaceGUID)
         let enumerator = OfemFPEEnumerator(
             containerItemIdentifier: id,
-            identifier: .root,
+            identifier: identifier,
             alias: "decode-fail-test",
             engineHost: host
         )
@@ -112,6 +119,8 @@ final class OfemFPEEnumeratorTests: XCTestCase {
                       "Engine failure must propagate as finishEnumeratingWithError")
         XCTAssertFalse(changeObserver.finished,
                        "finishEnumeratingChanges must NOT fire when the engine errors")
+        XCTAssertGreaterThanOrEqual(host.engineCallCount, 1,
+                                    "engine() must be called for workspace-level enumerateChanges")
     }
 
     // MARK: - enumerateChanges: notAuthenticated error sets markNeedsSignIn (OfemFPEEnumerator)
@@ -167,13 +176,19 @@ final class OfemFPEEnumeratorTests: XCTestCase {
     // MARK: - enumerateChanges: non-auth error does NOT set markNeedsSignIn (OfemFPEEnumerator)
 
     func testEnumerateChanges_nonAuthError_doesNotSetMarkNeedsSignIn() async throws {
+        // Uses a workspace-level identifier so that engine() is actually called
+        // and the error-classification guard in the non-root catch block is exercised.
+        // The root container now short-circuits before engine() is reached, which
+        // would make this test pass for the wrong reason if .root were used here.
         let host = MockEngineHost(alias: "non-auth-changes-test")
         host.engineResult = .failure(NSFileProviderError(.serverUnreachable))
 
-        let id = NSFileProviderItemIdentifier(ItemIdentifier.rootContainerString)
+        let workspaceGUID = UUID().uuidString
+        let id = NSFileProviderItemIdentifier(workspaceGUID)
+        let identifier = try parseOfemItemIdentifier(workspaceGUID)
         let enumerator = OfemFPEEnumerator(
             containerItemIdentifier: id,
-            identifier: .root,
+            identifier: identifier,
             alias: "non-auth-changes-test",
             engineHost: host
         )
@@ -189,6 +204,8 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         XCTAssertTrue(changeObserver.finishedWithError)
         XCTAssertFalse(host.markedNeedsSignIn,
                        "markNeedsSignIn must NOT be called for non-auth errors in enumerateChanges")
+        XCTAssertGreaterThanOrEqual(host.engineCallCount, 1,
+                                    "engine() must be called to exercise the non-auth classifier path")
     }
 
     // MARK: - enumerateChanges: notAuthenticated error sets markNeedsSignIn (OfemWorkingSetEnumerator)

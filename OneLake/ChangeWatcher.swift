@@ -46,7 +46,12 @@ final class ChangeWatcher {
     /// cancels any previous loop and starts a fresh one.
     func start() {
         Task { [weak self] in
-            await self?.signalAllDomains()
+            // Signal the working set first (existing one-shot resync), then
+            // immediately signal the root container so any workspaces created
+            // or renamed while the host was stopped are visible without
+            // waiting for the first periodic tick.
+            await self?.signal(container: .workingSet)
+            await self?.signal(container: .rootContainer)
         }
         Self.log.info("ChangeWatcher: one-shot launch resync triggered (FPE-owned change signaling)")
 
@@ -64,58 +69,56 @@ final class ChangeWatcher {
         rootRefreshTask?.cancel()
         rootRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: Self.rootRefreshInterval)
-                } catch {
-                    // Cancelled — exit cleanly.
-                    break
-                }
+                try? await Task.sleep(for: Self.rootRefreshInterval)
                 guard !Task.isCancelled else { break }
-                await self?.signalRootContainer()
+                // Each tick signals rootContainer for every registered domain,
+                // causing the FPE to expire the sync anchor and call
+                // listWorkspaces (one Fabric REST call per domain). At 1–3
+                // accounts the cost is negligible; acceptable at current scale.
+                await self?.signal(container: .rootContainer)
             }
         }
-        Self.log.info("ChangeWatcher: periodic root refresh started (interval=90s)")
-    }
-
-    /// Signals the root container for every currently registered domain so
-    /// Finder re-enumerates the workspace list.
-    private func signalRootContainer() async {
-        do {
-            let domains = try await ofemGetAllDomains()
-            for domain in domains {
-                await signalContainer(
-                    domain: domain,
-                    containerId: NSFileProviderItemIdentifier.rootContainer.rawValue
-                )
-            }
-            Self.log.debug(
-                "ChangeWatcher: root-container refresh signal sent to \(domains.count, privacy: .public) domain(s)"
-            )
-        } catch {
-            Self.log.warning(
-                "ChangeWatcher: could not list domains for root refresh: \(error.localizedDescription, privacy: .public)"
-            )
-        }
+        Self.log.info(
+            "ChangeWatcher: periodic root refresh started (interval=\(Self.rootRefreshInterval, privacy: .public))"
+        )
     }
 
     // MARK: - Signaling
 
-    private func signalAllDomains() async {
+    /// Signals `container` for every currently registered domain.
+    ///
+    /// - Parameters:
+    ///   - container: The container identifier to signal (e.g. `.workingSet`,
+    ///     `.rootContainer`). Each container type uses its own log level:
+    ///     `.rootContainer` logs at `.debug`/`.warning`; `.workingSet` at
+    ///     `.info`/`.error`.
+    private func signal(container: NSFileProviderItemIdentifier) async {
+        let containerId = container.rawValue
+        let isRoot = container == .rootContainer
         do {
             let domains = try await ofemGetAllDomains()
             for domain in domains {
-                await signalContainer(
-                    domain: domain,
-                    containerId: NSFileProviderItemIdentifier.workingSet.rawValue
+                await signalContainer(domain: domain, containerId: containerId)
+            }
+            if isRoot {
+                Self.log.debug(
+                    "ChangeWatcher: root-container refresh signal sent to \(domains.count, privacy: .public) domain(s)"
+                )
+            } else {
+                Self.log.info(
+                    "ChangeWatcher: resync signal sent to \(domains.count, privacy: .public) domain(s)"
                 )
             }
-            Self.log.info(
-                "ChangeWatcher: resync signal sent to \(domains.count, privacy: .public) domain(s)"
-            )
         } catch {
-            Self.log.error(
-                "ChangeWatcher: could not list domains for resync: \(error.localizedDescription, privacy: .public)"
-            )
+            if isRoot {
+                Self.log.warning(
+                    "ChangeWatcher: could not list domains for root refresh: \(error.localizedDescription, privacy: .public)"
+                )
+            } else {
+                Self.log.error(
+                    "ChangeWatcher: could not list domains for resync: \(error.localizedDescription, privacy: .public)"
+                )
+            }
         }
     }
 
