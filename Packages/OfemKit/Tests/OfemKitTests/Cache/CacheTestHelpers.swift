@@ -17,8 +17,12 @@ import GRDB
 /// let store = try makeTempStore()
 /// defer { try? FileManager.default.removeItem(at: store.root) }
 /// ```
-func makeTempStore(maxBlobBytes: Int64 = 0, clock: @escaping @Sendable () -> Int64 = wallClockNs) throws -> CacheStore {
+func makeTempStore(
+    maxBlobBytes: Int64 = 0,
+    clock: @escaping @Sendable () -> Int64 = wallClockNs,
+    logger: OfemLogger = .init()
+) throws -> CacheStore {
     let tmp = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    return try CacheStore(root: tmp, maxBlobBytes: maxBlobBytes, clock: clock)
+    return try CacheStore(root: tmp, maxBlobBytes: maxBlobBytes, clock: clock, logger: logger)
 }
