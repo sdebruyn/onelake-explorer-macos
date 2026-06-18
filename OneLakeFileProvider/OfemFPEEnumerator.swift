@@ -168,6 +168,10 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
         let identifierCopy = identifier
         let hostCopy = engineHost
 
+        Self.log.debug(
+            "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateItems entry — container=\(identifierCopy.identifierString, privacy: .public)"
+        )
+
         // Cancel any previous in-flight items task. Only cancel on a new
         // *items* enumeration — not on change observation — so concurrent
         // change-observation and items-enumeration tasks remain independent.
@@ -180,6 +184,9 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                     engine: engine
                 )
                 observer.didEnumerate(items)
+                Self.log.debug(
+                    "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateItems done — container=\(identifierCopy.identifierString, privacy: .public) count=\(items.count, privacy: .public) nextPage=nil"
+                )
                 observer.finishEnumerating(upTo: nil)
             } catch is CancellationError {
                 Self.log.debug(
@@ -233,6 +240,9 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
         // enumeration for an unrelated change observer). Store the new task in
         // inFlightChangesTask so invalidate() can cancel it (fpe-15).
         let changesTask = Task<Void, Never> {
+            Self.log.debug(
+                "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges entry — container=\(identifierCopy.identifierString, privacy: .public) anchor=\(previousNs, privacy: .public)"
+            )
             // Root-container changes cannot be served from the cache delta path:
             // the cache stores file/folder rows keyed by path, not workspace
             // metadata rows, so DomainItem.from(record:) mis-maps workspace rows
@@ -449,9 +459,12 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
         startingAt _: NSFileProviderPage
     ) {
         OfemWorkingSetEnumerator.log.debug(
-            "enumerateItems (working set) for \(self.alias, privacy: .public) -> empty"
+            "WorkingSet[\(self.alias, privacy: .public)]: enumerateItems entry — working set always returns empty"
         )
         observer.didEnumerate([])
+        OfemWorkingSetEnumerator.log.debug(
+            "WorkingSet[\(self.alias, privacy: .public)]: enumerateItems done — count=0 nextPage=nil"
+        )
         observer.finishEnumerating(upTo: nil)
     }
 
@@ -471,6 +484,9 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
 
         // Store the task so invalidate() can cancel it (fpe-15).
         let changesTask = Task<Void, Never> {
+            Self.log.debug(
+                "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges entry — anchor=\(previousNs, privacy: .public)"
+            )
             do {
                 let engine = try await hostCopy.engine()
                 let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
