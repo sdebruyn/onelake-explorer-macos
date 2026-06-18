@@ -18,9 +18,11 @@ import GRDB
 public final class CacheReader: Sendable {
 
     private let db: any DatabaseReader
+    private let logger: OfemLogger
 
-    init(db: any DatabaseReader) {
+    init(db: any DatabaseReader, logger: OfemLogger = .init()) {
         self.db = db
+        self.logger = logger
     }
 
     // MARK: - Metadata reads
@@ -30,17 +32,24 @@ public final class CacheReader: Sendable {
     /// Throws ``CacheError/notFound(_:)`` when the row does not exist.
     public func fetch(key: CacheKey) async throws -> MetadataRecord {
         try validateKey(key)
-        return try await db.read { db in
-            guard let row = try MetadataRecord
-                .filter(MetadataRecord.Columns.accountAlias == key.accountAlias)
-                .filter(MetadataRecord.Columns.workspaceID == key.workspaceID)
-                .filter(MetadataRecord.Columns.itemID == key.itemID)
-                .filter(MetadataRecord.Columns.path == key.path)
-                .fetchOne(db)
-            else {
-                throw CacheError.notFound("\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)")
+        do {
+            let row = try await db.read { db -> MetadataRecord in
+                guard let row = try MetadataRecord
+                    .filter(MetadataRecord.Columns.accountAlias == key.accountAlias)
+                    .filter(MetadataRecord.Columns.workspaceID == key.workspaceID)
+                    .filter(MetadataRecord.Columns.itemID == key.itemID)
+                    .filter(MetadataRecord.Columns.path == key.path)
+                    .fetchOne(db)
+                else {
+                    throw CacheError.notFound("\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)")
+                }
+                return row
             }
+            logger.debug("cache fetch", metadata: ["result": "hit", "key": "\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)"])
             return row
+        } catch CacheError.notFound {
+            logger.debug("cache fetch", metadata: ["result": "miss", "key": "\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)"])
+            throw CacheError.notFound("\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)")
         }
     }
 
@@ -158,7 +167,7 @@ public final class CacheReader: Sendable {
         accountAlias: String,
         ns: Int64
     ) async throws -> (updated: [MetadataRecord], deletedIdentifierStrings: [String]) {
-        try await db.read { db in
+        let result = try await db.read { db -> (updated: [MetadataRecord], deletedIdentifierStrings: [String]) in
             let updated = try MetadataRecord
                 .filter(MetadataRecord.Columns.accountAlias == accountAlias)
                 .filter(MetadataRecord.Columns.syncedAtNs > ns)
@@ -171,6 +180,12 @@ public final class CacheReader: Sendable {
 
             return (updated, deleted)
         }
+        logger.debug("cache changes", metadata: [
+            "updated": "\(result.updated.count)",
+            "deleted": "\(result.deletedIdentifierStrings.count)",
+            "sinceNs": "\(ns)",
+        ])
+        return result
     }
 
     // MARK: - Blob byte totals
