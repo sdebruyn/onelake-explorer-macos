@@ -48,6 +48,9 @@ public actor CacheStore {
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "CacheStore")
 
+    /// Structured logger for debug-level cache diagnostics.
+    private let logger: OfemLogger
+
     // MARK: - Public state
 
     /// The root directory passed at construction time.
@@ -75,10 +78,16 @@ public actor CacheStore {
     // referencing it directly because wallClockNs is internal and this init is public;
     // Swift requires default argument expressions to be at least as visible as the
     // declaration they appear in.
-    public init(root: URL, maxBlobBytes: Int64 = 0, clock: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000_000_000) }) throws {
+    public init(
+        root: URL,
+        maxBlobBytes: Int64 = 0,
+        clock: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000_000_000) },
+        logger: OfemLogger = .init()
+    ) throws {
         self.root = root
         self.maxBlobBytes = maxBlobBytes
         self.clock = clock
+        self.logger = logger
 
         // Create root directory.
         try FileManager.default.createDirectory(
@@ -133,7 +142,7 @@ public actor CacheStore {
     /// a `CacheReader` simultaneously; reads never block writers (WAL snapshot
     /// isolation).
     public nonisolated func reader() -> CacheReader {
-        CacheReader(db: dbPool)
+        CacheReader(db: dbPool, logger: logger)
     }
 
     // MARK: - Orphan sweep
@@ -691,7 +700,10 @@ public actor CacheStore {
         // that survive become orphans reclaimed by the next init-time sweep.
         blobs.wipeAll()
 
-        Self.log.info("CacheStore: wiped blobs=\(count, privacy: .public) bytes=\(bytes, privacy: .public)")
+        logger.info("cache wipe", metadata: [
+            "count": "\(count)",
+            "bytes": "\(bytes)",
+        ])
         return (count, bytes)
     }
 
@@ -788,11 +800,10 @@ public actor CacheStore {
             reclaimed += candidateSize
         })
 
-        for v in candidates {
-            Self.log.debug(
-                "CacheStore: evicted sha=\(v.sha, privacy: .public) bytes=\(v.size, privacy: .public)"
-            )
-        }
+        logger.debug("cache eviction", metadata: [
+            "evicted": "\(candidates.count)",
+            "reclaimed": "\(reclaimed)",
+        ])
 
         return (candidates.count, reclaimed)
     }
