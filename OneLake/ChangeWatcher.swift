@@ -9,6 +9,13 @@
 // login-item boot), covering any changes that accumulated while the host was
 // stopped.
 //
+// Additionally, ChangeWatcher runs a repeating loop that periodically signals
+// the root container for every registered domain. This ensures the workspace
+// list in Finder stays current: newly created or renamed Fabric workspaces
+// appear without waiting for macOS's own infrequent re-enumeration schedule.
+// The FPE responds to a root-container signal by expiring the sync anchor,
+// which forces a fresh enumerateItems(.root) → listWorkspaces call.
+//
 // This class is @MainActor because NSFileProviderManager calls are documented
 // as main-thread-only.
 
@@ -22,18 +29,73 @@ final class ChangeWatcher {
 
     private static let log = Logger(subsystem: ofemSubsystem, category: "change-watcher")
 
+    /// How often the root container is signalled to refresh the workspace list.
+    static let rootRefreshInterval: Duration = .seconds(90)
+
+    /// Handle for the periodic root-refresh loop. Stored so a second `start()`
+    /// call can cancel the previous loop before launching a new one.
+    private var rootRefreshTask: Task<Void, Never>?
+
     private init() {}
 
     // MARK: - Lifecycle
 
     /// Emit a one-shot full-resync signal to all registered domains so
-    /// Finder re-enumerates after app launch. Safe to call multiple times;
-    /// each call triggers a new resync.
+    /// Finder re-enumerates after app launch, then start the periodic
+    /// root-container refresh loop. Safe to call multiple times; each call
+    /// cancels any previous loop and starts a fresh one.
     func start() {
         Task { [weak self] in
             await self?.signalAllDomains()
         }
         Self.log.info("ChangeWatcher: one-shot launch resync triggered (FPE-owned change signaling)")
+
+        startRootRefreshLoop()
+    }
+
+    // MARK: - Periodic root refresh
+
+    /// Starts (or restarts) the repeating loop that signals the root container
+    /// for every registered domain at `rootRefreshInterval` intervals.
+    ///
+    /// Cancels any previously running loop so calling `start()` twice does not
+    /// stack two concurrent loops.
+    private func startRootRefreshLoop() {
+        rootRefreshTask?.cancel()
+        rootRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: Self.rootRefreshInterval)
+                } catch {
+                    // Cancelled — exit cleanly.
+                    break
+                }
+                guard !Task.isCancelled else { break }
+                await self?.signalRootContainer()
+            }
+        }
+        Self.log.info("ChangeWatcher: periodic root refresh started (interval=90s)")
+    }
+
+    /// Signals the root container for every currently registered domain so
+    /// Finder re-enumerates the workspace list.
+    private func signalRootContainer() async {
+        do {
+            let domains = try await ofemGetAllDomains()
+            for domain in domains {
+                await signalContainer(
+                    domain: domain,
+                    containerId: NSFileProviderItemIdentifier.rootContainer.rawValue
+                )
+            }
+            Self.log.debug(
+                "ChangeWatcher: root-container refresh signal sent to \(domains.count, privacy: .public) domain(s)"
+            )
+        } catch {
+            Self.log.warning(
+                "ChangeWatcher: could not list domains for root refresh: \(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 
     // MARK: - Signaling
