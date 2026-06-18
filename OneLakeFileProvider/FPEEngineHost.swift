@@ -190,7 +190,13 @@ final class FPEEngineHost: EngineProviding {
         // Build outside the lock to avoid blocking other callers during I/O.
         let cfg = try sharedSubsystemsLock.withLock { try sharedConfigStore().snapshot() }
         let paths = OfemPaths()
-        let candidate = try CacheStore(root: paths.cacheDir, maxBlobBytes: cfg.cache.maxBytes)
+        let cacheLogLevel = LogLevel(string: cfg.log.level) ?? .info
+        let cacheLogger = OfemLogger(configuration: LogConfiguration(
+            subsystem: "dev.debruyn.ofem",
+            category: "cache",
+            level: cacheLogLevel
+        ))
+        let candidate = try CacheStore(root: paths.cacheDir, maxBlobBytes: cfg.cache.maxBytes, logger: cacheLogger)
 
         // CAS: install only if no one else already created it.
         return sharedSubsystemsLock.withLock {
