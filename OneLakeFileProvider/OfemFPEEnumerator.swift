@@ -233,6 +233,21 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
         // enumeration for an unrelated change observer). Store the new task in
         // inFlightChangesTask so invalidate() can cancel it (fpe-15).
         let changesTask = Task<Void, Never> {
+            // Root-container changes cannot be served from the cache delta path:
+            // the cache stores file/folder rows keyed by path, not workspace
+            // metadata rows, so DomainItem.from(record:) mis-maps workspace rows
+            // and produces incorrect items. The only reliable source of truth for
+            // workspaces is a fresh enumerateItems(.root) → listWorkspaces call.
+            // Expire the anchor immediately so the framework performs that full
+            // re-enumeration instead of relying on the broken delta path.
+            if case .root = identifierCopy {
+                observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+                Self.log.debug(
+                    "OfemFPEEnumerator: root-container enumerateChanges — anchor expired to force full re-enum for \(aliasCopy, privacy: .public)"
+                )
+                return
+            }
+
             do {
                 let engine = try await hostCopy.engine()
                 let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
