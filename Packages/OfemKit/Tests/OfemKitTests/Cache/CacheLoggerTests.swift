@@ -60,6 +60,15 @@ struct CacheLoggerTests {
         let lines = try Self.readLogLines(from: logDir)
         let hitLine = lines.first(where: { $0.contains("\"msg\":\"cache fetch\"") && $0.contains("\"hit\"") })
         #expect(hitLine != nil, "expected a 'cache fetch' hit log line")
+
+        // The component keys must survive scrubbing and appear verbatim.
+        if let line = hitLine {
+            #expect(line.contains("\"accountAlias\":\"a1\""), "accountAlias must be present in hit log line")
+            #expect(line.contains("\"workspaceID\":\"ws1\""), "workspaceID must be present in hit log line")
+            #expect(line.contains("\"itemID\":\"it1\""), "itemID must be present in hit log line")
+            // Privacy contract: the raw file path must never appear verbatim.
+            #expect(!line.contains("\"hit.txt\""), "raw file path must not appear verbatim in hit log line")
+        }
     }
 
     @Test("fetch logs a miss when the row does not exist")
@@ -81,5 +90,14 @@ struct CacheLoggerTests {
         let lines = try Self.readLogLines(from: logDir)
         let missLine = lines.first(where: { $0.contains("\"msg\":\"cache fetch\"") && $0.contains("\"miss\"") })
         #expect(missLine != nil, "expected a 'cache fetch' miss log line")
+
+        // The component keys must survive scrubbing and appear verbatim.
+        if let line = missLine {
+            #expect(line.contains("\"accountAlias\":\"a1\""), "accountAlias must be present in miss log line")
+            #expect(line.contains("\"workspaceID\":\"ws1\""), "workspaceID must be present in miss log line")
+            #expect(line.contains("\"itemID\":\"it1\""), "itemID must be present in miss log line")
+            // Privacy contract: the raw file path must never appear verbatim.
+            #expect(!line.contains("\"no-such-file.txt\""), "raw file path must not appear verbatim in miss log line")
+        }
     }
 }

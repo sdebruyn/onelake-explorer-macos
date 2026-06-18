@@ -700,8 +700,7 @@ public actor CacheStore {
         // that survive become orphans reclaimed by the next init-time sweep.
         blobs.wipeAll()
 
-        Self.log.info("CacheStore: wiped blobs=\(count, privacy: .public) bytes=\(bytes, privacy: .public)")
-        logger.debug("cache wipe", metadata: [
+        logger.info("cache wipe", metadata: [
             "count": "\(count)",
             "bytes": "\(bytes)",
         ])

@@ -45,11 +45,27 @@ public final class CacheReader: Sendable {
                 }
                 return row
             }
-            logger.debug("cache fetch", metadata: ["result": "hit", "key": "\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)"])
+            if logger.isDebugEnabled {
+                logger.debug("cache fetch", metadata: [
+                    "result": "hit",
+                    "accountAlias": key.accountAlias,
+                    "workspaceID": key.workspaceID,
+                    "itemID": key.itemID,
+                    "pathSegments": "\(key.path.split(separator: "/", omittingEmptySubsequences: false).count)",
+                ])
+            }
             return row
-        } catch CacheError.notFound {
-            logger.debug("cache fetch", metadata: ["result": "miss", "key": "\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)"])
-            throw CacheError.notFound("\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)")
+        } catch let e as CacheError {
+            if case .notFound = e, logger.isDebugEnabled {
+                logger.debug("cache fetch", metadata: [
+                    "result": "miss",
+                    "accountAlias": key.accountAlias,
+                    "workspaceID": key.workspaceID,
+                    "itemID": key.itemID,
+                    "pathSegments": "\(key.path.split(separator: "/", omittingEmptySubsequences: false).count)",
+                ])
+            }
+            throw e
         }
     }
 
