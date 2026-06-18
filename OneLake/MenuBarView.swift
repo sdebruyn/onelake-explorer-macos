@@ -188,17 +188,21 @@ private struct AccountSubmenu: View {
         // the submenu has a consistent status row regardless of auth state.
         // The warning state uses a leading SF Symbol glyph + primary color so
         // it remains legible in both light and dark mode and on both normal and
-        // highlighted/selected rows (orange was unreadable on the selected row).
+        // highlighted/selected rows.
+        //
+        // .allowsHitTesting(false) is used instead of .disabled(true): disabled
+        // items in a MenuBarExtra(.menu) are rendered by AppKit which applies its
+        // own dimming on selected rows regardless of the SwiftUI foreground style,
+        // defeating the legibility fix. .allowsHitTesting(false) suppresses
+        // interaction without triggering AppKit's disabled-item dimming, so
+        // .primary/.secondary are respected on highlighted rows too.
         let needsSignIn = model.accountNeedsSignIn(alias: account.alias)
-        if needsSignIn {
-            Label("Sign-in required", systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.primary)
-                .disabled(true)
-        } else {
-            Text("Running")
-                .foregroundStyle(.secondary)
-                .disabled(true)
-        }
+        Label(
+            model.accountStatusLabel(alias: account.alias),
+            systemImage: needsSignIn ? "exclamationmark.triangle" : ""
+        )
+        .foregroundStyle(needsSignIn ? .primary : .secondary)
+        .allowsHitTesting(false)
 
         Divider()
 
