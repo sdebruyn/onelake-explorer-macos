@@ -14,19 +14,26 @@ import os.log
 ///
 /// ### Privacy model
 ///
+/// Both sinks use a compile-time `#if DEBUG` gate so it is impossible to
+/// accidentally ship un-redacted values in a distributed build.
+///
 /// os.Logger messages: static format strings and level/category are
 /// `.public`; dynamically interpolated values use a `#if DEBUG` gate:
 ///   - **DEBUG** builds: `.public` — un-redacted so `log show` / `log stream`
 ///     show real values during local development.
 ///   - **release** builds: `.private` — redacted in the system log, matching
-///     the telemetry privacy stance.  It is impossible to ship un-redacted
-///     prod logs by accident because the gate is compile-time.
+///     the telemetry privacy stance.
 ///
-/// On-disk JSON file: all metadata values are passed through
-/// `Privacy.scrubLogValue(_:)` before being written.  The `msg` field is
-/// written verbatim because call-site log messages must be static string
-/// constants that never carry PII — callers must place dynamic data in
-/// `metadata`, where the redaction boundary applies.
+/// On-disk JSON file: metadata values use the same `#if DEBUG` gate:
+///   - **DEBUG** builds: written verbatim — paths, UPNs, and workspace names
+///     appear in the file so developers can inspect real values locally.
+///   - **release** builds: all metadata values are passed through
+///     `Privacy.scrubLogValue(_:)` before being written, so PII never reaches
+///     a distributed log file.
+///
+/// The `msg` field is written verbatim in both configurations because
+/// call-site log messages must be static string constants that never carry
+/// PII — callers must place dynamic data in `metadata`.
 ///
 /// ### Usage
 ///
@@ -142,21 +149,32 @@ public struct OfemLogger: Sendable {
     /// Builds a single JSON log line.
     ///
     /// Reserved keys (`time`, `level`, `msg`) always win over same-named
-    /// metadata keys.  All metadata values are routed through
-    /// `Privacy.scrubLogValue(_:)` before being written to disk so that
-    /// paths, UPNs, and workspace names cannot appear verbatim.
+    /// metadata keys.  Metadata values use a `#if DEBUG` gate:
+    ///   - **DEBUG** builds: values are written verbatim so developers can
+    ///     inspect real paths, UPNs, and workspace names in local log files.
+    ///   - **release** builds: values are routed through
+    ///     `Privacy.scrubLogValue(_:)` so PII never reaches a distributed log.
     ///
     /// Example:
     /// ```json
     /// {"level":"INFO","msg":"workspace listed","tenantId":"9064c167","time":"2026-06-07T14:03:12.000Z"}
     /// ```
     private func jsonLine(level: LogLevel, message: String, metadata: [String: String]) -> String {
-        // Build the dictionary with caller metadata first (redacted), then
-        // overwrite with reserved keys so reserved keys always win.
+        // Build the dictionary with caller metadata first, then overwrite with
+        // reserved keys so reserved keys always win.
+        //
+        // DEBUG builds write metadata verbatim for local development;
+        // release builds scrub values through Privacy.scrubLogValue(_:).
         var dict: [String: Any] = [:]
+        #if DEBUG
+        for (k, v) in metadata {
+            dict[k] = v
+        }
+        #else
         for (k, v) in metadata {
             dict[k] = Privacy.scrubLogValue(v)
         }
+        #endif
         dict["time"] = Self.isoTimestamp()
         dict["level"] = Self.levelLabel(level)
         dict["msg"] = message

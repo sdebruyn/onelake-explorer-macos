@@ -109,9 +109,18 @@ struct OfemLoggerTests {
     }
 
     // MARK: - Privacy redaction on the file sink (logging-01)
+    //
+    // In DEBUG builds the JSON file sink writes metadata values verbatim so
+    // developers can inspect real values locally.  In release builds values are
+    // routed through Privacy.scrubLogValue(_:).
+    //
+    // The tests below use #if DEBUG / #else blocks to assert the correct
+    // behaviour for the current build configuration.  The pure-function tests
+    // for Privacy.scrubLogValue in TelemetryRedactionTests lock the release
+    // redaction contract independently of the logger.
 
-    @Test("OfemLogger redacts metadata values containing path separators in file sink")
-    func fileWriterRedactsPathInMetadata() throws {
+    @Test("OfemLogger file sink: path metadata is verbatim in DEBUG, redacted in release")
+    func fileWriterPathMetadataBehavior() throws {
         let dir = FileManager.default.temporaryDirectory
             .appending(path: "ofem-log-redact-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -121,7 +130,7 @@ struct OfemLoggerTests {
         let logger = OfemLogger(configuration: config)
 
         logger.info("sync complete", metadata: [
-            "filePath": "/Users/sam/Files/budget.csv",
+            "filePath": "/Users/example/Files/budget.csv",
             "tenantId": "9064c167-4885-40ef-9f34-1853218aea86",
         ])
         writer.close()
@@ -132,15 +141,23 @@ struct OfemLoggerTests {
         let data = try #require(firstLine.data(using: .utf8))
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
 
-        // File path must be redacted; GUID must pass through.
-        #expect(json?["filePath"] as? String == "redacted",
-                "path containing '/' must be redacted in the file sink")
+        // GUID must always pass through unchanged (safe charset in both configs).
         #expect(json?["tenantId"] as? String == "9064c167-4885-40ef-9f34-1853218aea86",
                 "GUID must pass through the file sink unchanged")
+
+        #if DEBUG
+        // DEBUG: path appears verbatim so developers can inspect real values.
+        #expect(json?["filePath"] as? String == "/Users/example/Files/budget.csv",
+                "path must be written verbatim in DEBUG builds")
+        #else
+        // release: path must be redacted (contains '/').
+        #expect(json?["filePath"] as? String == "redacted",
+                "path containing '/' must be redacted in the file sink in release builds")
+        #endif
     }
 
-    @Test("OfemLogger redacts metadata values containing UPN in file sink")
-    func fileWriterRedactsUPNInMetadata() throws {
+    @Test("OfemLogger file sink: UPN metadata is verbatim in DEBUG, redacted in release")
+    func fileWriterUPNMetadataBehavior() throws {
         let dir = FileManager.default.temporaryDirectory
             .appending(path: "ofem-log-upn-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -149,7 +166,7 @@ struct OfemLoggerTests {
         let config = LogConfiguration(level: .debug, fileWriter: writer)
         let logger = OfemLogger(configuration: config)
 
-        logger.warn("auth event", metadata: ["user": "sam@debruyn.dev"])
+        logger.warn("auth event", metadata: ["user": "user@example.com"])
         writer.close()
 
         let logFile = dir.appending(path: "ofem.log", directoryHint: .notDirectory)
@@ -158,16 +175,23 @@ struct OfemLoggerTests {
         let data = try #require(firstLine.data(using: .utf8))
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
 
+        #if DEBUG
+        // DEBUG: UPN appears verbatim.
+        #expect(json?["user"] as? String == "user@example.com",
+                "UPN must be written verbatim in DEBUG builds")
+        #else
+        // release: UPN must be redacted (contains '@').
         #expect(json?["user"] as? String == "redacted",
-                "UPN in metadata must be redacted in the file sink")
+                "UPN in metadata must be redacted in the file sink in release builds")
+        #endif
     }
 
     @Test("OfemLogger writes valid JSON even when metadata value contains quotes (logging-02)")
     func fileWriterEscapesSpecialCharsInFallback() throws {
-        // The primary path uses JSONSerialization which handles escaping.
-        // Verify that a value that would break hand-concatenated JSON is
-        // safely handled — it will be redacted via Privacy.scrubLogValue
-        // because it contains characters outside the safe charset.
+        // The primary path uses JSONSerialization which handles escaping
+        // regardless of build configuration.  In DEBUG the value is written
+        // verbatim; in release it is redacted.  Either way the line must be
+        // valid JSON — that is the invariant this test locks.
         let dir = FileManager.default.temporaryDirectory
             .appending(path: "ofem-log-escape-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -186,9 +210,53 @@ struct OfemLoggerTests {
         // Must be parseable JSON — not a crash or broken line.
         let data = try #require(firstLine.data(using: .utf8))
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        #expect(json != nil, "line must be valid JSON")
-        // The value with quotes is not in the safe charset → redacted.
-        #expect(json?["val"] as? String == "redacted")
+        #expect(json != nil, "line must be valid JSON regardless of build configuration")
+        #if DEBUG
+        // DEBUG: value written verbatim (JSONSerialization handles escaping).
+        #expect(json?["val"] as? String == "a\"b\\c",
+                "value must be written verbatim in DEBUG builds")
+        #else
+        // release: value contains chars outside safe charset → redacted.
+        #expect(json?["val"] as? String == "redacted",
+                "value with unsafe chars must be redacted in release builds")
+        #endif
+    }
+
+    // MARK: - DEBUG verbatim write (new behaviour)
+
+    @Test("OfemLogger writes path-like metadata values verbatim in DEBUG builds")
+    func fileWriterWritesVerbatimInDebug() throws {
+        // This test proves the new behaviour: a value that WOULD be scrubbed in
+        // release (contains '/' and space, outside the safe charset) is written
+        // verbatim to the JSON file in a DEBUG build.
+        //
+        // In release this test is skipped at compile-time; the corresponding
+        // redaction guarantee is locked by Privacy.scrubLogValue unit tests in
+        // TelemetryRedactionTests.
+        #if DEBUG
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "ofem-log-verbatim-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let writer = RotatingFileWriter(logDirectory: dir)
+        let config = LogConfiguration(level: .debug, fileWriter: writer)
+        let logger = OfemLogger(configuration: config)
+
+        // "a/b c" contains '/' and ' ' — both outside the safe charset — so it
+        // would be scrubbed to "redacted" in a release build.
+        logger.info("verbatim test", metadata: ["path": "a/b c"])
+        writer.close()
+
+        let logFile = dir.appending(path: "ofem.log", directoryHint: .notDirectory)
+        let content = try String(contentsOf: logFile, encoding: .utf8)
+        let firstLine = content.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
+        let data = try #require(firstLine.data(using: .utf8))
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        #expect(json?["path"] as? String == "a/b c",
+                "DEBUG build must write metadata value verbatim, not 'redacted'")
+        #expect(json?["msg"] as? String == "verbatim test")
+        #endif
     }
 
     // MARK: - Named constants (logging-07)
@@ -269,18 +337,18 @@ struct OfemLoggerTests {
         #expect(content.contains("hello"), "file must be readable after writer deinit")
     }
 
-    // MARK: - End-to-end redaction (logging-09)
+    // MARK: - End-to-end metadata handling (logging-09)
 
     /// Exercises the full path from a public `OfemLogger` call with PII in
-    /// metadata through to the written JSON line, asserting that the PII never
-    /// reaches disk and the `"redacted"` marker does.
+    /// metadata through to the written JSON line.
     ///
     /// The safe charset is `[A-Za-z0-9_.:-]`.  Values that contain characters
     /// outside this set (UPNs with `@`, paths with `/`, names with spaces)
-    /// are collapsed to `"redacted"`.  Values entirely within the charset
-    /// (e.g. a GUID) pass through unchanged.
-    @Test("OfemLogger end-to-end: PII in metadata is redacted in the on-disk JSON line (logging-09)")
-    func endToEndRedactionIntegration() throws {
+    /// are written verbatim in DEBUG builds and collapsed to `"redacted"` in
+    /// release builds.  Values entirely within the charset (e.g. a GUID) pass
+    /// through unchanged in both configurations.
+    @Test("OfemLogger end-to-end: PII in metadata is verbatim in DEBUG, redacted in release (logging-09)")
+    func endToEndMetadataHandling() throws {
         let dir = FileManager.default.temporaryDirectory
             .appending(path: "ofem-log-e2e-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -290,15 +358,15 @@ struct OfemLoggerTests {
         let logger = OfemLogger(configuration: config)
 
         // Log via the public API with PII in metadata values.
-        // - "upn" contains '@' → must be redacted
-        // - "workspaceName" contains a space → must be redacted
-        // - "filePath" contains '/' → must be redacted
-        // - "tenantId" is a GUID (all safe chars) → must pass through unchanged
+        // - "upn" contains '@' → verbatim in DEBUG, redacted in release
+        // - "workspaceName" contains a space → verbatim in DEBUG, redacted in release
+        // - "filePath" contains '/' → verbatim in DEBUG, redacted in release
+        // - "tenantId" is a GUID (all safe chars) → passes through unchanged in both
         // The message itself is a static string (as the contract requires).
         logger.info("user action completed", metadata: [
             "upn":           "user@contoso.com",
             "workspaceName": "Sales Data Warehouse",
-            "filePath":      "/Users/sam/OneLake/Contoso/budget.parquet",
+            "filePath":      "/Users/example/OneLake/Contoso/budget.parquet",
             "tenantId":      "9064c167-4885-40ef-9f34-1853218aea86",
         ])
         writer.close()
@@ -310,38 +378,48 @@ struct OfemLoggerTests {
             .first
             .map(String.init) ?? ""
 
-        // Must be valid JSON.
+        // Must be valid JSON in both configurations.
         let data = try #require(firstLine.data(using: .utf8))
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         #expect(json != nil, "written line must be valid JSON")
 
-        // The static message must appear verbatim (it carries no PII).
+        // The static message must appear verbatim (it carries no PII) in both configs.
         #expect(json?["msg"] as? String == "user action completed",
                 "static log message must reach disk verbatim")
 
-        // Strings that contain chars outside [A-Za-z0-9_.:-] must not appear
-        // verbatim in the raw output.
-        let piiTerms = ["user@contoso.com", "Sales Data Warehouse", "/Users/sam", "budget.parquet"]
-        for term in piiTerms {
-            #expect(!raw.contains(term),
-                    "PII term '\(term)' must not appear in the written log line")
-        }
-
-        // Each PII-bearing metadata key must be present but collapsed to "redacted".
-        #expect(json?["upn"] as? String == "redacted",
-                "UPN (contains '@') must be redacted")
-        #expect(json?["workspaceName"] as? String == "redacted",
-                "workspace name (contains space) must be redacted")
-        #expect(json?["filePath"] as? String == "redacted",
-                "file path (contains '/') must be redacted")
-
-        // Safe values must pass through unchanged.
+        // Safe values (GUID) must pass through unchanged in both configurations.
         #expect(json?["tenantId"] as? String == "9064c167-4885-40ef-9f34-1853218aea86",
                 "GUID tenantId must reach disk verbatim (all chars are in safe charset)")
+
+        #if DEBUG
+        // DEBUG: PII-bearing values appear verbatim so developers can inspect them.
+        #expect(json?["upn"] as? String == "user@contoso.com",
+                "UPN must be written verbatim in DEBUG builds")
+        #expect(json?["workspaceName"] as? String == "Sales Data Warehouse",
+                "workspace name must be written verbatim in DEBUG builds")
+        #expect(json?["filePath"] as? String == "/Users/example/OneLake/Contoso/budget.parquet",
+                "file path must be written verbatim in DEBUG builds")
+        #else
+        // release: PII-bearing values must be redacted.
+        // Strings that contain chars outside [A-Za-z0-9_.:-] must not appear
+        // verbatim in the raw output.
+        let piiTerms = ["user@contoso.com", "Sales Data Warehouse", "/Users/example", "budget.parquet"]
+        for term in piiTerms {
+            #expect(!raw.contains(term),
+                    "PII term '\(term)' must not appear in the written log line in release builds")
+        }
+
+        #expect(json?["upn"] as? String == "redacted",
+                "UPN (contains '@') must be redacted in release builds")
+        #expect(json?["workspaceName"] as? String == "redacted",
+                "workspace name (contains space) must be redacted in release builds")
+        #expect(json?["filePath"] as? String == "redacted",
+                "file path (contains '/') must be redacted in release builds")
 
         // The redaction marker must appear at least 3 times (one per PII key).
         let redactedCount = (firstLine.components(separatedBy: "\"redacted\"").count - 1)
         #expect(redactedCount >= 3,
-                "at least 3 'redacted' markers expected; found \(redactedCount)")
+                "at least 3 'redacted' markers expected in release builds; found \(redactedCount)")
+        #endif
     }
 }
