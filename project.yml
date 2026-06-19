@@ -21,13 +21,11 @@ settings:
     # "Update to recommended settings" banner persists by design — do NOT "fix" it
     # by deleting this line or accepting Xcode's architectures recommendation.
     ARCHS: arm64
-    # Sandbox run-script build phases so they declare their inputs/outputs and
-    # run with restricted filesystem access. Matches Xcode's recommended
-    # baseline and keeps any future Run Script phase sandboxed by default.
+    # Sandbox run-script build phases (Xcode recommended setting). There are
+    # no Run Script phases in this project; this matches the recommended baseline.
     ENABLE_USER_SCRIPT_SANDBOXING: YES
-    # Generate Swift symbols for String Catalog (.xcstrings) localization keys,
-    # giving type-safe access to localized strings. Matches Xcode's recommended
-    # baseline so catalogs added to the project pick up symbol generation.
+    # Enable symbol generation for String Catalog (.xcstrings) files
+    # (Xcode recommended setting). Matches the recommended baseline.
     STRING_CATALOG_GENERATE_SYMBOLS: YES
     # SWIFT_VERSION stays at 5.10 for the app and FPE targets.
     # OfemKit itself builds in Swift 6 mode (swift-tools-version: 6.0) and its
