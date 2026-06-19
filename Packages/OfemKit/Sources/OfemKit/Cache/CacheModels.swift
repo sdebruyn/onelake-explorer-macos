@@ -58,6 +58,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         public static let lastAccessedNs = Column("last_accessed_ns")
         public static let syncedAtNs = Column("synced_at_ns")
         public static let childrenSyncedAtNs = Column("children_synced_at_ns")
+        public static let itemType = Column("item_type")
     }
 
     // MARK: Fields
@@ -111,6 +112,12 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
     /// Zero = "never listed"; always zero for non-directory rows.
     public var childrenSyncedAtNs: Int64
 
+    /// Fabric item type (e.g. `"Lakehouse"`, `"Warehouse"`, `"SQLDatabase"`,
+    /// `"MirroredDatabase"`). Empty string for virtual rows (workspace sentinel,
+    /// root sentinel) and for rows written before v3 of the schema. An empty
+    /// value is treated as read-only by `DomainItem.computeCapabilities`.
+    public var itemType: String
+
     // MARK: Computed helpers
 
     /// `lastModifiedNs` as a `Date`. `nil` when zero.
@@ -144,7 +151,8 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         blobSize: Int64 = 0,
         lastAccessedNs: Int64 = 0,
         syncedAtNs: Int64 = 0,
-        childrenSyncedAtNs: Int64 = 0
+        childrenSyncedAtNs: Int64 = 0,
+        itemType: String = ""
     ) {
         self.accountAlias = accountAlias
         self.workspaceID = workspaceID
@@ -162,6 +170,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         self.lastAccessedNs = lastAccessedNs
         self.syncedAtNs = syncedAtNs
         self.childrenSyncedAtNs = childrenSyncedAtNs
+        self.itemType = itemType
     }
 
     // MARK: FetchableRecord
@@ -183,6 +192,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         lastAccessedNs = row[Columns.lastAccessedNs]
         syncedAtNs = row[Columns.syncedAtNs]
         childrenSyncedAtNs = row[Columns.childrenSyncedAtNs]
+        itemType = row[Columns.itemType] ?? ""
     }
 
     // MARK: PersistableRecord
@@ -204,6 +214,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         container[Columns.lastAccessedNs] = lastAccessedNs
         container[Columns.syncedAtNs] = syncedAtNs
         container[Columns.childrenSyncedAtNs] = childrenSyncedAtNs
+        container[Columns.itemType] = itemType
     }
 }
 

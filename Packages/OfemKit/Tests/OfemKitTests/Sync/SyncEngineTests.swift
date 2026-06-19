@@ -1565,4 +1565,37 @@ struct SyncEngineTests {
         #expect(ol.deleteCalls.count == 1)
         #expect(ol.deleteCalls[0].recursive == true)
     }
+
+    // MARK: - listItems: item_type persisted from Item.type
+
+    @Test("listItems() persists item_type from Item.type onto cache rows")
+    func testListItemsPersistsItemType() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let fabricItems = [
+            Item(id: "lh-1",  displayName: "Sales LH",  type: "Lakehouse",        workspaceID: Self.wsID),
+            Item(id: "wh-1",  displayName: "DW",         type: "Warehouse",         workspaceID: Self.wsID),
+            Item(id: "sdb-1", displayName: "Mirror",     type: "SQLDatabase",       workspaceID: Self.wsID),
+            Item(id: "mdb-1", displayName: "Replicated", type: "MirroredDatabase",  workspaceID: Self.wsID),
+        ]
+        fabric.listItemsResults.append(.success(fabricItems))
+        _ = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
+
+        // Each item row is stored under (alias, wsID, VirtualIDs.itemID, path: itemID).
+        let itemRowKey = { (path: String) in
+            CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: VirtualIDs.itemID, path: path)
+        }
+        let lhRow  = try await store.fetch(key: itemRowKey("lh-1"))
+        let whRow  = try await store.fetch(key: itemRowKey("wh-1"))
+        let sdbRow = try await store.fetch(key: itemRowKey("sdb-1"))
+        let mdbRow = try await store.fetch(key: itemRowKey("mdb-1"))
+
+        #expect(lhRow.itemType  == "Lakehouse",       "Lakehouse item_type must be persisted")
+        #expect(whRow.itemType  == "Warehouse",        "Warehouse item_type must be persisted")
+        #expect(sdbRow.itemType == "SQLDatabase",      "SQLDatabase item_type must be persisted")
+        #expect(mdbRow.itemType == "MirroredDatabase", "MirroredDatabase item_type must be persisted")
+    }
 }

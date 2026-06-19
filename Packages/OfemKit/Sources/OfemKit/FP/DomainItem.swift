@@ -44,10 +44,60 @@ public struct DomainItem: Sendable, Equatable {
     internal enum CapabilitySet {
         /// Read-only containers (root, workspaces, Fabric items, stub dirs).
         static let readOnly: Set<Capability>         = [.read, .enumerate]
+        /// Fabric-managed folder nodes (e.g. `Files`, `Tables` in a Lakehouse).
+        /// Users can create items inside but cannot rename or delete the node.
+        static let managedDirectory: Set<Capability> = [.read, .enumerate, .addSubitems]
         /// Writable directories (DFS dirs in the cache, synthetic dirs).
         static let writableDirectory: Set<Capability> = [.read, .write, .delete, .enumerate, .addSubitems]
         /// Writable files (DFS files in the cache, synthetic files).
         static let writableFile: Set<Capability>      = [.read, .write, .delete]
+    }
+
+    // MARK: - Capability policy (fp-05)
+
+    /// Computes the capability set for a path-level record according to the
+    /// write-access policy:
+    ///
+    /// A path is **writable** iff the Fabric item it belongs to is a
+    /// `Lakehouse` **and** the path is `Files`/`Tables` (Fabric-managed nodes)
+    /// or under `Files/…`/`Tables/…` (user-editable subtree).
+    ///
+    /// - `Files` and `Tables` nodes themselves are Fabric-managed: they get
+    ///   `managedDirectory` (read + enumerate + addSubitems) so Finder can
+    ///   create new items inside them without offering rename or delete.
+    /// - Descendants of `Files/` and `Tables/` get full writable caps.
+    /// - Everything else (Warehouse, SQLDatabase, MirroredDatabase content,
+    ///   non-Tables/Files paths in a Lakehouse, empty/unknown `itemType`)
+    ///   is read-only.
+    ///
+    /// Comparison is locale-independent (POSIX ASCII fold) to match
+    /// `Item.hasOneLakeStorage` in `FabricModels.swift`.
+    internal static func computeCapabilities(
+        isDir: Bool,
+        path: String,
+        itemType: String
+    ) -> Set<Capability> {
+        let posix = Locale(identifier: "en_US_POSIX")
+        guard itemType.lowercased(with: posix) == "lakehouse" else {
+            return CapabilitySet.readOnly
+        }
+        // Check whether `path` is exactly "Files"/"Tables" or under them.
+        let lower = path.lowercased(with: posix)
+        let isFilesNode   = lower == "files"
+        let isTablesNode  = lower == "tables"
+        let underFiles    = lower.hasPrefix("files/")
+        let underTables   = lower.hasPrefix("tables/")
+
+        if isFilesNode || isTablesNode {
+            // Fabric-managed folder node: allow creating inside, not rename/delete.
+            return CapabilitySet.managedDirectory
+        }
+        if underFiles || underTables {
+            // User-editable subtree: full caps based on entry kind.
+            return isDir ? CapabilitySet.writableDirectory : CapabilitySet.writableFile
+        }
+        // Non-writable path (e.g. item root, metadata dirs, other first-level dirs).
+        return CapabilitySet.readOnly
     }
 
     // MARK: - Fields
@@ -216,7 +266,11 @@ extension DomainItem {
             modificationDate: record.lastModified,
             contentVersion: ContentVersion.content(for: record),
             metadataVersion: ContentVersion.metadata(for: record),
-            capabilities: record.isDir ? CapabilitySet.writableDirectory : CapabilitySet.writableFile
+            capabilities: DomainItem.computeCapabilities(
+                isDir: record.isDir,
+                path: record.path,
+                itemType: record.itemType
+            )
         )
     }
 

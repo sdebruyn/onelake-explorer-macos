@@ -17,7 +17,7 @@ struct CacheSchemaTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let applied = try await store.appliedMigrations()
-        #expect(applied == ["v1", "v2"])
+        #expect(applied == ["v1", "v2", "v3"])
     }
 
     @Test("Fresh database creates path_metadata table")
@@ -31,6 +31,7 @@ struct CacheSchemaTests {
             "content_length", "etag", "last_modified_ns", "content_type",
             "blob_sha256", "blob_size",
             "last_accessed_ns", "synced_at_ns", "children_synced_at_ns",
+            "item_type",
         ]
         for col in expected {
             #expect(columns.contains(col), "Missing column: \(col)")
@@ -63,6 +64,45 @@ struct CacheSchemaTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
         let exists = try await store.tableExists("schema_version")
         #expect(!exists)
+    }
+
+    // MARK: - v3 migration: item_type column
+
+    @Test("Fresh database applies v3 migration")
+    func freshDatabaseAppliesV3Migration() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let applied = try await store.appliedMigrations()
+        #expect(applied.contains("v3"))
+    }
+
+    @Test("Fresh database has item_type column in path_metadata")
+    func freshDatabaseHasItemTypeColumn() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let columns = try await store.readColumns(in: "path_metadata")
+        #expect(columns.contains("item_type"), "Missing column: item_type")
+    }
+
+    @Test("Pre-existing rows default item_type to empty string after v3 migration")
+    func preExistingRowsDefaultItemTypeToEmpty() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        // Insert a row without specifying item_type to simulate a row from before v3.
+        let record = MetadataRecord(
+            accountAlias: "a",
+            workspaceID: "ws-1",
+            itemID: "item-1",
+            path: "Files/data.csv",
+            parentPath: "Files",
+            name: "data.csv",
+            isDir: false
+        )
+        try await store.upsert(record)
+        // Read it back and confirm the default.
+        let key = CacheKey(accountAlias: "a", workspaceID: "ws-1", itemID: "item-1", path: "Files/data.csv")
+        let fetched = try await store.fetch(key: key)
+        #expect(fetched.itemType == "", "Pre-existing rows must default item_type to ''")
     }
 }
 

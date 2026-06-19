@@ -279,7 +279,8 @@ public actor SyncEngine {
                 name: it.displayName,
                 isDir: true,
                 lastAccessedNs: nowNs,
-                syncedAtNs: nowNs
+                syncedAtNs: nowNs,
+                itemType: it.type
             )
         }
         await batchUpsert(rows, context: "listItems")
@@ -351,6 +352,19 @@ public actor SyncEngine {
         let nowNs = currentNowNs()
         let now = Date()
 
+        // Resolve the Fabric item type for this folder so every path row can
+        // carry it for capability computation. The discovery row written by
+        // listItems uses VirtualIDs.itemID as its itemID and stores the actual
+        // item GUID as `path`. An empty string means "unknown / not yet
+        // enumerated" and is treated as read-only by computeCapabilities.
+        let itemTypeKey = CacheKey(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: VirtualIDs.itemID,
+            path: key.itemID
+        )
+        let folderItemType = (try? await cache.fetch(key: itemTypeKey))?.itemType ?? ""
+
         // Build remote children set, filtering macOS metadata artefacts at emit
         // time so that remote .DS_Store / ._* files never appear in listings and
         // cannot resurrect after a local-only delete.
@@ -399,7 +413,8 @@ public actor SyncEngine {
                 lastModifiedNs: dateToNs(entry.lastModified) ?? 0,
                 lastAccessedNs: cur?.lastAccessedNs ?? nowNs,
                 syncedAtNs: nowNs,
-                childrenSyncedAtNs: cur?.childrenSyncedAtNs ?? 0
+                childrenSyncedAtNs: cur?.childrenSyncedAtNs ?? 0,
+                itemType: folderItemType
             )
             // Carry blob linkage when etag still matches.
             if let c = cur, !c.etag.isEmpty, c.etag == entry.eTag {
@@ -433,7 +448,8 @@ public actor SyncEngine {
         await batchDelete(deleteBatch, context: "refreshFolder delete")
 
         // Stamp parent row.
-        let existingParentLastAccessed = (try? await cache.fetch(key: key))?.lastAccessedNs ?? nowNs
+        let existingParent = try? await cache.fetch(key: key)
+        let existingParentLastAccessed = existingParent?.lastAccessedNs ?? nowNs
         let parent = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -444,7 +460,8 @@ public actor SyncEngine {
             isDir: true,
             lastAccessedNs: existingParentLastAccessed == 0 ? nowNs : existingParentLastAccessed,
             syncedAtNs: nowNs,
-            childrenSyncedAtNs: nowNs
+            childrenSyncedAtNs: nowNs,
+            itemType: folderItemType
         )
         do { try await cache.upsert(parent) } catch {
             Self.log.warning("refreshFolder: upsert parent failed err=\(error, privacy: .public)")
