@@ -103,7 +103,15 @@ func decodeSyncAnchor(_ anchor: NSFileProviderSyncAnchor) -> Int64 {
 ///
 /// `invalidate()` cancels all three handles synchronously without awaiting,
 /// honouring the `NSFileProviderEnumerator.invalidate()` synchronous contract.
-final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
+///
+/// `@unchecked Sendable`: the FileProvider framework invokes the synchronous,
+/// non-isolated `NSFileProviderEnumerator` requirements from arbitrary queues,
+/// so an `actor` is not viable. All mutable state — the three in-flight `Task`
+/// handles — is `nonisolated(unsafe)` and guarded by `taskLock`; every other
+/// stored property is an immutable `let`. The lock is the concurrency guard, so
+/// `@unchecked` is the correct, idiomatic choice (mirrors the lock-guarded
+/// framework-delegate pattern used for the XPC service types).
+final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Sendable {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
         category: "fpe-enumerator"
@@ -473,7 +481,13 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
 ///
 /// Task ownership: `taskLock` guards `inFlightChangesTask` and
 /// `inFlightAnchorTask`. `invalidate()` cancels both synchronously (fpe-15).
-final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
+///
+/// `@unchecked Sendable`: same justification as `OfemFPEEnumerator` — the
+/// framework invokes the synchronous `NSFileProviderEnumerator` requirements
+/// from arbitrary queues (actor not viable); the in-flight `Task` handles are
+/// `nonisolated(unsafe)` and guarded by `taskLock`, and the shared per-alias
+/// throttle state is guarded by `staticThrottleLock`.
+final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Sendable {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
         category: "working-set"
