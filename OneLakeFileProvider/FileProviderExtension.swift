@@ -799,11 +799,17 @@ private func engineCreateItem(
     fpeLog.warning(
         "createItem: using synthetic fallback for \(filename, privacy: .public) parent=\(parentID.identifierString, privacy: .public)"
     )
+    // Carry the parent's item type so computeCapabilities returns the correct
+    // caps immediately — without it, a file created under Lakehouse Files/
+    // would appear read-only until the next refreshFolder.
+    let parentKey = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
+    let syntheticItemType = (try? await engine.cache.fetch(key: parentKey))?.itemType ?? ""
     return OfemFPEItem(from: DomainItem.synthetic(
         identifier: newIdentifier,
         parentIdentifier: parentID,
         name: filename,
-        isDirectory: isDir
+        isDirectory: isDir,
+        itemType: syntheticItemType
     ))
 }
 

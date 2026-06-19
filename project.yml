@@ -41,6 +41,18 @@ settings:
     # emits the setting automatically. Declaring it twice creates drift risk.
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
+    # REGISTER_APP_GROUPS registers the `group.dev.debruyn.ofem` application
+    # group with the managed provisioning profile under AUTOMATIC signing
+    # (Debug). Without this, Xcode's automatic profile management does not
+    # include the App Groups capability; the primary failure mode is a
+    # codesign/provisioning error at build time ("entitlements not supported
+    # by the provisioning profile"), with container access being denied at
+    # runtime only as an edge case. Release builds use manual Developer ID
+    # signing with an explicit provisioning profile that already carries the
+    # capability, so this setting is a no-op there. The test bundles disable
+    # code signing (CODE_SIGNING_ALLOWED: NO), so this setting has no effect
+    # there in practice.
+    REGISTER_APP_GROUPS: YES
     GENERATE_INFOPLIST_FILE: NO
     # Xcode 16+ splits Debug builds into a separate `.debug.dylib` for
     # SwiftUI previews. A sandboxed File Provider Extension runs with

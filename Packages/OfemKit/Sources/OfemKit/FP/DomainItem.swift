@@ -44,10 +44,69 @@ public struct DomainItem: Sendable, Equatable {
     internal enum CapabilitySet {
         /// Read-only containers (root, workspaces, Fabric items, stub dirs).
         static let readOnly: Set<Capability>         = [.read, .enumerate]
-        /// Writable directories (DFS dirs in the cache, synthetic dirs).
+        /// Fabric-managed folder nodes (e.g. `Files`, `Tables` in a Lakehouse).
+        /// Users can create items inside but cannot rename or delete the node.
+        static let managedDirectory: Set<Capability> = [.read, .enumerate, .addSubitems]
+        /// Writable directories (DFS dirs under a Lakehouse Files/Tables subtree).
         static let writableDirectory: Set<Capability> = [.read, .write, .delete, .enumerate, .addSubitems]
-        /// Writable files (DFS files in the cache, synthetic files).
+        /// Writable files (DFS files under a Lakehouse Files/Tables subtree).
         static let writableFile: Set<Capability>      = [.read, .write, .delete]
+    }
+
+    // MARK: - Capability policy (fp-05)
+
+    /// Shared POSIX locale for case-insensitive ASCII comparisons inside
+    /// `computeCapabilities`.
+    ///
+    /// Allocated once and reused across calls — the same optimisation applied
+    /// to `ContentVersion`'s date formatter (see comment in `ContentVersion`).
+    // `Locale` is a value type backed by a tagged-pointer cache in the Swift
+    // runtime; `nonisolated(unsafe)` suppresses the Swift 6 Sendable diagnostic
+    // for this read-only-global pattern, matching the formatter precedent.
+    nonisolated(unsafe) private static let posixLocale = Locale(identifier: "en_US_POSIX")
+
+    /// Computes the capability set for a path-level record according to the
+    /// write-access policy:
+    ///
+    /// A path is **writable** iff the Fabric item it belongs to is a
+    /// `Lakehouse` **and** the path is `Files`/`Tables` (Fabric-managed nodes)
+    /// or under `Files/…`/`Tables/…` (user-editable subtree).
+    ///
+    /// - `Files` and `Tables` nodes themselves are Fabric-managed: they get
+    ///   `managedDirectory` (read + enumerate + addSubitems) so Finder can
+    ///   create new items inside them without offering rename or delete.
+    /// - Descendants of `Files/` and `Tables/` get full writable caps.
+    /// - Everything else (Warehouse, SQLDatabase, MirroredDatabase content,
+    ///   non-Tables/Files paths in a Lakehouse, empty/unknown `itemType`)
+    ///   is read-only.
+    ///
+    /// Comparison is locale-independent (POSIX ASCII fold), consistent with
+    /// `Item.isLakehouse` in `FabricModels.swift`.
+    internal static func computeCapabilities(
+        isDir: Bool,
+        path: String,
+        itemType: String
+    ) -> Set<Capability> {
+        guard itemType.lowercased(with: posixLocale) == "lakehouse" else {
+            return CapabilitySet.readOnly
+        }
+        // Check whether `path` is exactly "Files"/"Tables" or under them.
+        let lower = path.lowercased(with: posixLocale)
+        let isFilesNode   = lower == "files"
+        let isTablesNode  = lower == "tables"
+        let underFiles    = lower.hasPrefix("files/")
+        let underTables   = lower.hasPrefix("tables/")
+
+        if isFilesNode || isTablesNode {
+            // Fabric-managed folder node: allow creating inside, not rename/delete.
+            return CapabilitySet.managedDirectory
+        }
+        if underFiles || underTables {
+            // User-editable subtree: full caps based on entry kind.
+            return isDir ? CapabilitySet.writableDirectory : CapabilitySet.writableFile
+        }
+        // Non-writable path (e.g. item root, metadata dirs, other first-level dirs).
+        return CapabilitySet.readOnly
     }
 
     // MARK: - Fields
@@ -216,7 +275,11 @@ extension DomainItem {
             modificationDate: record.lastModified,
             contentVersion: ContentVersion.content(for: record),
             metadataVersion: ContentVersion.metadata(for: record),
-            capabilities: record.isDir ? CapabilitySet.writableDirectory : CapabilitySet.writableFile
+            capabilities: DomainItem.computeCapabilities(
+                isDir: record.isDir,
+                path: record.path,
+                itemType: record.itemType
+            )
         )
     }
 
@@ -243,20 +306,35 @@ extension DomainItem {
     // MARK: Synthetic item
 
     /// Builds an item for a just-created path before its cache row exists.
+    ///
+    /// Pass the parent's `itemType` (e.g. `"Lakehouse"`) so capability
+    /// computation follows the same write-access policy as `from(record:)`.
+    /// macOS only calls `createItem` on a parent that already advertised
+    /// `addSubitems`, so in practice `itemType` is always `"Lakehouse"` for
+    /// user-initiated creates — but threading it explicitly ensures the policy
+    /// is enforced at the code level regardless of caller assumptions.
     public static func synthetic(
         identifier: ItemIdentifier,
         parentIdentifier: ItemIdentifier,
         name: String,
-        isDirectory: Bool
+        isDirectory: Bool,
+        itemType: String = ""
     ) -> DomainItem {
-        DomainItem(
+        // Derive the path component from the identifier for capability lookup.
+        let path: String
+        if case .path(_, _, let p) = identifier {
+            path = p
+        } else {
+            path = ""
+        }
+        return DomainItem(
             identifier: identifier,
             parentIdentifier: parentIdentifier,
             filename: name,
             isDirectory: isDirectory,
             contentVersion: ContentVersion.fallback(seed: name, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: name, size: 0, mtime: nil),
-            capabilities: isDirectory ? CapabilitySet.writableDirectory : CapabilitySet.writableFile
+            capabilities: computeCapabilities(isDir: isDirectory, path: path, itemType: itemType)
         )
     }
 }
