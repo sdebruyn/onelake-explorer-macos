@@ -9,19 +9,50 @@
 // login-item boot), covering any changes that accumulated while the host was
 // stopped.
 //
-// Additionally, ChangeWatcher runs a repeating loop that periodically signals
-// the root container for every registered domain. This ensures the workspace
-// list in Finder stays current: newly created or renamed Fabric workspaces
-// appear without waiting for macOS's own infrequent re-enumeration schedule.
-// The FPE responds to a root-container signal by expiring the sync anchor,
-// which forces a fresh enumerateItems(.root) → listWorkspaces call.
+// Additionally, ChangeWatcher runs a repeating loop that periodically:
+//
+//  1. Signals the working set for every registered domain. The FPE's
+//     OfemWorkingSetEnumerator.enumerateChanges refreshes the workspace list
+//     from Fabric (throttled) and updates the shared SQLite cache.
+//
+//  2. Reads the cached workspace set for each registered account and computes a
+//     stable signature. When the signature changes (add/remove/rename), the
+//     account's File Provider domain is remounted
+//     (removeDomain + addDomain with .preserveDownloadedUserData). The remount
+//     forces a fresh root enumeration (enumerateItems(.root) / listWorkspaces),
+//     which is the only mechanism that introduces new top-level workspaces into
+//     the Finder sidebar. Downloaded files are preserved across the remount.
+//
+// Launch refresh: to catch workspace changes that accumulated while the host
+// was stopped, the first tick compares the cache signature against a baseline
+// captured BEFORE the launch working-set signal.  If the cache changed during
+// the signal (FPE refreshed from Fabric) the domain is remounted in that first
+// tick rather than waiting for the next full interval.
 //
 // This class is @MainActor because NSFileProviderManager calls are documented
 // as main-thread-only.
 
 import FileProvider
 import Foundation
+import OfemKit
 import os.log
+
+// MARK: - Workspace set signature helpers (pure, testable)
+
+/// Computes a stable, order-independent signature for a set of workspace
+/// cache rows.  Sorts the composed `"\(path)\tname"` strings so both renames
+/// and add/removes are detected.
+///
+/// Exposed as a free function so unit tests can exercise it without touching
+/// any network, file system, or FileProvider API.
+func workspaceSignature(_ records: [MetadataRecord]) -> String {
+    records
+        .map { "\($0.path)\t\($0.name)" }
+        .sorted()
+        .joined(separator: "\n")
+}
+
+// MARK: - ChangeWatcher
 
 @MainActor
 final class ChangeWatcher {
@@ -29,12 +60,32 @@ final class ChangeWatcher {
 
     private static let log = Logger(subsystem: ofemSubsystem, category: "change-watcher")
 
-    /// How often the root container is signalled to refresh the workspace list.
-    static let rootRefreshInterval: Duration = .seconds(90)
+    /// How often the working set is signalled and the workspace-set cache is
+    /// checked for changes.
+    static let workingSetRefreshInterval: Duration = .seconds(90)
 
-    /// Handle for the periodic root-refresh loop. Stored so a second `start()`
-    /// call can cancel the previous loop before launching a new one.
-    private var rootRefreshTask: Task<Void, Never>?
+    /// Handle for the periodic working-set + remount-check loop.  Stored so a
+    /// second `start()` call can cancel the previous loop before launching a new
+    /// one.
+    private var workingSetRefreshTask: Task<Void, Never>?
+
+    /// Last-seen workspace-set signatures, keyed by account alias.
+    ///
+    /// - A missing entry means "baseline not yet established".
+    /// - On the FIRST read for an alias the value is stored as the baseline and
+    ///   no remount is performed.
+    /// - On subsequent reads a change in signature triggers a remount, after
+    ///   which the stored value is updated.
+    private var lastWorkspaceSignatures: [String: String] = [:]
+
+    /// Guards against concurrent remounts of the same domain.  Keyed by alias.
+    private var remountInFlight: Set<String> = []
+
+    /// Lazily-opened cache reader; reused across ticks to avoid reopening the
+    /// SQLite database on every 90-second interval.  `nil` means the CacheStore
+    /// could not be opened (catastrophic SQLite failure); callers skip detection
+    /// gracefully when this is `nil`.
+    private var cacheReader: CacheReader? = nil
 
     private init() {}
 
@@ -42,83 +93,239 @@ final class ChangeWatcher {
 
     /// Emit a one-shot full-resync signal to all registered domains so
     /// Finder re-enumerates after app launch, then start the periodic
-    /// root-container refresh loop. Safe to call multiple times; each call
-    /// cancels any previous loop and starts a fresh one.
+    /// working-set refresh + workspace-change detection loop.
+    ///
+    /// Safe to call multiple times; each call cancels any previous loop and
+    /// starts a fresh one.
     func start() {
+        // Capture pre-launch baselines from the cache BEFORE sending the
+        // launch working-set signal.  This lets the first tick detect workspace
+        // changes that occurred while the host was stopped, without remounting
+        // when the cache has not actually changed.
         Task { [weak self] in
-            // Signal the working set first (existing one-shot resync), then
-            // immediately signal the root container so any workspaces created
-            // or renamed while the host was stopped are visible without
-            // waiting for the first periodic tick.
+            await self?.captureBaselines()
+            // One-shot launch resync: signal the working set so the FPE
+            // re-checks workspace changes that accumulated while the host
+            // was stopped and updates the SQLite cache.
             await self?.signal(container: .workingSet)
-            await self?.signal(container: .rootContainer)
         }
-        Self.log.info("ChangeWatcher: one-shot launch resync triggered (FPE-owned change signaling)")
+        Self.log.info("ChangeWatcher: one-shot launch resync triggered")
 
-        startRootRefreshLoop()
+        startWorkingSetRefreshLoop()
     }
 
-    // MARK: - Periodic root refresh
+    // MARK: - Periodic working-set refresh + workspace-set detection
 
-    /// Starts (or restarts) the repeating loop that signals the root container
-    /// for every registered domain at `rootRefreshInterval` intervals.
-    ///
-    /// Cancels any previously running loop so calling `start()` twice does not
-    /// stack two concurrent loops.
-    private func startRootRefreshLoop() {
-        rootRefreshTask?.cancel()
-        rootRefreshTask = Task { [weak self] in
+    /// Starts (or restarts) the repeating loop.  Cancels any previously running
+    /// loop so calling `start()` twice does not stack two concurrent loops.
+    private func startWorkingSetRefreshLoop() {
+        workingSetRefreshTask?.cancel()
+        workingSetRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: Self.rootRefreshInterval)
+                try? await Task.sleep(for: Self.workingSetRefreshInterval)
                 guard !Task.isCancelled else { break }
-                // Each tick signals rootContainer for every registered domain,
-                // causing the FPE to expire the sync anchor and call
-                // listWorkspaces (one Fabric REST call per domain). At 1–3
-                // accounts the cost is negligible; acceptable at current scale.
-                await self?.signal(container: .rootContainer)
+                // Signal the working set so the FPE's
+                // OfemWorkingSetEnumerator.enumerateChanges refreshes the
+                // workspace list from Fabric into the SQLite cache (throttled,
+                // at most once per 60 s per alias).  The signal completes once
+                // the signal has been QUEUED to the FPE — the FPE may not have
+                // finished its listWorkspaces call yet.  checkAndRemountChangedDomains
+                // therefore reads the PREVIOUS tick's cache (up to 90 s lag),
+                // which is acceptable — the lag is bounded by the refresh interval.
+                await self?.signal(container: .workingSet)
+                // Read the cached workspace set for each account and remount
+                // the domain when the signature changed.
+                await self?.checkAndRemountChangedDomains()
             }
         }
         Self.log.info(
-            "ChangeWatcher: periodic root refresh started (interval=\(Self.rootRefreshInterval, privacy: .public))"
+            "ChangeWatcher: periodic working-set refresh started (interval=\(Self.workingSetRefreshInterval, privacy: .public))"
         )
+    }
+
+    // MARK: - Workspace-set change detection + domain remount
+
+    /// Reads the cached workspace set for each registered account.  On the
+    /// first call per alias, establishes the baseline signature.  On subsequent
+    /// calls, remounts the domain when the signature changes.
+    ///
+    /// Pruning: entries in `lastWorkspaceSignatures` for aliases that are no
+    /// longer present in the account list are removed so that a re-added alias
+    /// does not reuse a stale baseline.
+    private func checkAndRemountChangedDomains() async {
+        let accounts = await SharedOfemAuth.shared.auth.listAccounts()
+
+        // Prune signatures for removed aliases so a re-added alias starts fresh.
+        let currentAliases = Set(accounts.map(\.alias))
+        for staleAlias in lastWorkspaceSignatures.keys where !currentAliases.contains(staleAlias) {
+            lastWorkspaceSignatures.removeValue(forKey: staleAlias)
+            Self.log.debug(
+                "ChangeWatcher: pruned stale signature for removed alias \(staleAlias, privacy: .public)"
+            )
+        }
+
+        guard !accounts.isEmpty else { return }
+
+        guard let reader = getOrOpenCacheReader() else { return }
+
+        for account in accounts {
+            let alias = account.alias
+            guard !remountInFlight.contains(alias) else {
+                Self.log.debug(
+                    "ChangeWatcher: remount already in flight for \(alias, privacy: .public), skipping"
+                )
+                continue
+            }
+
+            let records: [MetadataRecord]
+            do {
+                let key = CacheKey(
+                    accountAlias: alias,
+                    workspaceID: VirtualIDs.workspaceID,
+                    itemID: VirtualIDs.workspaceID,
+                    path: ""
+                )
+                records = try await reader.children(of: key)
+            } catch {
+                Self.log.warning(
+                    "ChangeWatcher: could not read workspace cache for \(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                continue
+            }
+
+            let sig = workspaceSignature(records)
+
+            guard let baseline = lastWorkspaceSignatures[alias] else {
+                // First observation for this alias — store as baseline, no remount.
+                lastWorkspaceSignatures[alias] = sig
+                Self.log.debug(
+                    "ChangeWatcher: established workspace baseline for \(alias, privacy: .public) (\(records.count, privacy: .public) workspaces)"
+                )
+                continue
+            }
+
+            guard sig != baseline else {
+                Self.log.debug(
+                    "ChangeWatcher: workspace set unchanged for \(alias, privacy: .public)"
+                )
+                continue
+            }
+
+            // Workspace set changed — remount the domain.
+            Self.log.info(
+                "ChangeWatcher: workspace set changed for \(alias, privacy: .public) — remounting domain"
+            )
+            remountInFlight.insert(alias)
+            await DomainSyncManager.shared.removeDomain(alias: alias)
+            await DomainSyncManager.shared.addDomain(alias: alias)
+            remountInFlight.remove(alias)
+
+            // Verify that the domain is actually registered after the remount
+            // before updating the stored signature.  removeDomain / addDomain
+            // are non-throwing — they catch, log, and return normally on failure.
+            // If the add failed the domain is absent from the list; do NOT update
+            // the signature so the next tick retries the remount.
+            let domainId = DomainSyncManager.shared.domainIdentifier(for: alias)
+            let registered: Bool
+            do {
+                let domains = try await ofemGetAllDomains()
+                registered = domains.contains { $0.identifier.rawValue == domainId }
+            } catch {
+                // Cannot list domains — assume failure; retry next tick.
+                Self.log.warning(
+                    "ChangeWatcher: could not verify domain registration for \(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                continue
+            }
+
+            guard registered else {
+                Self.log.warning(
+                    "ChangeWatcher: remount of \(alias, privacy: .public) did not register domain — will retry next tick"
+                )
+                continue
+            }
+
+            // Signature updated only after confirmed-successful remount.
+            lastWorkspaceSignatures[alias] = sig
+            Self.log.info(
+                "ChangeWatcher: remounted domain for \(alias, privacy: .public) (\(records.count, privacy: .public) workspaces)"
+            )
+        }
+    }
+
+    /// Captures baseline signatures for all registered accounts from the
+    /// current cache state.  Called before the launch working-set signal so the
+    /// first tick can detect changes that occurred while the host was stopped.
+    private func captureBaselines() async {
+        let accounts = await SharedOfemAuth.shared.auth.listAccounts()
+        guard !accounts.isEmpty else { return }
+
+        guard let reader = getOrOpenCacheReader() else { return }
+
+        for account in accounts {
+            let alias = account.alias
+            guard lastWorkspaceSignatures[alias] == nil else { continue }
+
+            let records: [MetadataRecord]
+            do {
+                let key = CacheKey(
+                    accountAlias: alias,
+                    workspaceID: VirtualIDs.workspaceID,
+                    itemID: VirtualIDs.workspaceID,
+                    path: ""
+                )
+                records = try await reader.children(of: key)
+            } catch {
+                Self.log.warning(
+                    "ChangeWatcher: captureBaselines failed for \(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                continue
+            }
+
+            lastWorkspaceSignatures[alias] = workspaceSignature(records)
+            Self.log.debug(
+                "ChangeWatcher: pre-launch baseline for \(alias, privacy: .public): \(records.count, privacy: .public) workspaces"
+            )
+        }
+    }
+
+    /// Returns the shared `CacheReader`, opening it lazily on first use.
+    ///
+    /// Returns `nil` if the database file does not yet exist or cannot be opened.
+    /// Callers must skip detection gracefully in that case.
+    ///
+    /// Uses `CacheStore.openReadOnly` to open only the DatabasePool in read-only
+    /// mode, skipping the orphan-blob sweep that `CacheStore.init` would launch
+    /// as a background write task.  The host process is a reader only; the FPE
+    /// is the sole writer of the cache database.
+    private func getOrOpenCacheReader() -> CacheReader? {
+        if let existing = cacheReader { return existing }
+        let paths = OfemPaths()
+        guard let r = CacheStore.openReadOnly(root: paths.cacheDir) else {
+            Self.log.debug("ChangeWatcher: cache not yet available — skipping detection this tick")
+            return nil
+        }
+        cacheReader = r
+        return r
     }
 
     // MARK: - Signaling
 
     /// Signals `container` for every currently registered domain.
-    ///
-    /// - Parameters:
-    ///   - container: The container identifier to signal (e.g. `.workingSet`,
-    ///     `.rootContainer`). Each container type uses its own log level:
-    ///     `.rootContainer` logs at `.debug`/`.warning`; `.workingSet` at
-    ///     `.info`/`.error`.
     private func signal(container: NSFileProviderItemIdentifier) async {
         let containerId = container.rawValue
-        let isRoot = container == .rootContainer
         do {
             let domains = try await ofemGetAllDomains()
             for domain in domains {
                 await signalContainer(domain: domain, containerId: containerId)
             }
-            if isRoot {
-                Self.log.debug(
-                    "ChangeWatcher: root-container refresh signal sent to \(domains.count, privacy: .public) domain(s)"
-                )
-            } else {
-                Self.log.info(
-                    "ChangeWatcher: resync signal sent to \(domains.count, privacy: .public) domain(s)"
-                )
-            }
+            Self.log.info(
+                "ChangeWatcher: resync signal sent to \(domains.count, privacy: .public) domain(s)"
+            )
         } catch {
-            if isRoot {
-                Self.log.warning(
-                    "ChangeWatcher: could not list domains for root refresh: \(error.localizedDescription, privacy: .public)"
-                )
-            } else {
-                Self.log.error(
-                    "ChangeWatcher: could not list domains for resync: \(error.localizedDescription, privacy: .public)"
-                )
-            }
+            Self.log.error(
+                "ChangeWatcher: could not list domains for resync: \(error.localizedDescription, privacy: .public)"
+            )
         }
     }
 
