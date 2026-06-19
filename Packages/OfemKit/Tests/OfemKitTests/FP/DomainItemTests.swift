@@ -65,6 +65,7 @@ struct DomainItemTests {
     // MARK: - from(record:) — file
 
     @Test func recordFileMapping() throws {
+        // itemType "Lakehouse" + path under Files/ → writable file.
         let record = MetadataRecord(
             accountAlias: "work",
             workspaceID: "ws-1",
@@ -74,7 +75,8 @@ struct DomainItemTests {
             name: "report.csv",
             isDir: false,
             contentLength: 1024,
-            etag: "\"abc\""
+            etag: "\"abc\"",
+            itemType: "Lakehouse"
         )
         let item = try DomainItem.from(record: record)
         #expect(item.identifier == ItemIdentifier.path(workspaceID: "ws-1", itemID: "item-2", path: "Files/report.csv"))
@@ -88,6 +90,7 @@ struct DomainItemTests {
     }
 
     @Test func recordDirectoryMapping() throws {
+        // itemType "Lakehouse" + path "Files" (Fabric-managed node) → managedDirectory.
         let record = MetadataRecord(
             accountAlias: "work",
             workspaceID: "ws-1",
@@ -97,7 +100,8 @@ struct DomainItemTests {
             name: "Files",
             isDir: true,
             contentLength: 0,
-            etag: ""
+            etag: "",
+            itemType: "Lakehouse"
         )
         let item = try DomainItem.from(record: record)
         #expect(item.isDirectory)
@@ -481,16 +485,18 @@ struct DomainItemTests {
     }
 
     @Test func recordDirectoryHasFullCapabilitySet() throws {
+        // A directory under Files/ in a Lakehouse gets full writable caps.
         let record = MetadataRecord(
             accountAlias: "work",
             workspaceID: "ws-1",
             itemID: "item-2",
-            path: "SubDir",
-            parentPath: "",
+            path: "Files/SubDir",
+            parentPath: "Files",
             name: "SubDir",
             isDir: true,
             contentLength: 0,
-            etag: ""
+            etag: "",
+            itemType: "Lakehouse"
         )
         let item = try DomainItem.from(record: record)
         let caps = item.capabilities
@@ -502,6 +508,7 @@ struct DomainItemTests {
     }
 
     @Test func recordFileHasExactlyReadWriteDelete() throws {
+        // A file under Files/ in a Lakehouse gets exactly read/write/delete.
         let record = MetadataRecord(
             accountAlias: "work",
             workspaceID: "ws-1",
@@ -511,7 +518,8 @@ struct DomainItemTests {
             name: "f.bin",
             isDir: false,
             contentLength: 99,
-            etag: ""
+            etag: "",
+            itemType: "Lakehouse"
         )
         let item = try DomainItem.from(record: record)
         #expect(item.capabilities == [.read, .write, .delete])
@@ -674,10 +682,10 @@ struct DomainItemTests {
         #expect(!synth.isDirectory)
     }
 
-    @Test func syntheticDirectoryHasFullCapabilitySet() {
-        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Dir")
-        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
-        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "Dir", isDirectory: true).capabilities
+    @Test func syntheticDirectoryInLakehouseHasFullCapabilitySet() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/Dir")
+        let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
+        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "Dir", isDirectory: true, itemType: "Lakehouse").capabilities
         #expect(caps.contains(.read))
         #expect(caps.contains(.write))
         #expect(caps.contains(.delete))
@@ -685,11 +693,28 @@ struct DomainItemTests {
         #expect(caps.contains(.addSubitems))
     }
 
-    @Test func syntheticFileHasExactlyReadWriteDelete() {
-        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "f.txt")
-        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
-        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false).capabilities
+    @Test func syntheticFileInLakehouseHasExactlyReadWriteDelete() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/f.txt")
+        let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
+        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false, itemType: "Lakehouse").capabilities
         #expect(caps == [.read, .write, .delete])
+    }
+
+    @Test func syntheticWithoutItemTypeIsReadOnly() {
+        // A synthetic item with no item type (unknown parent) must be read-only:
+        // capability computation cannot grant write access without a Lakehouse context.
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/f.txt")
+        let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
+        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false).capabilities
+        #expect(caps == DomainItem.CapabilitySet.readOnly)
+    }
+
+    @Test func syntheticWarehouseIsReadOnly() {
+        // A synthetic item under a Warehouse must be read-only regardless of path.
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/f.txt")
+        let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
+        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false, itemType: "Warehouse").capabilities
+        #expect(caps == DomainItem.CapabilitySet.readOnly)
     }
 
     @Test func syntheticPreservesIdentifiersAndName() {
@@ -833,17 +858,17 @@ struct DomainItemTests {
         #expect(stub.capabilities == DomainItem.CapabilitySet.readOnly)
     }
 
-    @Test func syntheticDirectoryUsesWritableDirectoryPreset() {
-        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Dir")
-        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
-        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "Dir", isDirectory: true)
+    @Test func syntheticLakehouseDirectoryUsesWritableDirectoryPreset() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/Dir")
+        let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
+        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "Dir", isDirectory: true, itemType: "Lakehouse")
         #expect(synth.capabilities == DomainItem.CapabilitySet.writableDirectory)
     }
 
-    @Test func syntheticFileUsesWritableFilePreset() {
-        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "f.txt")
-        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
-        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false)
+    @Test func syntheticLakehouseFileUsesWritableFilePreset() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/f.txt")
+        let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
+        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false, itemType: "Lakehouse")
         #expect(synth.capabilities == DomainItem.CapabilitySet.writableFile)
     }
 
@@ -984,5 +1009,169 @@ struct DomainItemTests {
         #expect(item.parentIdentifier == ItemIdentifier.path(workspaceID: "ws-1", itemID: "item-2", path: "Files"))
         #expect(!item.isDirectory)
         #expect(item.size == 42)
+    }
+
+    // MARK: - computeCapabilities: Lakehouse Files/Tables write policy
+
+    @Test func lakhouseFileUnderFilesIsWritable() throws {
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Files/data.csv", parentPath: "Files", name: "data.csv",
+            isDir: false, itemType: "Lakehouse"
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == DomainItem.CapabilitySet.writableFile)
+    }
+
+    @Test func lakehouseFileUnderTablesIsWritable() throws {
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Tables/delta/part.parquet", parentPath: "Tables/delta",
+            name: "part.parquet", isDir: false, itemType: "Lakehouse"
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == DomainItem.CapabilitySet.writableFile)
+    }
+
+    @Test func lakehouseDirUnderFilesIsWritable() throws {
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Files/subfolder", parentPath: "Files", name: "subfolder",
+            isDir: true, itemType: "Lakehouse"
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == DomainItem.CapabilitySet.writableDirectory)
+    }
+
+    @Test func lakehouseDirUnderTablesIsWritable() throws {
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Tables/myTable", parentPath: "Tables", name: "myTable",
+            isDir: true, itemType: "Lakehouse"
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == DomainItem.CapabilitySet.writableDirectory)
+    }
+
+    @Test func lakehouseFilesNodeIsManagedDirectory() throws {
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Files", parentPath: "", name: "Files",
+            isDir: true, itemType: "Lakehouse"
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == DomainItem.CapabilitySet.managedDirectory)
+    }
+
+    @Test func lakehouseTablesNodeIsManagedDirectory() throws {
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Tables", parentPath: "", name: "Tables",
+            isDir: true, itemType: "Lakehouse"
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == DomainItem.CapabilitySet.managedDirectory)
+    }
+
+    @Test func lakehouseManagedDirectoryHasNoWriteOrDelete() throws {
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Files", parentPath: "", name: "Files",
+            isDir: true, itemType: "Lakehouse"
+        )
+        let item = try DomainItem.from(record: record)
+        let caps = item.capabilities
+        #expect(caps.contains(.read))
+        #expect(caps.contains(.enumerate))
+        #expect(caps.contains(.addSubitems))
+        #expect(!caps.contains(.write))
+        #expect(!caps.contains(.delete))
+    }
+
+    @Test func lakehouseNonTableFilesPathIsReadOnly() throws {
+        // A path that is not under Files/ or Tables/ in a Lakehouse is read-only.
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Other/stuff.txt", parentPath: "Other", name: "stuff.txt",
+            isDir: false, itemType: "Lakehouse"
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
+    @Test func warehousePathIsReadOnly() throws {
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Files/data.csv", parentPath: "Files", name: "data.csv",
+            isDir: false, itemType: "Warehouse"
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
+    @Test func sqlDatabasePathIsReadOnly() throws {
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Tables/schema/part.parquet", parentPath: "Tables/schema",
+            name: "part.parquet", isDir: false, itemType: "SQLDatabase"
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
+    @Test func mirroredDatabasePathIsReadOnly() throws {
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Tables/mytable/part.parquet", parentPath: "Tables/mytable",
+            name: "part.parquet", isDir: false, itemType: "MirroredDatabase"
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
+    @Test func emptyItemTypeIsReadOnly() throws {
+        // Pre-v3 rows default to itemType "" and must be read-only.
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "Files/data.csv", parentPath: "Files", name: "data.csv",
+            isDir: false, itemType: ""
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
+    @Test func itemRootPathIsReadOnly() throws {
+        // path == "" maps to .item identifier; no write access at item root level.
+        // (This path goes through the .item branch, not .path, so from(record:)
+        // returns an item — but it still uses computeCapabilities which returns readOnly
+        // for an empty/non-Lakehouse type at path "".)
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "it",
+            path: "", parentPath: "", name: "MyLakehouse",
+            isDir: true, itemType: "Lakehouse"
+        )
+        let item = try DomainItem.from(record: record)
+        // The item root row uses computeCapabilities with path "".
+        // path "" is not "Files", "Tables", or under them → readOnly.
+        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
+    @Test func lakehouseTypeCheckIsCaseInsensitive() throws {
+        // Fabric API may return lowercase or mixed-case type strings.
+        for typeStr in ["lakehouse", "LAKEHOUSE", "Lakehouse", "lAkEhOuSe"] {
+            let record = MetadataRecord(
+                accountAlias: "a", workspaceID: "ws", itemID: "it",
+                path: "Files/f.bin", parentPath: "Files", name: "f.bin",
+                isDir: false, itemType: typeStr
+            )
+            let item = try DomainItem.from(record: record)
+            #expect(item.capabilities == DomainItem.CapabilitySet.writableFile,
+                    "itemType '\(typeStr)' should be treated as Lakehouse")
+        }
+    }
+
+    @Test func capabilityPresetsManagedDirectory() {
+        // managedDirectory must be exactly {.read, .enumerate, .addSubitems}.
+        #expect(DomainItem.CapabilitySet.managedDirectory == [.read, .enumerate, .addSubitems])
     }
 }

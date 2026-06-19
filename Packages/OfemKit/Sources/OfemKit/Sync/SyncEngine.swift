@@ -279,7 +279,8 @@ public actor SyncEngine {
                 name: it.displayName,
                 isDir: true,
                 lastAccessedNs: nowNs,
-                syncedAtNs: nowNs
+                syncedAtNs: nowNs,
+                itemType: it.type
             )
         }
         await batchUpsert(rows, context: "listItems")
@@ -351,6 +352,19 @@ public actor SyncEngine {
         let nowNs = currentNowNs()
         let now = Date()
 
+        // Resolve the Fabric item type for this folder so every path row can
+        // carry it for capability computation. The discovery row written by
+        // listItems uses VirtualIDs.itemID as its itemID and stores the actual
+        // item GUID as `path`. An empty string means "unknown / not yet
+        // enumerated" and is treated as read-only by computeCapabilities.
+        let itemTypeKey = CacheKey(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: VirtualIDs.itemID,
+            path: key.itemID
+        )
+        let folderItemType = (try? await cache.fetch(key: itemTypeKey))?.itemType ?? ""
+
         // Build remote children set, filtering macOS metadata artefacts at emit
         // time so that remote .DS_Store / ._* files never appear in listings and
         // cannot resurrect after a local-only delete.
@@ -399,7 +413,8 @@ public actor SyncEngine {
                 lastModifiedNs: dateToNs(entry.lastModified) ?? 0,
                 lastAccessedNs: cur?.lastAccessedNs ?? nowNs,
                 syncedAtNs: nowNs,
-                childrenSyncedAtNs: cur?.childrenSyncedAtNs ?? 0
+                childrenSyncedAtNs: cur?.childrenSyncedAtNs ?? 0,
+                itemType: folderItemType
             )
             // Carry blob linkage when etag still matches.
             if let c = cur, !c.etag.isEmpty, c.etag == entry.eTag {
@@ -433,7 +448,8 @@ public actor SyncEngine {
         await batchDelete(deleteBatch, context: "refreshFolder delete")
 
         // Stamp parent row.
-        let existingParentLastAccessed = (try? await cache.fetch(key: key))?.lastAccessedNs ?? nowNs
+        let existingParent = try? await cache.fetch(key: key)
+        let existingParentLastAccessed = existingParent?.lastAccessedNs ?? nowNs
         let parent = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -444,7 +460,8 @@ public actor SyncEngine {
             isDir: true,
             lastAccessedNs: existingParentLastAccessed == 0 ? nowNs : existingParentLastAccessed,
             syncedAtNs: nowNs,
-            childrenSyncedAtNs: nowNs
+            childrenSyncedAtNs: nowNs,
+            itemType: folderItemType
         )
         do { try await cache.upsert(parent) } catch {
             Self.log.warning("refreshFolder: upsert parent failed err=\(error, privacy: .public)")
@@ -636,6 +653,18 @@ public actor SyncEngine {
         // Log a warning on failure so the missing etag is visible rather than
         // silently leaving the row with etag="" (sync-12).
         let nowNs = currentNowNs()
+        // Carry the item type from the existing cache row or the parent
+        // directory row so that a freshly uploaded file under a Lakehouse
+        // Files/ subtree keeps writable capabilities without waiting for the
+        // next refreshFolder (fp-05).
+        var existingItemType = (try? await cache.fetch(key: key))?.itemType ?? ""
+        if existingItemType.isEmpty {
+            let parentKey = CacheKey(
+                accountAlias: key.accountAlias, workspaceID: key.workspaceID,
+                itemID: key.itemID, path: Enumerator.parentPath(key.path)
+            )
+            existingItemType = (try? await cache.fetch(key: parentKey))?.itemType ?? ""
+        }
         var row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -646,7 +675,8 @@ public actor SyncEngine {
             isDir: false,
             contentLength: fileSize,
             lastAccessedNs: nowNs,
-            syncedAtNs: nowNs
+            syncedAtNs: nowNs,
+            itemType: existingItemType
         )
         do {
             let props = try await onelake.getProperties(
@@ -770,6 +800,14 @@ public actor SyncEngine {
         await offlineTracker.observe(nil)
 
         let nowNs = currentNowNs()
+        // Carry the item type from the parent directory row so that a newly
+        // created folder under a Lakehouse Files/ subtree keeps writable
+        // capabilities without waiting for the next refreshFolder (fp-05).
+        let parentKeyMkdir = CacheKey(
+            accountAlias: key.accountAlias, workspaceID: key.workspaceID,
+            itemID: key.itemID, path: Enumerator.parentPath(key.path)
+        )
+        let mkdirItemType = (try? await cache.fetch(key: parentKeyMkdir))?.itemType ?? ""
         let row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -779,7 +817,8 @@ public actor SyncEngine {
             name: Enumerator.baseName(key.path),
             isDir: true,
             lastAccessedNs: nowNs,
-            syncedAtNs: nowNs
+            syncedAtNs: nowNs,
+            itemType: mkdirItemType
         )
         do { try await cache.upsert(row) } catch {
             Self.log.warning("mkdir: upsert failed err=\(error, privacy: .public)")
@@ -899,6 +938,17 @@ public actor SyncEngine {
 
         // Upsert metadata row and blob store as a logical pair (sync-29).
         let nowNs = currentNowNs()
+        // Carry the item type from the cached row (or the parent directory)
+        // so that a downloaded file under a Lakehouse Files/ subtree keeps
+        // writable capabilities without waiting for the next refreshFolder (fp-05).
+        var downloadItemType = cached?.itemType ?? ""
+        if downloadItemType.isEmpty {
+            let parentKeyDl = CacheKey(
+                accountAlias: key.accountAlias, workspaceID: key.workspaceID,
+                itemID: key.itemID, path: Enumerator.parentPath(key.path)
+            )
+            downloadItemType = (try? await cache.fetch(key: parentKeyDl))?.itemType ?? ""
+        }
         var row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -912,7 +962,8 @@ public actor SyncEngine {
             lastModifiedNs: dateToNs(props.lastModified) ?? 0,
             contentType: props.contentType,
             lastAccessedNs: nowNs,
-            syncedAtNs: nowNs
+            syncedAtNs: nowNs,
+            itemType: downloadItemType
         )
         if row.name.isEmpty { row.name = Enumerator.baseName(key.path) }
 
