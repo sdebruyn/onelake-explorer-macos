@@ -184,6 +184,15 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
             "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateItems entry — container=\(containerLogID, privacy: .public)"
         )
 
+        // NSFileProviderEnumerationObserver is @_nonSendable. Box it so the
+        // Task closure can capture it across the region-isolation boundary.
+        // The FPE framework guarantees the observer remains valid for the
+        // duration of the enumeration call.
+        struct ObsBox: @unchecked Sendable {
+            let value: NSFileProviderEnumerationObserver
+        }
+        let obs = ObsBox(value: observer)
+
         // Cancel any previous in-flight items task. Only cancel on a new
         // *items* enumeration — not on change observation — so concurrent
         // change-observation and items-enumeration tasks remain independent.
@@ -195,8 +204,8 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                     alias: aliasCopy,
                     engine: engine
                 )
-                observer.didEnumerate(items)
-                observer.finishEnumerating(upTo: nil)
+                obs.value.didEnumerate(items)
+                obs.value.finishEnumerating(upTo: nil)
                 Self.log.debug(
                     "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateItems delivered — container=\(containerLogID, privacy: .public) count=\(items.count, privacy: .public) nextPage=nil"
                 )
@@ -204,7 +213,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 Self.log.debug(
                     "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateItems cancelled — container=\(containerLogID, privacy: .public)"
                 )
-                observer.finishEnumeratingWithError(CocoaError(.userCancelled))
+                obs.value.finishEnumeratingWithError(CocoaError(.userCancelled))
             } catch {
                 let code = FPError.classify(error)
                 Self.log.error(
@@ -215,7 +224,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 if code == .notAuthenticated {
                     hostCopy.markNeedsSignIn()
                 }
-                observer.finishEnumeratingWithError(nsFileProviderError(for: code))
+                obs.value.finishEnumeratingWithError(nsFileProviderError(for: code))
             }
         }
 
@@ -247,6 +256,11 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
         let hostCopy = engineHost
         let previousNs = decodeSyncAnchor(anchor)
 
+        // NSFileProviderChangeObserver is @_nonSendable. Box it so the Task
+        // closure can capture it across the region-isolation boundary.
+        struct ObsBox: @unchecked Sendable { let value: NSFileProviderChangeObserver }
+        let obs = ObsBox(value: observer)
+
         // Change-observation tasks are independent from items tasks.
         // We do NOT cancel inFlightTask here (avoids aborting an ongoing items
         // enumeration for an unrelated change observer). Store the new task in
@@ -264,7 +278,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
             // Expire the anchor immediately so the framework performs that full
             // re-enumeration instead of relying on the broken delta path.
             if case .root = identifierCopy {
-                observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+                obs.value.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
                 Self.log.debug(
                     "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges — root container, anchor expired to force full re-enum"
                 )
@@ -282,7 +296,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                     Self.log.debug(
                         "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges — anchor ahead of cache, expiring"
                     )
-                    observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+                    obs.value.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
                     return
                 }
 
@@ -312,7 +326,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 }
 
                 if !updatedItems.isEmpty {
-                    observer.didUpdate(updatedItems)
+                    obs.value.didUpdate(updatedItems)
                 }
 
                 // Report remote deletions so Finder removes the items.
@@ -320,17 +334,17 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                     let deletedIdentifiers = deletedIdStrings.map {
                         NSFileProviderItemIdentifier($0)
                     }
-                    observer.didDeleteItems(withIdentifiers: deletedIdentifiers)
+                    obs.value.didDeleteItems(withIdentifiers: deletedIdentifiers)
                 }
 
                 let newAnchor = encodeSyncAnchor(currentNs)
-                observer.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
+                obs.value.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
 
                 Self.log.debug(
                     "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges delivered — container=\(containerLogID, privacy: .public) updates=\(updatedRecords.count, privacy: .public) deletions=\(deletedIdStrings.count, privacy: .public) anchor=\(previousNs, privacy: .public)→\(currentNs, privacy: .public)"
                 )
             } catch is CancellationError {
-                observer.finishEnumeratingWithError(CocoaError(.userCancelled))
+                obs.value.finishEnumeratingWithError(CocoaError(.userCancelled))
             } catch {
                 let code = FPError.classify(error)
                 Self.log.error(
@@ -343,7 +357,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 if code == .notAuthenticated {
                     hostCopy.markNeedsSignIn()
                 }
-                observer.finishEnumeratingWithError(nsFileProviderError(for: code))
+                obs.value.finishEnumeratingWithError(nsFileProviderError(for: code))
             }
         }
         taskLock.withLock {
@@ -355,16 +369,20 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
         let aliasCopy = alias
         let hostCopy = engineHost
+        // NSFileProviderEnumerator completion handlers are @escaping but not
+        // @Sendable. Box to cross the Task isolation boundary safely.
+        struct CH: @unchecked Sendable { let fn: (NSFileProviderSyncAnchor?) -> Void }
+        let ch = CH(fn: completionHandler)
         // Store the task so invalidate() can cancel it (fpe-15).
         let anchorTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
                 let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
-                completionHandler(encodeSyncAnchor(ns))
+                ch.fn(encodeSyncAnchor(ns))
             } catch {
                 // Engine unavailable; return a zero anchor so the next poll
                 // gets a full diff rather than an opaque failure.
-                completionHandler(encodeSyncAnchor(0))
+                ch.fn(encodeSyncAnchor(0))
             }
         }
         taskLock.withLock {
@@ -561,6 +579,11 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
         let hostCopy = engineHost
         let previousNs = decodeSyncAnchor(anchor)
 
+        // NSFileProviderChangeObserver is @_nonSendable. Box it so the Task
+        // closure can capture it across the region-isolation boundary.
+        struct ObsBox: @unchecked Sendable { let value: NSFileProviderChangeObserver }
+        let obs = ObsBox(value: observer)
+
         // Check the shared throttle (read-only — we only write AFTER success).
         let now = ContinuousClock.now
         let shouldRefresh: Bool = {
@@ -603,7 +626,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                             // the failure and abort.
                             Self.clearRefresh(for: aliasCopy)
                             hostCopy.markNeedsSignIn()
-                            observer.finishEnumeratingWithError(nsFileProviderError(for: code))
+                            obs.value.finishEnumeratingWithError(nsFileProviderError(for: code))
                             return
                         }
                         // Non-auth errors: proceed with the existing cache.
@@ -620,7 +643,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                     Self.log.debug(
                         "WorkingSet: anchor ahead of cache for \(aliasCopy, privacy: .public) — expiring"
                     )
-                    observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+                    obs.value.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
                     return
                 }
 
@@ -646,18 +669,18 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                     }
                 }
                 if !updatedItems.isEmpty {
-                    observer.didUpdate(updatedItems)
+                    obs.value.didUpdate(updatedItems)
                 }
 
                 if !deletedIdStrings.isEmpty {
                     let deletedIdentifiers = deletedIdStrings.map {
                         NSFileProviderItemIdentifier($0)
                     }
-                    observer.didDeleteItems(withIdentifiers: deletedIdentifiers)
+                    obs.value.didDeleteItems(withIdentifiers: deletedIdentifiers)
                 }
 
                 let newAnchor = encodeSyncAnchor(currentNs)
-                observer.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
+                obs.value.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
 
                 Self.log.debug(
                     "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges delivered — updates=\(updatedRecords.count, privacy: .public) deletions=\(deletedIdStrings.count, privacy: .public) anchor=\(previousNs, privacy: .public)→\(currentNs, privacy: .public)"
@@ -667,7 +690,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 // Signal userCancelled so the framework knows this was a clean
                 // cancellation, not a sync failure (mirrors OfemFPEEnumerator
                 // enumerateChanges — fpe-15).
-                observer.finishEnumeratingWithError(CocoaError(.userCancelled))
+                obs.value.finishEnumeratingWithError(CocoaError(.userCancelled))
             } catch {
                 let code = FPError.classify(error)
                 Self.log.error(
@@ -681,7 +704,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                     Self.clearRefresh(for: aliasCopy)
                     hostCopy.markNeedsSignIn()
                 }
-                observer.finishEnumeratingWithError(nsFileProviderError(for: code))
+                obs.value.finishEnumeratingWithError(nsFileProviderError(for: code))
             }
         }
         taskLock.withLock {
@@ -695,14 +718,18 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
     ) {
         let aliasCopy = alias
         let hostCopy = engineHost
+        // NSFileProviderEnumerator completion handlers are @escaping but not
+        // @Sendable. Box to cross the Task isolation boundary safely.
+        struct CH: @unchecked Sendable { let fn: (NSFileProviderSyncAnchor?) -> Void }
+        let ch = CH(fn: completionHandler)
         // Store the task so invalidate() can cancel it (fpe-15).
         let anchorTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
                 let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
-                completionHandler(encodeSyncAnchor(ns))
+                ch.fn(encodeSyncAnchor(ns))
             } catch {
-                completionHandler(encodeSyncAnchor(0))
+                ch.fn(encodeSyncAnchor(0))
             }
         }
         taskLock.withLock {
