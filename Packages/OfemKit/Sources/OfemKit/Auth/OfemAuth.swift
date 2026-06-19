@@ -339,26 +339,30 @@ public actor OfemAuth {
                 Self.log.warning("OfemAuth: account \(alias, privacy: .public) not in MSAL cache; re-auth required")
                 throw OfemAuthError.interactionRequired
             }
-            // Log the underlying error before stripping it from the thrown case.
-            // The error is .private so UPN / tenant detail stays out of unredacted
-            // logs; alias is .public (not PII). The internal MSAL error code
-            // (MSALInternalErrorCodeKey) is included in the MSAL error description,
-            // making config rejections diagnosable from this log line alone.
-            Self.log.error("OfemAuth: silent token for \(alias, privacy: .public) failed: \(error, privacy: .private)")
-            // Distinguish a config/credential rejection (invalid_client -42003,
-            // invalid_grant -42004) from an ordinary transient failure. A config
-            // rejection is not fixable by re-auth — it indicates a misconfigured
-            // Entra app registration (e.g. missing FPE redirect URI) and must be
-            // surfaced distinctly so it is diagnosable rather than looping the user
-            // through pointless "Sign in again" prompts.
+            // invalid_grant (-42004) arrives under MSALErrorInternal (-50000), not
+            // under MSALError.interactionRequired (-50002), so isInteractionRequired
+            // does not catch it. It means the refresh token was revoked or the grant
+            // is no longer valid (admin password reset, MFA re-enrollment, Conditional
+            // Access policy change). The user can self-recover by signing in again.
+            if isInvalidGrant(error) {
+                Self.log.info("OfemAuth: invalid_grant for \(alias, privacy: .public); re-auth required")
+                throw OfemAuthError.interactionRequired
+            }
+            // Distinguish a permanent config rejection (invalid_client -42003) from
+            // an ordinary transient failure. A config rejection cannot be fixed by
+            // re-auth — it indicates a misconfigured Entra app registration (e.g.
+            // missing FPE redirect URI). Surface it distinctly so operators can
+            // diagnose the root cause without looping users through "Sign in again".
             if isConfigRejection(error) {
                 Self.log.critical(
-                    "OfemAuth: config/credential rejection for \(alias, privacy: .public) — " +
-                    "check Entra app registration redirect URIs and client credentials: " +
-                    "\(error, privacy: .private)"
+                    "OfemAuth: config/credential rejection for \(alias, privacy: .public) — check Entra app registration redirect URIs and client credentials: \(error, privacy: .private)"
                 )
                 throw OfemAuthError.configRejection(alias)
             }
+            // Log the underlying error before stripping it from the thrown case.
+            // The error is .private so UPN / tenant detail stays out of unredacted
+            // logs; alias is .public (not PII).
+            Self.log.error("OfemAuth: silent token for \(alias, privacy: .public) failed: \(error, privacy: .private)")
             throw OfemAuthError.silentTokenFailed(alias)
         }
     }
@@ -423,42 +427,58 @@ public actor OfemAuth {
         return false
     }
 
-    /// Returns `true` when the MSAL error indicates a server-side config or
-    /// credential rejection that re-authentication cannot fix.
+    /// Returns `true` when the MSAL error is `invalid_grant` (-42004) — a
+    /// revoked or expired refresh token that the user can fix by signing in
+    /// again (admin password reset, MFA re-enrollment, Conditional Access
+    /// policy change).
     ///
-    /// Detected internal error codes (in `MSALInternalErrorCodeKey`):
+    /// This arrives under the MSAL top-level code `MSALErrorInternal` (-50000)
+    /// with `MSALInternalErrorCodeKey` = -42004. Because the top-level code is
+    /// not `MSALError.interactionRequired` (-50002), ``isInteractionRequired(_:)``
+    /// does not detect it; this helper bridges the gap so the caller can route
+    /// it to the ``OfemAuthError/interactionRequired`` path.
+    func isInvalidGrant(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == MSALErrorDomain,
+              nsError.code == MSALError.errorInternal.rawValue else {
+            return false
+        }
+        guard let internalCode = nsError.userInfo[MSALInternalErrorCodeKey] as? NSNumber else {
+            return false
+        }
+        // MSALInternalErrorInvalidGrant = -42004
+        return internalCode.intValue == -42004
+    }
+
+    /// Returns `true` when the MSAL error indicates a permanent server-side
+    /// config rejection that re-authentication cannot fix.
+    ///
+    /// Detected internal error code (in `MSALInternalErrorCodeKey`):
     /// - `-42003` (`MSALInternalErrorInvalidClient`): the redirect URI or
     ///   client ID was rejected by Entra. The canonical cause in OFEM is a
     ///   missing FPE redirect URI in the app registration — once `invalid_client`
     ///   is returned by the token endpoint, re-auth with the same credentials
     ///   will also fail. The fix is an out-of-band registration update.
-    /// - `-42004` (`MSALInternalErrorInvalidGrant`): the refresh token was
-    ///   revoked or the grant is no longer valid. This is a permanent rejection;
-    ///   re-auth obtains a new grant but does not unblock a legitimately revoked
-    ///   token.
     ///
-    /// Both codes arrive under the MSAL top-level code `-50000`
-    /// (`MSALErrorInternal`) with the specific internal code in
-    /// `MSALInternalErrorCodeKey` (`NSNumber`).
+    /// The code arrives under the MSAL top-level code `MSALErrorInternal`
+    /// (-50000) with the specific internal code in `MSALInternalErrorCodeKey`
+    /// (`NSNumber`).
     ///
-    /// This check is intentionally narrow: it matches only the two documented
-    /// permanent-rejection codes. Network errors and unknown internal codes
-    /// continue to fall through to ``OfemAuthError/silentTokenFailed(_:)``.
+    /// Note: `invalid_grant` (-42004) is handled separately by
+    /// ``isInvalidGrant(_:)`` and routes to ``OfemAuthError/interactionRequired``
+    /// because a revoked refresh token is recoverable by interactive re-auth.
     func isConfigRejection(_ error: Error) -> Bool {
         let nsError = error as NSError
-        // MSALErrorInternal = -50000: the top-level "internal error" code that
-        // MSAL uses when the specific failure is in MSALInternalErrorCodeKey.
         guard nsError.domain == MSALErrorDomain,
-              nsError.code == -50000 else {
+              nsError.code == MSALError.errorInternal.rawValue else {
             return false
         }
         guard let internalCode = nsError.userInfo[MSALInternalErrorCodeKey] as? NSNumber else {
             return false
         }
         // MSALInternalErrorInvalidClient = -42003
-        // MSALInternalErrorInvalidGrant  = -42004
         // (See MSALInternalError enum in MSALError.h)
-        return internalCode.intValue == -42003 || internalCode.intValue == -42004
+        return internalCode.intValue == -42003
     }
 
     /// Evicts the cached MSAL client for the `(clientID, tenantID)` pair

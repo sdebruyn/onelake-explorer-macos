@@ -101,11 +101,13 @@ On every OneLake request:
 
 | Condition | MSAL signal | Thrown error |
 |---|---|---|
-| User must interact (CA, MFA, expired RT) | `MSALError.interactionRequired` (-50002) or AADSTS STS codes 50076/50079/50078/50158 | ``OfemAuthError/interactionRequired`` |
-| Permanent config/credential rejection | `MSALInternalErrorCodeKey` = -42003 (`invalid_client`) or -42004 (`invalid_grant`) | ``OfemAuthError/configRejection(_:)`` |
+| User must interact (CA, MFA, expired RT, revoked refresh token) | `MSALError.interactionRequired` (-50002), AADSTS STS codes 50076/50079/50078/50158, or `MSALErrorInternal` (-50000) with `MSALInternalErrorCodeKey` = -42004 (`invalid_grant`) | ``OfemAuthError/interactionRequired`` |
+| Permanent config rejection | `MSALErrorInternal` (-50000) with `MSALInternalErrorCodeKey` = -42003 (`invalid_client`) | ``OfemAuthError/configRejection(_:)`` |
 | Other transient failure (network, server 5xx) | Any other error | ``OfemAuthError/silentTokenFailed(_:)`` |
 
-`configRejection` is distinct from `interactionRequired` because a config error cannot be fixed by re-authenticating. The most common cause is a missing redirect URI in the Entra app registration (see above). When `configRejection` is thrown, `OfemAuth` also logs at `.critical` level — including the full MSAL error with `MSALInternalErrorCodeKey` — so misconfigurations are diagnosable from Console.app logs without a debugger.
+`configRejection` applies only to `invalid_client` (-42003): a misconfigured Entra app registration (e.g. missing FPE redirect URI) that cannot be fixed by re-authenticating — the same broken client configuration will be used again. When `configRejection` is thrown, `OfemAuth` logs at `.critical` level so misconfigurations are diagnosable from Console.app without a debugger.
+
+`invalid_grant` (-42004) is routed to `interactionRequired` because a revoked or expired refresh token is recoverable: the user signs in again to obtain a new grant (triggered by admin password reset, MFA re-enrollment, or Conditional Access policy change).
 
 All three cases propagate through `HTTPClientError.tokenAcquisitionFailed` → `FabricError.unauthorized` → `FPError.notAuthenticated`, so Finder shows an auth-required indicator in all cases. The distinction is in the log output and the error type available to the host app's error-handling layer.
 
