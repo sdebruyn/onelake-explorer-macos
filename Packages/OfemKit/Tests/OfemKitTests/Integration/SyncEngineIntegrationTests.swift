@@ -72,9 +72,8 @@ struct SyncEngineIntegrationTests {
         let scratchBase = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let onelake = lake.client as any OneLakeClientProtocol
-        let fabric: any FabricClientProtocol = FabricClient(
-            http: HTTPClient(), tokenProvider: EnvVarTokenProvider()
-        )
+        let fabricPool = SessionPool(tokenProvider: EnvVarTokenProvider())
+        let fabric: any FabricClientProtocol = FabricClient(sessionPool: fabricPool)
         let engine = SyncEngine(
             cache: store,
             onelake: onelake,
@@ -87,7 +86,8 @@ struct SyncEngineIntegrationTests {
     /// Returns a ``LiveLakehouse`` loaded from the environment.
     private func liveLakehouse() throws -> LiveLakehouse {
         let config = try IntegrationConfig.fromEnvironment()
-        let client = OneLakeClient(http: HTTPClient(), tokenProvider: EnvVarTokenProvider())
+        let pool = SessionPool(tokenProvider: EnvVarTokenProvider())
+        let client = OneLakeClient(sessionPool: pool)
         return LiveLakehouse(client: client, workspace: config.workspaceID, item: config.lakehouseID)
     }
 

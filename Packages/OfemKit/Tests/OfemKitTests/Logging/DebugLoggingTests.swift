@@ -8,8 +8,13 @@ import Testing
 // debug log lines (per-request, per-page, end-of-sequence) through OfemLogger.
 //
 // Strategy: wire a debug-level OfemLogger backed by a RotatingFileWriter that
-// writes JSON lines to a temp directory.  After each scenario, read the log
+// writes JSON lines to a temp directory. After each scenario, read the log
 // file and assert the expected keys and values appear in the captured lines.
+//
+// HTTP interception is achieved by injecting a MockURLProtocol-backed Session
+// directly into the SessionPool via `_setSessionForTesting`. Each test
+// receives a unique stub queue ID so concurrent suites do not consume each
+// other's responses.
 
 // MARK: - Helpers
 
@@ -26,10 +31,7 @@ private func makeCapturingLogger(directory: URL) -> OfemLogger {
 }
 
 /// Reads all JSON log lines from `directory/ofem.log` and returns them as
-/// `[String: String]` dictionaries. Non-string values are converted via
-/// `String(describing:)`. Throws `CaptureError.malformedJSON` when any line
-/// is non-empty but fails JSON parsing, so a logger format regression surfaces
-/// immediately rather than silently returning a partial result.
+/// `[String: String]` dictionaries.
 private func capturedLines(directory: URL) throws -> [[String: String]] {
     let logURL = directory.appendingPathComponent("ofem.log")
     guard FileManager.default.fileExists(atPath: logURL.path) else { return [] }
@@ -82,60 +84,38 @@ private func withTempDir(_ body: (URL) async throws -> Void) async throws {
     try await body(dir)
 }
 
-// MARK: - Fabric stubs
+// MARK: - Stub helpers
 
 private let fabricBase = URL(string: "https://api.fabric.microsoft.com")!
-
-private func fabricStub(status: Int = 200, body: String = "") -> MockURLSession.Stub {
-    MockURLSession.Stub(
-        data: body.data(using: .utf8)!,
-        status: status,
-        headers: [:],
-        url: fabricBase
-    )
-}
-
-private func makeFabricClient(session: MockURLSession, logger: OfemLogger) -> FabricClient {
-    let http = HTTPClient(
-        session: session,
-        gateRegistry: makeGate(host: "api.fabric.microsoft.com"),
-        retryPolicy: HTTPRetryPolicy(maxAttempts: 1, initialBackoff: .milliseconds(5), maxBackoff: .milliseconds(20))
-    )
-    return FabricClient(
-        http: http,
-        tokenProvider: MockTokenProvider(token: "test-tok"),
-        baseURL: fabricBase,
-        logger: logger
-    )
-}
-
-// MARK: - OneLake stubs
-
 private let oneLakeBase = URL(string: "https://onelake.dfs.fabric.microsoft.com")!
 
-private func oneLakeStub(status: Int = 200, body: String = "", continuation: String? = nil) -> MockURLSession.Stub {
-    var headers: [String: String] = [:]
-    if let c = continuation { headers["x-ms-continuation"] = c }
-    return MockURLSession.Stub(
-        data: body.data(using: .utf8)!,
-        status: status,
-        headers: headers,
-        url: oneLakeBase
-    )
-}
-
-private func makeOneLakeClient(session: MockURLSession, logger: OfemLogger) -> OneLakeClient {
-    let http = HTTPClient(
-        session: session,
-        gateRegistry: makeGate(host: "onelake.dfs.fabric.microsoft.com"),
-        retryPolicy: HTTPRetryPolicy(maxAttempts: 1, initialBackoff: .milliseconds(5), maxBackoff: .milliseconds(20))
-    )
-    return OneLakeClient(
-        http: http,
-        tokenProvider: MockTokenProvider(token: "test-tok"),
-        baseURL: oneLakeBase,
-        logger: logger
-    )
+/// Creates a `SessionPool` with a `MockURLProtocol`-backed session pre-seeded
+/// for `alias` and both scopes.
+///
+/// Each call allocates a unique queue ID so concurrent test suites cannot
+/// consume each other's stubs.  The returned cleanup closure must be called
+/// (typically via `defer`) to remove the queue entry.
+///
+/// Every stub that lacks a `Content-Type` header is patched with
+/// `application/json` so Alamofire's `.validate()` content-type check does
+/// not reject valid JSON responses.
+private func makeMockPool(
+    alias: String,
+    stubs: [MockURLProtocol.StubResponse]
+) async -> (pool: SessionPool, cleanup: () -> Void) {
+    let queueID = UUID().uuidString
+    let patched = stubs.map { stub -> MockURLProtocol.StubResponse in
+        guard stub.headers["Content-Type"] == nil else { return stub }
+        var h = stub.headers
+        h["Content-Type"] = "application/json"
+        return MockURLProtocol.StubResponse(status: stub.status, body: stub.body, headers: h)
+    }
+    MockURLProtocol.registerQueue(id: queueID, stubs: patched)
+    let pool = SessionPool(tokenProvider: NoopTokenProvider())
+    let session = makeMockSession(queueID: queueID)
+    await pool._setSessionForTesting(session, alias: alias, scope: .fabric)
+    await pool._setSessionForTesting(session, alias: alias, scope: .oneLake)
+    return (pool, { MockURLProtocol.clearQueue(id: queueID) })
 }
 
 // MARK: - FabricClient debug logging
@@ -148,18 +128,20 @@ struct FabricClientDebugLoggingTests {
         let body = """
         {"value":[{"id":"ws1","displayName":"WS1","type":"Workspace"}]}
         """
+        let alias = "log-test-\(UUID().uuidString)"
         try await withTempDir { dir in
             let logger = makeCapturingLogger(directory: dir)
-            let session = MockURLSession(stubs: [fabricStub(body: body)])
-            let client = makeFabricClient(session: session, logger: logger)
+            let (pool, cleanup) = await makeMockPool(alias: alias, stubs: [
+                MockURLProtocol.StubResponse(status: 200, body: body),
+            ])
+            defer { cleanup() }
+            let client = FabricClient(sessionPool: pool, baseURL: fabricBase, logger: logger)
 
-            let workspaces = try await client.listAllWorkspaces(alias: "test")
+            let workspaces = try await client.listAllWorkspaces(alias: alias)
             #expect(workspaces.count == 1)
 
             let lines = try capturedLines(directory: dir)
 
-            // There must be a "fabric request" line with a static endpoint label
-            // (passes the scrubber) instead of a raw URL path (which would be redacted).
             let requestLines = lines.filter { $0["msg"] == "fabric request" }
             #expect(!requestLines.isEmpty, "expected at least one 'fabric request' log line")
             if let req = requestLines.first {
@@ -167,7 +149,6 @@ struct FabricClientDebugLoggingTests {
                 #expect(req["endpoint"] == "listWorkspaces")
             }
 
-            // There must be a "fabric response" line with status code.
             let responseLines = lines.filter { $0["msg"] == "fabric response" }
             #expect(!responseLines.isEmpty, "expected at least one 'fabric response' log line")
             if let resp = responseLines.first {
@@ -175,9 +156,6 @@ struct FabricClientDebugLoggingTests {
                 #expect(resp["status"] == "200")
             }
 
-            // There must be a "fabric list page" line for the last (only) page.
-            // Numeric and boolean-string values are in the safe charset and are
-            // written verbatim by Privacy.scrubLogValue.
             let pageLines = lines.filter { $0["msg"] == "fabric list page" }
             #expect(!pageLines.isEmpty, "expected at least one 'fabric list page' log line")
             if let pg = pageLines.first {
@@ -186,7 +164,6 @@ struct FabricClientDebugLoggingTests {
                 #expect(pg["hasContinuation"] == "false")
             }
 
-            // There must be a "fabric list complete" line.
             let completeLines = lines.filter { $0["msg"] == "fabric list complete" }
             #expect(!completeLines.isEmpty, "expected a 'fabric list complete' log line")
             if let comp = completeLines.first {
@@ -205,35 +182,35 @@ struct FabricClientDebugLoggingTests {
         let page2 = """
         {"value":[{"id":"ws3","displayName":"WS3","type":"Workspace"}]}
         """
+        let alias = "log-test-\(UUID().uuidString)"
         try await withTempDir { dir in
             let logger = makeCapturingLogger(directory: dir)
-            let session = MockURLSession(stubs: [fabricStub(body: page1), fabricStub(body: page2)])
-            let client = makeFabricClient(session: session, logger: logger)
+            let (pool, cleanup) = await makeMockPool(alias: alias, stubs: [
+                MockURLProtocol.StubResponse(status: 200, body: page1),
+                MockURLProtocol.StubResponse(status: 200, body: page2),
+            ])
+            defer { cleanup() }
+            let client = FabricClient(sessionPool: pool, baseURL: fabricBase, logger: logger)
 
-            let workspaces = try await client.listAllWorkspaces(alias: "test")
+            let workspaces = try await client.listAllWorkspaces(alias: alias)
             #expect(workspaces.count == 3)
 
             let lines = try capturedLines(directory: dir)
 
-            // Two request / response pairs.
             let requestLines = lines.filter { $0["msg"] == "fabric request" }
             #expect(requestLines.count == 2, "expected 2 'fabric request' lines, got \(requestLines.count)")
 
-            // Two page lines.
             let pageLines = lines.filter { $0["msg"] == "fabric list page" }
             #expect(pageLines.count == 2, "expected 2 'fabric list page' lines, got \(pageLines.count)")
 
-            // Page 1 has hasContinuation=true.
             let page1Line = pageLines.first(where: { $0["page"] == "1" })
             #expect(page1Line?["hasContinuation"] == "true")
             #expect(page1Line?["itemsThisPage"] == "2")
 
-            // Page 2 has hasContinuation=false.
             let page2Line = pageLines.first(where: { $0["page"] == "2" })
             #expect(page2Line?["hasContinuation"] == "false")
             #expect(page2Line?["itemsThisPage"] == "1")
 
-            // Complete line with totals.
             let completeLines = lines.filter { $0["msg"] == "fabric list complete" }
             #expect(completeLines.count == 1)
             #expect(completeLines.first?["totalPages"] == "2")
@@ -241,8 +218,6 @@ struct FabricClientDebugLoggingTests {
         }
     }
 }
-
-// MARK: - OneLakeClient debug logging
 
 @Suite("OneLakeClient debug logging")
 struct OneLakeClientDebugLoggingTests {
@@ -252,13 +227,17 @@ struct OneLakeClientDebugLoggingTests {
         let body = """
         {"paths":[{"name":"item-guid-test/Files/a.txt","isDirectory":"false","contentLength":"10"}]}
         """
+        let alias = "log-test-\(UUID().uuidString)"
         try await withTempDir { dir in
             let logger = makeCapturingLogger(directory: dir)
-            let session = MockURLSession(stubs: [oneLakeStub(body: body)])
-            let client = makeOneLakeClient(session: session, logger: logger)
+            let (pool, cleanup) = await makeMockPool(alias: alias, stubs: [
+                MockURLProtocol.StubResponse(status: 200, body: body),
+            ])
+            defer { cleanup() }
+            let client = OneLakeClient(sessionPool: pool, baseURL: oneLakeBase, logger: logger)
 
             let result = try await client.listPath(
-                alias: "test",
+                alias: alias,
                 workspaceGUID: "ws-guid",
                 itemGUID: "item-guid-test",
                 directory: "Files",
@@ -268,8 +247,6 @@ struct OneLakeClientDebugLoggingTests {
 
             let lines = try capturedLines(directory: dir)
 
-            // Request line — endpoint label and GUIDs survive the scrubber verbatim;
-            // raw URL paths would be redacted (they contain '/').
             let requestLines = lines.filter { $0["msg"] == "onelake request" }
             #expect(!requestLines.isEmpty, "expected at least one 'onelake request' log line")
             if let req = requestLines.first {
@@ -279,7 +256,6 @@ struct OneLakeClientDebugLoggingTests {
                 #expect(req["itemId"] == "item-guid-test")
             }
 
-            // Response line with status code.
             let responseLines = lines.filter { $0["msg"] == "onelake response" }
             #expect(!responseLines.isEmpty, "expected at least one 'onelake response' log line")
             if let resp = responseLines.first {
@@ -289,9 +265,6 @@ struct OneLakeClientDebugLoggingTests {
                 #expect(resp["status"] == "200")
             }
 
-            // Page line for the last (only) page.
-            // Numeric and boolean-string values are in the safe charset and are
-            // written verbatim by Privacy.scrubLogValue.
             let pageLines = lines.filter { $0["msg"] == "onelake list page" }
             #expect(!pageLines.isEmpty, "expected at least one 'onelake list page' log line")
             if let pg = pageLines.first {
@@ -303,7 +276,6 @@ struct OneLakeClientDebugLoggingTests {
                 #expect(pg["itemsThisPage"] == "1")
             }
 
-            // Complete line.
             let completeLines = lines.filter { $0["msg"] == "onelake list complete" }
             #expect(!completeLines.isEmpty, "expected an 'onelake list complete' log line")
             if let comp = completeLines.first {
@@ -324,16 +296,18 @@ struct OneLakeClientDebugLoggingTests {
         let page2Body = """
         {"paths":[{"name":"item-guid/Files/c.txt","isDirectory":"false","contentLength":"30"}]}
         """
+        let alias = "log-test-\(UUID().uuidString)"
         try await withTempDir { dir in
             let logger = makeCapturingLogger(directory: dir)
-            let session = MockURLSession(stubs: [
-                oneLakeStub(body: page1Body, continuation: "cont-token-1"),
-                oneLakeStub(body: page2Body),
+            let (pool, cleanup) = await makeMockPool(alias: alias, stubs: [
+                MockURLProtocol.StubResponse(status: 200, body: page1Body, headers: ["x-ms-continuation": "cont-token-1"]),
+                MockURLProtocol.StubResponse(status: 200, body: page2Body),
             ])
-            let client = makeOneLakeClient(session: session, logger: logger)
+            defer { cleanup() }
+            let client = OneLakeClient(sessionPool: pool, baseURL: oneLakeBase, logger: logger)
 
             let result = try await client.listPath(
-                alias: "test",
+                alias: alias,
                 workspaceGUID: "ws-guid",
                 itemGUID: "item-guid",
                 directory: "Files",
@@ -343,14 +317,12 @@ struct OneLakeClientDebugLoggingTests {
 
             let lines = try capturedLines(directory: dir)
 
-            // Two request / response pairs — each carries the GUID keys verbatim.
             let requestLines = lines.filter { $0["msg"] == "onelake request" }
             #expect(requestLines.count == 2, "expected 2 'onelake request' lines, got \(requestLines.count)")
             #expect(requestLines.allSatisfy { $0["endpoint"] == "listPath" })
             #expect(requestLines.allSatisfy { $0["workspaceId"] == "ws-guid" })
             #expect(requestLines.allSatisfy { $0["itemId"] == "item-guid" })
 
-            // Two page lines.
             let pageLines = lines.filter { $0["msg"] == "onelake list page" }
             #expect(pageLines.count == 2, "expected 2 'onelake list page' lines, got \(pageLines.count)")
 
@@ -364,7 +336,6 @@ struct OneLakeClientDebugLoggingTests {
             #expect(page2Line?["hasContinuation"] == "false")
             #expect(page2Line?["itemsThisPage"] == "1")
 
-            // Complete line — find it by msg and then assert each field value.
             let completeLines = lines.filter { $0["msg"] == "onelake list complete" }
             let completeLine = completeLines.first(where: { $0["totalPages"] != nil })
             #expect(completeLine != nil, "expected an 'onelake list complete' log line with totalPages")

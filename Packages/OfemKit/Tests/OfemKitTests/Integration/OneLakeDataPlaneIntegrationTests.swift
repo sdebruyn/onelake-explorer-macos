@@ -80,7 +80,8 @@ struct OneLakeDataPlaneIntegrationTests {
 
     private func liveLakehouse() throws -> LiveLakehouse {
         let config = try IntegrationConfig.fromEnvironment()
-        let client = OneLakeClient(http: HTTPClient(), tokenProvider: EnvVarTokenProvider())
+        let pool = SessionPool(tokenProvider: EnvVarTokenProvider())
+        let client = OneLakeClient(sessionPool: pool)
         return LiveLakehouse(client: client, workspace: config.workspaceID, item: config.lakehouseID)
     }
 
