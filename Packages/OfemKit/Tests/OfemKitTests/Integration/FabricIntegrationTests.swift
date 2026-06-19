@@ -8,7 +8,8 @@ import Testing
 struct FabricIntegrationTests {
 
     private func fabricClient() -> FabricClient {
-        FabricClient(http: HTTPClient(), tokenProvider: EnvVarTokenProvider())
+        let pool = SessionPool(tokenProvider: EnvVarTokenProvider())
+        return FabricClient(sessionPool: pool)
     }
 
     @Test("lists the test workspace among all workspaces")

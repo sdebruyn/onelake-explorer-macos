@@ -2,83 +2,6 @@ import Foundation
 import Testing
 @testable import OfemKit
 
-// MARK: - HTTPRetryPolicyTests
-
-@Suite("HTTPRetryPolicy")
-struct HTTPRetryPolicyTests {
-    // MARK: - Defaults
-
-    @Test("defaults: maxAttempts is 6")
-    func defaultMaxAttempts() {
-        let p = HTTPRetryPolicy()
-        #expect(p.maxAttempts == 6)
-    }
-
-    @Test("defaults: initialBackoff is 250 ms")
-    func defaultInitialBackoff() {
-        let p = HTTPRetryPolicy()
-        #expect(p.initialBackoff == .milliseconds(250))
-    }
-
-    @Test("defaults: maxBackoff is 30 s")
-    func defaultMaxBackoff() {
-        let p = HTTPRetryPolicy()
-        #expect(p.maxBackoff == .seconds(30))
-    }
-
-    // MARK: - Clamping
-
-    @Test("maxAttempts < 1 is treated as 1")
-    func clampMaxAttempts() {
-        let p = HTTPRetryPolicy(maxAttempts: 0)
-        #expect(p.maxAttempts == 1)
-    }
-
-    // MARK: - canRetryTransportError
-
-    @Test("GET transport error is always retried")
-    func getAlwaysRetried() {
-        let p = HTTPRetryPolicy(idempotent: false)
-        #expect(p.canRetryTransportError(method: "GET"))
-    }
-
-    @Test("HEAD transport error is always retried")
-    func headAlwaysRetried() {
-        let p = HTTPRetryPolicy(idempotent: false)
-        #expect(p.canRetryTransportError(method: "HEAD"))
-    }
-
-    @Test("PUT transport error is always retried")
-    func putAlwaysRetried() {
-        let p = HTTPRetryPolicy(idempotent: false)
-        #expect(p.canRetryTransportError(method: "PUT"))
-    }
-
-    @Test("DELETE transport error is always retried")
-    func deleteAlwaysRetried() {
-        let p = HTTPRetryPolicy(idempotent: false)
-        #expect(p.canRetryTransportError(method: "DELETE"))
-    }
-
-    @Test("POST transport error is NOT retried by default")
-    func postNotRetriedByDefault() {
-        let p = HTTPRetryPolicy(idempotent: false)
-        #expect(!p.canRetryTransportError(method: "POST"))
-    }
-
-    @Test("PATCH transport error is NOT retried by default")
-    func patchNotRetriedByDefault() {
-        let p = HTTPRetryPolicy(idempotent: false)
-        #expect(!p.canRetryTransportError(method: "PATCH"))
-    }
-
-    @Test("POST transport error IS retried when idempotent=true")
-    func postRetriedWhenIdempotent() {
-        let p = HTTPRetryPolicy(idempotent: true)
-        #expect(p.canRetryTransportError(method: "POST"))
-    }
-}
-
 // MARK: - ParseRetryAfterTests
 
 @Suite("parseRetryAfter")
@@ -154,36 +77,6 @@ struct ParseRetryAfterTests {
     @Test("garbage value returns nil")
     func garbageValue() {
         #expect(parseRetryAfter("not-a-date-or-number", now: Self.now) == nil)
-    }
-}
-
-// MARK: - BackoffTests
-
-@Suite("backoff helpers")
-struct BackoffTests {
-    @Test("nextBackoff doubles the window")
-    func doublesWindow() {
-        #expect(nextBackoff(.milliseconds(250), max: .seconds(30)) == .milliseconds(500))
-    }
-
-    @Test("nextBackoff clamps to maxBackoff")
-    func clampedToMax() {
-        #expect(nextBackoff(.seconds(20), max: .seconds(30)) == .seconds(30))
-    }
-
-    @Test("jitter returns value within [0, window)")
-    func jitterInRange() {
-        let window = Duration.seconds(10)
-        for _ in 0..<50 {
-            let j = jitter(window)
-            #expect(j >= .zero)
-            #expect(j < window)
-        }
-    }
-
-    @Test("jitter on zero window returns zero")
-    func jitterZeroWindow() {
-        #expect(jitter(.zero) == .zero)
     }
 }
 

@@ -2,14 +2,11 @@ import Foundation
 
 // MARK: - HTTPClientError
 
-/// Typed errors produced by ``HTTPClient`` and its components.
+/// Typed errors produced by the HTTP transport layer.
 public indirect enum HTTPClientError: Error, Sendable {
     // MARK: HTTP-status sentinels
 
     /// HTTP 401 — token is missing, expired or invalid.
-    ///
-    /// The retry layer does NOT retry 401; callers must refresh the token and
-    /// re-issue the request themselves.
     case unauthorized
 
     /// HTTP 403 — the authenticated identity lacks permission.
@@ -40,8 +37,6 @@ public indirect enum HTTPClientError: Error, Sendable {
     case unprocessableEntity
 
     /// HTTP 429 — the server is throttling this client.
-    ///
-    /// The retry layer honours the `Retry-After` header when present.
     case throttled
 
     /// Any 5xx response not specifically named above.
@@ -50,18 +45,14 @@ public indirect enum HTTPClientError: Error, Sendable {
     // MARK: API-level errors
 
     /// An HTTP response outside the 2xx range, carrying the raw details.
-    ///
-    /// Wraps one of the sentinel cases above so callers can pattern-match
-    /// on `underlying`.
     case apiError(APIError)
 
     // MARK: Transport / infrastructure errors
 
-    /// The request was cancelled by the caller's `Task` or the `URLSession`.
+    /// The request was cancelled by the caller's `Task` or the session.
     case cancelled
 
-    /// A transport-level error that is not retryable (e.g. permanent DNS
-    /// failure, `ECONNREFUSED`).
+    /// A transport-level error (e.g. DNS failure, connection refused).
     case transport(any Error)
 
     /// Retries were exhausted without a successful response.
@@ -78,10 +69,6 @@ public indirect enum HTTPClientError: Error, Sendable {
     // MARK: Response errors
 
     /// The response body exceeded the configured size limit.
-    ///
-    /// `bytesReceived` is the actual body size; `limit` is the configured
-    /// ceiling. Callers that need to transfer large payloads must use a
-    /// dedicated streaming path rather than `execute(_:)` (net-19).
     case responseTooLarge(bytesReceived: Int, limit: Int)
 }
 
@@ -98,15 +85,11 @@ public struct APIError: Sendable, CustomStringConvertible {
     /// Raw response body (stored in full; truncated to 256 bytes only in `description`).
     public let body: Data
 
-    /// Parsed `Retry-After` delay; zero if the header was absent or
-    /// unparseable.
+    /// Parsed `Retry-After` delay; zero if the header was absent or unparseable.
     public let retryAfter: Duration
 
     /// Number of attempts made before this error was surfaced.
-    /// `1` for immediate (non-retried) failures.
     public let attempts: Int
-
-    // MARK: Initialisers
 
     public init(
         statusCode: Int,
@@ -122,16 +105,10 @@ public struct APIError: Sendable, CustomStringConvertible {
         self.attempts = attempts
     }
 
-    // MARK: Sentinel (computed — avoids a recursive value-type cycle)
-
     /// The typed sentinel that `statusCode` maps to.
-    ///
-    /// `nil` for status codes without a specific sentinel (e.g. 400, 501).
     public var sentinel: HTTPClientError? {
         HTTPClientError.sentinel(for: statusCode)
     }
-
-    // MARK: CustomStringConvertible
 
     public var description: String {
         let bodyStr = String(data: body.prefix(256), encoding: .utf8)?
@@ -165,13 +142,5 @@ extension HTTPClientError {
         case 500...: return .serverError(status)
         default: return nil
         }
-    }
-
-    /// Returns `true` when the status warrants a retry attempt.
-    ///
-    /// Delegates to ``HTTPRetryStatusPolicy/isRetriable(_:)`` — the single
-    /// source of truth for the retriable-status set (net-13).
-    static func isRetriableStatus(_ status: Int) -> Bool {
-        HTTPRetryStatusPolicy.isRetriable(status)
     }
 }

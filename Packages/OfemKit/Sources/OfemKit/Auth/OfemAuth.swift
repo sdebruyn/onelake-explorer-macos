@@ -33,7 +33,7 @@ private let msalErrorInternalCode: Int = -50000
 /// The genuinely UI-bound part of authentication — interactive sign-in via
 /// `ASWebAuthenticationSession` — lives in the host app's `SharedOfemAuth`
 /// and remains `@MainActor` isolated as a leaf, separate from this actor.
-public actor OfemAuth {
+public actor OfemAuth: TokenProvider {
     // MARK: - Properties
 
     private let configStore: OfemConfigStore
@@ -58,7 +58,7 @@ public actor OfemAuth {
     /// callers `await` the same `Task` and share its result (or error). The task
     /// is evicted from the map when it completes. This prevents a "refresh
     /// stampede" under Finder's bursty concurrent enumeration.
-    private var inFlightTokenTasks: [String: Task<String, Error>] = [:]
+    private var inFlightTokenTasks: [String: Task<AccessToken, Error>] = [:]
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "OfemAuth")
 
@@ -231,6 +231,14 @@ public actor OfemAuth {
     /// subsequent callers `await` the same task and receive its result or error.
     /// This prevents a "refresh stampede" under Finder's bursty I/O pattern.
     public func tokenForScope(alias: String, scope: TokenScope) async throws -> String {
+        try await accessTokenForScope(alias: alias, scope: scope).value
+    }
+
+    /// Acquires an `AccessToken` (bearer string + MSAL expiry) for the given scope.
+    ///
+    /// Used by `OfemAuthenticator` via `TokenProvider.tokenWithExpiry` to supply
+    /// accurate expiry dates to the Alamofire credential without JWT parsing.
+    private func accessTokenForScope(alias: String, scope: TokenScope) async throws -> AccessToken {
         let snap = configStore.snapshot()
         guard let cfg = snap.accounts[alias] else {
             throw OfemAuthError.unknownAlias(alias)
@@ -257,7 +265,7 @@ public actor OfemAuth {
             return try await existing.value
         }
 
-        let task = Task<String, Error> {
+        let task = Task<AccessToken, Error> {
             try await silentToken(
                 client: client,
                 homeAccountID: cfg.homeAccountID,
@@ -274,6 +282,26 @@ public actor OfemAuth {
         }
 
         return try await task.value
+    }
+
+    // MARK: - TokenProvider
+
+    /// Returns the bearer token string for the given alias and scope.
+    ///
+    /// Satisfies the `TokenProvider` protocol so `OfemAuth` can be passed
+    /// directly to `SessionPool` without an intermediate adapter.
+    public func token(alias: String, scope: TokenScope) async throws -> String {
+        try await tokenForScope(alias: alias, scope: scope)
+    }
+
+    /// Returns the bearer token and its MSAL-provided expiry for the given scope.
+    ///
+    /// Used by `OfemAuthenticator` to populate `OfemCredential.expiresAt`
+    /// with the real `MSALResult.expiresOn` date, enabling the 5-minute
+    /// early-refresh window without JWT parsing.
+    public func tokenWithExpiry(alias: String, scope: TokenScope) async throws -> (String, Date) {
+        let t = try await accessTokenForScope(alias: alias, scope: scope)
+        return (t.value, t.expiresOn)
     }
 
     // MARK: - Private helpers
@@ -334,7 +362,7 @@ public actor OfemAuth {
         homeAccountID: String,
         scopes: [String],
         alias: String
-    ) async throws -> String {
+    ) async throws -> AccessToken {
         do {
             return try await client.acquireTokenSilent(scopes: scopes, homeAccountID: homeAccountID)
         } catch {

@@ -1,3 +1,4 @@
+import Alamofire
 import Foundation
 import os.log
 
@@ -5,17 +6,17 @@ import os.log
 
 /// HTTP client for the OneLake ADLS Gen2 DFS endpoint.
 ///
-/// Wraps ``HTTPClient`` with OneLake-specific URL construction, header
-/// injection, auth-token acquisition, response decoding, and pagination.
+/// Wraps a ``SessionPool`` with OneLake-specific URL construction, header
+/// injection, response decoding, and pagination.  Authentication and retry
+/// are handled transparently by the Alamofire session returned from the pool.
 ///
 /// All public methods are `async throws` and safe for concurrent use.
-/// The underlying ``HTTPClient`` and ``HTTPGateRegistry`` handle per-host
-/// throttling and retry; the client itself holds no mutable state.
+/// The client itself holds no mutable state.
 ///
 /// ## Usage
 ///
 /// ```swift
-/// let client = OneLakeClient(http: myHTTPClient, tokenProvider: myOfemAuth)
+/// let client = OneLakeClient(sessionPool: myPool)
 /// let listing = try await client.listPath(
 ///     alias: "work",
 ///     workspaceGUID: "...",
@@ -47,8 +48,7 @@ public final class OneLakeClient: Sendable {
 
     // MARK: - Properties
 
-    private let http: HTTPClient
-    private let tokenProvider: any TokenProvider
+    private let sessionPool: SessionPool
     private let baseURL: URL
     private let logger: OfemLogger
     /// Effective chunk size for append operations. Overridable in tests.
@@ -61,23 +61,21 @@ public final class OneLakeClient: Sendable {
     /// Creates an `OneLakeClient`.
     ///
     /// - Parameters:
-    /// - http: Shared ``HTTPClient`` (carries gate registry + retry policy).
-    /// - tokenProvider: Supplies bearer tokens for account aliases.
-    /// - baseURL: DFS endpoint. Default: ``defaultBaseURL``.
-    /// - chunkSize: Maximum bytes per append PATCH. Defaults to 4 MiB.
-    ///   Override in tests to exercise multi-chunk paths with small payloads.
-    /// - logger: Structured logger for debug request/pagination traces.
-    ///   Defaults to an ``OfemLogger`` with default ``LogConfiguration`` so
-    ///   existing call sites compile unchanged.
+    ///   - sessionPool: Process-wide pool of Alamofire sessions. One session per
+    ///     `(alias, .oneLake)` key is created lazily on first use.
+    ///   - baseURL: DFS endpoint. Default: ``defaultBaseURL``.
+    ///   - chunkSize: Maximum bytes per append PATCH. Defaults to 4 MiB.
+    ///     Override in tests to exercise multi-chunk paths with small payloads.
+    ///   - logger: Structured logger for debug request/pagination traces.
+    ///     Defaults to an ``OfemLogger`` with default ``LogConfiguration`` so
+    ///     existing call sites compile unchanged.
     public init(
-        http: HTTPClient,
-        tokenProvider: any TokenProvider,
+        sessionPool: SessionPool,
         baseURL: URL = OneLakeClient.defaultBaseURL,
         chunkSize: Int = 4 * 1024 * 1024,
         logger: OfemLogger = OfemLogger()
     ) {
-        self.http = http
-        self.tokenProvider = tokenProvider
+        self.sessionPool = sessionPool
         self.baseURL = baseURL
         self.chunkSize = chunkSize
         self.logger = logger
@@ -623,11 +621,11 @@ public final class OneLakeClient: Sendable {
         _ = try await doRequest(alias: alias, method: "PATCH", url: flushURL, body: nil, extraHeaders: nil, idempotent: true)
     }
 
-    /// Builds and executes a DFS request via ``HTTPClient``.
+    /// Executes a DFS request via the Alamofire session for `(alias, .oneLake)`.
     ///
     /// Injects the `x-ms-version` header and `Content-Length: 0` on bodyless
-    /// mutating requests (onelake-07), acquires a bearer token for `alias`,
-    /// and maps ``HTTPClientError`` to ``OneLakeError``.
+    /// mutating requests (onelake-07). Authentication, retry, and back-off are
+    /// handled transparently by the session's interceptor stack.
     @discardableResult
     private func doRequest(
         alias: String,
@@ -635,58 +633,108 @@ public final class OneLakeClient: Sendable {
         url: URL,
         body: Data?,
         extraHeaders: [String: String]?,
-        idempotent: Bool
+        idempotent: Bool  // retained for call-site documentation; session handles retry
     ) async throws -> (Data, HTTPURLResponse) {
-        var req = URLRequest(url: url)
-        req.httpMethod = method
-        req.setValue(oneLakeDFSAPIVersion, forHTTPHeaderField: "x-ms-version")
+        var headers = HTTPHeaders()
+        headers.add(name: "x-ms-version", value: oneLakeDFSAPIVersion)
         if let b = body {
-            req.httpBody = b
-            req.setValue("\(b.count)", forHTTPHeaderField: "Content-Length")
+            headers.add(name: "Content-Length", value: "\(b.count)")
         } else if method == "PUT" || method == "PATCH" {
             // onelake-07: ADLS Gen2 expects an explicit Content-Length: 0 on
             // bodyless PUT/PATCH (create, flush, createDirectory).
-            req.setValue("0", forHTTPHeaderField: "Content-Length")
+            headers.add(name: "Content-Length", value: "0")
         }
-        extraHeaders?.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        extraHeaders?.forEach { headers.add(name: $0, value: $1) }
 
+        let session = await sessionPool.session(alias: alias, scope: .oneLake)
+        let httpMethod = HTTPMethod(rawValue: method)
         do {
-            return try await http.execute(
-                req,
-                tokenProvider: tokenProvider,
-                alias: alias,
-                scope: .oneLake,
-                idempotent: idempotent
-            )
+            let req = session.request(url, method: httpMethod, headers: headers) { urlRequest in
+                urlRequest.httpBody = body
+            }
+            .validate()
+            let dataResponse = await req.serializingData().response
+            switch dataResponse.result {
+            case .success(let data):
+                guard let httpResponse = dataResponse.response else {
+                    throw HTTPClientError.transport(URLError(.badServerResponse))
+                }
+                return (data, httpResponse)
+            case .failure(let afError):
+                let mapped = HTTPClientError(
+                    afError: afError,
+                    response: dataResponse.response,
+                    retryCount: 0
+                )
+                throw OneLakeError.from(mapped)
+            }
+        } catch let oneLakeError as OneLakeError {
+            throw oneLakeError
+        } catch let afError as AFError {
+            let mapped = HTTPClientError(afError: afError, response: nil, retryCount: 0)
+            throw OneLakeError.from(mapped)
         } catch {
             throw OneLakeError.from(error)
         }
     }
 
-    /// Executes a streaming DFS GET request via ``HTTPClient/download(_:to:...)``.
+    /// Downloads a DFS resource to a `FileHandle` without buffering all bytes
+    /// in memory at once.
     ///
+    /// Uses Alamofire `DownloadRequest` with a temporary-file destination.  Once
+    /// the download completes the temporary file is memory-mapped and its bytes
+    /// are written into `fileHandle`, then the temporary file is removed.
     /// Injects the `x-ms-version` header and maps errors to ``OneLakeError``.
     private func doStreamRequest(
         alias: String,
         method: String,
         url: URL,
         extraHeaders: [String: String]?,
-        destination: FileHandle
+        destination fileHandle: FileHandle
     ) async throws -> HTTPURLResponse {
-        var req = URLRequest(url: url)
-        req.httpMethod = method
-        req.setValue(oneLakeDFSAPIVersion, forHTTPHeaderField: "x-ms-version")
-        extraHeaders?.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        var headers = HTTPHeaders()
+        headers.add(name: "x-ms-version", value: oneLakeDFSAPIVersion)
+        extraHeaders?.forEach { headers.add(name: $0, value: $1) }
+
+        let session = await sessionPool.session(alias: alias, scope: .oneLake)
+        let httpMethod = HTTPMethod(rawValue: method)
+
+        // Alamofire DownloadRequest streams to a temporary file URL.
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: false)
+        let afDestination: DownloadRequest.Destination = { _, _ in
+            (tmpURL, [.removePreviousFile, .createIntermediateDirectories])
+        }
 
         do {
-            return try await http.download(
-                req,
-                to: destination,
-                tokenProvider: tokenProvider,
-                alias: alias,
-                scope: .oneLake,
-                idempotent: true
-            )
+            let dl = session
+                .download(url, method: httpMethod, headers: headers, to: afDestination)
+                .validate()
+            let result = await dl.serializingDownloadedFileURL().result
+            guard let httpResponse = dl.response else {
+                throw HTTPClientError.transport(URLError(.badServerResponse))
+            }
+            switch result {
+            case .success(let fileURL):
+                // Memory-map and copy into the caller's FileHandle, then clean up.
+                let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
+                try fileHandle.write(contentsOf: data)
+                try? FileManager.default.removeItem(at: fileURL)
+                return httpResponse
+            case .failure(let afError):
+                try? FileManager.default.removeItem(at: tmpURL)
+                let mapped = HTTPClientError(
+                    afError: afError,
+                    response: httpResponse,
+                    retryCount: 0
+                )
+                throw OneLakeError.from(mapped)
+            }
+        } catch let oneLakeError as OneLakeError {
+            throw oneLakeError
+        } catch let afError as AFError {
+            let mapped = HTTPClientError(afError: afError, response: nil, retryCount: 0)
+            throw OneLakeError.from(mapped)
         } catch {
             throw OneLakeError.from(error)
         }

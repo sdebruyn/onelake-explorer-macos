@@ -585,13 +585,13 @@ final class MockMsalAuthClient: MsalAuthClientProtocol, @unchecked Sendable {
     func acquireTokenSilent(
         scopes: [String],
         homeAccountID: String
-    ) async throws -> String {
+    ) async throws -> AccessToken {
         _lock.withLock { capturedHomeAccountIDs.append(homeAccountID) }
         if acquireDelay > 0 {
             try await Task.sleep(nanoseconds: UInt64(acquireDelay * 1_000_000_000))
         }
         if let error = stubbedError { throw error }
-        return stubbedAccessToken
+        return AccessToken(value: stubbedAccessToken, expiresOn: Date(timeIntervalSinceNow: 3600))
     }
 
     func removeAccount(homeAccountID: String) throws {

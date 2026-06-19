@@ -1,3 +1,4 @@
+import Alamofire
 import Foundation
 import os.log
 
@@ -10,18 +11,18 @@ import os.log
 /// and workspace-folders, plus fetching a single item's metadata. File I/O
 /// happens through ``OneLakeClient`` against the DFS endpoint.
 ///
-/// `FabricClient` wraps ``HTTPClient`` with Fabric-specific URL construction,
+/// `FabricClient` wraps a ``SessionPool`` with Fabric-specific URL construction,
 /// bearer-token injection for the Fabric audience, response decoding, and
 /// two-branch pagination (``continuationToken`` or ``continuationUri``).
+/// Authentication and retry are handled transparently by the Alamofire session.
 ///
 /// All public methods are `async throws` and safe for concurrent use.
-/// The underlying ``HTTPClient`` and ``HTTPGateRegistry`` handle per-host
-/// throttling and retry; the client itself holds no mutable state.
+/// The client itself holds no mutable state.
 ///
 /// ## Usage
 ///
 /// ```swift
-/// let client = FabricClient(http: myHTTPClient, tokenProvider: myOfemAuth)
+/// let client = FabricClient(sessionPool: myPool)
 /// let workspaces = try await client.listAllWorkspaces(alias: "work")
 /// ```
 public final class FabricClient: Sendable {
@@ -42,8 +43,7 @@ public final class FabricClient: Sendable {
 
     // MARK: - Properties
 
-    private let http: HTTPClient
-    private let tokenProvider: any TokenProvider
+    private let sessionPool: SessionPool
     private let baseURL: URL
     private let logger: OfemLogger
 
@@ -54,20 +54,18 @@ public final class FabricClient: Sendable {
     /// Creates a `FabricClient`.
     ///
     /// - Parameters:
-    /// - http: Shared ``HTTPClient`` (carries gate registry + retry policy).
-    /// - tokenProvider: Supplies bearer tokens for account aliases.
-    /// - baseURL: Fabric REST endpoint. Default: `https://api.fabric.microsoft.com`.
-    /// - logger: Structured logger for debug request/pagination traces.
-    ///   Defaults to an ``OfemLogger`` with default ``LogConfiguration`` so
-    ///   existing call sites compile unchanged.
+    ///   - sessionPool: Process-wide pool of Alamofire sessions. One session per
+    ///     `(alias, .fabric)` key is created lazily on first use.
+    ///   - baseURL: Fabric REST endpoint. Default: `https://api.fabric.microsoft.com`.
+    ///   - logger: Structured logger for debug request/pagination traces.
+    ///     Defaults to an ``OfemLogger`` with default ``LogConfiguration`` so
+    ///     existing call sites compile unchanged.
     public init(
-        http: HTTPClient,
-        tokenProvider: any TokenProvider,
+        sessionPool: SessionPool,
         baseURL: URL = fabricDefaultBaseURL,
         logger: OfemLogger = OfemLogger()
     ) {
-        self.http = http
-        self.tokenProvider = tokenProvider
+        self.sessionPool = sessionPool
         self.baseURL = baseURL
         self.logger = logger
     }
@@ -277,10 +275,12 @@ public final class FabricClient: Sendable {
 
     // MARK: - Private helpers
 
-    /// Executes a Fabric REST request via ``HTTPClient``.
+    /// Executes a Fabric REST request via the Alamofire session for
+    /// `(alias, .fabric)`.
     ///
-    /// Acquires a bearer token for the Fabric audience (``TokenScope/fabric``)
-    /// and maps ``HTTPClientError`` to ``FabricError``.
+    /// Authentication and retry are handled transparently by the session's
+    /// interceptor stack. Maps ``AFError`` → ``HTTPClientError`` →
+    /// ``FabricError`` on failure.
     @discardableResult
     private func doRequest(
         alias: String,
@@ -288,32 +288,45 @@ public final class FabricClient: Sendable {
         url: URL,
         endpoint: String
     ) async throws -> (Data, HTTPURLResponse) {
-        let req = fabricRequest(method: method, url: url)
+        let urlRequest = fabricRequest(method: method, url: url)
         Self.log.debug("FabricClient: \(method, privacy: .public) \(url.path, privacy: .public)")
         logger.debug("fabric request", metadata: ["method": method, "endpoint": endpoint])
-        do {
-            let (data, response) = try await http.execute(
-                req,
-                tokenProvider: tokenProvider,
-                alias: alias,
-                scope: .fabric,
-                idempotent: true // All Fabric reads are idempotent.
-            )
-            logger.debug("fabric response", metadata: ["method": method, "endpoint": endpoint, "status": "\(response.statusCode)"])
-            return (data, response)
-        } catch {
-            // fabric-05: log the raw HTTPClientError (or transport error) before
-            // classification so a fast failure — e.g. a cached 404 served by
-            // URLSession without a real network round-trip — is observable in
-            // unredacted DEBUG streams.  The message is compile-time eliminated
-            // in Release builds; alias is .public (not PII), error is .public in
-            // DEBUG only.
+
+        let session = await sessionPool.session(alias: alias, scope: .fabric)
+        let httpMethod = HTTPMethod(rawValue: method)
+        let headers = urlRequest.headers
+
+        let req = session
+            .request(url, method: httpMethod, headers: headers)
+            .validate()
+        let dataResponse = await req.serializingData().response
+
+        switch dataResponse.result {
+        case .success(let data):
+            guard let httpResponse = dataResponse.response else {
+                throw FabricError.from(HTTPClientError.transport(URLError(.badServerResponse)))
+            }
+            logger.debug("fabric response", metadata: [
+                "method": method,
+                "endpoint": endpoint,
+                "status": "\(httpResponse.statusCode)",
+            ])
+            return (data, httpResponse)
+        case .failure(let afError):
+            // fabric-05: log the raw error before classification so a fast failure
+            // (e.g. a 404 without a network round-trip) is observable in unredacted
+            // DEBUG streams.
             #if DEBUG
             Self.log.debug(
-                "FabricClient[D]: raw error before FabricError.from alias=\(alias, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                "FabricClient[D]: raw error before FabricError.from alias=\(alias, privacy: .public) error=\(String(describing: afError), privacy: .public)"
             )
             #endif
-            throw FabricError.from(error)
+            let mapped = HTTPClientError(
+                afError: afError,
+                response: dataResponse.response,
+                retryCount: 0
+            )
+            throw FabricError.from(mapped)
         }
     }
 
