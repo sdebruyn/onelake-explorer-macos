@@ -17,11 +17,32 @@ We register a **multi-tenant public client application** in our own tenant:
 |---|---|
 | Display name | `OneLake Explorer for macOS` |
 | Supported account types | Accounts in any organizational directory (multi-tenant) |
-| Redirect URI | `msauth.dev.debruyn.ofem://auth` (Mobile and desktop applications) |
+| Redirect URIs | See below — **both** URIs must be registered |
 | Allow public client flows | **Yes** |
 | API permissions | `https://storage.azure.com/user_impersonation` (Azure Storage, delegated) **and** Power BI Service `Workspace.Read.All` + `Item.Read.All` (delegated, user-consented) for Fabric REST discovery. |
 
 The client ID lives in `Packages/OfemKit/Sources/OfemKit/Auth/` as a constant — it is a public identifier, not a secret.
+
+### Required redirect URIs
+
+The app registration **must** include both of the following public-client redirect URIs under **Mobile and desktop applications**:
+
+| URI | Used by |
+|---|---|
+| `msauth.dev.debruyn.ofem://auth` | Host app (`dev.debruyn.ofem`) |
+| `msauth.dev.debruyn.ofem.fileprovider://auth` | File Provider Extension (`dev.debruyn.ofem.fileprovider`) |
+
+**Why two URIs?** MSAL for Apple Platforms constructs the redirect URI from the calling process's bundle ID (`msauth.<bundleID>://auth`) and validates it locally before sending any request. The host app and the File Provider Extension run as separate processes with different bundle IDs, so each process produces a different redirect URI. Both URIs must also be registered server-side in the Entra app registration — if one is missing, Entra rejects every token refresh from that process with `invalid_client` (`MSALInternalErrorInvalidClient`, internal error code -42003), which surfaces as ``OfemAuthError/configRejection(_:)`` in the logs. The FPE's redirect URI (`msauth.dev.debruyn.ofem.fileprovider://auth`) was introduced in commit `4c6de3f` alongside the per-process redirect URI strategy; omitting it from the registration causes the FPE's silent MSAL refresh to fail on every mount until the registration is corrected.
+
+**Registration command** (Azure CLI, run once):
+
+```bash
+az ad app update \
+  --id <appId> \
+  --public-client-redirect-uris \
+    "msauth.dev.debruyn.ofem://auth" \
+    "msauth.dev.debruyn.ofem.fileprovider://auth"
+```
 
 ## Token acquisition flow
 
@@ -73,6 +94,22 @@ On every OneLake request:
 3. Otherwise call MSAL `acquireTokenSilent` to refresh.
 4. If silent refresh fails with `interaction_required` (e.g. Conditional Access challenge, MFA expired) → mark account as `needsReauth`, queue a menu-bar error indicator. No system notification.
 5. The next time the user opens the menu bar app, the indicator shows them which account needs re-auth. They sign that account out and add it again from the menu bar to interactively unblock.
+
+### Silent-failure error classification
+
+`OfemAuth.silentToken` maps MSAL silent-acquisition failures into three distinct ``OfemAuthError`` cases:
+
+| Condition | MSAL signal | Thrown error |
+|---|---|---|
+| User must interact (CA, MFA, expired RT, revoked refresh token) | `MSALError.interactionRequired` (-50002), AADSTS STS codes 50076/50079/50078/50158, or `MSALErrorInternal` (-50000) with `MSALInternalErrorCodeKey` = -42004 (`invalid_grant`) | ``OfemAuthError/interactionRequired`` |
+| Permanent config rejection | `MSALErrorInternal` (-50000) with `MSALInternalErrorCodeKey` = -42003 (`invalid_client`) | ``OfemAuthError/configRejection(_:)`` |
+| Other transient failure (network, server 5xx) | Any other error | ``OfemAuthError/silentTokenFailed(_:)`` |
+
+`configRejection` applies only to `invalid_client` (-42003): a misconfigured Entra app registration (e.g. missing FPE redirect URI) that cannot be fixed by re-authenticating — the same broken client configuration will be used again. When `configRejection` is thrown, `OfemAuth` logs at `.critical` level so misconfigurations are diagnosable from Console.app without a debugger.
+
+`invalid_grant` (-42004) is routed to `interactionRequired` because a revoked or expired refresh token is recoverable: the user signs in again to obtain a new grant (triggered by admin password reset, MFA re-enrollment, or Conditional Access policy change).
+
+All three cases propagate through `HTTPClientError.tokenAcquisitionFailed` → `FabricError.unauthorized` → `FPError.notAuthenticated`, so Finder shows an auth-required indicator in all cases. The distinction is in the log output and the error type available to the host app's error-handling layer.
 
 ## Conditional Access / MFA challenges
 
