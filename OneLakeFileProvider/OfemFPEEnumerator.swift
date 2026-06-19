@@ -507,7 +507,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
     /// Clears the refresh timestamp for `alias` (used on auth failure so the
     /// next signal retries immediately without waiting for the full window).
     static func clearRefresh(for alias: String) {
-        staticThrottleLock.withLock { aliasRefreshTimestamps.removeValue(forKey: alias) }
+        _ = staticThrottleLock.withLock { aliasRefreshTimestamps.removeValue(forKey: alias) }
     }
 
     func invalidate() {
