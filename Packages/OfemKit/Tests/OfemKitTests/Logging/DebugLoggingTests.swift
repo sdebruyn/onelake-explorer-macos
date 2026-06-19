@@ -95,8 +95,18 @@ private let oneLakeBase = URL(string: "https://onelake.dfs.fabric.microsoft.com"
 /// Using `_setSessionForTesting` to inject the session avoids relying on
 /// global `URLProtocol.registerClass`, which Alamofire sessions with an
 /// explicit `URLSessionConfiguration` do not inherit.
+///
+/// Every stub that lacks a `Content-Type` header is patched with
+/// `application/json` so Alamofire's `.validate()` content-type check does
+/// not reject valid JSON responses.
 private func makeMockPool(alias: String, stubs: [MockURLProtocol.StubResponse]) async -> SessionPool {
-    MockURLProtocol.stubs = stubs
+    let patched = stubs.map { stub -> MockURLProtocol.StubResponse in
+        guard stub.headers["Content-Type"] == nil else { return stub }
+        var h = stub.headers
+        h["Content-Type"] = "application/json"
+        return MockURLProtocol.StubResponse(status: stub.status, body: stub.body, headers: h)
+    }
+    MockURLProtocol.stubs = patched
     let pool = SessionPool(tokenProvider: NoopTokenProvider())
     let session = makeMockSession()
     await pool._setSessionForTesting(session, alias: alias, scope: .fabric)
