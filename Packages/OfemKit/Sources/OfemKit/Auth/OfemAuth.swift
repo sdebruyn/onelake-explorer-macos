@@ -2,6 +2,13 @@ import Foundation
 @preconcurrency import MSAL
 import os.log
 
+// `MSALErrorInternal` (-50000) is the ObjC enum case for the top-level
+// "internal error" code that MSAL uses when the specific failure is stored
+// in MSALInternalErrorCodeKey. In Swift the bridged name would be
+// `MSALError.internal`, but `internal` is a reserved keyword so the case
+// is not directly accessible as a typed value. Use this constant instead.
+private let msalErrorInternalCode: Int = -50000
+
 // MARK: - OfemAuth
 
 /// Top-level authentication façade for OFEM.
@@ -440,7 +447,7 @@ public actor OfemAuth {
     func isInvalidGrant(_ error: Error) -> Bool {
         let nsError = error as NSError
         guard nsError.domain == MSALErrorDomain,
-              nsError.code == MSALError.errorInternal.rawValue else {
+              nsError.code == msalErrorInternalCode else {
             return false
         }
         guard let internalCode = nsError.userInfo[MSALInternalErrorCodeKey] as? NSNumber else {
@@ -470,7 +477,7 @@ public actor OfemAuth {
     func isConfigRejection(_ error: Error) -> Bool {
         let nsError = error as NSError
         guard nsError.domain == MSALErrorDomain,
-              nsError.code == MSALError.errorInternal.rawValue else {
+              nsError.code == msalErrorInternalCode else {
             return false
         }
         guard let internalCode = nsError.userInfo[MSALInternalErrorCodeKey] as? NSNumber else {

@@ -651,7 +651,7 @@ struct OfemAuthIsConfigRejectionTests {
         let auth = OfemAuth(configStore: store)
         let err = NSError(
             domain: MSALErrorDomain,
-            code: MSALError.errorInternal.rawValue,
+            code: -50000,
             userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42003)]
         )
         #expect(await auth.isConfigRejection(err))
@@ -665,7 +665,7 @@ struct OfemAuthIsConfigRejectionTests {
         let auth = OfemAuth(configStore: store)
         let err = NSError(
             domain: MSALErrorDomain,
-            code: MSALError.errorInternal.rawValue,
+            code: -50000,
             userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42004)]
         )
         #expect(await auth.isConfigRejection(err) == false)
@@ -688,7 +688,7 @@ struct OfemAuthIsConfigRejectionTests {
         // -42000 = MSALInternalErrorInvalidParameter — a different internal error
         let err = NSError(
             domain: MSALErrorDomain,
-            code: MSALError.errorInternal.rawValue,
+            code: -50000,
             userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42000)]
         )
         #expect(await auth.isConfigRejection(err) == false)
@@ -699,7 +699,7 @@ struct OfemAuthIsConfigRejectionTests {
         let (store, _t) = try makeStore(label: "IsCRTests")
         defer { try? FileManager.default.removeItem(at: _t) }
         let auth = OfemAuth(configStore: store)
-        let err = NSError(domain: MSALErrorDomain, code: MSALError.errorInternal.rawValue)
+        let err = NSError(domain: MSALErrorDomain, code: -50000)
         #expect(await auth.isConfigRejection(err) == false)
     }
 
@@ -721,7 +721,7 @@ struct OfemAuthIsConfigRejectionTests {
         let auth = OfemAuth(configStore: store)
         let err = NSError(
             domain: MSALErrorDomain,
-            code: MSALError.errorInternal.rawValue,
+            code: -50000,
             userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42003)]
         )
         #expect(await auth.isInteractionRequired(err) == false)
@@ -745,7 +745,7 @@ struct OfemAuthIsInvalidGrantTests {
         let auth = OfemAuth(configStore: store)
         let err = NSError(
             domain: MSALErrorDomain,
-            code: MSALError.errorInternal.rawValue,
+            code: -50000,
             userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42004)]
         )
         #expect(await auth.isInvalidGrant(err))
@@ -758,7 +758,7 @@ struct OfemAuthIsInvalidGrantTests {
         let auth = OfemAuth(configStore: store)
         let err = NSError(
             domain: MSALErrorDomain,
-            code: MSALError.errorInternal.rawValue,
+            code: -50000,
             userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42003)]
         )
         #expect(await auth.isInvalidGrant(err) == false)
