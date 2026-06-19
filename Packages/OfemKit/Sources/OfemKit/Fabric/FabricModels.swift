@@ -71,72 +71,30 @@ public struct Item: Sendable, Equatable {
     /// (`/{workspaceGUID}/{itemGUID}/…`) and should appear as a browsable
     /// folder in Finder.
     ///
-    /// Uses a **denylist**: unknown or future item types default to `true`
-    /// (show by default — they may have storage). Only types confirmed to have
-    /// **no** DFS path are listed here. Storage-backed types that MUST remain
-    /// visible: `Lakehouse`, `Warehouse`, `KQLDatabase`, `MirroredDatabase`,
-    /// `SQLDatabase`, `Eventhouse`, `MirroredWarehouse`,
-    /// `MirroredAzureDatabricksCatalog`, `AzureDatabricksStorage`,
-    /// `SnowflakeDatabase`, `CosmosDBDatabase`.
+    /// Uses a strict **allowlist**: only `Lakehouse`, `Warehouse`,
+    /// `MirroredDatabase`, and `SQLDatabase` are shown. All other item types —
+    /// including types that have OneLake storage but are not yet supported
+    /// (e.g. `KQLDatabase`, `Eventhouse`, `MirroredWarehouse`) — are hidden
+    /// until explicitly added here.
+    ///
+    /// `SQLDatabase` auto-replicates all its tables to OneLake as read-only
+    /// Delta tables, making it a fully OneLake-backed item type.
+    ///
+    /// Comparison is **case-insensitive**: a casing drift in the Fabric REST API
+    /// response can never hide a user's storage item.
     ///
     /// Source: Fabric REST API `ItemType` enumeration
     /// (https://learn.microsoft.com/en-us/rest/api/fabric/core/items/list-items#itemtype)
-    /// as of June 2026.
     public var hasOneLakeStorage: Bool {
-        !Self.nonStorageTypes.contains(type)
+        Self.allowedStorageTypes.contains(type.lowercased(with: Locale(identifier: "en_US_POSIX")))
     }
 
-    static let nonStorageTypes: Set<String> = [
-        // Power BI artifacts — no OneLake storage path.
-        "Dashboard",
-        "Report",
-        "SemanticModel",
-        "PaginatedReport",
-        "Datamart",
-        // Auto-created SQL analytics endpoint for each Lakehouse — same display
-        // name as the lakehouse, causing the " 2" duplicate folders (issue #296).
-        "SQLEndpoint",
-        // Compute / orchestration items — no own OneLake folder.
-        "Notebook",
-        "SparkJobDefinition",
-        "DataPipeline",
-        "Dataflow",
-        "ApacheAirflowJob",
-        "CopyJob",
-        // Real-time / streaming items — no own OneLake folder.
-        "Eventstream",
-        // KQL query / dashboard items — no own OneLake folder (KQLDatabase has one,
-        // but KQLQueryset and KQLDashboard do not).
-        "KQLQueryset",
-        "KQLDashboard",
-        // ML items — no own OneLake folder.
-        "MLExperiment",
-        "MLModel",
-        // Environment / configuration items.
-        "Environment",
-        "VariableLibrary",
-        // API / agent items.
-        "GraphQLApi",
-        "MountedDataFactory",
-        "Reflex",
-        "DigitalTwinBuilder",
-        "DigitalTwinBuilderFlow",
-        "Map",
-        "AnomalyDetector",
-        "UserDataFunction",
-        "GraphModel",
-        "GraphQuerySet",
-        "OperationsAgent",
-        "Ontology",
-        "EventSchemaSet",
-        "DataAgent",
-        "MirroredCatalog",
-        "AppBackend",
-        "OrgApp",
-        "OrgAppAudience",
-        "DataBuildToolJob",
-        // Warehouse snapshots — derived read-only view, no own storage path.
-        "WarehouseSnapshot",
+    /// Lowercased canonical forms of the four item types surfaced in Finder.
+    private static let allowedStorageTypes: Set<String> = [
+        "lakehouse",
+        "warehouse",
+        "mirroreddatabase",
+        "sqldatabase",
     ]
 }
 

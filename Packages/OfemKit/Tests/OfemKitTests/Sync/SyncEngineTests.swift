@@ -1196,9 +1196,10 @@ struct SyncEngineTests {
     /// Lakehouse and its SQLEndpoint appear as browsable folders in Finder, and
     /// macOS de-duplicates the display name by appending " 2".
     ///
-    /// `listItems` must return only storage-backed item types (Lakehouse, Warehouse, …)
-    /// and exclude non-storage types (SQLEndpoint, SemanticModel, Notebook, Report, …).
-    @Test("listItems() filters non-storage item types, eliminating ' 2' duplicate entries (issue-296)")
+    /// `listItems` must return only the four allowlisted item types
+    /// (Lakehouse, Warehouse, MirroredDatabase, SQLDatabase) and exclude
+    /// everything else (SQLEndpoint, SemanticModel, Notebook, Report, …).
+    @Test("listItems() filters non-allowlisted item types, eliminating ' 2' duplicate entries (issue-296)")
     func testListItemsFiltersNonStorageTypes() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
@@ -1206,24 +1207,26 @@ struct SyncEngineTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // Simulate a real workspace: a Lakehouse whose auto-created SQLEndpoint
-        // and default SemanticModel share the same displayName, plus a Warehouse
-        // and a Notebook.
+        // and default SemanticModel share the same displayName, plus a Warehouse,
+        // a SQLDatabase, and a Notebook.
         let fabricItems = [
             Item(id: "lh-1",  displayName: "Sales",   type: "Lakehouse",    workspaceID: Self.wsID),
             Item(id: "sql-1", displayName: "Sales",   type: "SQLEndpoint",  workspaceID: Self.wsID),
             Item(id: "sm-1",  displayName: "Sales",   type: "SemanticModel",workspaceID: Self.wsID),
             Item(id: "wh-1",  displayName: "DW",      type: "Warehouse",    workspaceID: Self.wsID),
+            Item(id: "sdb-1", displayName: "Mirror",  type: "SQLDatabase",  workspaceID: Self.wsID),
             Item(id: "nb-1",  displayName: "EDA",     type: "Notebook",     workspaceID: Self.wsID),
         ]
         fabric.listItemsResults.append(.success(fabricItems))
 
         let got = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
 
-        // Only the two storage-backed items must come back.
-        #expect(got.count == 2)
+        // Only the three storage-backed items must come back.
+        #expect(got.count == 3)
         let ids = got.map(\.id)
-        #expect(ids.contains("lh-1"), "Lakehouse must be returned")
-        #expect(ids.contains("wh-1"), "Warehouse must be returned")
+        #expect(ids.contains("lh-1"),  "Lakehouse must be returned")
+        #expect(ids.contains("wh-1"),  "Warehouse must be returned")
+        #expect(ids.contains("sdb-1"), "SQLDatabase must be returned")
         #expect(!ids.contains("sql-1"), "SQLEndpoint must be filtered out")
         #expect(!ids.contains("sm-1"),  "SemanticModel must be filtered out")
         #expect(!ids.contains("nb-1"),  "Notebook must be filtered out")
@@ -1238,13 +1241,14 @@ struct SyncEngineTests {
         let cachedPaths = try await store.children(of: parentKey).map(\.path)
         #expect(cachedPaths.contains("lh-1"))
         #expect(cachedPaths.contains("wh-1"))
+        #expect(cachedPaths.contains("sdb-1"))
         #expect(!cachedPaths.contains("sql-1"))
         #expect(!cachedPaths.contains("sm-1"))
         #expect(!cachedPaths.contains("nb-1"))
     }
 
-    @Test("listItems() passes unknown item types through (denylist policy: show by default)")
-    func testListItemsPassesUnknownTypesThrough() async throws {
+    @Test("listItems() hides unknown item types (allowlist policy: hide by default)")
+    func testListItemsHidesUnknownTypes() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -1259,46 +1263,75 @@ struct SyncEngineTests {
 
         let got = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
 
-        // All three must pass through: Lakehouse (known storage), FutureItemType
-        // (unknown → show by default), and empty type (show by default).
-        #expect(got.count == 3)
+        // Only the Lakehouse is in the allowlist; FutureItemType and empty type
+        // are hidden by the strict allowlist policy.
+        #expect(got.count == 1)
         let ids = got.map(\.id)
         #expect(ids.contains("k-1"))
-        #expect(ids.contains("u-1"))
-        #expect(ids.contains("e-1"))
+        #expect(!ids.contains("u-1"), "unknown type must be hidden by allowlist")
+        #expect(!ids.contains("e-1"), "empty type must be hidden by allowlist")
     }
 
-    @Test("Item.hasOneLakeStorage is false for SQLEndpoint/SemanticModel and true for Lakehouse/Warehouse")
-    func testItemHasOneLakeStorageDenylistContents() {
-        // Key non-storage types that cause the ' 2' issue must not have storage.
+    @Test("Item.hasOneLakeStorage reflects strict allowlist: true only for Lakehouse/Warehouse/MirroredDatabase/SQLDatabase")
+    func testItemHasOneLakeStorageAllowlistContents() {
         func item(type: String) -> Item { Item(id: "x", displayName: "x", type: type, workspaceID: "w") }
+        // The four allowed types must be visible.
+        #expect(item(type: "Lakehouse").hasOneLakeStorage)
+        #expect(item(type: "Warehouse").hasOneLakeStorage)
+        #expect(item(type: "MirroredDatabase").hasOneLakeStorage)
+        #expect(item(type: "SQLDatabase").hasOneLakeStorage)
+        // Types that have OneLake storage but are not yet supported are hidden.
+        #expect(!item(type: "KQLDatabase").hasOneLakeStorage)
+        #expect(!item(type: "Eventhouse").hasOneLakeStorage)
+        #expect(!item(type: "MirroredWarehouse").hasOneLakeStorage)
+        // Non-storage types must also be hidden.
         #expect(!item(type: "SQLEndpoint").hasOneLakeStorage)
         #expect(!item(type: "SemanticModel").hasOneLakeStorage)
         #expect(!item(type: "Notebook").hasOneLakeStorage)
         #expect(!item(type: "Report").hasOneLakeStorage)
         #expect(!item(type: "Dashboard").hasOneLakeStorage)
         #expect(!item(type: "DataPipeline").hasOneLakeStorage)
-        // Storage-backed types must report hasOneLakeStorage == true.
-        #expect(item(type: "Lakehouse").hasOneLakeStorage)
-        #expect(item(type: "Warehouse").hasOneLakeStorage)
-        #expect(item(type: "KQLDatabase").hasOneLakeStorage)
-        #expect(item(type: "MirroredDatabase").hasOneLakeStorage)
-        #expect(item(type: "SQLDatabase").hasOneLakeStorage)
-        #expect(item(type: "Eventhouse").hasOneLakeStorage)
-        #expect(item(type: "MirroredWarehouse").hasOneLakeStorage)
+        // Unknown / future types are hidden by default.
+        #expect(!item(type: "FutureItemType").hasOneLakeStorage)
+        #expect(!item(type: "").hasOneLakeStorage)
     }
 
-    @Test("listItems() evicts a previously-cached non-storage row via expireDiscoveryRows")
+    @Test("Item.hasOneLakeStorage is case-insensitive for the four allowed types")
+    func testItemHasOneLakeStorageCaseInsensitive() {
+        func item(type: String) -> Item { Item(id: "x", displayName: "x", type: type, workspaceID: "w") }
+        // All-lower
+        #expect(item(type: "lakehouse").hasOneLakeStorage)
+        #expect(item(type: "warehouse").hasOneLakeStorage)
+        #expect(item(type: "mirroreddatabase").hasOneLakeStorage)
+        #expect(item(type: "sqldatabase").hasOneLakeStorage)
+        // All-upper
+        #expect(item(type: "LAKEHOUSE").hasOneLakeStorage)
+        #expect(item(type: "WAREHOUSE").hasOneLakeStorage)
+        #expect(item(type: "MIRROREDDATABASE").hasOneLakeStorage)
+        #expect(item(type: "SQLDATABASE").hasOneLakeStorage)
+        // Mixed case
+        #expect(item(type: "LakeHouse").hasOneLakeStorage)
+        #expect(item(type: "WareHouse").hasOneLakeStorage)
+        #expect(item(type: "MirroredDatabase").hasOneLakeStorage)
+        #expect(item(type: "SqlDatabase").hasOneLakeStorage)
+        // Case-insensitive match must not accidentally allow other types.
+        #expect(!item(type: "KQLDATABASE").hasOneLakeStorage)
+        #expect(!item(type: "notebook").hasOneLakeStorage)
+    }
+
+    @Test("listItems() evicts previously-cached rows that are now excluded by the allowlist via expireDiscoveryRows")
     func testListItemsEvictsPrecachedNonStorageRow() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
-        // Simulate a row written by a pre-PR build: a SQLEndpoint cached under the
-        // workspace items parent. expireDiscoveryRows must evict it because "sql-stale"
-        // is not in the `seen` set built from storage-only items.
-        let staleRow = MetadataRecord(
+        // Simulate rows written by a pre-allowlist build: a SQLEndpoint (never had
+        // storage) and a KQLDatabase (has storage but is not in the allowlist)
+        // cached under the workspace items parent. expireDiscoveryRows must evict both
+        // because neither "sql-stale" nor "kql-stale" is in the `seen` set built from
+        // the four allowed item types (Lakehouse, Warehouse, MirroredDatabase, SQLDatabase).
+        let sqlRow = MetadataRecord(
             accountAlias: Self.alias,
             workspaceID: Self.wsID,
             itemID: VirtualIDs.itemID,
@@ -1309,12 +1342,25 @@ struct SyncEngineTests {
             lastAccessedNs: 0,
             syncedAtNs: 0
         )
-        try await store.upsert(staleRow)
+        let kqlRow = MetadataRecord(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            itemID: VirtualIDs.itemID,
+            path: "kql-stale",
+            parentPath: "",
+            name: "Events",
+            isDir: true,
+            lastAccessedNs: 0,
+            syncedAtNs: 0
+        )
+        try await store.upsert(sqlRow)
+        try await store.upsert(kqlRow)
 
-        // Fabric returns the SQLEndpoint (non-storage) and a Lakehouse (storage).
+        // Fabric returns both excluded items and one allowed Lakehouse.
         fabric.listItemsResults.append(.success([
-            Item(id: "sql-stale", displayName: "Sales", type: "SQLEndpoint", workspaceID: Self.wsID),
-            Item(id: "lh-1",      displayName: "Sales", type: "Lakehouse",   workspaceID: Self.wsID),
+            Item(id: "sql-stale", displayName: "Sales",  type: "SQLEndpoint",  workspaceID: Self.wsID),
+            Item(id: "kql-stale", displayName: "Events", type: "KQLDatabase",  workspaceID: Self.wsID),
+            Item(id: "lh-1",      displayName: "Sales",  type: "Lakehouse",    workspaceID: Self.wsID),
         ]))
         _ = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
 
@@ -1325,7 +1371,8 @@ struct SyncEngineTests {
             path: ""
         )
         let paths = try await store.children(of: parentKey).map(\.path)
-        #expect(!paths.contains("sql-stale"), "expireDiscoveryRows must evict pre-cached non-storage rows")
+        #expect(!paths.contains("sql-stale"), "expireDiscoveryRows must evict pre-cached SQLEndpoint rows")
+        #expect(!paths.contains("kql-stale"), "expireDiscoveryRows must evict pre-cached KQLDatabase rows")
         #expect(paths.contains("lh-1"), "Lakehouse must remain in cache")
     }
 
