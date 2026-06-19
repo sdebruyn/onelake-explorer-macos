@@ -9,20 +9,20 @@ import Foundation
 /// A `URLProtocol` subclass that serves pre-registered stubs without a
 /// live network connection.
 ///
-/// Register stubs before creating the `Session`:
+/// Each logical test session is assigned a unique queue ID.  Stubs are
+/// registered per-queue so concurrent test suites do not consume each
+/// other's stubs:
 /// ```swift
-/// MockURLProtocol.stubs = [
-///     StubResponse(status: 200, body: jsonData, headers: [:]),
-///     StubResponse(status: 404, body: Data(), headers: [:]),
-/// ]
-/// let session = makeMockSession()
+/// let stubs = [StubResponse(status: 200, body: jsonData)]
+/// let (session, queue) = makeMockSession(stubs: stubs)
+/// // ... use session ...
+/// MockURLProtocol.clearQueue(id: queue)
 /// ```
 ///
-/// Stubs are consumed in FIFO order.  If the queue is empty, the request
-/// fails with a `URLError(.resourceUnavailable)`.
+/// Stubs are consumed in FIFO order.  If the queue is empty the request
+/// fails with `URLError(.resourceUnavailable)`.
 ///
-/// Thread safety: `stubs` is guarded by `lock`; safe for concurrent use
-/// within a single test (single-writer, multiple-reader via `lock`).
+/// Thread safety: all queue access is serialised by `lock`.
 final class MockURLProtocol: URLProtocol {
 
     /// A canned HTTP response stub.
@@ -42,22 +42,45 @@ final class MockURLProtocol: URLProtocol {
         }
     }
 
-    private static let lock = NSLock()
-    // nonisolated(unsafe): access is serialised by `lock`.
-    private nonisolated(unsafe) static var _stubs: [StubResponse] = []
+    // MARK: - Per-queue registry
 
-    /// The ordered queue of stub responses to serve.  Consumed in FIFO order.
-    static var stubs: [StubResponse] {
-        get { lock.withLock { _stubs } }
-        set { lock.withLock { _stubs = newValue } }
+    private static let lock = NSLock()
+    /// Header name used to route each request to its stub queue.
+    static let queueIDHeader = "X-Mock-Queue-ID"
+    // nonisolated(unsafe): serialised by `lock`.
+    private nonisolated(unsafe) static var _queues: [String: [StubResponse]] = [:]
+
+    /// Registers a stub queue for the given identifier.
+    static func registerQueue(id: String, stubs: [StubResponse]) {
+        lock.withLock { _queues[id] = stubs }
     }
+
+    /// Removes a stub queue (call in `defer` to clean up after a test).
+    static func clearQueue(id: String) {
+        lock.withLock { _queues.removeValue(forKey: id) }
+    }
+
+    /// Legacy global queue — used by tests that do not need per-session isolation.
+    ///
+    /// Prefer `registerQueue(id:stubs:)` + `makeMockSession(queueID:stubs:)` for
+    /// new tests to avoid cross-suite interference.
+    static var stubs: [StubResponse] {
+        get { lock.withLock { _queues["global"] ?? [] } }
+        set { lock.withLock { _queues["global"] = newValue } }
+    }
+
+    // MARK: - URLProtocol overrides
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        let queueID = request.value(forHTTPHeaderField: Self.queueIDHeader) ?? "global"
         let stub = Self.lock.withLock { () -> StubResponse? in
-            Self._stubs.isEmpty ? nil : Self._stubs.removeFirst()
+            guard var q = Self._queues[queueID], !q.isEmpty else { return nil }
+            let first = q.removeFirst()
+            Self._queues[queueID] = q
+            return first
         }
 
         guard let stub else {
@@ -85,9 +108,17 @@ final class MockURLProtocol: URLProtocol {
 /// Creates an Alamofire `Session` that routes all requests through
 /// `MockURLProtocol`.
 ///
-/// The returned session should be used as the `SessionPool` backing in tests
-/// that need to control HTTP responses without a live network.
-func makeMockSession(tokenProvider: any TokenProvider = NoopTokenProvider()) -> Session {
+/// When `queueID` is supplied, the session injects an `X-Mock-Queue-ID`
+/// header on every request so each session's stubs are isolated from those
+/// of other concurrent sessions.  Callers must pair this with
+/// `MockURLProtocol.registerQueue(id:stubs:)` before making requests and
+/// `MockURLProtocol.clearQueue(id:)` when done.
+///
+/// When `queueID` is `nil`, the legacy global stub queue is used.
+func makeMockSession(
+    tokenProvider: any TokenProvider = NoopTokenProvider(),
+    queueID: String? = nil
+) -> Session {
     let config = URLSessionConfiguration.ephemeral
     config.protocolClasses = [MockURLProtocol.self]
     config.urlCache = nil
@@ -103,7 +134,30 @@ func makeMockSession(tokenProvider: any TokenProvider = NoopTokenProvider()) -> 
         authenticator: authenticator,
         credential: credential
     )
-    return Session(configuration: config, interceptor: authInterceptor)
+
+    if let queueID {
+        // Adapter that stamps every outgoing request with the queue ID so
+        // MockURLProtocol can route it to the correct stub queue.
+        let adapter = QueueIDAdapter(queueID: queueID)
+        let interceptor = Interceptor(adapters: [adapter], retriers: [], interceptors: [authInterceptor])
+        return Session(configuration: config, interceptor: interceptor)
+    } else {
+        return Session(configuration: config, interceptor: authInterceptor)
+    }
+}
+
+/// Request adapter that stamps the `X-Mock-Queue-ID` header on every request.
+private struct QueueIDAdapter: RequestAdapter {
+    let queueID: String
+    func adapt(
+        _ urlRequest: URLRequest,
+        for session: Session,
+        completion: @escaping (Result<URLRequest, any Error>) -> Void
+    ) {
+        var req = urlRequest
+        req.setValue(queueID, forHTTPHeaderField: MockURLProtocol.queueIDHeader)
+        completion(.success(req))
+    }
 }
 
 // MARK: - NoopTokenProvider

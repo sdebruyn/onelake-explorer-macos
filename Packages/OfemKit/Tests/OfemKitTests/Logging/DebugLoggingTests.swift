@@ -12,9 +12,9 @@ import Testing
 // file and assert the expected keys and values appear in the captured lines.
 //
 // HTTP interception is achieved by injecting a MockURLProtocol-backed Session
-// directly into the SessionPool via `_setSessionForTesting`. This avoids
-// relying on global `URLProtocol.registerClass`, which Alamofire sessions
-// with a custom URLSessionConfiguration do not inherit.
+// directly into the SessionPool via `_setSessionForTesting`. Each test
+// receives a unique stub queue ID so concurrent suites do not consume each
+// other's responses.
 
 // MARK: - Helpers
 
@@ -92,34 +92,35 @@ private let oneLakeBase = URL(string: "https://onelake.dfs.fabric.microsoft.com"
 /// Creates a `SessionPool` with a `MockURLProtocol`-backed session pre-seeded
 /// for `alias` and both scopes.
 ///
-/// Using `_setSessionForTesting` to inject the session avoids relying on
-/// global `URLProtocol.registerClass`, which Alamofire sessions with an
-/// explicit `URLSessionConfiguration` do not inherit.
+/// Each call allocates a unique queue ID so concurrent test suites cannot
+/// consume each other's stubs.  The returned cleanup closure must be called
+/// (typically via `defer`) to remove the queue entry.
 ///
 /// Every stub that lacks a `Content-Type` header is patched with
 /// `application/json` so Alamofire's `.validate()` content-type check does
 /// not reject valid JSON responses.
-private func makeMockPool(alias: String, stubs: [MockURLProtocol.StubResponse]) async -> SessionPool {
+private func makeMockPool(
+    alias: String,
+    stubs: [MockURLProtocol.StubResponse]
+) async -> (pool: SessionPool, cleanup: () -> Void) {
+    let queueID = UUID().uuidString
     let patched = stubs.map { stub -> MockURLProtocol.StubResponse in
         guard stub.headers["Content-Type"] == nil else { return stub }
         var h = stub.headers
         h["Content-Type"] = "application/json"
         return MockURLProtocol.StubResponse(status: stub.status, body: stub.body, headers: h)
     }
-    MockURLProtocol.stubs = patched
+    MockURLProtocol.registerQueue(id: queueID, stubs: patched)
     let pool = SessionPool(tokenProvider: NoopTokenProvider())
-    let session = makeMockSession()
+    let session = makeMockSession(queueID: queueID)
     await pool._setSessionForTesting(session, alias: alias, scope: .fabric)
     await pool._setSessionForTesting(session, alias: alias, scope: .oneLake)
-    return pool
+    return (pool, { MockURLProtocol.clearQueue(id: queueID) })
 }
 
 // MARK: - FabricClient debug logging
-//
-// These suites are serialised because MockURLProtocol.stubs is a global queue.
-// Serialising prevents a test from consuming stubs that belong to another test.
 
-@Suite("FabricClient debug logging", .serialized)
+@Suite("FabricClient debug logging")
 struct FabricClientDebugLoggingTests {
 
     @Test("single-page listAllWorkspaces emits request, page, and complete log lines")
@@ -130,10 +131,10 @@ struct FabricClientDebugLoggingTests {
         let alias = "log-test-\(UUID().uuidString)"
         try await withTempDir { dir in
             let logger = makeCapturingLogger(directory: dir)
-            let pool = await makeMockPool(alias: alias, stubs: [
+            let (pool, cleanup) = await makeMockPool(alias: alias, stubs: [
                 MockURLProtocol.StubResponse(status: 200, body: body),
             ])
-            defer { MockURLProtocol.stubs = [] }
+            defer { cleanup() }
             let client = FabricClient(sessionPool: pool, baseURL: fabricBase, logger: logger)
 
             let workspaces = try await client.listAllWorkspaces(alias: alias)
@@ -184,11 +185,11 @@ struct FabricClientDebugLoggingTests {
         let alias = "log-test-\(UUID().uuidString)"
         try await withTempDir { dir in
             let logger = makeCapturingLogger(directory: dir)
-            let pool = await makeMockPool(alias: alias, stubs: [
+            let (pool, cleanup) = await makeMockPool(alias: alias, stubs: [
                 MockURLProtocol.StubResponse(status: 200, body: page1),
                 MockURLProtocol.StubResponse(status: 200, body: page2),
             ])
-            defer { MockURLProtocol.stubs = [] }
+            defer { cleanup() }
             let client = FabricClient(sessionPool: pool, baseURL: fabricBase, logger: logger)
 
             let workspaces = try await client.listAllWorkspaces(alias: alias)
@@ -218,7 +219,7 @@ struct FabricClientDebugLoggingTests {
     }
 }
 
-@Suite("OneLakeClient debug logging", .serialized)
+@Suite("OneLakeClient debug logging")
 struct OneLakeClientDebugLoggingTests {
 
     @Test("single-page listPath emits request, response, page, and complete log lines")
@@ -229,10 +230,10 @@ struct OneLakeClientDebugLoggingTests {
         let alias = "log-test-\(UUID().uuidString)"
         try await withTempDir { dir in
             let logger = makeCapturingLogger(directory: dir)
-            let pool = await makeMockPool(alias: alias, stubs: [
+            let (pool, cleanup) = await makeMockPool(alias: alias, stubs: [
                 MockURLProtocol.StubResponse(status: 200, body: body),
             ])
-            defer { MockURLProtocol.stubs = [] }
+            defer { cleanup() }
             let client = OneLakeClient(sessionPool: pool, baseURL: oneLakeBase, logger: logger)
 
             let result = try await client.listPath(
@@ -298,11 +299,11 @@ struct OneLakeClientDebugLoggingTests {
         let alias = "log-test-\(UUID().uuidString)"
         try await withTempDir { dir in
             let logger = makeCapturingLogger(directory: dir)
-            let pool = await makeMockPool(alias: alias, stubs: [
+            let (pool, cleanup) = await makeMockPool(alias: alias, stubs: [
                 MockURLProtocol.StubResponse(status: 200, body: page1Body, headers: ["x-ms-continuation": "cont-token-1"]),
                 MockURLProtocol.StubResponse(status: 200, body: page2Body),
             ])
-            defer { MockURLProtocol.stubs = [] }
+            defer { cleanup() }
             let client = OneLakeClient(sessionPool: pool, baseURL: oneLakeBase, logger: logger)
 
             let result = try await client.listPath(
