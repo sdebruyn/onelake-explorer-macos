@@ -23,6 +23,7 @@ let package = Package(
             exact: "2.13.0"
         ),
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1"),
+        .package(url: "https://github.com/Alamofire/Alamofire.git", exact: "5.12.0"),
     ],
     targets: [
         .target(
@@ -31,6 +32,7 @@ let package = Package(
                 .product(name: "TOMLKit", package: "TOMLKit"),
                 .product(name: "MSAL", package: "microsoft-authentication-library-for-objc"),
                 .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "Alamofire", package: "Alamofire"),
             ],
             linkerSettings: [
                 .linkedFramework("FileProvider"),

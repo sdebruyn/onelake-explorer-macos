@@ -6,9 +6,9 @@ import Foundation
 /// engine object.
 ///
 /// `OfemEngine` is a **facade / wire-up container** that builds the per-alias
-/// dependency graph (auth → HTTP client → Fabric + OneLake clients → sync
-/// engine) using process-wide shared subsystems (cache, telemetry, HTTP gate
-/// registry) that are injected at initialisation time.
+/// dependency graph (auth → session pool → Fabric + OneLake clients → sync
+/// engine) using process-wide shared subsystems (cache, telemetry, session
+/// pool) that are injected at initialisation time.
 ///
 /// ## Process-wide shared vs per-alias
 ///
@@ -20,9 +20,8 @@ import Foundation
 ///   hazard and ensures the blob byte-budget is enforced once, globally.
 /// - `TelemetryClient` — one flush timer.  All per-alias telemetry events
 ///   flow through the shared client.
-/// - `HTTPGateRegistry` — endpoint-protection budgets are per-host, not
-///   per-account; sharing the registry prevents the budgets from being
-///   multiplied by the number of accounts.
+/// - `SessionPool` — one Alamofire session per `(alias, scope)` pair; sharing
+///   the pool avoids multiplying connection pools by the number of engines.
 ///
 /// Per-alias subsystems that remain private to each `OfemEngine`:
 ///
@@ -69,6 +68,12 @@ public actor OfemEngine {
     /// Structured logger.
     public nonisolated let logger: OfemLogger
 
+    /// Process-wide session pool (process-wide shared instance, arch-04).
+    ///
+    /// Exposed so callers can invalidate sessions for a specific alias after an
+    /// account is removed, ensuring no stale session reuses a purged token.
+    public nonisolated let sessionPool: SessionPool
+
     // MARK: - Private state
 
     private var started = false
@@ -110,9 +115,9 @@ public actor OfemEngine {
     ///
     /// The config snapshot is read once at initialisation time and baked
     /// into the subsystems (log level → `OfemLogger`, telemetry opt-out →
-    /// sink choice, `cache.maxBytes` → `CacheStore`, concurrency limits →
-    /// `HTTPGateRegistry`). Subsequent config changes therefore require
-    /// building a **new** `OfemEngine` from the updated snapshot.
+    /// sink choice, `cache.maxBytes` → `CacheStore`). Subsequent config
+    /// changes therefore require building a **new** `OfemEngine` from the
+    /// updated snapshot.
     ///
     /// The reload mechanism in `FPEEngineHost` is: after a successful
     /// `setConfig` write, call `FPEEngineHost.reloadEngine()`, which shuts
@@ -125,7 +130,7 @@ public actor OfemEngine {
     ///   - paths: Resolved on-disk paths (cache dir, log dir, etc.).
     ///   - sharedCache: Process-wide CacheStore to share across engines.
     ///   - sharedTelemetry: Process-wide TelemetryClient to share across engines.
-    ///   - sharedGateRegistry: Process-wide HTTPGateRegistry to share across engines.
+    ///   - sharedSessionPool: Process-wide SessionPool to share across engines.
     ///   - httpBaseURLs: Override the default DFS / Fabric base URLs. Pass
     ///     `nil` to use the production endpoints.
     public init(
@@ -133,7 +138,7 @@ public actor OfemEngine {
         paths: OfemPaths,
         sharedCache: CacheStore,
         sharedTelemetry: TelemetryClient,
-        sharedGateRegistry: HTTPGateRegistry,
+        sharedSessionPool: SessionPool,
         httpBaseURLs: (oneLake: URL, fabric: URL)? = nil
     ) throws {
         // Read the config snapshot exactly once so all subsystems see the same
@@ -143,16 +148,18 @@ public actor OfemEngine {
         let perAlias = try OfemEngine.buildPerAliasSubsystems(
             cfg: cfg,
             configStore: configStore,
+            auth: nil,
             paths: paths,
             cache: sharedCache,
             telemetry: sharedTelemetry,
-            gateRegistry: sharedGateRegistry,
+            sessionPool: sharedSessionPool,
             httpBaseURLs: httpBaseURLs
         )
 
         self.logger = perAlias.logger
         self.cache = sharedCache
         self.telemetry = sharedTelemetry
+        self.sessionPool = sharedSessionPool
         self.auth = perAlias.auth
         self.sync = perAlias.sync
         // Injected init does NOT own the shared subsystems (engine-03).
@@ -209,22 +216,26 @@ public actor OfemEngine {
             maxBlobBytes: cfg.cache.maxBytes
         )
 
-        // Build owned gate registry.
-        let ownedGates = HTTPGateRegistry.makeDefault()
+        // Build auth first so the owned pool uses the same instance.
+        let ownedAuth = OfemAuth(configStore: configStore)
+        // Build owned session pool backed by the same OfemAuth actor.
+        let ownedPool = SessionPool(tokenProvider: ownedAuth)
 
         let perAlias = try OfemEngine.buildPerAliasSubsystems(
             cfg: cfg,
             configStore: configStore,
+            auth: ownedAuth,
             paths: paths,
             cache: ownedCache,
             telemetry: ownedTelemetry,
-            gateRegistry: ownedGates,
+            sessionPool: ownedPool,
             httpBaseURLs: httpBaseURLs
         )
 
         self.logger = perAlias.logger
         self.cache = ownedCache
         self.telemetry = ownedTelemetry
+        self.sessionPool = ownedPool
         self.auth = perAlias.auth
         self.sync = perAlias.sync
         // Standalone init owns every subsystem it created (engine-03).
@@ -294,17 +305,18 @@ public actor OfemEngine {
     /// engine) given already-resolved shared subsystems.
     ///
     /// Extracted so both initialisers share identical wiring logic and future
-    /// changes (e.g. WP-G SyncEngine updates) only need to be applied once.
+    /// changes only need to be applied once.
     ///
     /// The `cfg` parameter must be the snapshot already read by the caller
     /// so that both inits read the config exactly once (engine-01).
     private static func buildPerAliasSubsystems(
         cfg: OfemConfig,
         configStore: OfemConfigStore,
+        auth existingAuth: OfemAuth?,
         paths: OfemPaths,
         cache: CacheStore,
         telemetry: TelemetryClient,
-        gateRegistry: HTTPGateRegistry,
+        sessionPool: SessionPool,
         httpBaseURLs: (oneLake: URL, fabric: URL)?
     ) throws -> PerAliasSubsystems {
 
@@ -322,19 +334,17 @@ public actor OfemEngine {
         )
         let logger = OfemLogger(configuration: logConfig)
 
-        // 2. Auth — OfemAuth is a Swift actor (not @MainActor), so init
-        //    no longer forces the engine init onto the main thread.
-        let auth = OfemAuth(configStore: configStore)
+        // 2. Auth — reuse the provided instance when the caller already built
+        //    it (standalone init pre-builds auth so the SessionPool and the
+        //    engine use the same actor). Otherwise build a fresh one.
+        let auth = existingAuth ?? OfemAuth(configStore: configStore)
 
-        // 3. HTTP clients — use the provided gate registry.
-        let http = HTTPClient(gateRegistry: gateRegistry)
-
+        // 3. HTTP clients — use the provided session pool.
         let oneLakeURL = httpBaseURLs?.oneLake ?? OneLakeClient.defaultBaseURL
         let fabricURL  = httpBaseURLs?.fabric  ?? OfemEngine.defaultFabricBaseURL
 
-        let tokenProvider = TokenProviderAdapter(auth: auth)
-        let onelake = OneLakeClient(http: http, tokenProvider: tokenProvider, baseURL: oneLakeURL, logger: logger)
-        let fabric  = FabricClient(http: http, tokenProvider: tokenProvider, baseURL: fabricURL, logger: logger)
+        let onelake = OneLakeClient(sessionPool: sessionPool, baseURL: oneLakeURL, logger: logger)
+        let fabric  = FabricClient(sessionPool: sessionPool, baseURL: fabricURL, logger: logger)
 
         // 4. Sync engine (per-alias).
         let scratchBase = paths.cacheDir.appendingPathComponent("partials")
@@ -348,27 +358,5 @@ public actor OfemEngine {
         )
 
         return PerAliasSubsystems(logger: logger, auth: auth, sync: syncEngine)
-    }
-}
-
-// MARK: - TokenProviderAdapter
-
-/// Bridges ``OfemAuth`` (a Swift `actor`) to the ``TokenProvider``
-/// protocol expected by ``OneLakeClient`` and ``FabricClient``.
-///
-/// Token acquisition runs on `OfemAuth`'s own executor — not the main actor —
-/// so concurrent Finder I/O calls in the FPE do not serialise through the
-/// main thread.
-private final class TokenProviderAdapter: TokenProvider, Sendable {
-    private let auth: OfemAuth
-
-    init(auth: OfemAuth) {
-        self.auth = auth
-    }
-
-    func token(alias: String, scope: TokenScope) async throws -> String {
-        // OfemAuth is a Swift actor; calling its methods suspends here and
-        // resumes on the actor's executor. No main-actor hop needed.
-        try await auth.tokenForScope(alias: alias, scope: scope)
     }
 }

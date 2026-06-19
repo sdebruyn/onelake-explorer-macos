@@ -81,14 +81,14 @@ struct OfemEngineInjectedTests {
         let (store, paths) = try makeTempConfigStore()
         let sharedCache = try CacheStore(root: paths.cacheDir, maxBlobBytes: 0)
         let sharedTelemetry = makeNoopTelemetry()
-        let sharedGates = HTTPGateRegistry.makeDefault()
+        let sharedPool = SessionPool(tokenProvider: NoopTokenProvider())
 
         let engine = try OfemEngine(
             configStore: store,
             paths: paths,
             sharedCache: sharedCache,
             sharedTelemetry: sharedTelemetry,
-            sharedGateRegistry: sharedGates
+            sharedSessionPool: sharedPool
         )
 
         // Must be the exact same instances (identity, not value equality).
@@ -112,7 +112,7 @@ struct OfemEngineInjectedTests {
             )
         )
         let sharedCache = try CacheStore(root: paths.cacheDir, maxBlobBytes: 0)
-        let sharedGates = HTTPGateRegistry.makeDefault()
+        let sharedPool = SessionPool(tokenProvider: NoopTokenProvider())
 
         await sharedTelemetry.start()
 
@@ -121,7 +121,7 @@ struct OfemEngineInjectedTests {
             paths: paths,
             sharedCache: sharedCache,
             sharedTelemetry: sharedTelemetry,
-            sharedGateRegistry: sharedGates
+            sharedSessionPool: sharedPool
         )
 
         // Shut down the per-alias engine — the shared telemetry must keep running.
@@ -371,7 +371,7 @@ struct SharedSubsystemsTelemetryFlushTests {
             )
         )
         let sharedCache = try CacheStore(root: paths.cacheDir, maxBlobBytes: 0)
-        let sharedGates = HTTPGateRegistry.makeDefault()
+        let sharedPool = SessionPool(tokenProvider: NoopTokenProvider())
 
         await sharedTelemetry.start()
 
@@ -380,7 +380,7 @@ struct SharedSubsystemsTelemetryFlushTests {
             paths: paths,
             sharedCache: sharedCache,
             sharedTelemetry: sharedTelemetry,
-            sharedGateRegistry: sharedGates
+            sharedSessionPool: sharedPool
         )
         await engine.start()
         // Per-alias engine shutdown must NOT stop the shared telemetry.

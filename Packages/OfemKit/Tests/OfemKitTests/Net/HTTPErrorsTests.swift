@@ -4,13 +4,10 @@ import Foundation
 
 // MARK: - HTTPErrorsTests
 
-/// Tests for ``HTTPClientError`` and ``APIError`` that are NOT already covered
-/// by HTTPRetryTests.swift (which covers `sentinel(for:)` for a subset of codes)
-/// or HTTPClientTests.swift (which covers the client behaviour).
+/// Tests for ``HTTPClientError`` and ``APIError``.
 ///
 /// This file focuses on:
-/// - sentinel(for:) for the remaining unmapped / edge-case codes
-/// - isRetriableStatus(_:) for all documented retriable and non-retriable codes
+/// - sentinel(for:) for the remaining unmapped / edge-case status codes
 /// - APIError.description formatting (body truncation, empty body, attemptsSuffix)
 /// - APIError.sentinel computed property
 /// - Cases that are untested elsewhere: .conflict, .gone, .preconditionFailed,
@@ -94,72 +91,6 @@ struct HTTPClientErrorTests {
         #expect(HTTPClientError.sentinel(for: 408) == nil)
     }
 
-    // MARK: - isRetriableStatus(_:)
-
-    @Test("408 is retriable")
-    func retriable408() {
-        #expect(HTTPClientError.isRetriableStatus(408))
-    }
-
-    @Test("425 is retriable")
-    func retriable425() {
-        #expect(HTTPClientError.isRetriableStatus(425))
-    }
-
-    @Test("429 is retriable")
-    func retriable429() {
-        #expect(HTTPClientError.isRetriableStatus(429))
-    }
-
-    @Test("500 is retriable")
-    func retriable500() {
-        #expect(HTTPClientError.isRetriableStatus(500))
-    }
-
-    @Test("502 is retriable")
-    func retriable502() {
-        #expect(HTTPClientError.isRetriableStatus(502))
-    }
-
-    @Test("503 is retriable")
-    func retriable503() {
-        #expect(HTTPClientError.isRetriableStatus(503))
-    }
-
-    @Test("504 is retriable")
-    func retriable504() {
-        #expect(HTTPClientError.isRetriableStatus(504))
-    }
-
-    @Test("200 is NOT retriable")
-    func notRetriable200() {
-        #expect(!HTTPClientError.isRetriableStatus(200))
-    }
-
-    @Test("401 is NOT retriable")
-    func notRetriable401() {
-        #expect(!HTTPClientError.isRetriableStatus(401))
-    }
-
-    @Test("403 is NOT retriable")
-    func notRetriable403() {
-        #expect(!HTTPClientError.isRetriableStatus(403))
-    }
-
-    @Test("404 is NOT retriable")
-    func notRetriable404() {
-        #expect(!HTTPClientError.isRetriableStatus(404))
-    }
-
-    @Test("412 is NOT retriable")
-    func notRetriable412() {
-        #expect(!HTTPClientError.isRetriableStatus(412))
-    }
-
-    @Test("501 is NOT retriable")
-    func notRetriable501() {
-        #expect(!HTTPClientError.isRetriableStatus(501))
-    }
 }
 
 // MARK: - APIErrorTests

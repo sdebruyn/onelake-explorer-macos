@@ -162,7 +162,7 @@ final class FPEEngineHost: EngineProviding {
     private static let sharedSubsystemsLock = NSLock()
     private static nonisolated(unsafe) var _sharedCache: CacheStore?
     private static nonisolated(unsafe) var _sharedTelemetry: TelemetryClient?
-    private static nonisolated(unsafe) var _sharedGateRegistry: HTTPGateRegistry?
+    private static nonisolated(unsafe) var _sharedSessionPool: SessionPool?
 
     // MARK: - Active host reference count (fpe-14)
 
@@ -250,13 +250,28 @@ final class FPEEngineHost: EngineProviding {
         }
     }
 
-    /// Returns (or lazily creates) the process-wide HTTPGateRegistry.
-    static func sharedGateRegistry() -> HTTPGateRegistry {
-        sharedSubsystemsLock.withLock {
-            if let g = _sharedGateRegistry { return g }
-            let g = HTTPGateRegistry.makeDefault()
-            _sharedGateRegistry = g
-            return g
+    /// Returns (or lazily creates) the process-wide `SessionPool`.
+    ///
+    /// The pool is backed by an `OfemAuth` instance that shares the process-wide
+    /// config store, so token requests for any alias are routed to the correct
+    /// per-account MSAL client without requiring a per-engine pool.
+    ///
+    /// - Throws: `OfemConfigError` on TOML parse failure (first call only).
+    static func sharedSessionPool() throws -> SessionPool {
+        // Fast path.
+        if let p = sharedSubsystemsLock.withLock({ _sharedSessionPool }) { return p }
+
+        // Build outside the lock: OfemAuth init is synchronous but sharedConfigStore
+        // may throw (first call), so we build the candidate here.
+        let cs = try sharedSubsystemsLock.withLock { try sharedConfigStore() }
+        let auth = OfemAuth(configStore: cs)
+        let candidate = SessionPool(tokenProvider: auth)
+
+        // CAS: install only if no one else already created it.
+        return sharedSubsystemsLock.withLock {
+            if let p = _sharedSessionPool { return p }
+            _sharedSessionPool = candidate
+            return candidate
         }
     }
 
@@ -296,7 +311,7 @@ final class FPEEngineHost: EngineProviding {
             }
             _sharedCache = nil
             _sharedTelemetry = nil
-            _sharedGateRegistry = nil
+            _sharedSessionPool = nil
         }
         activeHostLock.withLock { _activeHostCount = 0 }
     }
@@ -548,6 +563,13 @@ final class FPEEngineHost: EngineProviding {
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine shut down")
         }
 
+        // Release the Alamofire sessions for this alias so a stale or
+        // in-progress request cannot reuse a token that was just purged
+        // from the Keychain by the account-removal path.
+        if let pool = try? Self.sharedSessionPool() {
+            await pool.invalidate(alias: alias)
+        }
+
         // Decrement the process-wide host count. When the last host exits,
         // flush and stop the shared telemetry so the final batch is not lost
         // (fpe-14). Guard against underflow: if the framework calls invalidate()
@@ -599,17 +621,17 @@ final class FPEEngineHost: EngineProviding {
 
             // Obtain (or lazily create) the process-wide shared subsystems.
             // All engines in this FPE process share the same CacheStore,
-            // TelemetryClient, and HTTPGateRegistry (arch-04).
+            // TelemetryClient, and SessionPool (arch-04).
             let cache = try FPEEngineHost.sharedCache()
             let telemetry = try FPEEngineHost.sharedTelemetry()
-            let gateRegistry = FPEEngineHost.sharedGateRegistry()
+            let sessionPool = try FPEEngineHost.sharedSessionPool()
 
             let engine = try OfemEngine(
                 configStore: cs,
                 paths: paths,
                 sharedCache: cache,
                 sharedTelemetry: telemetry,
-                sharedGateRegistry: gateRegistry
+                sharedSessionPool: sessionPool
             )
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine built")
             // Start background tasks (telemetry flush timer). Create the Task

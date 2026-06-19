@@ -13,7 +13,8 @@ import Testing
 struct FabricDiscoveryIntegrationTests {
 
     private func fabricClient() -> FabricClient {
-        FabricClient(http: HTTPClient(), tokenProvider: EnvVarTokenProvider())
+        let pool = SessionPool(tokenProvider: EnvVarTokenProvider())
+        return FabricClient(sessionPool: pool)
     }
 
     // MARK: - 1. getItem returns the lakehouse with correct fields

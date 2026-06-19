@@ -21,13 +21,14 @@ public protocol MsalAuthClientProtocol: Sendable {
     ///   - homeAccountID: MSAL's unique identifier for the account
     ///     (`objectId.tenantId` format). The implementation looks up the
     ///     `MSALAccount` internally.
-    /// - Returns: The access token string.
+    /// - Returns: An `AccessToken` containing the bearer token string and
+    ///   the `MSALResult.expiresOn` date.
     /// - Throws: Any MSAL error. ``OfemAuth`` maps
     ///   `MSALError.interactionRequired` to ``OfemAuthError/interactionRequired``.
     func acquireTokenSilent(
         scopes: [String],
         homeAccountID: String
-    ) async throws -> String
+    ) async throws -> AccessToken
 
     /// Removes the account identified by `homeAccountID` from the MSAL
     /// Keychain cache, purging the stored refresh token.
@@ -100,14 +101,14 @@ public final class MsalAuthClient: MsalAuthClientProtocol {
     public func acquireTokenSilent(
         scopes: [String],
         homeAccountID: String
-    ) async throws -> String {
+    ) async throws -> AccessToken {
         // The account lookup and MSAL call are performed entirely inside the
         // withCheckedThrowingContinuation closure so that no non-Sendable
         // MSALAccount value is ever captured across an async suspension point.
         // Both `inner.allAccounts()` and `inner.acquireTokenSilent(with:completionBlock:)`
         // are called synchronously within the same closure execution, before any
         // suspension, so no data-race suppression is needed.
-        let accessToken = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+        let token = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<AccessToken, Error>) in
             // Perform account lookup synchronously inside the closure.
             let msalAccount: MSALAccount
             do {
@@ -122,15 +123,19 @@ public final class MsalAuthClient: MsalAuthClientProtocol {
                 if let error {
                     continuation.resume(throwing: error)
                 } else if let result {
-                    // Extract only the plain String token inside the callback
+                    // Extract the token string and expiresOn inside the callback
                     // so the non-Sendable MSALResult does not cross any boundary.
-                    continuation.resume(returning: result.accessToken)
+                    let accessToken = AccessToken(
+                        value: result.accessToken,
+                        expiresOn: result.expiresOn ?? Date(timeIntervalSinceNow: 50 * 60)
+                    )
+                    continuation.resume(returning: accessToken)
                 } else {
                     continuation.resume(throwing: MsalAuthClientError.nilResult)
                 }
             }
         }
-        return accessToken
+        return token
     }
 
     public func removeAccount(homeAccountID: String) throws {

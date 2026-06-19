@@ -31,8 +31,8 @@ private func requestBody(_ request: URLRequest) -> Data? {
 /// is only used by `AppInsightsSinkHTTPTests`; no other suite in this package
 /// registers it. `AppInsightsSinkHTTPTests` is annotated `@Suite(.serialized)`
 /// to prevent intra-suite handler races. If a future suite also needs this
-/// stub, migrate to the per-instance queue pattern used by
-/// `MockStreamURLProtocol` in `OneLakeStreamingTests.swift`.
+/// stub, migrate to the global-registration pattern used by
+/// `MockURLProtocol` in `NetTestHelpers.swift`.
 ///
 /// Call `reset()` at the start of each test to clear stale handler state left
 /// by a previous test.

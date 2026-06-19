@@ -38,8 +38,8 @@ struct WarehouseIntegrationTests {
         let table = ProcessInfo.processInfo.environment["OFEM_TEST_WH_TABLE"]
             .flatMap { $0.isEmpty ? nil : $0 } ?? "ofem_ci_orders"
         return LiveWarehouse(
-            onelakeClient: OneLakeClient(http: HTTPClient(), tokenProvider: EnvVarTokenProvider()),
-            fabricClient: FabricClient(http: HTTPClient(), tokenProvider: EnvVarTokenProvider()),
+            onelakeClient: OneLakeClient(sessionPool: SessionPool(tokenProvider: EnvVarTokenProvider())),
+            fabricClient: FabricClient(sessionPool: SessionPool(tokenProvider: EnvVarTokenProvider())),
             workspaceID: c.workspaceID,
             itemID: wh,
             table: table
