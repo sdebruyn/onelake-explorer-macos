@@ -237,13 +237,13 @@ public actor SyncEngine {
         }
         await offlineTracker.observe(nil)
 
-        // Filter out item types with no own OneLake DFS storage path. These
-        // types (SQLEndpoint, SemanticModel, Notebook, Report, …) have no
-        // /{workspaceGUID}/{itemGUID}/… folder on the DFS endpoint and would
-        // appear as empty or error-generating entries in the Finder. The
-        // SQLEndpoint type in particular causes " 2" duplicate entries because
-        // every Lakehouse auto-creates a same-named SQLEndpoint (issue #296).
-        // Unknown/empty types pass through — denylist policy: show by default.
+        // Keep only items whose type is in the strict allowlist
+        // (Lakehouse, Warehouse, MirroredDatabase, SQLDatabase). All other
+        // types — including types that have OneLake storage but are not yet
+        // supported (KQLDatabase, Eventhouse, MirroredWarehouse) and types with
+        // no DFS path at all (SQLEndpoint, SemanticModel, Notebook, Report, …)
+        // — are hidden. Unknown and empty types are also hidden.
+        // Allowlist policy: hide by default.
         let storageItems = items.filter(\.hasOneLakeStorage)
 
         let nowNs = currentNowNs()

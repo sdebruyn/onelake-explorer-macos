@@ -1196,9 +1196,9 @@ struct SyncEngineTests {
     /// Lakehouse and its SQLEndpoint appear as browsable folders in Finder, and
     /// macOS de-duplicates the display name by appending " 2".
     ///
-    /// `listItems` must return only the three allowlisted item types
-    /// (Lakehouse, Warehouse, MirroredDatabase) and exclude everything else
-    /// (SQLEndpoint, SemanticModel, Notebook, Report, …).
+    /// `listItems` must return only the four allowlisted item types
+    /// (Lakehouse, Warehouse, MirroredDatabase, SQLDatabase) and exclude
+    /// everything else (SQLEndpoint, SemanticModel, Notebook, Report, …).
     @Test("listItems() filters non-allowlisted item types, eliminating ' 2' duplicate entries (issue-296)")
     func testListItemsFiltersNonStorageTypes() async throws {
         let ol = MockOneLakeClient()
@@ -1207,24 +1207,26 @@ struct SyncEngineTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // Simulate a real workspace: a Lakehouse whose auto-created SQLEndpoint
-        // and default SemanticModel share the same displayName, plus a Warehouse
-        // and a Notebook.
+        // and default SemanticModel share the same displayName, plus a Warehouse,
+        // a SQLDatabase, and a Notebook.
         let fabricItems = [
             Item(id: "lh-1",  displayName: "Sales",   type: "Lakehouse",    workspaceID: Self.wsID),
             Item(id: "sql-1", displayName: "Sales",   type: "SQLEndpoint",  workspaceID: Self.wsID),
             Item(id: "sm-1",  displayName: "Sales",   type: "SemanticModel",workspaceID: Self.wsID),
             Item(id: "wh-1",  displayName: "DW",      type: "Warehouse",    workspaceID: Self.wsID),
+            Item(id: "sdb-1", displayName: "Mirror",  type: "SQLDatabase",  workspaceID: Self.wsID),
             Item(id: "nb-1",  displayName: "EDA",     type: "Notebook",     workspaceID: Self.wsID),
         ]
         fabric.listItemsResults.append(.success(fabricItems))
 
         let got = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
 
-        // Only the two storage-backed items must come back.
-        #expect(got.count == 2)
+        // Only the three storage-backed items must come back.
+        #expect(got.count == 3)
         let ids = got.map(\.id)
-        #expect(ids.contains("lh-1"), "Lakehouse must be returned")
-        #expect(ids.contains("wh-1"), "Warehouse must be returned")
+        #expect(ids.contains("lh-1"),  "Lakehouse must be returned")
+        #expect(ids.contains("wh-1"),  "Warehouse must be returned")
+        #expect(ids.contains("sdb-1"), "SQLDatabase must be returned")
         #expect(!ids.contains("sql-1"), "SQLEndpoint must be filtered out")
         #expect(!ids.contains("sm-1"),  "SemanticModel must be filtered out")
         #expect(!ids.contains("nb-1"),  "Notebook must be filtered out")
@@ -1239,6 +1241,7 @@ struct SyncEngineTests {
         let cachedPaths = try await store.children(of: parentKey).map(\.path)
         #expect(cachedPaths.contains("lh-1"))
         #expect(cachedPaths.contains("wh-1"))
+        #expect(cachedPaths.contains("sdb-1"))
         #expect(!cachedPaths.contains("sql-1"))
         #expect(!cachedPaths.contains("sm-1"))
         #expect(!cachedPaths.contains("nb-1"))
@@ -1324,10 +1327,10 @@ struct SyncEngineTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // Simulate rows written by a pre-allowlist build: a SQLEndpoint (never had
-        // storage) and a KQLDatabase (has storage but is no longer in the allowlist)
+        // storage) and a KQLDatabase (has storage but is not in the allowlist)
         // cached under the workspace items parent. expireDiscoveryRows must evict both
         // because neither "sql-stale" nor "kql-stale" is in the `seen` set built from
-        // the three allowed item types.
+        // the four allowed item types (Lakehouse, Warehouse, MirroredDatabase, SQLDatabase).
         let sqlRow = MetadataRecord(
             accountAlias: Self.alias,
             workspaceID: Self.wsID,

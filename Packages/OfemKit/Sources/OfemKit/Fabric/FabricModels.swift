@@ -85,9 +85,8 @@ public struct Item: Sendable, Equatable {
     ///
     /// Source: Fabric REST API `ItemType` enumeration
     /// (https://learn.microsoft.com/en-us/rest/api/fabric/core/items/list-items#itemtype)
-    /// as of June 2026.
     public var hasOneLakeStorage: Bool {
-        Self.allowedStorageTypes.contains(type.lowercased())
+        Self.allowedStorageTypes.contains(type.lowercased(with: Locale(identifier: "en_US_POSIX")))
     }
 
     /// Lowercased canonical forms of the four item types surfaced in Finder.
