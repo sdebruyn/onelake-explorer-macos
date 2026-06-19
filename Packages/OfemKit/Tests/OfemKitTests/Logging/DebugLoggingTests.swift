@@ -11,11 +11,10 @@ import Testing
 // writes JSON lines to a temp directory. After each scenario, read the log
 // file and assert the expected keys and values appear in the captured lines.
 //
-// HTTP interception is achieved by globally registering MockURLProtocol before
-// each test and unregistering it after. Because global URLProtocol registration
-// affects all sessions created after the call, and SessionPool creates sessions
-// lazily per-alias, each test uses a unique alias so the pool creates a fresh
-// session that sees the registered protocol.
+// HTTP interception is achieved by injecting a MockURLProtocol-backed Session
+// directly into the SessionPool via `_setSessionForTesting`. This avoids
+// relying on global `URLProtocol.registerClass`, which Alamofire sessions
+// with a custom URLSessionConfiguration do not inherit.
 
 // MARK: - Helpers
 
@@ -90,20 +89,19 @@ private func withTempDir(_ body: (URL) async throws -> Void) async throws {
 private let fabricBase = URL(string: "https://api.fabric.microsoft.com")!
 private let oneLakeBase = URL(string: "https://onelake.dfs.fabric.microsoft.com")!
 
-/// Runs `body` with `MockURLProtocol` globally registered for the duration.
+/// Creates a `SessionPool` with a `MockURLProtocol`-backed session pre-seeded
+/// for `alias` and both scopes.
 ///
-/// The caller must configure `MockURLProtocol.stubs` before calling `body`.
-/// A unique alias is produced so that `SessionPool` creates a fresh session
-/// that picks up the registered protocol.
-private func withMockProtocol(stubs: [MockURLProtocol.StubResponse], _ body: (String) async throws -> Void) async throws {
+/// Using `_setSessionForTesting` to inject the session avoids relying on
+/// global `URLProtocol.registerClass`, which Alamofire sessions with an
+/// explicit `URLSessionConfiguration` do not inherit.
+private func makeMockPool(alias: String, stubs: [MockURLProtocol.StubResponse]) async -> SessionPool {
     MockURLProtocol.stubs = stubs
-    URLProtocol.registerClass(MockURLProtocol.self)
-    defer {
-        URLProtocol.unregisterClass(MockURLProtocol.self)
-        MockURLProtocol.stubs = []
-    }
-    let alias = "log-test-\(UUID().uuidString)"
-    try await body(alias)
+    let pool = SessionPool(tokenProvider: NoopTokenProvider())
+    let session = makeMockSession()
+    await pool._setSessionForTesting(session, alias: alias, scope: .fabric)
+    await pool._setSessionForTesting(session, alias: alias, scope: .oneLake)
+    return pool
 }
 
 // MARK: - FabricClient debug logging
@@ -119,17 +117,17 @@ struct FabricClientDebugLoggingTests {
         let body = """
         {"value":[{"id":"ws1","displayName":"WS1","type":"Workspace"}]}
         """
+        let alias = "log-test-\(UUID().uuidString)"
         try await withTempDir { dir in
             let logger = makeCapturingLogger(directory: dir)
-            try await withMockProtocol(stubs: [
+            let pool = await makeMockPool(alias: alias, stubs: [
                 MockURLProtocol.StubResponse(status: 200, body: body),
-            ]) { alias in
-                let pool = SessionPool(tokenProvider: NoopTokenProvider())
-                let client = FabricClient(sessionPool: pool, baseURL: fabricBase, logger: logger)
+            ])
+            defer { MockURLProtocol.stubs = [] }
+            let client = FabricClient(sessionPool: pool, baseURL: fabricBase, logger: logger)
 
-                let workspaces = try await client.listAllWorkspaces(alias: alias)
-                #expect(workspaces.count == 1)
-            }
+            let workspaces = try await client.listAllWorkspaces(alias: alias)
+            #expect(workspaces.count == 1)
 
             let lines = try capturedLines(directory: dir)
 
@@ -173,18 +171,18 @@ struct FabricClientDebugLoggingTests {
         let page2 = """
         {"value":[{"id":"ws3","displayName":"WS3","type":"Workspace"}]}
         """
+        let alias = "log-test-\(UUID().uuidString)"
         try await withTempDir { dir in
             let logger = makeCapturingLogger(directory: dir)
-            try await withMockProtocol(stubs: [
+            let pool = await makeMockPool(alias: alias, stubs: [
                 MockURLProtocol.StubResponse(status: 200, body: page1),
                 MockURLProtocol.StubResponse(status: 200, body: page2),
-            ]) { alias in
-                let pool = SessionPool(tokenProvider: NoopTokenProvider())
-                let client = FabricClient(sessionPool: pool, baseURL: fabricBase, logger: logger)
+            ])
+            defer { MockURLProtocol.stubs = [] }
+            let client = FabricClient(sessionPool: pool, baseURL: fabricBase, logger: logger)
 
-                let workspaces = try await client.listAllWorkspaces(alias: alias)
-                #expect(workspaces.count == 3)
-            }
+            let workspaces = try await client.listAllWorkspaces(alias: alias)
+            #expect(workspaces.count == 3)
 
             let lines = try capturedLines(directory: dir)
 
@@ -218,23 +216,23 @@ struct OneLakeClientDebugLoggingTests {
         let body = """
         {"paths":[{"name":"item-guid-test/Files/a.txt","isDirectory":"false","contentLength":"10"}]}
         """
+        let alias = "log-test-\(UUID().uuidString)"
         try await withTempDir { dir in
             let logger = makeCapturingLogger(directory: dir)
-            try await withMockProtocol(stubs: [
+            let pool = await makeMockPool(alias: alias, stubs: [
                 MockURLProtocol.StubResponse(status: 200, body: body),
-            ]) { alias in
-                let pool = SessionPool(tokenProvider: NoopTokenProvider())
-                let client = OneLakeClient(sessionPool: pool, baseURL: oneLakeBase, logger: logger)
+            ])
+            defer { MockURLProtocol.stubs = [] }
+            let client = OneLakeClient(sessionPool: pool, baseURL: oneLakeBase, logger: logger)
 
-                let result = try await client.listPath(
-                    alias: alias,
-                    workspaceGUID: "ws-guid",
-                    itemGUID: "item-guid-test",
-                    directory: "Files",
-                    recursive: false
-                )
-                #expect(result.entries.count == 1)
-            }
+            let result = try await client.listPath(
+                alias: alias,
+                workspaceGUID: "ws-guid",
+                itemGUID: "item-guid-test",
+                directory: "Files",
+                recursive: false
+            )
+            #expect(result.entries.count == 1)
 
             let lines = try capturedLines(directory: dir)
 
@@ -287,24 +285,24 @@ struct OneLakeClientDebugLoggingTests {
         let page2Body = """
         {"paths":[{"name":"item-guid/Files/c.txt","isDirectory":"false","contentLength":"30"}]}
         """
+        let alias = "log-test-\(UUID().uuidString)"
         try await withTempDir { dir in
             let logger = makeCapturingLogger(directory: dir)
-            try await withMockProtocol(stubs: [
+            let pool = await makeMockPool(alias: alias, stubs: [
                 MockURLProtocol.StubResponse(status: 200, body: page1Body, headers: ["x-ms-continuation": "cont-token-1"]),
                 MockURLProtocol.StubResponse(status: 200, body: page2Body),
-            ]) { alias in
-                let pool = SessionPool(tokenProvider: NoopTokenProvider())
-                let client = OneLakeClient(sessionPool: pool, baseURL: oneLakeBase, logger: logger)
+            ])
+            defer { MockURLProtocol.stubs = [] }
+            let client = OneLakeClient(sessionPool: pool, baseURL: oneLakeBase, logger: logger)
 
-                let result = try await client.listPath(
-                    alias: alias,
-                    workspaceGUID: "ws-guid",
-                    itemGUID: "item-guid",
-                    directory: "Files",
-                    recursive: false
-                )
-                #expect(result.entries.count == 3)
-            }
+            let result = try await client.listPath(
+                alias: alias,
+                workspaceGUID: "ws-guid",
+                itemGUID: "item-guid",
+                directory: "Files",
+                recursive: false
+            )
+            #expect(result.entries.count == 3)
 
             let lines = try capturedLines(directory: dir)
 

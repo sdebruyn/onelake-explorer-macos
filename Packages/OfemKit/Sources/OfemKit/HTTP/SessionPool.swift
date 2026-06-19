@@ -55,6 +55,14 @@ public actor SessionPool {
         return s
     }
 
+    /// Seeds a pre-built `Session` for a specific `(alias, scope)` pair.
+    ///
+    /// Intended for unit tests that need to inject a session backed by
+    /// `MockURLProtocol`.  Not for use in production code.
+    func _setSessionForTesting(_ session: Session, alias: String, scope: TokenScope) {
+        sessions[Key(alias: alias, scope: scope)] = session
+    }
+
     // MARK: - Invalidation
 
     /// Cancels all in-flight requests and removes every `Session` for `alias`
