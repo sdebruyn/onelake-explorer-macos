@@ -241,6 +241,18 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
         // enumeration for an unrelated change observer). Store the new task in
         // inFlightChangesTask so invalidate() can cancel it (fpe-15).
         let changesTask = Task<Void, Never> {
+            // The root container's workspace list is refreshed by the host-side
+            // ChangeWatcher via domain remount.  Delivering file/folder cache rows
+            // to the root-container change observer would be semantically wrong
+            // (those rows are scoped to lakehouse paths, not to the root).
+            // Expire the anchor for root so the framework performs a full
+            // re-enumeration of the root (which calls enumerateItems → listWorkspaces)
+            // rather than computing an account-wide delta.
+            if identifierCopy == .root {
+                observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+                return
+            }
+
             do {
                 let engine = try await hostCopy.engine()
                 let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
@@ -574,6 +586,18 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 }
 
                 let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+
+                // If the anchor is ahead of the cache the DB may have been
+                // reset (or a new process started). Expire so the framework
+                // performs a full re-enumeration, mirroring the same guard in
+                // OfemFPEEnumerator.enumerateChanges.
+                if previousNs > currentNs && previousNs != 0 {
+                    Self.log.debug(
+                        "WorkingSet: anchor ahead of cache for \(aliasCopy, privacy: .public) — expiring"
+                    )
+                    observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+                    return
+                }
 
                 // Propagate SQLite errors; report deletions.
                 let (updatedRecords, deletedIdStrings) = try await engine.cache.itemsChangedAfter(

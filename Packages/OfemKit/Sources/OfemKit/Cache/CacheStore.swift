@@ -145,6 +145,31 @@ public actor CacheStore {
         CacheReader(db: dbPool, logger: logger)
     }
 
+    // MARK: - Read-only factory (host process)
+
+    /// Opens the cache at `root` in read-only mode and returns a `CacheReader`.
+    ///
+    /// Unlike the full `CacheStore.init`, this factory does **not** run the
+    /// orphan-blob sweep — a write transaction that competes with the FPE
+    /// process's writes.  Use this in the host app, which only needs to read
+    /// the workspace cache; the FPE is the sole writer.
+    ///
+    /// Returns `nil` when the SQLite file cannot be opened (e.g. the FPE has
+    /// not yet created the database).
+    public static func openReadOnly(root: URL, logger: OfemLogger = .init()) -> CacheReader? {
+        let dbURL = root.appendingPathComponent(CacheStore.sqliteFile)
+        guard FileManager.default.fileExists(atPath: dbURL.path) else { return nil }
+        var config = Configuration()
+        config.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA journal_mode = WAL")
+            try db.execute(sql: "PRAGMA busy_timeout = \(CacheStore.busyTimeoutMs)")
+        }
+        guard let pool = try? DatabasePool(path: dbURL.path, configuration: config) else {
+            return nil
+        }
+        return CacheReader(db: pool, logger: logger)
+    }
+
     // MARK: - Orphan sweep
 
     /// Runs the orphan-blob sweep synchronously (blocking the actor).

@@ -8,6 +8,32 @@ import XCTest
 
 final class OfemFPEEnumeratorTests: XCTestCase {
 
+    // MARK: - Test lifecycle
+
+    /// Fixed aliases used with OfemWorkingSetEnumerator that write to the
+    /// process-wide static `aliasRefreshTimestamps` dictionary.  Cleared in
+    /// setUp and tearDown so test execution order cannot affect results.
+    private static let fixedWorkingSetAliases: [String] = [
+        "ws-test",
+        "ws-auth-changes-test",
+        "ws-non-auth-test",
+        "ws-refresh-auth-test",
+    ]
+
+    override func setUp() {
+        super.setUp()
+        for alias in Self.fixedWorkingSetAliases {
+            OfemWorkingSetEnumerator.clearRefresh(for: alias)
+        }
+    }
+
+    override func tearDown() {
+        for alias in Self.fixedWorkingSetAliases {
+            OfemWorkingSetEnumerator.clearRefresh(for: alias)
+        }
+        super.tearDown()
+    }
+
     // MARK: - OfemWorkingSetEnumerator: enumerateItems returns empty page
 
     func testWorkingSetEnumerateItemsReturnsEmpty() async throws {

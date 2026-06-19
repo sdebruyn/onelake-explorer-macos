@@ -40,9 +40,8 @@ import os.log
 // MARK: - Workspace set signature helpers (pure, testable)
 
 /// Computes a stable, order-independent signature for a set of workspace
-/// cache rows.  Sorts rows by workspace GUID (path) then by display name and
-/// joins them with a tab-separated format so both renames and add/removes are
-/// detected.
+/// cache rows.  Sorts the composed `"\(path)\tname"` strings so both renames
+/// and add/removes are detected.
 ///
 /// Exposed as a free function so unit tests can exercise it without touching
 /// any network, file system, or FileProvider API.
@@ -125,12 +124,17 @@ final class ChangeWatcher {
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.workingSetRefreshInterval)
                 guard !Task.isCancelled else { break }
-                // Signal the working set so the FPE refreshes the workspace
-                // list from Fabric into the SQLite cache.
+                // Signal the working set so the FPE's
+                // OfemWorkingSetEnumerator.enumerateChanges refreshes the
+                // workspace list from Fabric into the SQLite cache (throttled,
+                // at most once per 60 s per alias).  The signal completes once
+                // the signal has been QUEUED to the FPE — the FPE may not have
+                // finished its listWorkspaces call yet.  checkAndRemountChangedDomains
+                // therefore reads the PREVIOUS tick's cache (up to 90 s lag),
+                // which is acceptable — the lag is bounded by the refresh interval.
                 await self?.signal(container: .workingSet)
-                // After the FPE has had a chance to update the cache, read
-                // the cached workspace set for each account and remount the
-                // domain if the set changed.
+                // Read the cached workspace set for each account and remount
+                // the domain when the signature changed.
                 await self?.checkAndRemountChangedDomains()
             }
         }
@@ -144,8 +148,22 @@ final class ChangeWatcher {
     /// Reads the cached workspace set for each registered account.  On the
     /// first call per alias, establishes the baseline signature.  On subsequent
     /// calls, remounts the domain when the signature changes.
+    ///
+    /// Pruning: entries in `lastWorkspaceSignatures` for aliases that are no
+    /// longer present in the account list are removed so that a re-added alias
+    /// does not reuse a stale baseline.
     private func checkAndRemountChangedDomains() async {
         let accounts = await SharedOfemAuth.shared.auth.listAccounts()
+
+        // Prune signatures for removed aliases so a re-added alias starts fresh.
+        let currentAliases = Set(accounts.map(\.alias))
+        for staleAlias in lastWorkspaceSignatures.keys where !currentAliases.contains(staleAlias) {
+            lastWorkspaceSignatures.removeValue(forKey: staleAlias)
+            Self.log.debug(
+                "ChangeWatcher: pruned stale signature for removed alias \(staleAlias, privacy: .public)"
+            )
+        }
+
         guard !accounts.isEmpty else { return }
 
         guard let reader = getOrOpenCacheReader() else { return }
@@ -201,7 +219,33 @@ final class ChangeWatcher {
             await DomainSyncManager.shared.removeDomain(alias: alias)
             await DomainSyncManager.shared.addDomain(alias: alias)
             remountInFlight.remove(alias)
-            // Update signature AFTER successful remount.
+
+            // Verify that the domain is actually registered after the remount
+            // before updating the stored signature.  removeDomain / addDomain
+            // are non-throwing — they catch, log, and return normally on failure.
+            // If the add failed the domain is absent from the list; do NOT update
+            // the signature so the next tick retries the remount.
+            let domainId = DomainSyncManager.shared.domainIdentifier(for: alias)
+            let registered: Bool
+            do {
+                let domains = try await ofemGetAllDomains()
+                registered = domains.contains { $0.identifier.rawValue == domainId }
+            } catch {
+                // Cannot list domains — assume failure; retry next tick.
+                Self.log.warning(
+                    "ChangeWatcher: could not verify domain registration for \(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                continue
+            }
+
+            guard registered else {
+                Self.log.warning(
+                    "ChangeWatcher: remount of \(alias, privacy: .public) did not register domain — will retry next tick"
+                )
+                continue
+            }
+
+            // Signature updated only after confirmed-successful remount.
             lastWorkspaceSignatures[alias] = sig
             Self.log.info(
                 "ChangeWatcher: remounted domain for \(alias, privacy: .public) (\(records.count, privacy: .public) workspaces)"
@@ -247,20 +291,20 @@ final class ChangeWatcher {
 
     /// Returns the shared `CacheReader`, opening it lazily on first use.
     ///
-    /// Returns `nil` if the CacheStore cannot be opened (catastrophic SQLite
-    /// failure).  Callers must skip detection gracefully in that case.
+    /// Returns `nil` if the database file does not yet exist or cannot be opened.
+    /// Callers must skip detection gracefully in that case.
     ///
-    /// We construct a `CacheStore` (actor) and immediately call `.reader()` to
-    /// get the non-isolated `CacheReader`.  The store is intentionally kept alive
-    /// by storing the reader (which retains the underlying `DatabasePool`).
+    /// Uses `CacheStore.openReadOnly` to open only the DatabasePool in read-only
+    /// mode, skipping the orphan-blob sweep that `CacheStore.init` would launch
+    /// as a background write task.  The host process is a reader only; the FPE
+    /// is the sole writer of the cache database.
     private func getOrOpenCacheReader() -> CacheReader? {
         if let existing = cacheReader { return existing }
         let paths = OfemPaths()
-        guard let store = try? CacheStore(root: paths.cacheDir) else {
-            Self.log.error("ChangeWatcher: failed to open CacheStore — workspace-set detection disabled")
+        guard let r = CacheStore.openReadOnly(root: paths.cacheDir) else {
+            Self.log.debug("ChangeWatcher: cache not yet available — skipping detection this tick")
             return nil
         }
-        let r = store.reader()
         cacheReader = r
         return r
     }
