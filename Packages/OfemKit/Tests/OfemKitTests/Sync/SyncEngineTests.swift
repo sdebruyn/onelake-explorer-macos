@@ -1269,16 +1269,16 @@ struct SyncEngineTests {
         #expect(!ids.contains("e-1"), "empty type must be hidden by allowlist")
     }
 
-    @Test("Item.hasOneLakeStorage reflects strict allowlist: true only for Lakehouse/Warehouse/MirroredDatabase")
+    @Test("Item.hasOneLakeStorage reflects strict allowlist: true only for Lakehouse/Warehouse/MirroredDatabase/SQLDatabase")
     func testItemHasOneLakeStorageAllowlistContents() {
         func item(type: String) -> Item { Item(id: "x", displayName: "x", type: type, workspaceID: "w") }
-        // The three allowed types must be visible.
+        // The four allowed types must be visible.
         #expect(item(type: "Lakehouse").hasOneLakeStorage)
         #expect(item(type: "Warehouse").hasOneLakeStorage)
         #expect(item(type: "MirroredDatabase").hasOneLakeStorage)
+        #expect(item(type: "SQLDatabase").hasOneLakeStorage)
         // Types that have OneLake storage but are not yet supported are hidden.
         #expect(!item(type: "KQLDatabase").hasOneLakeStorage)
-        #expect(!item(type: "SQLDatabase").hasOneLakeStorage)
         #expect(!item(type: "Eventhouse").hasOneLakeStorage)
         #expect(!item(type: "MirroredWarehouse").hasOneLakeStorage)
         // Non-storage types must also be hidden.
@@ -1293,21 +1293,24 @@ struct SyncEngineTests {
         #expect(!item(type: "").hasOneLakeStorage)
     }
 
-    @Test("Item.hasOneLakeStorage is case-insensitive for the three allowed types")
+    @Test("Item.hasOneLakeStorage is case-insensitive for the four allowed types")
     func testItemHasOneLakeStorageCaseInsensitive() {
         func item(type: String) -> Item { Item(id: "x", displayName: "x", type: type, workspaceID: "w") }
         // All-lower
         #expect(item(type: "lakehouse").hasOneLakeStorage)
         #expect(item(type: "warehouse").hasOneLakeStorage)
         #expect(item(type: "mirroreddatabase").hasOneLakeStorage)
+        #expect(item(type: "sqldatabase").hasOneLakeStorage)
         // All-upper
         #expect(item(type: "LAKEHOUSE").hasOneLakeStorage)
         #expect(item(type: "WAREHOUSE").hasOneLakeStorage)
         #expect(item(type: "MIRROREDDATABASE").hasOneLakeStorage)
+        #expect(item(type: "SQLDATABASE").hasOneLakeStorage)
         // Mixed case
         #expect(item(type: "LakeHouse").hasOneLakeStorage)
         #expect(item(type: "WareHouse").hasOneLakeStorage)
         #expect(item(type: "MirroredDatabase").hasOneLakeStorage)
+        #expect(item(type: "SqlDatabase").hasOneLakeStorage)
         // Case-insensitive match must not accidentally allow other types.
         #expect(!item(type: "KQLDATABASE").hasOneLakeStorage)
         #expect(!item(type: "notebook").hasOneLakeStorage)

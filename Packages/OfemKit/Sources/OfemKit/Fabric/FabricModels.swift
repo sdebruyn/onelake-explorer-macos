@@ -71,11 +71,14 @@ public struct Item: Sendable, Equatable {
     /// (`/{workspaceGUID}/{itemGUID}/…`) and should appear as a browsable
     /// folder in Finder.
     ///
-    /// Uses a strict **allowlist**: only `Lakehouse`, `Warehouse`, and
-    /// `MirroredDatabase` are shown. All other item types — including types
-    /// that have OneLake storage but are not yet supported (e.g. `KQLDatabase`,
-    /// `Eventhouse`, `SQLDatabase`, `MirroredWarehouse`) — are hidden until
-    /// explicitly added here.
+    /// Uses a strict **allowlist**: only `Lakehouse`, `Warehouse`,
+    /// `MirroredDatabase`, and `SQLDatabase` are shown. All other item types —
+    /// including types that have OneLake storage but are not yet supported
+    /// (e.g. `KQLDatabase`, `Eventhouse`, `MirroredWarehouse`) — are hidden
+    /// until explicitly added here.
+    ///
+    /// `SQLDatabase` auto-replicates all its tables to OneLake as read-only
+    /// Delta tables, making it a fully OneLake-backed item type.
     ///
     /// Comparison is **case-insensitive**: a casing drift in the Fabric REST API
     /// response can never hide a user's storage item.
@@ -87,11 +90,12 @@ public struct Item: Sendable, Equatable {
         Self.allowedStorageTypes.contains(type.lowercased())
     }
 
-    /// Lowercased canonical forms of the three item types surfaced in Finder.
+    /// Lowercased canonical forms of the four item types surfaced in Finder.
     private static let allowedStorageTypes: Set<String> = [
         "lakehouse",
         "warehouse",
         "mirroreddatabase",
+        "sqldatabase",
     ]
 }
 
