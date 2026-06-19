@@ -99,20 +99,27 @@ final class MenuStatusModelExtendedTests: XCTestCase {
     private var model: MenuStatusModel!
     private var cancellables = Set<AnyCancellable>()
 
-    @MainActor override func setUp() {
+    // setUp and tearDown override nonisolated XCTestCase methods, so they
+    // cannot be marked @MainActor. XCTest always runs them on the main thread;
+    // MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
+    override func setUp() {
         super.setUp()
-        accountProvider = FakeAccountProvider()
-        engineProvider = FakeEngineStatusProvider()
-        domainManager = FakeDomainManager()
-        model = MenuStatusModel(
-            accountProvider: accountProvider,
-            engineStatusProvider: engineProvider,
-            domainManager: domainManager
-        )
+        MainActor.assumeIsolated {
+            accountProvider = FakeAccountProvider()
+            engineProvider = FakeEngineStatusProvider()
+            domainManager = FakeDomainManager()
+            model = MenuStatusModel(
+                accountProvider: accountProvider,
+                engineStatusProvider: engineProvider,
+                domainManager: domainManager
+            )
+        }
     }
 
-    @MainActor override func tearDown() {
-        cancellables.removeAll()
+    override func tearDown() {
+        MainActor.assumeIsolated {
+            cancellables.removeAll()
+        }
         super.tearDown()
     }
 
@@ -602,18 +609,25 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase {
     // Since the test bundle includes both files we can reference the private types by
     // redeclaring compatible local versions here.
 
-    @MainActor override func setUp() {
+    // setUp and tearDown override nonisolated XCTestCase methods, so they
+    // cannot be marked @MainActor. XCTest always runs them on the main thread;
+    // MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
+    override func setUp() {
         super.setUp()
-        signInProvider = MockSignInProvider()
-        domainRegistrar = MockDomainRegistrar()
-        coordinator = AddAccountCoordinator(
-            signInProvider: signInProvider,
-            domainRegistrar: domainRegistrar
-        )
+        MainActor.assumeIsolated {
+            signInProvider = MockSignInProvider()
+            domainRegistrar = MockDomainRegistrar()
+            coordinator = AddAccountCoordinator(
+                signInProvider: signInProvider,
+                domainRegistrar: domainRegistrar
+            )
+        }
     }
 
-    @MainActor override func tearDown() {
-        cancellables.removeAll()
+    override func tearDown() {
+        MainActor.assumeIsolated {
+            cancellables.removeAll()
+        }
         super.tearDown()
     }
 

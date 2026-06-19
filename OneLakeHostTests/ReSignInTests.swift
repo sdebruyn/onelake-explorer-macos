@@ -114,22 +114,29 @@ final class ReSignInTests: XCTestCase {
     private var model: MenuStatusModel!
     private var cancellables = Set<AnyCancellable>()
 
-    @MainActor override func setUp() {
+    // setUp and tearDown override nonisolated XCTestCase methods, so they
+    // cannot be marked @MainActor. XCTest always runs them on the main thread;
+    // MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
+    override func setUp() {
         super.setUp()
-        accountProvider = FakeReSignInAccountProvider()
-        engineProvider = FakeReSignInEngineProvider()
-        domainManager = FakeReSignInDomainManager()
-        reSignInProvider = FakeReSignInProvider()
-        model = MenuStatusModel(
-            accountProvider: accountProvider,
-            engineStatusProvider: engineProvider,
-            domainManager: domainManager,
-            reSignInProvider: reSignInProvider
-        )
+        MainActor.assumeIsolated {
+            accountProvider = FakeReSignInAccountProvider()
+            engineProvider = FakeReSignInEngineProvider()
+            domainManager = FakeReSignInDomainManager()
+            reSignInProvider = FakeReSignInProvider()
+            model = MenuStatusModel(
+                accountProvider: accountProvider,
+                engineStatusProvider: engineProvider,
+                domainManager: domainManager,
+                reSignInProvider: reSignInProvider
+            )
+        }
     }
 
-    @MainActor override func tearDown() {
-        cancellables.removeAll()
+    override func tearDown() {
+        MainActor.assumeIsolated {
+            cancellables.removeAll()
+        }
         super.tearDown()
     }
 
