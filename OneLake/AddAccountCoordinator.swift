@@ -222,6 +222,7 @@ final class AddAccountCoordinator: ObservableObject {
             case .unknownAlias(let a): return "Account '\(a)' not found."
             case .emptyScopes: return "Internal error: no scopes configured."
             case .silentTokenFailed(let alias): return "Token error for '\(alias)' — please sign in again."
+            case .configRejection(let alias): return "Authentication configuration error for '\(alias)' — contact the administrator."
             case .msalRemoveFailed(let alias, _): return "Sign-out error for '\(alias)' — refresh token may not have been cleared."
             }
         }
