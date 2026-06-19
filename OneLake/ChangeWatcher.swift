@@ -32,7 +32,7 @@
 // This class is @MainActor because NSFileProviderManager calls are documented
 // as main-thread-only.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import OfemKit
 import os.log

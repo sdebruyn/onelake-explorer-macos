@@ -52,20 +52,25 @@ private final class MockDomainRegistrar: DomainRegistrar, @unchecked Sendable {
 // MARK: - Tests
 
 @MainActor
-final class AddAccountCoordinatorTests: XCTestCase {
+final class AddAccountCoordinatorTests: XCTestCase, @unchecked Sendable {
 
     private var signInProvider: MockSignInProvider!
     private var domainRegistrar: MockDomainRegistrar!
     private var coordinator: AddAccountCoordinator!
 
+    // setUp overrides a nonisolated XCTestCase method and cannot be marked
+    // @MainActor. XCTest always runs setUp on the main thread; this is asserted
+    // via MainActor.assumeIsolated to satisfy Swift 6 strict concurrency.
     override func setUp() {
         super.setUp()
-        signInProvider = MockSignInProvider()
-        domainRegistrar = MockDomainRegistrar()
-        coordinator = AddAccountCoordinator(
-            signInProvider: signInProvider,
-            domainRegistrar: domainRegistrar
-        )
+        MainActor.assumeIsolated {
+            signInProvider = MockSignInProvider()
+            domainRegistrar = MockDomainRegistrar()
+            coordinator = AddAccountCoordinator(
+                signInProvider: signInProvider,
+                domainRegistrar: domainRegistrar
+            )
+        }
     }
 
     // MARK: - Initial state

@@ -14,7 +14,11 @@ import Foundation
 /// NSSecureCoding-conformant account info for XPC transport.
 ///
 /// Used in OfemClientControlProtocol replies that return account data.
-@objc(XPCAccountInfo) public final class XPCAccountInfo: NSObject, NSSecureCoding {
+///
+/// All stored properties are `let`, set once at init and never mutated. NSObject +
+/// `@objc` prevent automatic Sendable synthesis, so `@unchecked Sendable` is the
+/// correct idiomatic annotation — there is no shared mutable state to guard.
+@objc(XPCAccountInfo) public final class XPCAccountInfo: NSObject, NSSecureCoding, @unchecked Sendable {
     @objc public static var supportsSecureCoding: Bool { true }
 
     @objc public let alias: String

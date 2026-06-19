@@ -91,7 +91,7 @@ private func makeAccount(alias: String) -> Account {
 // MARK: - Tests
 
 @MainActor
-final class MenuStatusModelExtendedTests: XCTestCase {
+final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
 
     private var accountProvider: FakeAccountProvider!
     private var engineProvider: FakeEngineStatusProvider!
@@ -99,20 +99,27 @@ final class MenuStatusModelExtendedTests: XCTestCase {
     private var model: MenuStatusModel!
     private var cancellables = Set<AnyCancellable>()
 
+    // setUp and tearDown override nonisolated XCTestCase methods, so they
+    // cannot be marked @MainActor. XCTest always runs them on the main thread;
+    // MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
     override func setUp() {
         super.setUp()
-        accountProvider = FakeAccountProvider()
-        engineProvider = FakeEngineStatusProvider()
-        domainManager = FakeDomainManager()
-        model = MenuStatusModel(
-            accountProvider: accountProvider,
-            engineStatusProvider: engineProvider,
-            domainManager: domainManager
-        )
+        MainActor.assumeIsolated {
+            accountProvider = FakeAccountProvider()
+            engineProvider = FakeEngineStatusProvider()
+            domainManager = FakeDomainManager()
+            model = MenuStatusModel(
+                accountProvider: accountProvider,
+                engineStatusProvider: engineProvider,
+                domainManager: domainManager
+            )
+        }
     }
 
     override func tearDown() {
-        cancellables.removeAll()
+        MainActor.assumeIsolated {
+            cancellables.removeAll()
+        }
         super.tearDown()
     }
 
@@ -591,7 +598,7 @@ final class CopyrightDerivationTests: XCTestCase {
 // MARK: - AddAccountCoordinator extended tests (host-04, host-16)
 
 @MainActor
-final class AddAccountCoordinatorExtendedTests: XCTestCase {
+final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable {
 
     private var signInProvider: MockSignInProvider!
     private var domainRegistrar: MockDomainRegistrar!
@@ -602,18 +609,25 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase {
     // Since the test bundle includes both files we can reference the private types by
     // redeclaring compatible local versions here.
 
+    // setUp and tearDown override nonisolated XCTestCase methods, so they
+    // cannot be marked @MainActor. XCTest always runs them on the main thread;
+    // MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
     override func setUp() {
         super.setUp()
-        signInProvider = MockSignInProvider()
-        domainRegistrar = MockDomainRegistrar()
-        coordinator = AddAccountCoordinator(
-            signInProvider: signInProvider,
-            domainRegistrar: domainRegistrar
-        )
+        MainActor.assumeIsolated {
+            signInProvider = MockSignInProvider()
+            domainRegistrar = MockDomainRegistrar()
+            coordinator = AddAccountCoordinator(
+                signInProvider: signInProvider,
+                domainRegistrar: domainRegistrar
+            )
+        }
     }
 
     override func tearDown() {
-        cancellables.removeAll()
+        MainActor.assumeIsolated {
+            cancellables.removeAll()
+        }
         super.tearDown()
     }
 

@@ -4,7 +4,7 @@
 // One canonical mapping ensures that a code change (e.g. deciding .serverBusy
 // should surface differently) is applied consistently at every FPE call site.
 
-import FileProvider
+@preconcurrency import FileProvider
 import OfemKit
 
 /// Maps a stable ``FPError/Code`` to the corresponding `NSFileProviderError`.

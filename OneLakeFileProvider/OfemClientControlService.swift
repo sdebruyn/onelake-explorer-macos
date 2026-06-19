@@ -22,7 +22,7 @@
 //     must be listed as reply blocks in the XPC interface via
 //     setClasses(_:for:argumentIndex:ofReply:).
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import OfemKit
 import os.log
@@ -42,6 +42,33 @@ import os.log
 ///   - `certificate leaf[subject.OU]` — Developer Team ID leaf field
 let ofemXPCPeerRequirement = #"identifier "dev.debruyn.ofem" and anchor apple generic and certificate leaf[subject.OU] = "6D79CUWZ4J""#
 
+// MARK: - Reply-once helper
+
+/// Ensures an XPC reply block is called at most once regardless of which code path
+/// completes first (Task body, defer, or connection teardown).
+///
+/// NSXPCConnection invokes the reply block from an arbitrary queue; the Swift Task
+/// body runs on a cooperative thread pool. Without this guard both paths can race to
+/// call `reply` — the second call is undefined behaviour at the XPC boundary.
+/// The lock makes the second call a no-op.
+///
+/// Usage: wrap each distinct reply invocation in a `() -> Void` closure so the
+/// helper stays generic over the unit type.
+///
+/// `@unchecked Sendable`: the only mutable state is `replied`, guarded by `lock`.
+private final class ReplyOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var replied = false
+
+    func callOnce(_ body: () -> Void) {
+        lock.withLock {
+            guard !replied else { return }
+            replied = true
+            body()
+        }
+    }
+}
+
 // MARK: - OfemClientControlService
 
 /// NSFileProviderServiceSource that vends the OfemClientControlProtocol XPC service.
@@ -54,7 +81,11 @@ let ofemXPCPeerRequirement = #"identifier "dev.debruyn.ofem" and anchor apple ge
 /// A single NSXPCListener is created lazily on the first `makeListenerEndpoint`
 /// call and reused for all subsequent calls. Replacing the listener on every
 /// call would orphan the previous endpoint's connections.
-final class OfemClientControlService: NSObject, NSFileProviderServiceSource {
+///
+/// `@unchecked Sendable`: `NSFileProviderServiceSource` is a synchronous
+/// non-isolated ObjC protocol; actors are not viable here. All mutable state
+/// (`listener`, `listenerDelegate`) is guarded by `listenerLock`.
+final class OfemClientControlService: NSObject, NSFileProviderServiceSource, @unchecked Sendable {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
         category: "control-service"
@@ -106,7 +137,12 @@ final class OfemClientControlService: NSObject, NSFileProviderServiceSource {
 // MARK: - XPC Listener Delegate
 
 /// Accepts and configures incoming XPC connections for the control protocol.
-private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
+///
+/// `@unchecked Sendable`: `NSXPCListenerDelegate` is a synchronous non-isolated
+/// ObjC protocol; actors are not viable here. The only stored property (`engineHost`)
+/// is immutable after init — `any EngineProviding` is itself `Sendable` (protocol
+/// requirement in OfemKit).
+private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     private let engineHost: any EngineProviding
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
@@ -164,7 +200,12 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
 // MARK: - XPC Handler (the "exported object" on the FPE side)
 
 /// Implements OfemClientControlProtocol — called by the host app via XPC.
-private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
+///
+/// `@unchecked Sendable`: XPC invokes these methods from an arbitrary thread;
+/// `OfemClientControlProtocol` is a synchronous non-isolated `@objc` protocol.
+/// The only stored property (`engineHost`) is immutable after init and is itself
+/// `Sendable` (declared as `AnyObject & Sendable` in `EngineProviding`).
+private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @unchecked Sendable {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
         category: "xpc-handler"
@@ -186,17 +227,17 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
     // MARK: - getEngineStatus
 
     func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
-        // xpc-02: reply-once guard — fires exactly once on every path,
-        // including Task cancellation or connection teardown. Without this a
-        // torn-down connection can leave the host app waiting forever.
-        var replied = false
-        let replyOnce: (XPCEngineStatus?, Error?) -> Void = { status, err in
-            guard !replied else { return }
-            replied = true
-            reply(status, err)
-        }
+        // xpc-02: reply-once guard via ReplyOnce — fires exactly once on every
+        // path, including Task cancellation or connection teardown.
+        //
+        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
+        // @unchecked Sendable so the Task body can capture it safely — the
+        // ReplyOnce guard ensures the closure is called at most once.
+        struct ReplyBox: @unchecked Sendable { let fn: (XPCEngineStatus?, Error?) -> Void }
+        let rb = ReplyBox(fn: reply)
+        let replyOnce = ReplyOnce()
         Task { [self] in
-            defer { replyOnce(nil, NSFileProviderError(.cannotSynchronize)) }
+            defer { replyOnce.callOnce { rb.fn(nil, NSFileProviderError(.cannotSynchronize)) } }
             do {
                 // Read config snapshot via the shared configStore — does NOT
                 // require the engine to be built yet (cheaper for first call).
@@ -244,12 +285,12 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                     pausedWorkspaces: pausedWorkspaces,
                     needsSignIn: engineHost.needsSignIn
                 )
-                replyOnce(status, nil)
+                replyOnce.callOnce { rb.fn(status, nil) }
             } catch {
                 Self.log.error(
                     "getEngineStatus failed: \(error.localizedDescription, privacy: .public)"
                 )
-                replyOnce(nil, error)
+                replyOnce.callOnce { rb.fn(nil, error) }
             }
         }
     }
@@ -257,81 +298,110 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
     // MARK: - setConfig
 
     func setConfig(key: String, value: String, reply: @escaping (Error?) -> Void) {
-        // xpc-02: reply-once guard — fires exactly once on every path,
-        // including Task cancellation or connection teardown.
-        var replied = false
-        let replyOnce: (Error?) -> Void = { err in
-            guard !replied else { return }
-            replied = true
-            reply(err)
+        // Validate-first: resolve (key, value) synchronously to a plain Sendable
+        // value before spinning up any Task. Validation never mutates state
+        // captured by the async mutator closure, so the closure stays
+        // `@Sendable`-safe.
+        //
+        // `ValidatedConfig` is a Sendable enum of plain value-typed cases;
+        // the async Task captures only the resolved case, not any closures.
+        enum ValidatedConfig: Sendable {
+            case telemetry(Bool)
+            case cacheMaxSizeGB(Int)
+            case netMaxUploads(Int)
+            case netMaxDownloads(Int)
+            case logLevel(String)
         }
+
+        let result: Result<ValidatedConfig, SetConfigError>
+        switch key {
+        case "telemetry":
+            guard value == "on" || value == "off" else {
+                result = .failure(.invalidValue(key: key, value: value,
+                    reason: "expected \"on\" or \"off\""))
+                break
+            }
+            result = .success(.telemetry(value == "on"))
+        case "cache.max_size_gb":
+            guard let gb = Int(value) else {
+                result = .failure(.invalidValue(key: key, value: value,
+                    reason: "expected an integer"))
+                break
+            }
+            // 0 is the "no limit" sentinel; positive values are
+            // clamped to [minSizeGB, maxSizeGB].
+            let clamped = gb == 0 ? 0 : min(max(gb, CacheConfig.minSizeGB), CacheConfig.maxSizeGB)
+            result = .success(.cacheMaxSizeGB(clamped))
+        case "net.max_concurrent_uploads_per_account":
+            guard let n = Int(value) else {
+                result = .failure(.invalidValue(key: key, value: value,
+                    reason: "expected an integer"))
+                break
+            }
+            // xpc-07: use named constants from NetConfig.
+            // Upper bound is per-protocol (16 uploads); the shared
+            // NetConfig.maxConcurrent (64) is the absolute ceiling
+            // for any concurrency field — the XPC protocol caps
+            // uploads more tightly to avoid swamping the endpoint.
+            result = .success(.netMaxUploads(min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxUploadsPerAccount)))
+        case "net.max_concurrent_downloads_per_account":
+            guard let n = Int(value) else {
+                result = .failure(.invalidValue(key: key, value: value,
+                    reason: "expected an integer"))
+                break
+            }
+            // xpc-08: use named constants from NetConfig.
+            result = .success(.netMaxDownloads(min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxDownloadsPerAccount)))
+        case "log.level":
+            let allowed = ["debug", "info", "warn", "error"]
+            guard allowed.contains(value) else {
+                result = .failure(.invalidValue(key: key, value: value,
+                    reason: "expected one of \(allowed.joined(separator: ", "))"))
+                break
+            }
+            result = .success(.logLevel(value))
+        default:
+            result = .failure(.unknownKey(key))
+        }
+
+        let validated: ValidatedConfig
+        switch result {
+        case .failure(let err):
+            Self.log.warning(
+                "setConfig: key='\(key, privacy: .public)' rejected: \(err.localizedDescription, privacy: .public)"
+            )
+            // xpc-03: bridge SetConfigError to NSError so the host
+            // receives a decodable, classifiable error at the XPC
+            // boundary rather than an opaque SwiftErrorDomain blob.
+            reply(err.asNSError())
+            return
+        case .success(let value):
+            validated = value
+        }
+
+        // xpc-02: reply-once guard via ReplyOnce — fires exactly once on every
+        // path, including Task cancellation or connection teardown.
+        //
+        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
+        // @unchecked Sendable so the Task body can capture it safely — the
+        // ReplyOnce guard ensures the closure is called at most once.
+        struct ReplyBox: @unchecked Sendable { let fn: (Error?) -> Void }
+        let rb = ReplyBox(fn: reply)
+        let replyOnce = ReplyOnce()
         Task { [self] in
-            defer { replyOnce(NSFileProviderError(.cannotSynchronize)) }
+            defer { replyOnce.callOnce { rb.fn(NSFileProviderError(.cannotSynchronize)) } }
             do {
                 let configStore = try engineHost.configStore()
-                var applyError: SetConfigError? = nil
+                // The mutator closure captures only `validated` — a Sendable
+                // enum of plain value-typed cases — so it is `@Sendable`-safe.
                 try await configStore.updateAndSave { cfg in
-                    switch key {
-                    case "telemetry":
-                        guard value == "on" || value == "off" else {
-                            applyError = .invalidValue(key: key, value: value,
-                                reason: "expected \"on\" or \"off\"")
-                            return
-                        }
-                        cfg.telemetry = (value == "on")
-                    case "cache.max_size_gb":
-                        guard let gb = Int(value) else {
-                            applyError = .invalidValue(key: key, value: value,
-                                reason: "expected an integer")
-                            return
-                        }
-                        // 0 is the "no limit" sentinel; positive values are
-                        // clamped to [minSizeGB, maxSizeGB].
-                        cfg.cache.maxSizeGB = gb == 0
-                            ? 0
-                            : min(max(gb, CacheConfig.minSizeGB), CacheConfig.maxSizeGB)
-                    case "net.max_concurrent_uploads_per_account":
-                        guard let n = Int(value) else {
-                            applyError = .invalidValue(key: key, value: value,
-                                reason: "expected an integer")
-                            return
-                        }
-                        // xpc-07: use named constants from NetConfig.
-                        // Upper bound is per-protocol (16 uploads); the shared
-                        // NetConfig.maxConcurrent (64) is the absolute ceiling
-                        // for any concurrency field — the XPC protocol caps
-                        // uploads more tightly to avoid swamping the endpoint.
-                        cfg.net.maxConcurrentUploadsPerAccount = min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxUploadsPerAccount)
-                    case "net.max_concurrent_downloads_per_account":
-                        guard let n = Int(value) else {
-                            applyError = .invalidValue(key: key, value: value,
-                                reason: "expected an integer")
-                            return
-                        }
-                        // xpc-08: use named constants from NetConfig.
-                        cfg.net.maxConcurrentDownloadsPerAccount = min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxDownloadsPerAccount)
-                    case "log.level":
-                        let allowed = ["debug", "info", "warn", "error"]
-                        guard allowed.contains(value) else {
-                            applyError = .invalidValue(key: key, value: value,
-                                reason: "expected one of \(allowed.joined(separator: ", "))")
-                            return
-                        }
-                        cfg.log.level = value
-                    default:
-                        applyError = .unknownKey(key)
+                    switch validated {
+                    case .telemetry(let flag):      cfg.telemetry = flag
+                    case .cacheMaxSizeGB(let gb):   cfg.cache.maxSizeGB = gb
+                    case .netMaxUploads(let n):     cfg.net.maxConcurrentUploadsPerAccount = n
+                    case .netMaxDownloads(let n):   cfg.net.maxConcurrentDownloadsPerAccount = n
+                    case .logLevel(let lvl):        cfg.log.level = lvl
                     }
-                }
-
-                if let applyError {
-                    Self.log.warning(
-                        "setConfig: key='\(key, privacy: .public)' rejected: \(applyError.localizedDescription, privacy: .public)"
-                    )
-                    // xpc-03: bridge SetConfigError to NSError so the host
-                    // receives a decodable, classifiable error at the XPC
-                    // boundary rather than an opaque SwiftErrorDomain blob.
-                    replyOnce(applyError.asNSError())
-                    return
                 }
 
                 Self.log.info(
@@ -345,12 +415,12 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
                 // _engine and _buildError, and let the next use rebuild lazily.
                 await engineHost.reloadEngine()
 
-                replyOnce(nil)
+                replyOnce.callOnce { rb.fn(nil) }
             } catch {
                 Self.log.error(
                     "setConfig failed: key='\(key, privacy: .public)' error=\(error.localizedDescription, privacy: .public)"
                 )
-                replyOnce(error)
+                replyOnce.callOnce { rb.fn(error) }
             }
         }
     }
@@ -358,26 +428,27 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol {
     // MARK: - clearCache
 
     func clearCache(reply: @escaping (Int64, Error?) -> Void) {
-        // xpc-02: reply-once guard — fires exactly once on every path,
-        // including Task cancellation or connection teardown.
-        var replied = false
-        let replyOnce: (Int64, Error?) -> Void = { bytes, err in
-            guard !replied else { return }
-            replied = true
-            reply(bytes, err)
-        }
+        // xpc-02: reply-once guard via ReplyOnce — fires exactly once on every
+        // path, including Task cancellation or connection teardown.
+        //
+        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
+        // @unchecked Sendable so the Task body can capture it safely — the
+        // ReplyOnce guard ensures the closure is called at most once.
+        struct ReplyBox: @unchecked Sendable { let fn: (Int64, Error?) -> Void }
+        let rb = ReplyBox(fn: reply)
+        let replyOnce = ReplyOnce()
         Task { [self] in
-            defer { replyOnce(0, NSFileProviderError(.cannotSynchronize)) }
+            defer { replyOnce.callOnce { rb.fn(0, NSFileProviderError(.cannotSynchronize)) } }
             do {
                 let engine = try await engineHost.engine()
                 let (_, freedBytes) = try await engine.cache.wipe()
                 Self.log.info("clearCache: \(freedBytes, privacy: .public) bytes freed")
-                replyOnce(freedBytes, nil)
+                replyOnce.callOnce { rb.fn(freedBytes, nil) }
             } catch {
                 Self.log.error(
                     "clearCache failed: \(error.localizedDescription, privacy: .public)"
                 )
-                replyOnce(0, error)
+                replyOnce.callOnce { rb.fn(0, error) }
             }
         }
     }

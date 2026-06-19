@@ -15,7 +15,12 @@
 
 import Foundation
 
-@objc(XPCPausedWorkspace) public final class XPCPausedWorkspace: NSObject, NSSecureCoding {
+/// Immutable snapshot of one paused-workspace entry carried over the XPC boundary.
+///
+/// All stored properties are `let`, set once at init and never mutated. NSObject +
+/// `@objc` prevent automatic Sendable synthesis, so `@unchecked Sendable` is the
+/// correct idiomatic annotation — there is no shared mutable state to guard.
+@objc(XPCPausedWorkspace) public final class XPCPausedWorkspace: NSObject, NSSecureCoding, @unchecked Sendable {
     @objc public static var supportsSecureCoding: Bool { true }
 
     @objc public let accountAlias: String

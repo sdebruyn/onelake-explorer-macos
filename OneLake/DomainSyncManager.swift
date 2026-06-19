@@ -26,7 +26,7 @@
 // addDomain(alias:) and removeDomain(alias:) are surgical alternatives
 // for callers that already know exactly which domain to add or remove.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import OfemKit
 import os.log

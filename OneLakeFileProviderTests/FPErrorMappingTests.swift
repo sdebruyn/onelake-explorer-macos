@@ -5,7 +5,7 @@
 // A change to the mapping table that silently alters retry semantics would be
 // caught here before it reaches the framework.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import OfemKit
 import XCTest

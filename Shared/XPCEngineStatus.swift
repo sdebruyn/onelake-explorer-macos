@@ -21,7 +21,12 @@
 
 import Foundation
 
-@objc(XPCEngineStatus) public final class XPCEngineStatus: NSObject, NSSecureCoding {
+/// Immutable snapshot of engine status carried over the XPC boundary.
+///
+/// All stored properties are `let`, set once at init and never mutated. NSObject +
+/// `@objc` prevent automatic Sendable synthesis, so `@unchecked Sendable` is the
+/// correct idiomatic annotation — there is no shared mutable state to guard.
+@objc(XPCEngineStatus) public final class XPCEngineStatus: NSObject, NSSecureCoding, @unchecked Sendable {
     @objc public static var supportsSecureCoding: Bool { true }
 
     @objc public let cacheBytes: Int64

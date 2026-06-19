@@ -5,7 +5,7 @@
 // completion-handler wiring) inject this mock instead of a live FPEEngineHost
 // so no real OfemEngine, SQLite, or network round-trip is needed.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import OfemKit
 

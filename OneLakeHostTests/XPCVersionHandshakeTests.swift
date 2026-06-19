@@ -41,25 +41,32 @@ import Combine
 // MARK: - Tests
 
 @MainActor
-final class XPCVersionHandshakeTests: XCTestCase {
+final class XPCVersionHandshakeTests: XCTestCase, @unchecked Sendable {
 
     private var client: OfemFPEClient!
     private var model: MenuStatusModel!
     private var cancellables = Set<AnyCancellable>()
 
+    // setUp and tearDown override nonisolated XCTestCase methods, so they
+    // cannot be marked @MainActor. XCTest always runs them on the main thread;
+    // MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
     override func setUp() {
         super.setUp()
-        client = OfemFPEClient()
-        // Create a fresh model with no real dependencies — version mismatch
-        // is surfaced via MenuStatusModel.shared, but we can observe the
-        // singleton's lastActionError because setUp runs before each test.
-        model = MenuStatusModel.shared
-        // Reset any residual error from prior tests.
-        model.clearLastActionError()
+        MainActor.assumeIsolated {
+            client = OfemFPEClient()
+            // Create a fresh model with no real dependencies — version mismatch
+            // is surfaced via MenuStatusModel.shared, but we can observe the
+            // singleton's lastActionError because setUp runs before each test.
+            model = MenuStatusModel.shared
+            // Reset any residual error from prior tests.
+            model.clearLastActionError()
+        }
     }
 
     override func tearDown() {
-        cancellables.removeAll()
+        MainActor.assumeIsolated {
+            cancellables.removeAll()
+        }
         super.tearDown()
     }
 

@@ -105,7 +105,7 @@ private func makeTestAccount(alias: String) -> Account {
 // MARK: - Tests
 
 @MainActor
-final class ReSignInTests: XCTestCase {
+final class ReSignInTests: XCTestCase, @unchecked Sendable {
 
     private var accountProvider: FakeReSignInAccountProvider!
     private var engineProvider: FakeReSignInEngineProvider!
@@ -114,22 +114,29 @@ final class ReSignInTests: XCTestCase {
     private var model: MenuStatusModel!
     private var cancellables = Set<AnyCancellable>()
 
+    // setUp and tearDown override nonisolated XCTestCase methods, so they
+    // cannot be marked @MainActor. XCTest always runs them on the main thread;
+    // MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
     override func setUp() {
         super.setUp()
-        accountProvider = FakeReSignInAccountProvider()
-        engineProvider = FakeReSignInEngineProvider()
-        domainManager = FakeReSignInDomainManager()
-        reSignInProvider = FakeReSignInProvider()
-        model = MenuStatusModel(
-            accountProvider: accountProvider,
-            engineStatusProvider: engineProvider,
-            domainManager: domainManager,
-            reSignInProvider: reSignInProvider
-        )
+        MainActor.assumeIsolated {
+            accountProvider = FakeReSignInAccountProvider()
+            engineProvider = FakeReSignInEngineProvider()
+            domainManager = FakeReSignInDomainManager()
+            reSignInProvider = FakeReSignInProvider()
+            model = MenuStatusModel(
+                accountProvider: accountProvider,
+                engineStatusProvider: engineProvider,
+                domainManager: domainManager,
+                reSignInProvider: reSignInProvider
+            )
+        }
     }
 
     override func tearDown() {
-        cancellables.removeAll()
+        MainActor.assumeIsolated {
+            cancellables.removeAll()
+        }
         super.tearDown()
     }
 
