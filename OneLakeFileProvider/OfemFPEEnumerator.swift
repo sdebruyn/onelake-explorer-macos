@@ -313,7 +313,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 // past it. NOT advancing would cause an infinite retry loop
                 // because the same undecodable record would reappear on every
                 // subsequent call from the same anchor.
-                var updatedItems: [NSFileProviderItem] = []
+                var updatedItems: [OfemFPEItem] = []
                 for record in updatedRecords {
                     do {
                         let di = try DomainItem.from(record: record)
@@ -394,11 +394,15 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
     // MARK: - Private engine dispatch
 
     /// Dispatches enumeration based on the identifier level.
+    ///
+    /// Returns the concrete `OfemFPEItem` (which is `Sendable`) rather than the
+    /// non-Sendable `NSFileProviderItem` existential so the result can cross the
+    /// enumeration `Task`'s isolation boundary without a data-race diagnostic.
     private static func enumerate(
         identifier: ItemIdentifier,
         alias: String,
         engine: OfemEngine
-    ) async throws -> [NSFileProviderItem] {
+    ) async throws -> [OfemFPEItem] {
         switch identifier {
         case .root:
             // List all workspaces for this alias.
@@ -657,7 +661,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 // drop is observable, skip the record, and advance the anchor
                 // past it. The same policy as OfemFPEEnumerator.enumerateChanges —
                 // NOT advancing would cause an infinite retry loop on corrupt data.
-                var updatedItems: [NSFileProviderItem] = []
+                var updatedItems: [OfemFPEItem] = []
                 for record in updatedRecords {
                     do {
                         let di = try DomainItem.from(record: record)

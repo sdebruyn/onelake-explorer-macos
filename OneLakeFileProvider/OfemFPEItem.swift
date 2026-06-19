@@ -9,7 +9,15 @@ import OfemKit
 import UniformTypeIdentifiers
 
 /// `NSFileProviderItem` wrapping a `DomainItem` from the Swift engine.
-final class OfemFPEItem: NSObject, NSFileProviderItem {
+///
+/// `@unchecked Sendable`: an immutable value carrier. Every stored property is
+/// a `let` assigned once in `init` and never mutated afterwards, so instances
+/// are safe to share across concurrency domains (they are produced inside an
+/// enumeration `Task` and handed to the FileProvider framework). NSObject +
+/// the non-Sendable FileProvider value types (`NSFileProviderItemVersion`,
+/// `NSFileProviderItemCapabilities`) block automatic Sendable synthesis, so
+/// `@unchecked` is the correct, idiomatic choice here.
+final class OfemFPEItem: NSObject, NSFileProviderItem, @unchecked Sendable {
     let itemIdentifier: NSFileProviderItemIdentifier
     let parentItemIdentifier: NSFileProviderItemIdentifier
     let filename: String
