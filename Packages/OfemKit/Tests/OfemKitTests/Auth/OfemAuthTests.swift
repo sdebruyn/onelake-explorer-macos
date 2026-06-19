@@ -331,6 +331,74 @@ struct OfemAuthTokenTests {
         #expect(caughtCorrectError)
     }
 
+    // MARK: - config-rejection propagation (invalid_client / invalid_grant)
+
+    @Test("tokenForScope throws configRejection when MSAL returns invalid_client (-42003)")
+    func tokenConfigRejectionInvalidClient() async throws {
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let factory = MockMsalAuthClientFactory()
+        let mockClient = MockMsalAuthClient()
+        // Simulate MSALErrorInternal (-50000) with MSALInternalErrorInvalidClient (-42003).
+        mockClient.stubbedError = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42003)]
+        )
+        factory.stubbedClient = mockClient
+
+        let auth = OfemAuth(configStore: store, msalClientFactory: factory)
+        try await auth.addAccount(makeAccount(alias: "work", tenantID: "t1", homeAccountID: "home-xyz"))
+
+        await #expect(throws: OfemAuthError.configRejection("work")) {
+            _ = try await auth.tokenForScope(alias: "work", scope: .oneLake)
+        }
+    }
+
+    @Test("tokenForScope throws configRejection when MSAL returns invalid_grant (-42004)")
+    func tokenConfigRejectionInvalidGrant() async throws {
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let factory = MockMsalAuthClientFactory()
+        let mockClient = MockMsalAuthClient()
+        // Simulate MSALErrorInternal (-50000) with MSALInternalErrorInvalidGrant (-42004).
+        mockClient.stubbedError = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42004)]
+        )
+        factory.stubbedClient = mockClient
+
+        let auth = OfemAuth(configStore: store, msalClientFactory: factory)
+        try await auth.addAccount(makeAccount(alias: "work", tenantID: "t1", homeAccountID: "home-xyz"))
+
+        await #expect(throws: OfemAuthError.configRejection("work")) {
+            _ = try await auth.tokenForScope(alias: "work", scope: .oneLake)
+        }
+    }
+
+    @Test("tokenForScope throws silentTokenFailed (not configRejection) for unrelated MSALErrorInternal code")
+    func tokenUnrelatedInternalCodeNotConfigRejection() async throws {
+        let (store, _t) = try makeStore(label: "OfemAuthTokenTests")
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let factory = MockMsalAuthClientFactory()
+        let mockClient = MockMsalAuthClient()
+        // -42000 = MSALInternalErrorInvalidParameter — not a config rejection
+        mockClient.stubbedError = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42000)]
+        )
+        factory.stubbedClient = mockClient
+
+        let auth = OfemAuth(configStore: store, msalClientFactory: factory)
+        try await auth.addAccount(makeAccount(alias: "work", tenantID: "t1", homeAccountID: "home-xyz"))
+
+        await #expect(throws: OfemAuthError.silentTokenFailed("work")) {
+            _ = try await auth.tokenForScope(alias: "work", scope: .oneLake)
+        }
+    }
+
     // MARK: - Per-(clientID, tenantID) client reuse
 
     @Test("clientFor reuses the same client instance for the same (clientID, tenantID)")
@@ -568,5 +636,103 @@ struct OfemAuthIsInteractionRequiredTests {
         defer { try? FileManager.default.removeItem(at: _t) }
         let err = NSError(domain: MSALErrorDomain, code: MSALError.serverDeclinedScopes.rawValue)
         #expect(await auth.isInteractionRequired(err) == false)
+    }
+}
+
+// MARK: - OfemAuthIsConfigRejectionTests
+
+/// Direct unit tests for ``OfemAuth/isConfigRejection(_:)``.
+///
+/// A config rejection (`invalid_client` -42003 or `invalid_grant` -42004) must
+/// be distinguished from `interactionRequired` (-50002) and from ordinary
+/// transient failures so operators can diagnose Entra app registration problems
+/// without confusing them with routine re-auth prompts.
+@Suite("OfemAuth isConfigRejection")
+struct OfemAuthIsConfigRejectionTests {
+    private func makeAuth() throws -> (OfemAuth, URL) {
+        let tmp = FileManager.default.temporaryDirectory
+            .appending(path: "IsCRTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let paths = OfemPaths(root: tmp)
+        let store = try OfemConfigStore(paths: paths)
+        return (OfemAuth(configStore: store), tmp)
+    }
+
+    // MSALInternalErrorInvalidClient = -42003 (e.g. missing FPE redirect URI in Entra registration)
+    @Test("MSALInternalErrorCodeKey = -42003 (invalid_client) → isConfigRejection true")
+    func invalidClientCode() async throws {
+        let (auth, _t) = try makeAuth()
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let err = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42003)]
+        )
+        #expect(await auth.isConfigRejection(err))
+    }
+
+    // MSALInternalErrorInvalidGrant = -42004 (revoked refresh token / invalid grant)
+    @Test("MSALInternalErrorCodeKey = -42004 (invalid_grant) → isConfigRejection true")
+    func invalidGrantCode() async throws {
+        let (auth, _t) = try makeAuth()
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let err = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42004)]
+        )
+        #expect(await auth.isConfigRejection(err))
+    }
+
+    @Test("MSALError.interactionRequired (-50002) → isConfigRejection false")
+    func interactionRequiredNotConfigRejection() async throws {
+        let (auth, _t) = try makeAuth()
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let err = NSError(domain: MSALErrorDomain, code: MSALError.interactionRequired.rawValue)
+        #expect(await auth.isConfigRejection(err) == false)
+    }
+
+    @Test("MSALErrorInternal (-50000) with unrelated internal code → isConfigRejection false")
+    func internalCodeUnrelated() async throws {
+        let (auth, _t) = try makeAuth()
+        defer { try? FileManager.default.removeItem(at: _t) }
+        // -42000 = MSALInternalErrorInvalidParameter — a different internal error
+        let err = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42000)]
+        )
+        #expect(await auth.isConfigRejection(err) == false)
+    }
+
+    @Test("MSALErrorInternal (-50000) with no MSALInternalErrorCodeKey → isConfigRejection false")
+    func internalCodeMissing() async throws {
+        let (auth, _t) = try makeAuth()
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let err = NSError(domain: MSALErrorDomain, code: -50000)
+        #expect(await auth.isConfigRejection(err) == false)
+    }
+
+    @Test("Non-MSAL domain → isConfigRejection false")
+    func nonMsalDomain() async throws {
+        let (auth, _t) = try makeAuth()
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let err = NSError(domain: "NSURLErrorDomain", code: -1009)
+        #expect(await auth.isConfigRejection(err) == false)
+    }
+
+    // Verify that isConfigRejection and isInteractionRequired are mutually exclusive
+    // for the config-rejection codes, so the silentToken routing is unambiguous.
+    @Test("invalid_client (-42003) is NOT classified as interactionRequired")
+    func invalidClientNotInteractionRequired() async throws {
+        let (auth, _t) = try makeAuth()
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let err = NSError(
+            domain: MSALErrorDomain,
+            code: -50000,
+            userInfo: [MSALInternalErrorCodeKey: NSNumber(value: -42003)]
+        )
+        #expect(await auth.isInteractionRequired(err) == false)
+        #expect(await auth.isConfigRejection(err) == true)
     }
 }
