@@ -1268,24 +1268,65 @@ struct SyncEngineTests {
         #expect(ids.contains("e-1"))
     }
 
-    @Test("SyncEngine.nonStorageItemTypes contains SQLEndpoint and SemanticModel but not Lakehouse or Warehouse")
-    func testNonStorageItemTypesDenylistContents() {
-        let denylist = SyncEngine.nonStorageItemTypes
-        // Key non-storage types that cause the ' 2' issue must be in the denylist.
-        #expect(denylist.contains("SQLEndpoint"))
-        #expect(denylist.contains("SemanticModel"))
-        #expect(denylist.contains("Notebook"))
-        #expect(denylist.contains("Report"))
-        #expect(denylist.contains("Dashboard"))
-        #expect(denylist.contains("DataPipeline"))
-        // Storage-backed types must NOT be in the denylist.
-        #expect(!denylist.contains("Lakehouse"))
-        #expect(!denylist.contains("Warehouse"))
-        #expect(!denylist.contains("KQLDatabase"))
-        #expect(!denylist.contains("MirroredDatabase"))
-        #expect(!denylist.contains("SQLDatabase"))
-        #expect(!denylist.contains("Eventhouse"))
-        #expect(!denylist.contains("MirroredWarehouse"))
+    @Test("Item.hasOneLakeStorage is false for SQLEndpoint/SemanticModel and true for Lakehouse/Warehouse")
+    func testItemHasOneLakeStorageDenylistContents() {
+        // Key non-storage types that cause the ' 2' issue must not have storage.
+        func item(type: String) -> Item { Item(id: "x", displayName: "x", type: type, workspaceID: "w") }
+        #expect(!item(type: "SQLEndpoint").hasOneLakeStorage)
+        #expect(!item(type: "SemanticModel").hasOneLakeStorage)
+        #expect(!item(type: "Notebook").hasOneLakeStorage)
+        #expect(!item(type: "Report").hasOneLakeStorage)
+        #expect(!item(type: "Dashboard").hasOneLakeStorage)
+        #expect(!item(type: "DataPipeline").hasOneLakeStorage)
+        // Storage-backed types must report hasOneLakeStorage == true.
+        #expect(item(type: "Lakehouse").hasOneLakeStorage)
+        #expect(item(type: "Warehouse").hasOneLakeStorage)
+        #expect(item(type: "KQLDatabase").hasOneLakeStorage)
+        #expect(item(type: "MirroredDatabase").hasOneLakeStorage)
+        #expect(item(type: "SQLDatabase").hasOneLakeStorage)
+        #expect(item(type: "Eventhouse").hasOneLakeStorage)
+        #expect(item(type: "MirroredWarehouse").hasOneLakeStorage)
+    }
+
+    @Test("listItems() evicts a previously-cached non-storage row via expireDiscoveryRows")
+    func testListItemsEvictsPrecachedNonStorageRow() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Simulate a row written by a pre-PR build: a SQLEndpoint cached under the
+        // workspace items parent. expireDiscoveryRows must evict it because "sql-stale"
+        // is not in the `seen` set built from storage-only items.
+        let staleRow = MetadataRecord(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            itemID: VirtualIDs.itemID,
+            path: "sql-stale",
+            parentPath: "",
+            name: "Sales",
+            isDir: true,
+            lastAccessedNs: 0,
+            syncedAtNs: 0
+        )
+        try await store.upsert(staleRow)
+
+        // Fabric returns the SQLEndpoint (non-storage) and a Lakehouse (storage).
+        fabric.listItemsResults.append(.success([
+            Item(id: "sql-stale", displayName: "Sales", type: "SQLEndpoint", workspaceID: Self.wsID),
+            Item(id: "lh-1",      displayName: "Sales", type: "Lakehouse",   workspaceID: Self.wsID),
+        ]))
+        _ = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
+
+        let parentKey = CacheKey(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            itemID: VirtualIDs.itemID,
+            path: ""
+        )
+        let paths = try await store.children(of: parentKey).map(\.path)
+        #expect(!paths.contains("sql-stale"), "expireDiscoveryRows must evict pre-cached non-storage rows")
+        #expect(paths.contains("lh-1"), "Lakehouse must remain in cache")
     }
 
     // MARK: - enumerate: stale cache triggers refresh
