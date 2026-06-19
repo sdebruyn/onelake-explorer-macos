@@ -112,14 +112,14 @@ final class FPEEngineHost: EngineProviding {
     /// The account alias this host serves.
     let alias: String
 
-    /// The File Provider domain. Retained for diagnostics.
+    /// Identifier of the File Provider domain this host serves. Retained for
+    /// diagnostics.
     ///
-    /// `NSFileProviderDomain` does not conform to `Sendable`. Because `domain`
-    /// is a `let` stored only in `init` and never mutated after construction,
-    /// access across concurrency domains is safe; `nonisolated(unsafe)` tells
-    /// the compiler to trust that invariant rather than requiring the type to
-    /// carry a `Sendable` conformance.
-    nonisolated(unsafe) let domain: NSFileProviderDomain
+    /// We store the `NSFileProviderDomainIdentifier` rather than the whole
+    /// `NSFileProviderDomain`: the identifier is a `Sendable` value type, so the
+    /// `Sendable`-conforming `FPEEngineHost` needs no `nonisolated(unsafe)`
+    /// escape hatch, and nothing here reads back the rest of the domain.
+    let domainIdentifier: NSFileProviderDomainIdentifier
 
     // MARK: - Process-wide shared config store
 
@@ -352,7 +352,7 @@ final class FPEEngineHost: EngineProviding {
 
     init(alias: String, domain: NSFileProviderDomain) {
         self.alias = alias
-        self.domain = domain
+        self.domainIdentifier = domain.identifier
         // Register this host instance in the process-wide reference count so
         // the last shutdown() can call shutdownSharedSubsystems() automatically.
         Self.activeHostLock.withLock { Self._activeHostCount += 1 }
