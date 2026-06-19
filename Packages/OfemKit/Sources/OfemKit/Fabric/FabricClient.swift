@@ -45,6 +45,7 @@ public final class FabricClient: Sendable {
     private let http: HTTPClient
     private let tokenProvider: any TokenProvider
     private let baseURL: URL
+    private let logger: OfemLogger
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "FabricClient")
 
@@ -56,14 +57,19 @@ public final class FabricClient: Sendable {
     /// - http: Shared ``HTTPClient`` (carries gate registry + retry policy).
     /// - tokenProvider: Supplies bearer tokens for account aliases.
     /// - baseURL: Fabric REST endpoint. Default: `https://api.fabric.microsoft.com`.
+    /// - logger: Structured logger for debug request/pagination traces.
+    ///   Defaults to an ``OfemLogger`` with default ``LogConfiguration`` so
+    ///   existing call sites compile unchanged.
     public init(
         http: HTTPClient,
         tokenProvider: any TokenProvider,
-        baseURL: URL = fabricDefaultBaseURL
+        baseURL: URL = fabricDefaultBaseURL,
+        logger: OfemLogger = OfemLogger()
     ) {
         self.http = http
         self.tokenProvider = tokenProvider
         self.baseURL = baseURL
+        self.logger = logger
     }
 
     // MARK: - Workspace operations
@@ -87,7 +93,7 @@ public final class FabricClient: Sendable {
         continuation: String? = nil
     ) async throws -> WorkspacePage {
         let url = try fabricListURL(base: baseURL, path: "/v1/workspaces", continuationToken: continuation)
-        let (data, _) = try await doRequest(alias: alias, method: "GET", url: url)
+        let (data, _) = try await doRequest(alias: alias, method: "GET", url: url, endpoint: "listWorkspaces")
         do {
             let page = try Self.decoder.decode(FabricPageResponse<WireWorkspace>.self, from: data)
             let tok = page.continuationToken.flatMap { $0.isEmpty ? nil : $0 }
@@ -111,7 +117,7 @@ public final class FabricClient: Sendable {
     /// ``FabricError/paginationExceeded(_:)`` and
     /// ``FabricError/loopingPagination(_:)`` as safety guards.
     public func listAllWorkspaces(alias: String) async throws -> [Workspace] {
-        try await listAllPages(alias: alias, path: "/v1/workspaces") { (wire: WireWorkspace) in
+        try await listAllPages(alias: alias, path: "/v1/workspaces", endpoint: "listWorkspaces") { (wire: WireWorkspace) in
             wire.toWorkspace()
         }
     }
@@ -141,7 +147,7 @@ public final class FabricClient: Sendable {
         // reserved character does not silently restructure the URL.
         let path = "/v1/workspaces/\(workspaceID.percentEncodedPathSegment)/items"
         let url = try fabricListURL(base: baseURL, path: path, continuationToken: continuation)
-        let (data, _) = try await doRequest(alias: alias, method: "GET", url: url)
+        let (data, _) = try await doRequest(alias: alias, method: "GET", url: url, endpoint: "listItems")
         do {
             let page = try Self.decoder.decode(FabricPageResponse<WireItem>.self, from: data)
             let tok = page.continuationToken.flatMap { $0.isEmpty ? nil : $0 }
@@ -168,7 +174,7 @@ public final class FabricClient: Sendable {
         }
         // fabric-03: percent-encode the path segment.
         let path = "/v1/workspaces/\(workspaceID.percentEncodedPathSegment)/items"
-        return try await listAllPages(alias: alias, path: path) { (wire: WireItem) in
+        return try await listAllPages(alias: alias, path: path, endpoint: "listItems", workspaceId: workspaceID) { (wire: WireItem) in
             wire.toItem()
         }
     }
@@ -196,7 +202,7 @@ public final class FabricClient: Sendable {
         // fabric-03: percent-encode the path segment.
         let path = "/v1/workspaces/\(workspaceID.percentEncodedPathSegment)/folders"
         let url = try fabricListURL(base: baseURL, path: path, continuationToken: continuation)
-        let (data, _) = try await doRequest(alias: alias, method: "GET", url: url)
+        let (data, _) = try await doRequest(alias: alias, method: "GET", url: url, endpoint: "listFolders")
         do {
             let page = try Self.decoder.decode(FabricPageResponse<WireFolder>.self, from: data)
             let tok = page.continuationToken.flatMap { $0.isEmpty ? nil : $0 }
@@ -227,7 +233,7 @@ public final class FabricClient: Sendable {
         }
         // fabric-03: percent-encode the path segment.
         let path = "/v1/workspaces/\(workspaceID.percentEncodedPathSegment)/folders"
-        return try await listAllPages(alias: alias, path: path) { (wire: WireFolder) in
+        return try await listAllPages(alias: alias, path: path, endpoint: "listFolders", workspaceId: workspaceID) { (wire: WireFolder) in
             wire.toFolder()
         }
     }
@@ -254,7 +260,7 @@ public final class FabricClient: Sendable {
         // fabric-03: percent-encode both IDs.
         let path = "/v1/workspaces/\(workspaceID.percentEncodedPathSegment)/items/\(itemID.percentEncodedPathSegment)"
         let url = try fabricItemURL(base: baseURL, path: path)
-        let (data, _) = try await doRequest(alias: alias, method: "GET", url: url)
+        let (data, _) = try await doRequest(alias: alias, method: "GET", url: url, endpoint: "getItem")
         do {
             guard let item = try Self.decoder.decode(WireItem.self, from: data).toItem() else {
                 throw FabricError.decodeFailed(
@@ -279,18 +285,22 @@ public final class FabricClient: Sendable {
     private func doRequest(
         alias: String,
         method: String,
-        url: URL
+        url: URL,
+        endpoint: String
     ) async throws -> (Data, HTTPURLResponse) {
         let req = fabricRequest(method: method, url: url)
         Self.log.debug("FabricClient: \(method, privacy: .public) \(url.path, privacy: .public)")
+        logger.debug("fabric request", metadata: ["method": method, "endpoint": endpoint])
         do {
-            return try await http.execute(
+            let (data, response) = try await http.execute(
                 req,
                 tokenProvider: tokenProvider,
                 alias: alias,
                 scope: .fabric,
                 idempotent: true // All Fabric reads are idempotent.
             )
+            logger.debug("fabric response", metadata: ["method": method, "endpoint": endpoint, "status": "\(response.statusCode)"])
+            return (data, response)
         } catch {
             // fabric-05: log the raw HTTPClientError (or transport error) before
             // classification so a fast failure — e.g. a cached 404 served by
@@ -307,6 +317,29 @@ public final class FabricClient: Sendable {
         }
     }
 
+    /// Logs a single pagination page's metadata in a canonical way so the
+    /// schema is defined in exactly one place.
+    private func logFabricListPage(
+        endpoint: String,
+        workspaceId: String,
+        page: Int,
+        itemsThisPage: Int,
+        totalSoFar: Int,
+        hasContinuation: Bool
+    ) {
+        var meta: [String: String] = [
+            "endpoint": endpoint,
+            "page": "\(page)",
+            "itemsThisPage": "\(itemsThisPage)",
+            "totalSoFar": "\(totalSoFar)",
+            "hasContinuation": hasContinuation ? "true" : "false",
+        ]
+        if !workspaceId.isEmpty {
+            meta["workspaceId"] = workspaceId
+        }
+        logger.debug("fabric list page", metadata: meta)
+    }
+
     /// Walks a paginated Fabric collection, honouring either
     /// `continuationToken` (token replayed on the original path) or
     /// `continuationUri` (absolute or relative URL — resolved and issued directly).
@@ -318,6 +351,8 @@ public final class FabricClient: Sendable {
     private func listAllPages<Wire: Decodable, Model>(
         alias: String,
         path: String,
+        endpoint: String,
+        workspaceId: String = "",
         convert: (Wire) -> Model?
     ) async throws -> [Model] {
         var all: [Model] = []
@@ -326,7 +361,7 @@ public final class FabricClient: Sendable {
         var seenURIs: Set<String> = []
 
         for page in 0..<Self.maxPaginationPages {
-            let (data, _) = try await doRequest(alias: alias, method: "GET", url: nextURL)
+            let (data, _) = try await doRequest(alias: alias, method: "GET", url: nextURL, endpoint: endpoint)
             let pr: FabricPageResponse<Wire>
             do {
                 pr = try Self.decoder.decode(FabricPageResponse<Wire>.self, from: data)
@@ -334,7 +369,8 @@ public final class FabricClient: Sendable {
                 throw FabricError.decodeFailed(error)
             }
 
-            all.append(contentsOf: pr.value.compactMap(convert))
+            let pageItems = pr.value.compactMap(convert)
+            all.append(contentsOf: pageItems)
 
             // Determine how to advance (token branch or URI branch).
             //
@@ -357,6 +393,7 @@ public final class FabricClient: Sendable {
                 seenURIs.removeAll()
                 nextURL = try fabricListURL(base: baseURL, path: path, continuationToken: tok)
                 Self.log.debug("FabricClient: following continuationToken, page \(page + 1, privacy: .public), \(all.count, privacy: .public) items so far")
+                logFabricListPage(endpoint: endpoint, workspaceId: workspaceId, page: page + 1, itemsThisPage: pageItems.count, totalSoFar: all.count, hasContinuation: true)
             } else if let uriString = pr.continuationUri, !uriString.isEmpty {
                 // net-12: a continuationUri-only response means more pages exist.
                 if seenURIs.contains(uriString) {
@@ -368,8 +405,19 @@ public final class FabricClient: Sendable {
                 seenTokens.removeAll()
                 nextURL = try resolveContinuationURI(uriString, base: baseURL)
                 Self.log.debug("FabricClient: following continuationUri, page \(page + 1, privacy: .public), \(all.count, privacy: .public) items so far")
+                logFabricListPage(endpoint: endpoint, workspaceId: workspaceId, page: page + 1, itemsThisPage: pageItems.count, totalSoFar: all.count, hasContinuation: true)
             } else {
                 // No continuation — last page.
+                logFabricListPage(endpoint: endpoint, workspaceId: workspaceId, page: page + 1, itemsThisPage: pageItems.count, totalSoFar: all.count, hasContinuation: false)
+                var completeMeta: [String: String] = [
+                    "endpoint": endpoint,
+                    "totalPages": "\(page + 1)",
+                    "totalItems": "\(all.count)",
+                ]
+                if !workspaceId.isEmpty {
+                    completeMeta["workspaceId"] = workspaceId
+                }
+                logger.debug("fabric list complete", metadata: completeMeta)
                 return all
             }
         }

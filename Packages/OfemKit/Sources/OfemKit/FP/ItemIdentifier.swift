@@ -90,6 +90,28 @@ public enum ItemIdentifier: Hashable, Sendable {
         }
     }
 
+    // MARK: - Log-safe identifier prefix
+
+    /// Returns an opaque identifier string safe for logging at `.public`.
+    ///
+    /// For `.path` identifiers, `identifierString` contains human-readable
+    /// folder and file names (e.g. `"<wsGUID>/<itemGUID>/Files/HR Salaries.pbix"`),
+    /// which must not appear unredacted in the system log (see `docs/telemetry.md`).
+    /// This property replaces the path segment with `"..."` so the workspace and
+    /// item GUIDs remain visible for debugging without leaking file names.
+    ///
+    /// All other cases (`root`, `trash`, `workingSet`, `workspace`, `item`)
+    /// contain only GUIDs or well-known Apple constant strings and are safe
+    /// to log as-is.
+    public var opaqueLogPrefix: String {
+        switch self {
+        case .path(let ws, let item, _):
+            return "\(ws)/\(item)/..."
+        default:
+            return identifierString
+        }
+    }
+
     // MARK: - Parent identifier
 
     /// Returns the identifier of the parent container.

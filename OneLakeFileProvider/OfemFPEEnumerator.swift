@@ -176,6 +176,14 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
         let identifierCopy = identifier
         let hostCopy = engineHost
 
+        // For .path identifiers the identifierString contains human-readable
+        // folder/file names. Log only the opaque GUID prefix (workspace/item)
+        // and omit the leaf path so file names never appear in the system log.
+        let containerLogID = identifierCopy.opaqueLogPrefix
+        Self.log.debug(
+            "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateItems entry — container=\(containerLogID, privacy: .public)"
+        )
+
         // Cancel any previous in-flight items task. Only cancel on a new
         // *items* enumeration — not on change observation — so concurrent
         // change-observation and items-enumeration tasks remain independent.
@@ -189,15 +197,18 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 )
                 observer.didEnumerate(items)
                 observer.finishEnumerating(upTo: nil)
+                Self.log.debug(
+                    "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateItems delivered — container=\(containerLogID, privacy: .public) count=\(items.count, privacy: .public) nextPage=nil"
+                )
             } catch is CancellationError {
                 Self.log.debug(
-                    "OfemFPEEnumerator cancelled for \(aliasCopy, privacy: .public)/\(identifierCopy.identifierString, privacy: .public)"
+                    "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateItems cancelled — container=\(containerLogID, privacy: .public)"
                 )
                 observer.finishEnumeratingWithError(CocoaError(.userCancelled))
             } catch {
                 let code = FPError.classify(error)
                 Self.log.error(
-                    "OfemFPEEnumerator failed for \(aliasCopy, privacy: .public)/\(identifierCopy.identifierString, privacy: .public): \(error.localizedDescription, privacy: .public) (code=\(code.rawValue, privacy: .public))"
+                    "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateItems failed — container=\(containerLogID, privacy: .public) error=\(error.localizedDescription, privacy: .public) code=\(code.rawValue, privacy: .public)"
                 )
                 // Surface auth-error state so the host-app menu bar can show
                 // a "Sign-in required" indicator for this account.
@@ -241,15 +252,22 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
         // enumeration for an unrelated change observer). Store the new task in
         // inFlightChangesTask so invalidate() can cancel it (fpe-15).
         let changesTask = Task<Void, Never> {
-            // The root container's workspace list is refreshed by the host-side
-            // ChangeWatcher via domain remount.  Delivering file/folder cache rows
-            // to the root-container change observer would be semantically wrong
-            // (those rows are scoped to lakehouse paths, not to the root).
-            // Expire the anchor for root so the framework performs a full
-            // re-enumeration of the root (which calls enumerateItems → listWorkspaces)
-            // rather than computing an account-wide delta.
-            if identifierCopy == .root {
+            let containerLogID = identifierCopy.opaqueLogPrefix
+            Self.log.debug(
+                "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges entry — container=\(containerLogID, privacy: .public) anchor=\(previousNs, privacy: .public)"
+            )
+            // Root-container changes cannot be served from the cache delta path:
+            // the cache stores file/folder rows keyed by path, not workspace
+            // metadata rows, so DomainItem.from(record:) mis-maps workspace rows
+            // and produces incorrect items. The only reliable source of truth for
+            // workspaces is a fresh enumerateItems(.root) → listWorkspaces call.
+            // Expire the anchor immediately so the framework performs that full
+            // re-enumeration instead of relying on the broken delta path.
+            if case .root = identifierCopy {
                 observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+                Self.log.debug(
+                    "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges — root container, anchor expired to force full re-enum"
+                )
                 return
             }
 
@@ -262,7 +280,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 // performs a full re-enumeration.
                 if previousNs > currentNs && previousNs != 0 {
                     Self.log.debug(
-                        "OfemFPEEnumerator: anchor ahead of cache for \(aliasCopy, privacy: .public) — expiring"
+                        "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges — anchor ahead of cache, expiring"
                     )
                     observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
                     return
@@ -288,7 +306,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                         updatedItems.append(OfemFPEItem(from: di))
                     } catch {
                         Self.log.error(
-                            "OfemFPEEnumerator: skipping un-decodable record for \(aliasCopy, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                            "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges — skipping un-decodable record: \(error.localizedDescription, privacy: .public)"
                         )
                     }
                 }
@@ -309,14 +327,14 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator {
                 observer.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
 
                 Self.log.debug(
-                    "OfemFPEEnumerator: enumerateChanges for \(aliasCopy, privacy: .public)/\(identifierCopy.identifierString, privacy: .public): \(updatedRecords.count, privacy: .public) updates, \(deletedIdStrings.count, privacy: .public) deletions, anchor \(previousNs, privacy: .public) → \(currentNs, privacy: .public)"
+                    "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges delivered — container=\(containerLogID, privacy: .public) updates=\(updatedRecords.count, privacy: .public) deletions=\(deletedIdStrings.count, privacy: .public) anchor=\(previousNs, privacy: .public)→\(currentNs, privacy: .public)"
                 )
             } catch is CancellationError {
                 observer.finishEnumeratingWithError(CocoaError(.userCancelled))
             } catch {
                 let code = FPError.classify(error)
                 Self.log.error(
-                    "OfemFPEEnumerator: enumerateChanges failed for \(aliasCopy, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges failed — container=\(containerLogID, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
                 )
                 // Surface auth-error state so the host-app menu bar can show
                 // a "Sign-in required" indicator. Token expiry in steady state
@@ -502,7 +520,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
             inFlightAnchorTask = nil
         }
         OfemWorkingSetEnumerator.log.debug(
-            "Invalidate working set enumerator for \(self.alias, privacy: .public)"
+            "WorkingSet[\(self.alias, privacy: .public)]: invalidated"
         )
     }
 
@@ -511,10 +529,14 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
         startingAt _: NSFileProviderPage
     ) {
         OfemWorkingSetEnumerator.log.debug(
-            "enumerateItems (working set) for \(self.alias, privacy: .public) -> empty"
+            "WorkingSet[\(self.alias, privacy: .public)]: enumerateItems entry — working set always returns empty"
         )
-        observer.didEnumerate([])
+        let items: [NSFileProviderItem] = []
+        observer.didEnumerate(items)
         observer.finishEnumerating(upTo: nil)
+        OfemWorkingSetEnumerator.log.debug(
+            "WorkingSet[\(self.alias, privacy: .public)]: enumerateItems delivered — count=\(items.count, privacy: .public) nextPage=nil"
+        )
     }
 
     /// Reports real cache deltas since `anchor` for the working set.
@@ -552,6 +574,9 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
 
         // Store the task so invalidate() can cancel it (fpe-15).
         let changesTask = Task<Void, Never> {
+            Self.log.debug(
+                "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges entry — anchor=\(previousNs, privacy: .public)"
+            )
             do {
                 let engine = try await hostCopy.engine()
 
@@ -616,7 +641,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                         updatedItems.append(OfemFPEItem(from: di))
                     } catch {
                         Self.log.error(
-                            "WorkingSet: skipping un-decodable record for \(aliasCopy, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                            "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges — skipping un-decodable record: \(error.localizedDescription, privacy: .public)"
                         )
                     }
                 }
@@ -635,7 +660,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 observer.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
 
                 Self.log.debug(
-                    "WorkingSet: enumerateChanges for \(aliasCopy, privacy: .public): \(updatedRecords.count, privacy: .public) updates, \(deletedIdStrings.count, privacy: .public) deletions since anchor=\(previousNs, privacy: .public)"
+                    "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges delivered — updates=\(updatedRecords.count, privacy: .public) deletions=\(deletedIdStrings.count, privacy: .public) anchor=\(previousNs, privacy: .public)→\(currentNs, privacy: .public)"
                 )
             } catch is CancellationError {
                 // The enumerator was invalidated while the task was in flight.
@@ -646,7 +671,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
             } catch {
                 let code = FPError.classify(error)
                 Self.log.error(
-                    "WorkingSet: enumerateChanges failed for \(aliasCopy, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges failed — error=\(error.localizedDescription, privacy: .public)"
                 )
                 // Mirror OfemFPEEnumerator.enumerateChanges: surface auth failures
                 // so the host-app menu bar can show "Sign-in required".
