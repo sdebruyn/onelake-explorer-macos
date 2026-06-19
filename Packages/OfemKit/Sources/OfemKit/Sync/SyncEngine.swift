@@ -237,6 +237,15 @@ public actor SyncEngine {
         }
         await offlineTracker.observe(nil)
 
+        // Filter out item types with no own OneLake DFS storage path. These
+        // types (SQLEndpoint, SemanticModel, Notebook, Report, …) have no
+        // /{workspaceGUID}/{itemGUID}/… folder on the DFS endpoint and would
+        // appear as empty or error-generating entries in the Finder. The
+        // SQLEndpoint type in particular causes " 2" duplicate entries because
+        // every Lakehouse auto-creates a same-named SQLEndpoint (issue #296).
+        // Unknown/empty types pass through — denylist policy: show by default.
+        let storageItems = items.filter(\.hasOneLakeStorage)
+
         let nowNs = currentNowNs()
         let parentKey = CacheKey(
             accountAlias: alias,
@@ -259,8 +268,8 @@ public actor SyncEngine {
             Self.log.warning("listItems: upsert root failed err=\(error, privacy: .public)")
         }
 
-        let seen = Set(items.map(\.id))
-        let rows = items.map { it in
+        let seen = Set(storageItems.map(\.id))
+        let rows = storageItems.map { it in
             MetadataRecord(
                 accountAlias: alias,
                 workspaceID: workspaceID,
@@ -277,7 +286,7 @@ public actor SyncEngine {
         await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
 
         await track(eventName: "item_list", alias: alias, start: start, outcome: .success())
-        return items
+        return storageItems
     }
 
     // MARK: - Enumerate
@@ -1080,7 +1089,10 @@ public actor SyncEngine {
     /// regardless of its `syncedAt` timestamp (sync-25 fix: removes the
     /// time-window guard that coupled folder-content TTL with discovery expiry).
     private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String) async {
-        guard let kids = try? await cache.children(of: parent) else { return }
+        guard let kids = try? await cache.children(of: parent) else {
+            Self.log.warning("expireDiscoveryRows: cache.children failed, stale rows may persist")
+            return
+        }
         let deleteBatch = kids
             .filter { !seen.contains($0.path) }
             .map { k in
