@@ -229,9 +229,15 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
     func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
         // xpc-02: reply-once guard via ReplyOnce — fires exactly once on every
         // path, including Task cancellation or connection teardown.
+        //
+        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
+        // @unchecked Sendable so the Task body can capture it safely — the
+        // ReplyOnce guard ensures the closure is called at most once.
+        struct ReplyBox: @unchecked Sendable { let fn: (XPCEngineStatus?, Error?) -> Void }
+        let rb = ReplyBox(fn: reply)
         let replyOnce = ReplyOnce()
         Task { [self] in
-            defer { replyOnce.callOnce { reply(nil, NSFileProviderError(.cannotSynchronize)) } }
+            defer { replyOnce.callOnce { rb.fn(nil, NSFileProviderError(.cannotSynchronize)) } }
             do {
                 // Read config snapshot via the shared configStore — does NOT
                 // require the engine to be built yet (cheaper for first call).
@@ -279,12 +285,12 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                     pausedWorkspaces: pausedWorkspaces,
                     needsSignIn: engineHost.needsSignIn
                 )
-                replyOnce.callOnce { reply(status, nil) }
+                replyOnce.callOnce { rb.fn(status, nil) }
             } catch {
                 Self.log.error(
                     "getEngineStatus failed: \(error.localizedDescription, privacy: .public)"
                 )
-                replyOnce.callOnce { reply(nil, error) }
+                replyOnce.callOnce { rb.fn(nil, error) }
             }
         }
     }
@@ -376,9 +382,15 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
 
         // xpc-02: reply-once guard via ReplyOnce — fires exactly once on every
         // path, including Task cancellation or connection teardown.
+        //
+        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
+        // @unchecked Sendable so the Task body can capture it safely — the
+        // ReplyOnce guard ensures the closure is called at most once.
+        struct ReplyBox: @unchecked Sendable { let fn: (Error?) -> Void }
+        let rb = ReplyBox(fn: reply)
         let replyOnce = ReplyOnce()
         Task { [self] in
-            defer { replyOnce.callOnce { reply(NSFileProviderError(.cannotSynchronize)) } }
+            defer { replyOnce.callOnce { rb.fn(NSFileProviderError(.cannotSynchronize)) } }
             do {
                 let configStore = try engineHost.configStore()
                 // The mutator closure captures only `validated` — a Sendable
@@ -404,12 +416,12 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                 // _engine and _buildError, and let the next use rebuild lazily.
                 await engineHost.reloadEngine()
 
-                replyOnce.callOnce { reply(nil) }
+                replyOnce.callOnce { rb.fn(nil) }
             } catch {
                 Self.log.error(
                     "setConfig failed: key='\(key, privacy: .public)' error=\(error.localizedDescription, privacy: .public)"
                 )
-                replyOnce.callOnce { reply(error) }
+                replyOnce.callOnce { rb.fn(error) }
             }
         }
     }
@@ -419,19 +431,25 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
     func clearCache(reply: @escaping (Int64, Error?) -> Void) {
         // xpc-02: reply-once guard via ReplyOnce — fires exactly once on every
         // path, including Task cancellation or connection teardown.
+        //
+        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
+        // @unchecked Sendable so the Task body can capture it safely — the
+        // ReplyOnce guard ensures the closure is called at most once.
+        struct ReplyBox: @unchecked Sendable { let fn: (Int64, Error?) -> Void }
+        let rb = ReplyBox(fn: reply)
         let replyOnce = ReplyOnce()
         Task { [self] in
-            defer { replyOnce.callOnce { reply(0, NSFileProviderError(.cannotSynchronize)) } }
+            defer { replyOnce.callOnce { rb.fn(0, NSFileProviderError(.cannotSynchronize)) } }
             do {
                 let engine = try await engineHost.engine()
                 let (_, freedBytes) = try await engine.cache.wipe()
                 Self.log.info("clearCache: \(freedBytes, privacy: .public) bytes freed")
-                replyOnce.callOnce { reply(freedBytes, nil) }
+                replyOnce.callOnce { rb.fn(freedBytes, nil) }
             } catch {
                 Self.log.error(
                     "clearCache failed: \(error.localizedDescription, privacy: .public)"
                 )
-                replyOnce.callOnce { reply(0, error) }
+                replyOnce.callOnce { rb.fn(0, error) }
             }
         }
     }
