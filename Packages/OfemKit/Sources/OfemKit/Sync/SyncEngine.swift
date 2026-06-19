@@ -218,6 +218,74 @@ public actor SyncEngine {
         return ws
     }
 
+    /// Fabric item type strings that have **no own OneLake DFS storage path** and
+    /// must therefore be hidden from the workspace item listing.
+    ///
+    /// ## Policy
+    /// This is a **denylist**: any item type NOT in this set is shown by default.
+    /// Unknown or future item types are always shown — they may well have storage.
+    /// Only add a type here once you are confident it has no `/{workspaceGUID}/{itemGUID}/…`
+    /// DFS path. Storage-backed types that MUST remain visible:
+    /// `Lakehouse`, `Warehouse`, `KQLDatabase`, `MirroredDatabase`, `SQLDatabase`,
+    /// `Eventhouse`, `MirroredWarehouse`, `MirroredAzureDatabricksCatalog`,
+    /// `AzureDatabricksStorage`, `SnowflakeDatabase`, `CosmosDBDatabase`.
+    ///
+    /// Source: Fabric REST API `ItemType` enumeration
+    /// (https://learn.microsoft.com/en-us/rest/api/fabric/core/items/list-items#itemtype)
+    /// as of June 2026.
+    static let nonStorageItemTypes: Set<String> = [
+        // Power BI artifacts — no OneLake storage path.
+        "Dashboard",
+        "Report",
+        "SemanticModel",
+        "PaginatedReport",
+        "Datamart",
+        // Auto-created SQL analytics endpoint for each Lakehouse — same display
+        // name as the lakehouse, causing the " 2" duplicate folders (issue #296).
+        "SQLEndpoint",
+        // Compute / orchestration items — no own OneLake folder.
+        "Notebook",
+        "SparkJobDefinition",
+        "DataPipeline",
+        "Dataflow",
+        "ApacheAirflowJob",
+        "CopyJob",
+        // Real-time / streaming items — no own OneLake folder.
+        "Eventstream",
+        // KQL query / dashboard items — no own OneLake folder (KQLDatabase has one,
+        // but KQLQueryset and KQLDashboard do not).
+        "KQLQueryset",
+        "KQLDashboard",
+        // ML items — no own OneLake folder.
+        "MLExperiment",
+        "MLModel",
+        // Environment / configuration items.
+        "Environment",
+        "VariableLibrary",
+        // API / agent items.
+        "GraphQLApi",
+        "MountedDataFactory",
+        "Reflex",
+        "DigitalTwinBuilder",
+        "DigitalTwinBuilderFlow",
+        "Map",
+        "AnomalyDetector",
+        "UserDataFunction",
+        "GraphModel",
+        "GraphQuerySet",
+        "OperationsAgent",
+        "Ontology",
+        "EventSchemaSet",
+        "DataAgent",
+        "MirroredCatalog",
+        "AppBackend",
+        "OrgApp",
+        "OrgAppAudience",
+        "DataBuildToolJob",
+        // Warehouse snapshots — derived read-only view, no own storage path.
+        "WarehouseSnapshot",
+    ]
+
     /// Returns all items inside `workspaceID`, reconciling the local cache.
     public func listItems(alias: String, workspaceID: String) async throws -> [Item] {
         let start = Date()
@@ -236,6 +304,15 @@ public actor SyncEngine {
             throw error
         }
         await offlineTracker.observe(nil)
+
+        // Filter out item types with no own OneLake DFS storage path. These
+        // types (SQLEndpoint, SemanticModel, Notebook, Report, …) have no
+        // /{workspaceGUID}/{itemGUID}/… folder on the DFS endpoint and would
+        // appear as empty or error-generating entries in the Finder. The
+        // SQLEndpoint type in particular causes " 2" duplicate entries because
+        // every Lakehouse auto-creates a same-named SQLEndpoint (issue #296).
+        // Unknown/empty types pass through — denylist policy: show by default.
+        let storageItems = items.filter { !Self.nonStorageItemTypes.contains($0.type) }
 
         let nowNs = currentNowNs()
         let parentKey = CacheKey(
@@ -259,8 +336,8 @@ public actor SyncEngine {
             Self.log.warning("listItems: upsert root failed err=\(error, privacy: .public)")
         }
 
-        let seen = Set(items.map(\.id))
-        let rows = items.map { it in
+        let seen = Set(storageItems.map(\.id))
+        let rows = storageItems.map { it in
             MetadataRecord(
                 accountAlias: alias,
                 workspaceID: workspaceID,
@@ -277,7 +354,7 @@ public actor SyncEngine {
         await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
 
         await track(eventName: "item_list", alias: alias, start: start, outcome: .success())
-        return items
+        return storageItems
     }
 
     // MARK: - Enumerate

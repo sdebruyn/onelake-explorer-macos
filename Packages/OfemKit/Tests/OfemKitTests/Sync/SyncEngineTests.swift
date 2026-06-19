@@ -1155,13 +1155,14 @@ struct SyncEngineTests {
         }
     }
 
-    @Test("listItems() returns items and stamps cache rows on success")
+    @Test("listItems() returns only storage-backed items and stamps their cache rows")
     func testListItemsSuccessStampsCache() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
+        // Fabric returns a Lakehouse and a Notebook; only the Lakehouse is storage-backed.
         let items = [
             Item(id: "it-1", displayName: "Lakehouse 1", type: "Lakehouse", workspaceID: Self.wsID),
             Item(id: "it-2", displayName: "Notebook 1",  type: "Notebook",  workspaceID: Self.wsID),
@@ -1169,7 +1170,9 @@ struct SyncEngineTests {
         fabric.listItemsResults.append(.success(items))
 
         let got = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
-        #expect(got.count == 2)
+        // Notebook is a non-storage item and must be filtered out.
+        #expect(got.count == 1)
+        #expect(got[0].id == "it-1")
 
         let parentKey = CacheKey(
             accountAlias: Self.alias,
@@ -1180,7 +1183,109 @@ struct SyncEngineTests {
         let children = try await store.children(of: parentKey)
         let paths = children.map(\.path)
         #expect(paths.contains("it-1"))
-        #expect(paths.contains("it-2"))
+        // Non-storage item must not appear in the cache either.
+        #expect(!paths.contains("it-2"))
+    }
+
+    // MARK: - issue-296: non-storage item types filtered from workspace listing
+
+    /// Regression test for issue #296.
+    ///
+    /// A Fabric Lakehouse auto-creates a SQLEndpoint and sometimes a default
+    /// SemanticModel with the same `displayName`. Without filtering, both the
+    /// Lakehouse and its SQLEndpoint appear as browsable folders in Finder, and
+    /// macOS de-duplicates the display name by appending " 2".
+    ///
+    /// `listItems` must return only storage-backed item types (Lakehouse, Warehouse, …)
+    /// and exclude non-storage types (SQLEndpoint, SemanticModel, Notebook, Report, …).
+    @Test("listItems() filters non-storage item types, eliminating ' 2' duplicate entries (issue-296)")
+    func testListItemsFiltersNonStorageTypes() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Simulate a real workspace: a Lakehouse whose auto-created SQLEndpoint
+        // and default SemanticModel share the same displayName, plus a Warehouse
+        // and a Notebook.
+        let fabricItems = [
+            Item(id: "lh-1",  displayName: "Sales",   type: "Lakehouse",    workspaceID: Self.wsID),
+            Item(id: "sql-1", displayName: "Sales",   type: "SQLEndpoint",  workspaceID: Self.wsID),
+            Item(id: "sm-1",  displayName: "Sales",   type: "SemanticModel",workspaceID: Self.wsID),
+            Item(id: "wh-1",  displayName: "DW",      type: "Warehouse",    workspaceID: Self.wsID),
+            Item(id: "nb-1",  displayName: "EDA",     type: "Notebook",     workspaceID: Self.wsID),
+        ]
+        fabric.listItemsResults.append(.success(fabricItems))
+
+        let got = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
+
+        // Only the two storage-backed items must come back.
+        #expect(got.count == 2)
+        let ids = got.map(\.id)
+        #expect(ids.contains("lh-1"), "Lakehouse must be returned")
+        #expect(ids.contains("wh-1"), "Warehouse must be returned")
+        #expect(!ids.contains("sql-1"), "SQLEndpoint must be filtered out")
+        #expect(!ids.contains("sm-1"),  "SemanticModel must be filtered out")
+        #expect(!ids.contains("nb-1"),  "Notebook must be filtered out")
+
+        // Non-storage items must not appear in the discovery cache either.
+        let parentKey = CacheKey(
+            accountAlias: Self.alias,
+            workspaceID: Self.wsID,
+            itemID: VirtualIDs.itemID,
+            path: ""
+        )
+        let cachedPaths = try await store.children(of: parentKey).map(\.path)
+        #expect(cachedPaths.contains("lh-1"))
+        #expect(cachedPaths.contains("wh-1"))
+        #expect(!cachedPaths.contains("sql-1"))
+        #expect(!cachedPaths.contains("sm-1"))
+        #expect(!cachedPaths.contains("nb-1"))
+    }
+
+    @Test("listItems() passes unknown item types through (denylist policy: show by default)")
+    func testListItemsPassesUnknownTypesThrough() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let fabricItems = [
+            Item(id: "k-1", displayName: "Known",   type: "Lakehouse",       workspaceID: Self.wsID),
+            Item(id: "u-1", displayName: "Unknown", type: "FutureItemType",  workspaceID: Self.wsID),
+            Item(id: "e-1", displayName: "Empty",   type: "",                workspaceID: Self.wsID),
+        ]
+        fabric.listItemsResults.append(.success(fabricItems))
+
+        let got = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
+
+        // All three must pass through: Lakehouse (known storage), FutureItemType
+        // (unknown → show by default), and empty type (show by default).
+        #expect(got.count == 3)
+        let ids = got.map(\.id)
+        #expect(ids.contains("k-1"))
+        #expect(ids.contains("u-1"))
+        #expect(ids.contains("e-1"))
+    }
+
+    @Test("SyncEngine.nonStorageItemTypes contains SQLEndpoint and SemanticModel but not Lakehouse or Warehouse")
+    func testNonStorageItemTypesDenylistContents() {
+        let denylist = SyncEngine.nonStorageItemTypes
+        // Key non-storage types that cause the ' 2' issue must be in the denylist.
+        #expect(denylist.contains("SQLEndpoint"))
+        #expect(denylist.contains("SemanticModel"))
+        #expect(denylist.contains("Notebook"))
+        #expect(denylist.contains("Report"))
+        #expect(denylist.contains("Dashboard"))
+        #expect(denylist.contains("DataPipeline"))
+        // Storage-backed types must NOT be in the denylist.
+        #expect(!denylist.contains("Lakehouse"))
+        #expect(!denylist.contains("Warehouse"))
+        #expect(!denylist.contains("KQLDatabase"))
+        #expect(!denylist.contains("MirroredDatabase"))
+        #expect(!denylist.contains("SQLDatabase"))
+        #expect(!denylist.contains("Eventhouse"))
+        #expect(!denylist.contains("MirroredWarehouse"))
     }
 
     // MARK: - enumerate: stale cache triggers refresh
