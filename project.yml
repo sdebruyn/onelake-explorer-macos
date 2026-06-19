@@ -15,7 +15,18 @@ configFiles:
   Release: Local.xcconfig
 settings:
   base:
+    # ARCHS is intentionally pinned to arm64 (hard project constraint: no universal
+    # binaries, no x86_64 slice). Removing this line would let Xcode choose
+    # ARCHS_STANDARD and produce a universal binary. As a consequence, Xcode's
+    # "Update to recommended settings" banner persists by design — do NOT "fix" it
+    # by deleting this line or accepting Xcode's architectures recommendation.
     ARCHS: arm64
+    # Sandbox run-script build phases (Xcode recommended setting). There are
+    # no Run Script phases in this project; this matches the recommended baseline.
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    # Enable symbol generation for String Catalog (.xcstrings) files
+    # (Xcode recommended setting). Matches the recommended baseline.
+    STRING_CATALOG_GENERATE_SYMBOLS: YES
     # SWIFT_VERSION stays at 5.10 for the app and FPE targets.
     # OfemKit itself builds in Swift 6 mode (swift-tools-version: 6.0) and its
     # CI job runs `swift test` under strict concurrency checking.  The app/FPE
@@ -48,6 +59,13 @@ settings:
       # Release uses -destination "generic/platform=macOS" which builds all
       # architectures regardless, making this setting redundant there.
       ONLY_ACTIVE_ARCH: YES
+    Release:
+      # DEAD_CODE_STRIPPING strips unreferenced code at link time for a smaller
+      # shipped binary. Scoped to Release so Debug builds (and the XCTest
+      # bundles, which run in Debug and rely on Objective-C runtime reflection
+      # to discover test classes) keep the linker's default of NO. Matches
+      # Xcode's recommended baseline for the distributed build.
+      DEAD_CODE_STRIPPING: YES
 # OfemKit is a local Swift Package that houses all engine modules
 # (auth, cache, sync, OneLake clients, telemetry). Linked into both the
 # host app and the File Provider Extension.
