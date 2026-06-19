@@ -563,6 +563,13 @@ final class FPEEngineHost: EngineProviding {
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine shut down")
         }
 
+        // Release the Alamofire sessions for this alias so a stale or
+        // in-progress request cannot reuse a token that was just purged
+        // from the Keychain by the account-removal path.
+        if let pool = try? Self.sharedSessionPool() {
+            await pool.invalidate(alias: alias)
+        }
+
         // Decrement the process-wide host count. When the last host exits,
         // flush and stop the shared telemetry so the final batch is not lost
         // (fpe-14). Guard against underflow: if the framework calls invalidate()
