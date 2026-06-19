@@ -15,7 +15,7 @@
 // which are available in the test sandbox. Tests that verify build outcomes use
 // MockEngineHost (see FileProviderExtensionTests.swift).
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import XCTest
 

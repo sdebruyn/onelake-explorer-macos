@@ -1,7 +1,7 @@
 // OfemClientControlServiceTests.swift
 // Tests for OfemClientControlService XPC service-source.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import XCTest
 

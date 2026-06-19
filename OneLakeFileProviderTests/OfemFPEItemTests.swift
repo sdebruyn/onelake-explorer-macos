@@ -4,7 +4,7 @@
 // Verifies that every DomainItem field is faithfully reflected in the
 // NSFileProviderItem properties that macOS and Finder depend on.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import OfemKit
 import UniformTypeIdentifiers

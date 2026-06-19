@@ -1,7 +1,7 @@
 // OfemFPEEnumeratorTests.swift
 // Tests for OfemFPEEnumerator and OfemWorkingSetEnumerator.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import OfemKit
 import XCTest

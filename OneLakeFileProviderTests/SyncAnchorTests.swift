@@ -1,7 +1,7 @@
 // SyncAnchorTests.swift
 // Tests for sync-anchor encode/decode round-trips and edge cases.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import XCTest
 

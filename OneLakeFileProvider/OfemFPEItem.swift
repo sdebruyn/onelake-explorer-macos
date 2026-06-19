@@ -3,7 +3,7 @@
 //
 // Single NSFileProviderItem implementation backed by OfemKit's DomainItem.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import OfemKit
 import UniformTypeIdentifiers

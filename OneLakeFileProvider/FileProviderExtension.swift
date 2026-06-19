@@ -21,7 +21,7 @@
 // still-pending (.featureUnsupported) so the system does not believe the
 // change was applied when it was not.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import OfemKit
 import os.log

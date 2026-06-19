@@ -26,7 +26,7 @@
 // refresh, fence, and action logic without a live FPE/config stack.
 
 import AppKit
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import OfemKit
 import os.log

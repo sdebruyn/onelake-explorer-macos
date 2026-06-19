@@ -4,7 +4,7 @@
 // Uses MockEngineHost to exercise completion-handler wiring, error mapping,
 // and cancellation behaviour without a live fileproviderd or OfemEngine.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import XCTest
 

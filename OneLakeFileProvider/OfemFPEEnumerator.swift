@@ -52,7 +52,7 @@
 //   only cancels an in-flight task when starting a NEW items enumeration — not
 //   when a change-observation arrives.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import OfemKit
 import os.log
