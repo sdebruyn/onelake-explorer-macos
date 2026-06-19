@@ -17,7 +17,7 @@
 // The menu shows account-scoped actions; hasAccounts drives controls.
 
 import AppKit
-import FileProvider
+@preconcurrency import FileProvider
 import SwiftUI
 import os.log
 

@@ -34,7 +34,7 @@ import os.log
 /// (never both) — but both may run from different queues and close over the
 /// same continuation, so a naïve implementation can leak tasks. This wrapper
 /// uses a lock so the second resume is a no-op.
-final class OneShotContinuation<T>: @unchecked Sendable {
+final class OneShotContinuation<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var resumed = false
     private let continuation: CheckedContinuation<T, Error>
@@ -84,15 +84,21 @@ final class XPCConnectionBox: @unchecked Sendable {
 /// OfemFPEClient — all three formerly maintained separate copies of this
 /// identical bridge.
 func ofemGetAllDomains() async throws -> [NSFileProviderDomain] {
-    try await withCheckedThrowingContinuation { continuation in
+    // NSFileProviderDomain is @_nonSendable in the SDK, but the system callback
+    // hands us a freshly-created array that no other context holds a reference
+    // to. Box it in an @unchecked Sendable wrapper so it can cross the
+    // continuation boundary. The box is discarded immediately after unpacking.
+    struct DomainsBox: @unchecked Sendable { let value: [NSFileProviderDomain] }
+    let box: DomainsBox = try await withCheckedThrowingContinuation { continuation in
         NSFileProviderManager.getDomainsWithCompletionHandler { domains, error in
             if let error {
                 continuation.resume(throwing: error)
             } else {
-                continuation.resume(returning: domains)
+                continuation.resume(returning: DomainsBox(value: domains))
             }
         }
     }
+    return box.value
 }
 
 // MARK: - OfemFPEClient

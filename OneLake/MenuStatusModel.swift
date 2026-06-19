@@ -49,7 +49,7 @@ enum MenuIconState {
 /// Provides the account list and default account.
 /// Implemented by OfemAuth (via extension in OfemFPEClient.swift conformances);
 /// faked in tests.
-protocol AccountProvider {
+protocol AccountProvider: Sendable {
     /// Returns all known accounts. Returns an empty array if the store is empty.
     func listAccounts() async -> [Account]
     /// Returns the alias of the default account, or nil if none is set.
@@ -60,7 +60,7 @@ protocol AccountProvider {
 
 /// Provides engine status and config writes over XPC.
 /// Implemented by OfemFPEClient; faked in tests.
-protocol EngineStatusProvider {
+protocol EngineStatusProvider: Sendable {
     func getEngineStatus(alias: String) async throws -> XPCEngineStatus
     func setConfig(alias: String, key: String, value: String) async throws
     func clearCache(alias: String) async throws -> Int64
@@ -71,13 +71,13 @@ protocol EngineStatusProvider {
 /// The provider must run the same two sequential interactive flows as the
 /// first-sign-in path (OneLake storage + Fabric Power BI) so both token
 /// audiences are refreshed in the shared App Group Keychain.
-protocol ReSignInProvider {
+protocol ReSignInProvider: Sendable {
     func reSignIn(alias: String, window: NSWindow) async throws
 }
 
 /// Provides domain management (add/remove).
 /// Implemented by DomainSyncManager; faked in tests.
-protocol DomainManager {
+protocol DomainManager: Sendable {
     func removeDomain(alias: String) async
 }
 
@@ -90,6 +90,25 @@ extension OfemFPEClient: EngineStatusProvider {}
 extension DomainSyncManager: DomainManager {}
 
 extension SharedOfemAuth: ReSignInProvider {}
+
+// MARK: - Sendable conformances for global-actor-isolated classes
+//
+// `EngineStatusProvider: Sendable` and `DomainManager: Sendable` require their
+// conforming types to be `Sendable`. Both `OfemFPEClient` and `DomainSyncManager`
+// are `@MainActor final class` — all state is confined to the main actor and
+// never shared concurrently. `@unchecked Sendable` is the correct annotation:
+// the actor isolation is the guard, not lock-based internal state.
+
+/// `OfemFPEClient` is `@MainActor`-isolated and all stored properties
+/// (`[String: XPCConnectionBox]`, `[String: Task<XPCConnectionBox, Error>]`)
+/// are themselves `Sendable`. Conforming to `@unchecked Sendable` here
+/// satisfies `EngineStatusProvider: Sendable` without altering the class
+/// declaration, keeping the conformance co-located with its use.
+extension OfemFPEClient: @unchecked Sendable {}
+
+/// `DomainSyncManager` is `@MainActor`-isolated and carries no mutable stored
+/// properties beyond those guarded by that isolation. See OfemFPEClient above.
+extension DomainSyncManager: @unchecked Sendable {}
 
 // MARK: - MenuStatusModel
 

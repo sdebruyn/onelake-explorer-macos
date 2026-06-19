@@ -18,7 +18,7 @@ import os.log
 
 /// Abstracts the interactive sign-in operation so AddAccountCoordinator can
 /// be tested with a mock that doesn't require MSAL or a real NSWindow.
-protocol SignInProvider {
+protocol SignInProvider: Sendable {
     func signIn(
         alias: String,
         tenant: String?,
@@ -29,7 +29,7 @@ protocol SignInProvider {
 
 /// Abstracts domain registration so AddAccountCoordinator can be tested
 /// without a live NSFileProviderManager.
-protocol DomainRegistrar {
+protocol DomainRegistrar: Sendable {
     func registerDomain(alias: String) async
 }
 
@@ -37,6 +37,8 @@ protocol DomainRegistrar {
 
 extension SharedOfemAuth: SignInProvider {}
 
+// `OfemFPEClient: @unchecked Sendable` is declared in MenuStatusModel.swift,
+// which is the canonical location for all OfemFPEClient protocol conformances.
 extension OfemFPEClient: DomainRegistrar {}
 
 // MARK: - AddAccountCoordinator

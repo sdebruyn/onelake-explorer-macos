@@ -52,7 +52,7 @@ private final class MockDomainRegistrar: DomainRegistrar, @unchecked Sendable {
 // MARK: - Tests
 
 @MainActor
-final class AddAccountCoordinatorTests: XCTestCase {
+final class AddAccountCoordinatorTests: XCTestCase, @unchecked Sendable {
 
     private var signInProvider: MockSignInProvider!
     private var domainRegistrar: MockDomainRegistrar!

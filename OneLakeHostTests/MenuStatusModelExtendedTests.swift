@@ -91,7 +91,7 @@ private func makeAccount(alias: String) -> Account {
 // MARK: - Tests
 
 @MainActor
-final class MenuStatusModelExtendedTests: XCTestCase {
+final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
 
     private var accountProvider: FakeAccountProvider!
     private var engineProvider: FakeEngineStatusProvider!
@@ -598,7 +598,7 @@ final class CopyrightDerivationTests: XCTestCase {
 // MARK: - AddAccountCoordinator extended tests (host-04, host-16)
 
 @MainActor
-final class AddAccountCoordinatorExtendedTests: XCTestCase {
+final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable {
 
     private var signInProvider: MockSignInProvider!
     private var domainRegistrar: MockDomainRegistrar!

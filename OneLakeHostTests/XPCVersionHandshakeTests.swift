@@ -41,7 +41,7 @@ import Combine
 // MARK: - Tests
 
 @MainActor
-final class XPCVersionHandshakeTests: XCTestCase {
+final class XPCVersionHandshakeTests: XCTestCase, @unchecked Sendable {
 
     private var client: OfemFPEClient!
     private var model: MenuStatusModel!

@@ -105,7 +105,7 @@ private func makeTestAccount(alias: String) -> Account {
 // MARK: - Tests
 
 @MainActor
-final class ReSignInTests: XCTestCase {
+final class ReSignInTests: XCTestCase, @unchecked Sendable {
 
     private var accountProvider: FakeReSignInAccountProvider!
     private var engineProvider: FakeReSignInEngineProvider!
