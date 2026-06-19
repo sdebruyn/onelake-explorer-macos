@@ -35,7 +35,7 @@ settings:
     # FormatOptions.swift.  The types that cross the OfemKit/app boundary are
     # all value types or already Sendable, so no concurrency violations are
     # suppressed.  See docs/tech-stack.md for a full explanation.
-    SWIFT_VERSION: "5.10"
+    SWIFT_VERSION: "6.0"
     # MACOSX_DEPLOYMENT_TARGET is intentionally omitted here — XcodeGen
     # derives it from options.deploymentTarget.macOS above ("14.0") and
     # emits the setting automatically. Declaring it twice creates drift risk.
