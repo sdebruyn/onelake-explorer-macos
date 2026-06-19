@@ -15,7 +15,24 @@ configFiles:
   Release: Local.xcconfig
 settings:
   base:
+    # ARCHS is intentionally pinned to arm64 (hard project constraint: no universal
+    # binaries, no x86_64 slice). Removing this line would let Xcode choose
+    # ARCHS_STANDARD and produce a universal binary. As a consequence, Xcode's
+    # "Update to recommended settings" banner persists by design — do NOT "fix" it
+    # by deleting this line or accepting Xcode's architectures recommendation.
     ARCHS: arm64
+    # Strip unreferenced code at link time. Small binary-size win; this is the
+    # default for new Xcode targets but must be set explicitly in the project
+    # file so that it survives `make gen` regeneration.
+    DEAD_CODE_STRIPPING: YES
+    # Sandbox run-script build phases. We have no Run Script phases today, so
+    # this is a no-op for now, but it future-proofs the project and matches
+    # Xcode's recommended baseline.
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    # Enable symbol generation for String Catalog (.xcstrings) files. No string
+    # catalogs exist in this project yet, so this is a no-op; included to match
+    # Xcode's recommended baseline and avoid drift when catalogs are added later.
+    STRING_CATALOG_GENERATE_SYMBOLS: YES
     # SWIFT_VERSION stays at 5.10 for the app and FPE targets.
     # OfemKit itself builds in Swift 6 mode (swift-tools-version: 6.0) and its
     # CI job runs `swift test` under strict concurrency checking.  The app/FPE
