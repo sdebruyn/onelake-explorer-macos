@@ -172,12 +172,13 @@ final class FileProviderExtensionTests: XCTestCase {
         struct SourcesBox: @unchecked Sendable {
             let value: [any NSFileProviderServiceSource]
         }
-        let sources: [any NSFileProviderServiceSource] = try await withCheckedThrowingContinuation { cont in
+        let box: SourcesBox = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<SourcesBox, any Error>) in
             _ = ext.supportedServiceSources(for: .rootContainer) { sources, err in
                 if let err { cont.resume(throwing: err) }
                 else { cont.resume(returning: SourcesBox(value: sources ?? [])) }
             }
-        }.value
+        }
+        let sources = box.value
 
         XCTAssertFalse(sources.isEmpty, "rootContainer should expose the control service")
     }
@@ -192,12 +193,13 @@ final class FileProviderExtensionTests: XCTestCase {
         struct SourcesBox: @unchecked Sendable {
             let value: [any NSFileProviderServiceSource]
         }
-        let sources: [any NSFileProviderServiceSource] = try await withCheckedThrowingContinuation { cont in
+        let box: SourcesBox = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<SourcesBox, any Error>) in
             _ = ext.supportedServiceSources(for: wsID) { sources, err in
                 if let err { cont.resume(throwing: err) }
                 else { cont.resume(returning: SourcesBox(value: sources ?? [])) }
             }
-        }.value
+        }
+        let sources = box.value
 
         XCTAssertTrue(sources.isEmpty, "non-rootContainer should expose no services")
     }
