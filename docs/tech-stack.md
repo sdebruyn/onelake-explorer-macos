@@ -64,22 +64,19 @@ the File Provider Extension.
 
 ## Swift language versions
 
-OfemKit (`Packages/OfemKit/`) is built in **Swift 6 language mode**
-(`swift-tools-version: 6.0`). The CI `OfemKit package tests` job runs
-`swift test` directly against the package, which enforces Swift 6 strict
-concurrency checking on all engine code.
+All targets build in **Swift 6 language mode**:
 
-The host app (`OneLake/`) and File Provider Extension (`OneLakeFileProvider/`)
-use **`SWIFT_VERSION = 5.10`** (set in `project.yml`). The reason is that
-TOMLKit 0.6.0 — a dependency of OfemKit pulled into the app targets when
-xcodebuild builds the whole scheme — is not Sendable-conformant in Swift 6
-mode and produces approximately 14 compiler errors in `FormatOptions.swift`.
-Keeping the app/FPE targets at Swift 5.10 sidesteps those errors.
+- **OfemKit** (`Packages/OfemKit/`) — `swift-tools-version: 6.0` in the
+  package manifest. The CI `OfemKit package tests` job runs `swift test`
+  directly against the package.
+- **Host app** (`OneLake/`) and **File Provider Extension**
+  (`OneLakeFileProvider/`) — `SWIFT_VERSION = "6.0"` in `project.yml`.
 
-The split is intentionally safe: the types that cross the boundary between
-OfemKit and the app targets are all value types (`struct`/`enum`) or are
-already `Sendable`-conformant, so no concurrency violations are silently
-suppressed by the lower language mode in the consumer targets.
+TOMLKit 0.6.0 compiles cleanly under Swift 6 / Xcode 16.3 with no errors.
+The `Shared/` XPC payload types (`XPCEngineStatus`, `XPCAccountInfo`,
+`XPCPausedWorkspace`) and XPC service types conform to `@unchecked Sendable`
+with justification comments; all other cross-boundary types are value types
+or already `Sendable`-conformant.
 
 ## Build & release
 

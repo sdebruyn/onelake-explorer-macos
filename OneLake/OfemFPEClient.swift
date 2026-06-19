@@ -20,7 +20,7 @@
 //   handler into the waiting continuation via a resume-once guard so no
 //   task ever hangs forever.
 
-import FileProvider
+@preconcurrency import FileProvider
 import Foundation
 import os.log
 
@@ -58,6 +58,19 @@ final class OneShotContinuation<T>: @unchecked Sendable {
             continuation.resume(throwing: error)
         }
     }
+}
+
+// MARK: - NSXPCConnection sendable box
+
+/// Boxes an `NSXPCConnection` so it can be stored in `Sendable` contexts such as
+/// `Task<XPCConnectionBox, Error>`. NSXPCConnection is `@_nonSendable` in the SDK,
+/// but all access to the connection goes through `@MainActor`-isolated
+/// `OfemFPEClient`, so there is no concurrent access in practice.
+/// `@unchecked Sendable` is the correct annotation here — it mirrors the
+/// `OneShotContinuation` precedent in the same file.
+final class XPCConnectionBox: @unchecked Sendable {
+    let connection: NSXPCConnection
+    init(_ connection: NSXPCConnection) { self.connection = connection }
 }
 
 // MARK: - Shared async domain listing bridge
@@ -282,12 +295,12 @@ final class OfemFPEClient {
     // MARK: - Connection management
 
     /// Cache of open connections keyed by domain identifier string.
-    private var connections: [String: NSXPCConnection] = [:]
+    private var connections: [String: XPCConnectionBox] = [:]
 
     /// In-flight connection-build tasks keyed by domain identifier string.
     /// Prevents check-then-insert races: concurrent callers for the same
     /// domain await the same Task rather than each building a connection.
-    private var inFlightConnections: [String: Task<NSXPCConnection, Error>] = [:]
+    private var inFlightConnections: [String: Task<XPCConnectionBox, Error>] = [:]
 
     /// Returns the NSXPCConnection (and its domain identifier) for the domain
     /// identified by `alias`. Creates a connection if needed.
@@ -297,20 +310,20 @@ final class OfemFPEClient {
         let domainIdentifier = DomainSyncManager.shared.domainIdentifier(for: alias)
 
         // Return a cached connection if one exists.
-        if let conn = connections[domainIdentifier] {
-            return (conn, domainIdentifier)
+        if let box = connections[domainIdentifier] {
+            return (box.connection, domainIdentifier)
         }
 
         // If a build is already in flight for this domain, await it rather than
         // starting a second one (prevents the check-then-insert race).
         if let inFlight = inFlightConnections[domainIdentifier] {
-            let conn = try await inFlight.value
-            return (conn, domainIdentifier)
+            let box = try await inFlight.value
+            return (box.connection, domainIdentifier)
         }
 
         // Build a new connection under a tracked Task so concurrent callers
         // can join the same build rather than racing.
-        let buildTask: Task<NSXPCConnection, Error> = Task { [weak self] in
+        let buildTask: Task<XPCConnectionBox, Error> = Task { [weak self] in
             guard let self else {
                 throw OfemFPEClientError.connectionFailed("OfemFPEClient deallocated during connection build")
             }
@@ -318,9 +331,9 @@ final class OfemFPEClient {
         }
         inFlightConnections[domainIdentifier] = buildTask
 
-        let conn: NSXPCConnection
+        let box: XPCConnectionBox
         do {
-            conn = try await buildTask.value
+            box = try await buildTask.value
         } catch {
             inFlightConnections.removeValue(forKey: domainIdentifier)
             throw error
@@ -332,7 +345,7 @@ final class OfemFPEClient {
         // concurrent in-flight waiters joining via the task above would each
         // call makeProxy on the same connection, creating double error-handlers
         // that both try to invalidate the same connection on fault.
-        connections[domainIdentifier] = conn
+        connections[domainIdentifier] = box
         Self.log.info(
             "FPE XPC connection established for domain \(domainIdentifier, privacy: .public)"
         )
@@ -340,13 +353,13 @@ final class OfemFPEClient {
         // Perform the protocol version handshake on each new connection (xpc-06).
         // Non-fatal: a mismatch is logged and surfaced to the user but does not
         // prevent the connection from being used.
-        await checkProtocolVersion(connection: conn, domainIdentifier: domainIdentifier)
+        await checkProtocolVersion(connection: box.connection, domainIdentifier: domainIdentifier)
 
-        return (conn, domainIdentifier)
+        return (box.connection, domainIdentifier)
     }
 
     /// Build and configure a new NSXPCConnection for `domainIdentifier`.
-    private func buildConnection(domainIdentifier: String) async throws -> NSXPCConnection {
+    private func buildConnection(domainIdentifier: String) async throws -> XPCConnectionBox {
         // Find the domain using the shared helper.
         let domain = try await findDomain(identifier: domainIdentifier)
 
@@ -415,7 +428,7 @@ final class OfemFPEClient {
             }
         }
         connection.resume()
-        return connection
+        return XPCConnectionBox(connection)
     }
 
     private func findDomain(identifier: String) async throws -> NSFileProviderDomain {

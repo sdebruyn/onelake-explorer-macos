@@ -27,14 +27,10 @@ settings:
     # Enable symbol generation for String Catalog (.xcstrings) files
     # (Xcode recommended setting). Matches the recommended baseline.
     STRING_CATALOG_GENERATE_SYMBOLS: YES
-    # SWIFT_VERSION stays at 5.10 for the app and FPE targets.
-    # OfemKit itself builds in Swift 6 mode (swift-tools-version: 6.0) and its
-    # CI job runs `swift test` under strict concurrency checking.  The app/FPE
-    # targets remain at 5.10 because TOMLKit 0.6.0 is not Sendable-conformant;
-    # building those targets in Swift 6 mode produces ~14 errors in TOMLKit's
-    # FormatOptions.swift.  The types that cross the OfemKit/app boundary are
-    # all value types or already Sendable, so no concurrency violations are
-    # suppressed.  See docs/tech-stack.md for a full explanation.
+    # All targets — app, FPE, and OfemKit — build in Swift 6 language mode.
+    # OfemKit uses swift-tools-version: 6.0 in its package manifest; the app
+    # and FPE targets are set here. TOMLKit 0.6.0 compiles cleanly under
+    # Swift 6 / Xcode 16.3. See docs/tech-stack.md.
     SWIFT_VERSION: "6.0"
     # MACOSX_DEPLOYMENT_TARGET is intentionally omitted here — XcodeGen
     # derives it from options.deploymentTarget.macOS above ("14.0") and
