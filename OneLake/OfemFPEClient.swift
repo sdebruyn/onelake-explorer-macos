@@ -441,7 +441,9 @@ final class OfemFPEClient {
             }
         }
         connection.resume()
-        return XPCConnectionBox(connection)
+        // `connBox` already wraps this exact connection; return it rather than
+        // allocating a second identical box.
+        return connBox
     }
 
     private func findDomain(identifier: String) async throws -> NSFileProviderDomain {

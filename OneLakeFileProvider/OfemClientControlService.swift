@@ -298,10 +298,10 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
     // MARK: - setConfig
 
     func setConfig(key: String, value: String, reply: @escaping (Error?) -> Void) {
-        // Validate-first: resolve (key, value) to a plain Sendable value before
-        // spinning up any Task. This avoids the captured `var applyError` pattern
-        // where a mutable binding escapes into a `@Sendable` mutator closure —
-        // a Swift 6 data-race violation.
+        // Validate-first: resolve (key, value) synchronously to a plain Sendable
+        // value before spinning up any Task. Validation never mutates state
+        // captured by the async mutator closure, so the closure stays
+        // `@Sendable`-safe.
         //
         // `ValidatedConfig` is a Sendable enum of plain value-typed cases;
         // the async Task captures only the resolved case, not any closures.
@@ -364,6 +364,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             result = .failure(.unknownKey(key))
         }
 
+        let validated: ValidatedConfig
         switch result {
         case .failure(let err):
             Self.log.warning(
@@ -374,11 +375,9 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             // boundary rather than an opaque SwiftErrorDomain blob.
             reply(err.asNSError())
             return
-        case .success:
-            break
+        case .success(let value):
+            validated = value
         }
-
-        guard case .success(let validated) = result else { return }
 
         // xpc-02: reply-once guard via ReplyOnce — fires exactly once on every
         // path, including Task cancellation or connection teardown.
