@@ -664,7 +664,8 @@ public final class OneLakeClient: Sendable {
                 let mapped = HTTPClientError(
                     afError: afError,
                     response: dataResponse.response,
-                    retryCount: 0
+                    body: dataResponse.data,
+                    retryCount: req.retryCount
                 )
                 throw OneLakeError.from(mapped)
             }
@@ -682,8 +683,8 @@ public final class OneLakeClient: Sendable {
     /// in memory at once.
     ///
     /// Uses Alamofire `DownloadRequest` with a temporary-file destination.  Once
-    /// the download completes the temporary file is memory-mapped and its bytes
-    /// are written into `fileHandle`, then the temporary file is removed.
+    /// the download completes, the temporary file is read in 64 KB chunks and
+    /// forwarded into `fileHandle`, then the temporary file is removed.
     /// Injects the `x-ms-version` header and maps errors to ``OneLakeError``.
     private func doStreamRequest(
         alias: String,
@@ -716,17 +717,24 @@ public final class OneLakeClient: Sendable {
             }
             switch result {
             case .success(let fileURL):
-                // Memory-map and copy into the caller's FileHandle, then clean up.
-                let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
-                try fileHandle.write(contentsOf: data)
-                try? FileManager.default.removeItem(at: fileURL)
+                // Copy in 64 KB chunks so the FPE process does not map the
+                // entire file into its address space at once.
+                defer { try? FileManager.default.removeItem(at: fileURL) }
+                let src = try FileHandle(forReadingFrom: fileURL)
+                defer { try? src.close() }
+                let chunkSize = 65_536
+                while true {
+                    let chunk = try src.read(upToCount: chunkSize)
+                    if chunk.isEmpty { break }
+                    try fileHandle.write(contentsOf: chunk)
+                }
                 return httpResponse
             case .failure(let afError):
                 try? FileManager.default.removeItem(at: tmpURL)
                 let mapped = HTTPClientError(
                     afError: afError,
                     response: httpResponse,
-                    retryCount: 0
+                    retryCount: dl.retryCount
                 )
                 throw OneLakeError.from(mapped)
             }

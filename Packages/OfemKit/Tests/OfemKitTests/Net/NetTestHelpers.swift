@@ -43,7 +43,8 @@ final class MockURLProtocol: URLProtocol {
     }
 
     private static let lock = NSLock()
-    private static var _stubs: [StubResponse] = []
+    // nonisolated(unsafe): access is serialised by `lock`.
+    private nonisolated(unsafe) static var _stubs: [StubResponse] = []
 
     /// The ordered queue of stub responses to serve.  Consumed in FIFO order.
     static var stubs: [StubResponse] {

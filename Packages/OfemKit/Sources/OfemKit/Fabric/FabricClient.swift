@@ -324,7 +324,8 @@ public final class FabricClient: Sendable {
             let mapped = HTTPClientError(
                 afError: afError,
                 response: dataResponse.response,
-                retryCount: 0
+                body: dataResponse.data,
+                retryCount: req.retryCount
             )
             throw FabricError.from(mapped)
         }

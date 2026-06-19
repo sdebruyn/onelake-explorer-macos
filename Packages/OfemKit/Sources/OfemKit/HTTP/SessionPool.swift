@@ -89,7 +89,7 @@ public actor SessionPool {
         // never be served without a live round-trip.
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        // Per-host concurrency cap replaces the previous gate's maxConcurrent.
+        // Per-host concurrency cap to bound parallel in-flight requests per scope.
         config.httpMaximumConnectionsPerHost = scope == .oneLake
             ? oneLakeMaxConnections
             : fabricMaxConnections

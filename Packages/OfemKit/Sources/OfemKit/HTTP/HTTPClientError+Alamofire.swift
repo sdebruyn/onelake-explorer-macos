@@ -11,9 +11,12 @@ extension HTTPClientError {
     /// - Parameters:
     ///   - afError: The Alamofire error produced by the failed request.
     ///   - response: The HTTP response accompanying the error, if any.
+    ///   - body: The raw HTTP response body, forwarded into `APIError` so callers
+    ///     such as `PauseManager.isPausedCapacityError()` can inspect the payload.
     ///   - retryCount: The number of retry attempts Alamofire made before surfacing
-    ///     this error (used to populate `retriesExhausted(attempts:last:)`).
-    init(afError: AFError, response: HTTPURLResponse?, retryCount: Int = 0) {
+    ///     this error, sourced from `Request.retryCount`; used to populate
+    ///     `retriesExhausted(attempts:last:)`.
+    init(afError: AFError, response: HTTPURLResponse?, body: Data? = nil, retryCount: Int = 0) {
         // Cancellation — check first so it short-circuits all other classification.
         if afError.isExplicitlyCancelledError {
             self = .cancelled
@@ -50,7 +53,12 @@ extension HTTPClientError {
             let status = resp.statusCode
             let phrase = HTTPURLResponse.localizedString(forStatusCode: status)
             let statusStr = "\(status) \(phrase)"
-            let ae = APIError(statusCode: status, status: statusStr, body: Data(), attempts: retryCount + 1)
+            let ae = APIError(
+                statusCode: status,
+                status: statusStr,
+                body: body ?? Data(),
+                attempts: retryCount + 1
+            )
             if let sentinel = ae.sentinel {
                 self = sentinel
             } else {
