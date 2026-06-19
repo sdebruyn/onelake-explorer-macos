@@ -21,17 +21,13 @@ settings:
     # "Update to recommended settings" banner persists by design — do NOT "fix" it
     # by deleting this line or accepting Xcode's architectures recommendation.
     ARCHS: arm64
-    # Strip unreferenced code at link time. Small binary-size win; this is the
-    # default for new Xcode targets but must be set explicitly in the project
-    # file so that it survives `make gen` regeneration.
-    DEAD_CODE_STRIPPING: YES
-    # Sandbox run-script build phases. We have no Run Script phases today, so
-    # this is a no-op for now, but it future-proofs the project and matches
-    # Xcode's recommended baseline.
+    # Sandbox run-script build phases so they declare their inputs/outputs and
+    # run with restricted filesystem access. Matches Xcode's recommended
+    # baseline and keeps any future Run Script phase sandboxed by default.
     ENABLE_USER_SCRIPT_SANDBOXING: YES
-    # Enable symbol generation for String Catalog (.xcstrings) files. No string
-    # catalogs exist in this project yet, so this is a no-op; included to match
-    # Xcode's recommended baseline and avoid drift when catalogs are added later.
+    # Generate Swift symbols for String Catalog (.xcstrings) localization keys,
+    # giving type-safe access to localized strings. Matches Xcode's recommended
+    # baseline so catalogs added to the project pick up symbol generation.
     STRING_CATALOG_GENERATE_SYMBOLS: YES
     # SWIFT_VERSION stays at 5.10 for the app and FPE targets.
     # OfemKit itself builds in Swift 6 mode (swift-tools-version: 6.0) and its
@@ -65,6 +61,13 @@ settings:
       # Release uses -destination "generic/platform=macOS" which builds all
       # architectures regardless, making this setting redundant there.
       ONLY_ACTIVE_ARCH: YES
+    Release:
+      # DEAD_CODE_STRIPPING strips unreferenced code at link time for a smaller
+      # shipped binary. Scoped to Release so Debug builds (and the XCTest
+      # bundles, which run in Debug and rely on Objective-C runtime reflection
+      # to discover test classes) keep the linker's default of NO. Matches
+      # Xcode's recommended baseline for the distributed build.
+      DEAD_CODE_STRIPPING: YES
 # OfemKit is a local Swift Package that houses all engine modules
 # (auth, cache, sync, OneLake clients, telemetry). Linked into both the
 # host app and the File Provider Extension.
