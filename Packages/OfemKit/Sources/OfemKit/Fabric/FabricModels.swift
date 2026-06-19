@@ -86,7 +86,15 @@ public struct Item: Sendable, Equatable {
     /// Source: Fabric REST API `ItemType` enumeration
     /// (https://learn.microsoft.com/en-us/rest/api/fabric/core/items/list-items#itemtype)
     public var hasOneLakeStorage: Bool {
-        Self.allowedStorageTypes.contains(type.lowercased(with: Locale(identifier: "en_US_POSIX")))
+        Self.allowedStorageTypes.contains(type.lowercased(with: .posix))
+    }
+
+    /// `true` when the item type is `"Lakehouse"` (case-insensitive).
+    ///
+    /// Use this predicate wherever `"lakehouse"` must be checked to avoid
+    /// duplicating the locale-independent string comparison.
+    public var isLakehouse: Bool {
+        type.lowercased(with: .posix) == "lakehouse"
     }
 
     /// Lowercased canonical forms of the four item types surfaced in Finder.

@@ -653,6 +653,18 @@ public actor SyncEngine {
         // Log a warning on failure so the missing etag is visible rather than
         // silently leaving the row with etag="" (sync-12).
         let nowNs = currentNowNs()
+        // Carry the item type from the existing cache row or the parent
+        // directory row so that a freshly uploaded file under a Lakehouse
+        // Files/ subtree keeps writable capabilities without waiting for the
+        // next refreshFolder (fp-05).
+        var existingItemType = (try? await cache.fetch(key: key))?.itemType ?? ""
+        if existingItemType.isEmpty {
+            let parentKey = CacheKey(
+                accountAlias: key.accountAlias, workspaceID: key.workspaceID,
+                itemID: key.itemID, path: Enumerator.parentPath(key.path)
+            )
+            existingItemType = (try? await cache.fetch(key: parentKey))?.itemType ?? ""
+        }
         var row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -663,7 +675,8 @@ public actor SyncEngine {
             isDir: false,
             contentLength: fileSize,
             lastAccessedNs: nowNs,
-            syncedAtNs: nowNs
+            syncedAtNs: nowNs,
+            itemType: existingItemType
         )
         do {
             let props = try await onelake.getProperties(
@@ -787,6 +800,14 @@ public actor SyncEngine {
         await offlineTracker.observe(nil)
 
         let nowNs = currentNowNs()
+        // Carry the item type from the parent directory row so that a newly
+        // created folder under a Lakehouse Files/ subtree keeps writable
+        // capabilities without waiting for the next refreshFolder (fp-05).
+        let parentKeyMkdir = CacheKey(
+            accountAlias: key.accountAlias, workspaceID: key.workspaceID,
+            itemID: key.itemID, path: Enumerator.parentPath(key.path)
+        )
+        let mkdirItemType = (try? await cache.fetch(key: parentKeyMkdir))?.itemType ?? ""
         let row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -796,7 +817,8 @@ public actor SyncEngine {
             name: Enumerator.baseName(key.path),
             isDir: true,
             lastAccessedNs: nowNs,
-            syncedAtNs: nowNs
+            syncedAtNs: nowNs,
+            itemType: mkdirItemType
         )
         do { try await cache.upsert(row) } catch {
             Self.log.warning("mkdir: upsert failed err=\(error, privacy: .public)")
@@ -916,6 +938,17 @@ public actor SyncEngine {
 
         // Upsert metadata row and blob store as a logical pair (sync-29).
         let nowNs = currentNowNs()
+        // Carry the item type from the cached row (or the parent directory)
+        // so that a downloaded file under a Lakehouse Files/ subtree keeps
+        // writable capabilities without waiting for the next refreshFolder (fp-05).
+        var downloadItemType = cached?.itemType ?? ""
+        if downloadItemType.isEmpty {
+            let parentKeyDl = CacheKey(
+                accountAlias: key.accountAlias, workspaceID: key.workspaceID,
+                itemID: key.itemID, path: Enumerator.parentPath(key.path)
+            )
+            downloadItemType = (try? await cache.fetch(key: parentKeyDl))?.itemType ?? ""
+        }
         var row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -929,7 +962,8 @@ public actor SyncEngine {
             lastModifiedNs: dateToNs(props.lastModified) ?? 0,
             contentType: props.contentType,
             lastAccessedNs: nowNs,
-            syncedAtNs: nowNs
+            syncedAtNs: nowNs,
+            itemType: downloadItemType
         )
         if row.name.isEmpty { row.name = Enumerator.baseName(key.path) }
 

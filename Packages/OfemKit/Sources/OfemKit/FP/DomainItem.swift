@@ -47,13 +47,23 @@ public struct DomainItem: Sendable, Equatable {
         /// Fabric-managed folder nodes (e.g. `Files`, `Tables` in a Lakehouse).
         /// Users can create items inside but cannot rename or delete the node.
         static let managedDirectory: Set<Capability> = [.read, .enumerate, .addSubitems]
-        /// Writable directories (DFS dirs in the cache, synthetic dirs).
+        /// Writable directories (DFS dirs under a Lakehouse Files/Tables subtree).
         static let writableDirectory: Set<Capability> = [.read, .write, .delete, .enumerate, .addSubitems]
-        /// Writable files (DFS files in the cache, synthetic files).
+        /// Writable files (DFS files under a Lakehouse Files/Tables subtree).
         static let writableFile: Set<Capability>      = [.read, .write, .delete]
     }
 
     // MARK: - Capability policy (fp-05)
+
+    /// Shared POSIX locale for case-insensitive ASCII comparisons inside
+    /// `computeCapabilities`.
+    ///
+    /// Allocated once and reused across calls — the same optimisation applied
+    /// to `ContentVersion`'s date formatter (see comment in `ContentVersion`).
+    // `Locale` is a value type backed by a tagged-pointer cache in the Swift
+    // runtime; `nonisolated(unsafe)` suppresses the Swift 6 Sendable diagnostic
+    // for this read-only-global pattern, matching the formatter precedent.
+    nonisolated(unsafe) private static let posixLocale = Locale(identifier: "en_US_POSIX")
 
     /// Computes the capability set for a path-level record according to the
     /// write-access policy:
@@ -70,19 +80,18 @@ public struct DomainItem: Sendable, Equatable {
     ///   non-Tables/Files paths in a Lakehouse, empty/unknown `itemType`)
     ///   is read-only.
     ///
-    /// Comparison is locale-independent (POSIX ASCII fold) to match
-    /// `Item.hasOneLakeStorage` in `FabricModels.swift`.
+    /// Comparison is locale-independent (POSIX ASCII fold), consistent with
+    /// `Item.isLakehouse` in `FabricModels.swift`.
     internal static func computeCapabilities(
         isDir: Bool,
         path: String,
         itemType: String
     ) -> Set<Capability> {
-        let posix = Locale(identifier: "en_US_POSIX")
-        guard itemType.lowercased(with: posix) == "lakehouse" else {
+        guard itemType.lowercased(with: posixLocale) == "lakehouse" else {
             return CapabilitySet.readOnly
         }
         // Check whether `path` is exactly "Files"/"Tables" or under them.
-        let lower = path.lowercased(with: posix)
+        let lower = path.lowercased(with: posixLocale)
         let isFilesNode   = lower == "files"
         let isTablesNode  = lower == "tables"
         let underFiles    = lower.hasPrefix("files/")
@@ -297,20 +306,35 @@ extension DomainItem {
     // MARK: Synthetic item
 
     /// Builds an item for a just-created path before its cache row exists.
+    ///
+    /// Pass the parent's `itemType` (e.g. `"Lakehouse"`) so capability
+    /// computation follows the same write-access policy as `from(record:)`.
+    /// macOS only calls `createItem` on a parent that already advertised
+    /// `addSubitems`, so in practice `itemType` is always `"Lakehouse"` for
+    /// user-initiated creates — but threading it explicitly ensures the policy
+    /// is enforced at the code level regardless of caller assumptions.
     public static func synthetic(
         identifier: ItemIdentifier,
         parentIdentifier: ItemIdentifier,
         name: String,
-        isDirectory: Bool
+        isDirectory: Bool,
+        itemType: String = ""
     ) -> DomainItem {
-        DomainItem(
+        // Derive the path component from the identifier for capability lookup.
+        let path: String
+        if case .path(_, _, let p) = identifier {
+            path = p
+        } else {
+            path = ""
+        }
+        return DomainItem(
             identifier: identifier,
             parentIdentifier: parentIdentifier,
             filename: name,
             isDirectory: isDirectory,
             contentVersion: ContentVersion.fallback(seed: name, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: name, size: 0, mtime: nil),
-            capabilities: isDirectory ? CapabilitySet.writableDirectory : CapabilitySet.writableFile
+            capabilities: computeCapabilities(isDir: isDirectory, path: path, itemType: itemType)
         )
     }
 }

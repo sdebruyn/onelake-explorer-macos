@@ -682,10 +682,10 @@ struct DomainItemTests {
         #expect(!synth.isDirectory)
     }
 
-    @Test func syntheticDirectoryHasFullCapabilitySet() {
-        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Dir")
-        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
-        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "Dir", isDirectory: true).capabilities
+    @Test func syntheticDirectoryInLakehouseHasFullCapabilitySet() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/Dir")
+        let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
+        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "Dir", isDirectory: true, itemType: "Lakehouse").capabilities
         #expect(caps.contains(.read))
         #expect(caps.contains(.write))
         #expect(caps.contains(.delete))
@@ -693,11 +693,28 @@ struct DomainItemTests {
         #expect(caps.contains(.addSubitems))
     }
 
-    @Test func syntheticFileHasExactlyReadWriteDelete() {
-        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "f.txt")
-        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
-        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false).capabilities
+    @Test func syntheticFileInLakehouseHasExactlyReadWriteDelete() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/f.txt")
+        let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
+        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false, itemType: "Lakehouse").capabilities
         #expect(caps == [.read, .write, .delete])
+    }
+
+    @Test func syntheticWithoutItemTypeIsReadOnly() {
+        // A synthetic item with no item type (unknown parent) must be read-only:
+        // capability computation cannot grant write access without a Lakehouse context.
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/f.txt")
+        let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
+        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false).capabilities
+        #expect(caps == DomainItem.CapabilitySet.readOnly)
+    }
+
+    @Test func syntheticWarehouseIsReadOnly() {
+        // A synthetic item under a Warehouse must be read-only regardless of path.
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/f.txt")
+        let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
+        let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false, itemType: "Warehouse").capabilities
+        #expect(caps == DomainItem.CapabilitySet.readOnly)
     }
 
     @Test func syntheticPreservesIdentifiersAndName() {
@@ -841,17 +858,17 @@ struct DomainItemTests {
         #expect(stub.capabilities == DomainItem.CapabilitySet.readOnly)
     }
 
-    @Test func syntheticDirectoryUsesWritableDirectoryPreset() {
-        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Dir")
-        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
-        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "Dir", isDirectory: true)
+    @Test func syntheticLakehouseDirectoryUsesWritableDirectoryPreset() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/Dir")
+        let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
+        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "Dir", isDirectory: true, itemType: "Lakehouse")
         #expect(synth.capabilities == DomainItem.CapabilitySet.writableDirectory)
     }
 
-    @Test func syntheticFileUsesWritableFilePreset() {
-        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "f.txt")
-        let pid = ItemIdentifier.item(workspaceID: "ws", itemID: "i")
-        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false)
+    @Test func syntheticLakehouseFileUsesWritableFilePreset() {
+        let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/f.txt")
+        let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
+        let synth = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false, itemType: "Lakehouse")
         #expect(synth.capabilities == DomainItem.CapabilitySet.writableFile)
     }
 

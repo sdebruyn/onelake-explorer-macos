@@ -1598,4 +1598,115 @@ struct SyncEngineTests {
         #expect(sdbRow.itemType == "SQLDatabase",      "SQLDatabase item_type must be persisted")
         #expect(mdbRow.itemType == "MirroredDatabase", "MirroredDatabase item_type must be persisted")
     }
+
+    // MARK: - refreshFolder: item_type propagated to child rows
+
+    @Test("refreshFolder() stamps item_type from discovery row onto child path rows")
+    func testRefreshFolderStampsItemType() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Write the discovery row that listItems would produce (Lakehouse).
+        let discoveryKey = CacheKey(
+            accountAlias: Self.alias, workspaceID: Self.wsID,
+            itemID: VirtualIDs.itemID, path: Self.itID
+        )
+        let discoveryRow = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID,
+            itemID: VirtualIDs.itemID, path: Self.itID,
+            parentPath: "", name: "Sales LH", isDir: true,
+            itemType: "Lakehouse"
+        )
+        try await store.upsert(discoveryRow)
+
+        // Stub listPath to return one file under Files/.
+        ol.listPathResults.append(.success(ListResult(entries: [
+            PathEntry.file(name: "Files/data.csv")
+        ])))
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files")
+        _ = try await engine.refreshFolder(key: key)
+
+        let childKey = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files/data.csv")
+        let childRow = try await store.fetch(key: childKey)
+        #expect(childRow.itemType == "Lakehouse", "child rows must carry the Lakehouse item_type from the discovery row")
+    }
+
+    @Test("refreshFolder() before listItems: child rows get empty item_type and are read-only")
+    func testRefreshFolderBeforeListItemsYieldsReadOnlyRows() async throws {
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // No discovery row written — simulates refreshFolder racing ahead of listItems.
+        ol.listPathResults.append(.success(ListResult(entries: [
+            PathEntry.file(name: "Files/data.csv")
+        ])))
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files")
+        _ = try await engine.refreshFolder(key: key)
+
+        let childKey = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files/data.csv")
+        let childRow = try await store.fetch(key: childKey)
+        // item_type is "" — the row is read-only until the next listItems + refreshFolder cycle.
+        #expect(childRow.itemType == "", "missing discovery row must produce empty item_type (transient read-only)")
+    }
+
+    // MARK: - put / mkdir: item_type propagated from parent cache row
+
+    @Test("put() carries item_type from parent directory row into the upserted file row")
+    func testPutCarriesItemTypeFromParent() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Pre-seed parent directory row with Lakehouse item_type.
+        let parentKey = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files")
+        let parentRow = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID,
+            itemID: Self.itID, path: "Files", parentPath: "",
+            name: "Files", isDir: true, itemType: "Lakehouse"
+        )
+        try await store.upsert(parentRow)
+
+        let src = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".csv")
+        try Data(repeating: 0xAB, count: 64).write(to: src)
+        defer { try? FileManager.default.removeItem(at: src) }
+
+        ol.writeResults.append(.success(()))
+        ol.getPropertiesResults.append(.success(PathProperties.make(contentLength: 64, eTag: "etag1")))
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files/data.csv")
+        try await engine.put(key: key, sourceURL: src)
+
+        let row = try await store.fetch(key: key)
+        #expect(row.itemType == "Lakehouse", "put() must carry Lakehouse item_type so the file is immediately writable")
+    }
+
+    @Test("mkdir() carries item_type from parent directory row into the upserted directory row")
+    func testMkdirCarriesItemTypeFromParent() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Pre-seed parent directory row with Lakehouse item_type.
+        let parentKey = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files")
+        let parentRow = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID,
+            itemID: Self.itID, path: "Files", parentPath: "",
+            name: "Files", isDir: true, itemType: "Lakehouse"
+        )
+        try await store.upsert(parentRow)
+
+        ol.createDirectoryResults.append(.success(()))
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files/NewDir")
+        try await engine.mkdir(key: key)
+
+        let row = try await store.fetch(key: key)
+        #expect(row.itemType == "Lakehouse", "mkdir() must carry Lakehouse item_type so the new directory is immediately writable")
+    }
 }

@@ -127,8 +127,7 @@ public enum CacheSchema {
 
         // v3: add item_type to persist the Fabric item type (e.g. "Lakehouse",
         // "Warehouse") on every path_metadata row. Capability computation reads
-        // this field to decide whether a path is writable. Pre-existing rows
-        // default to '' and are treated as read-only until re-enumerated.
+        // this field to decide whether a path is writable.
         m.registerMigration("v3") { db in
             try db.execute(sql: """
                 ALTER TABLE path_metadata

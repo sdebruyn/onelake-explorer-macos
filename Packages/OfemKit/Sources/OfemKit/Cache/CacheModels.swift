@@ -113,9 +113,9 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
     public var childrenSyncedAtNs: Int64
 
     /// Fabric item type (e.g. `"Lakehouse"`, `"Warehouse"`, `"SQLDatabase"`,
-    /// `"MirroredDatabase"`). Empty string for virtual rows (workspace sentinel,
-    /// root sentinel) and for rows written before v3 of the schema. An empty
-    /// value is treated as read-only by `DomainItem.computeCapabilities`.
+    /// `"MirroredDatabase"`). Empty string for virtual rows (workspace and
+    /// root sentinels) and for items not yet enumerated by the sync engine.
+    /// An empty value is treated as read-only by `DomainItem.computeCapabilities`.
     public var itemType: String
 
     // MARK: Computed helpers
