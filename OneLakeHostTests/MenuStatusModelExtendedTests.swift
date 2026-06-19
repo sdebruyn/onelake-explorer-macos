@@ -99,7 +99,7 @@ final class MenuStatusModelExtendedTests: XCTestCase {
     private var model: MenuStatusModel!
     private var cancellables = Set<AnyCancellable>()
 
-    override func setUp() {
+    @MainActor override func setUp() {
         super.setUp()
         accountProvider = FakeAccountProvider()
         engineProvider = FakeEngineStatusProvider()
@@ -111,7 +111,7 @@ final class MenuStatusModelExtendedTests: XCTestCase {
         )
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() {
         cancellables.removeAll()
         super.tearDown()
     }
@@ -602,7 +602,7 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase {
     // Since the test bundle includes both files we can reference the private types by
     // redeclaring compatible local versions here.
 
-    override func setUp() {
+    @MainActor override func setUp() {
         super.setUp()
         signInProvider = MockSignInProvider()
         domainRegistrar = MockDomainRegistrar()
@@ -612,7 +612,7 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase {
         )
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() {
         cancellables.removeAll()
         super.tearDown()
     }

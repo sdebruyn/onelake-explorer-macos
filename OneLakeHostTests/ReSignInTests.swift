@@ -114,7 +114,7 @@ final class ReSignInTests: XCTestCase {
     private var model: MenuStatusModel!
     private var cancellables = Set<AnyCancellable>()
 
-    override func setUp() {
+    @MainActor override func setUp() {
         super.setUp()
         accountProvider = FakeReSignInAccountProvider()
         engineProvider = FakeReSignInEngineProvider()
@@ -128,7 +128,7 @@ final class ReSignInTests: XCTestCase {
         )
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() {
         cancellables.removeAll()
         super.tearDown()
     }

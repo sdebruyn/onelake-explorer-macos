@@ -47,7 +47,7 @@ final class XPCVersionHandshakeTests: XCTestCase {
     private var model: MenuStatusModel!
     private var cancellables = Set<AnyCancellable>()
 
-    override func setUp() {
+    @MainActor override func setUp() {
         super.setUp()
         client = OfemFPEClient()
         // Create a fresh model with no real dependencies — version mismatch
@@ -58,7 +58,7 @@ final class XPCVersionHandshakeTests: XCTestCase {
         model.clearLastActionError()
     }
 
-    override func tearDown() {
+    @MainActor override func tearDown() {
         cancellables.removeAll()
         super.tearDown()
     }

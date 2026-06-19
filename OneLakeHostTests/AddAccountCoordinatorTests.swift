@@ -58,7 +58,7 @@ final class AddAccountCoordinatorTests: XCTestCase {
     private var domainRegistrar: MockDomainRegistrar!
     private var coordinator: AddAccountCoordinator!
 
-    override func setUp() {
+    @MainActor override func setUp() {
         super.setUp()
         signInProvider = MockSignInProvider()
         domainRegistrar = MockDomainRegistrar()
