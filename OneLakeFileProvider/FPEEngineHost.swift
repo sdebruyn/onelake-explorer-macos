@@ -113,7 +113,13 @@ final class FPEEngineHost: EngineProviding {
     let alias: String
 
     /// The File Provider domain. Retained for diagnostics.
-    let domain: NSFileProviderDomain
+    ///
+    /// `NSFileProviderDomain` does not conform to `Sendable`. Because `domain`
+    /// is a `let` stored only in `init` and never mutated after construction,
+    /// access across concurrency domains is safe; `nonisolated(unsafe)` tells
+    /// the compiler to trust that invariant rather than requiring the type to
+    /// carry a `Sendable` conformance.
+    nonisolated(unsafe) let domain: NSFileProviderDomain
 
     // MARK: - Process-wide shared config store
 
