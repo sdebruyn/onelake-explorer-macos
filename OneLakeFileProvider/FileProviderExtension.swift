@@ -96,8 +96,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         FileProviderExtension.log.info(
             "Invalidating extension for domain \(self.domain.identifier.rawValue, privacy: .public)"
         )
+        // Capture engineHost (Sendable) explicitly so the Task body does not
+        // need to capture self, which is not Sendable.
+        let hostCopy = engineHost
         Task {
-            await engineHost.shutdown()
+            await hostCopy.shutdown()
         }
     }
 
@@ -127,6 +130,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         let aliasCopy = alias
         let hostCopy = engineHost
+        // NSFileProviderReplicatedExtension completion handlers are @escaping but
+        // not @Sendable. Box to cross the Task isolation boundary safely.
+        struct CH: @unchecked Sendable { let fn: (NSFileProviderItem?, Error?) -> Void }
+        let ch = CH(fn: completionHandler)
         let task = Task {
             do {
                 let engine = try await hostCopy.engine()
@@ -135,15 +142,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     alias: aliasCopy,
                     engine: engine
                 )
-                completionHandler(item, nil)
+                ch.fn(item, nil)
             } catch is CancellationError {
-                completionHandler(nil, CocoaError(.userCancelled))
+                ch.fn(nil, CocoaError(.userCancelled))
             } catch {
                 let code = FPError.classify(error)
                 FileProviderExtension.log.error(
                     "item(for:) failed for \(aliasCopy, privacy: .public)/\(ofemID.identifierString, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
-                completionHandler(nil, nsFileProviderError(for: code))
+                ch.fn(nil, nsFileProviderError(for: code))
             }
         }
         progress.cancellationHandler = { task.cancel() }
@@ -190,6 +197,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         let aliasCopy = alias
         let hostCopy = engineHost
+        // NSFileProviderReplicatedExtension completion handlers are @escaping but
+        // not @Sendable. Box to cross the Task isolation boundary safely.
+        struct CH: @unchecked Sendable { let fn: (URL?, NSFileProviderItem?, Error?) -> Void }
+        let ch = CH(fn: completionHandler)
         let task = Task {
             do {
                 let engine = try await hostCopy.engine()
@@ -233,15 +244,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     progress.totalUnitCount = actualBytes
                 }
                 progress.completedUnitCount = actualBytes
-                completionHandler(dest, domainItem, nil)
+                ch.fn(dest, domainItem, nil)
             } catch is CancellationError {
-                completionHandler(nil, nil, CocoaError(.userCancelled))
+                ch.fn(nil, nil, CocoaError(.userCancelled))
             } catch {
                 let code = FPError.classify(error)
                 FileProviderExtension.log.error(
                     "fetchContents failed for \(aliasCopy, privacy: .public)/\(ofemID.identifierString, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
-                completionHandler(nil, nil, nsFileProviderError(for: code))
+                ch.fn(nil, nil, nsFileProviderError(for: code))
             }
         }
         progress.cancellationHandler = { task.cancel() }
@@ -284,6 +295,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             "createItem \(filename, privacy: .public) isDir=\(isDir, privacy: .public) parent=\(parentID.identifierString, privacy: .public) fields=\(fieldsCopy.rawValue, privacy: .public) options=\(optionsCopy.rawValue, privacy: .public)"
         )
 
+        // NSFileProviderReplicatedExtension completion handlers are @escaping but
+        // not @Sendable. Box to cross the Task isolation boundary safely.
+        struct CH: @unchecked Sendable {
+            let fn: (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
+        }
+        let ch = CH(fn: completionHandler)
         let task = Task {
             do {
                 let engine = try await hostCopy.engine()
@@ -297,15 +314,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     alias: aliasCopy,
                     engine: engine
                 )
-                completionHandler(item, [], false, nil)
+                ch.fn(item, [], false, nil)
             } catch is CancellationError {
-                completionHandler(nil, [], false, CocoaError(.userCancelled))
+                ch.fn(nil, [], false, CocoaError(.userCancelled))
             } catch {
                 let code = FPError.classify(error)
                 FileProviderExtension.log.error(
                     "createItem failed: \(error.localizedDescription, privacy: .public)"
                 )
-                completionHandler(nil, [], false, nsFileProviderError(for: code))
+                ch.fn(nil, [], false, nsFileProviderError(for: code))
             }
         }
         progress.cancellationHandler = { task.cancel() }
@@ -363,6 +380,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
             let aliasCopy = alias
             let hostCopy = engineHost
+            // NSFileProviderReplicatedExtension completion handlers are @escaping
+            // but not @Sendable. Box to cross the Task isolation boundary safely.
+            struct CH: @unchecked Sendable {
+                let fn: (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
+            }
+            let ch = CH(fn: completionHandler)
             let task = Task {
                 do {
                     let engine = try await hostCopy.engine()
@@ -371,15 +394,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                         alias: aliasCopy,
                         engine: engine
                     )
-                    completionHandler(existing, [], false, nil)
+                    ch.fn(existing, [], false, nil)
                 } catch is CancellationError {
-                    completionHandler(nil, [], false, CocoaError(.userCancelled))
+                    ch.fn(nil, [], false, CocoaError(.userCancelled))
                 } catch {
                     let code = FPError.classify(error)
                     FileProviderExtension.log.error(
                         "modifyItem(metadata) fetch failed: \(error.localizedDescription, privacy: .public)"
                     )
-                    completionHandler(nil, [], false, nsFileProviderError(for: code))
+                    ch.fn(nil, [], false, nsFileProviderError(for: code))
                 }
             }
             progress.cancellationHandler = { task.cancel() }
@@ -417,6 +440,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             "modifyItem \(ofemID.identifierString, privacy: .public)"
         )
 
+        // NSFileProviderReplicatedExtension completion handlers are @escaping but
+        // not @Sendable. Box to cross the Task isolation boundary safely.
+        struct CH: @unchecked Sendable {
+            let fn: (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
+        }
+        let ch = CH(fn: completionHandler)
         let task = Task {
             do {
                 let engine = try await hostCopy.engine()
@@ -440,15 +469,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     alias: aliasCopy,
                     engine: engine
                 )
-                completionHandler(updated, [], false, nil)
+                ch.fn(updated, [], false, nil)
             } catch is CancellationError {
-                completionHandler(nil, [], false, CocoaError(.userCancelled))
+                ch.fn(nil, [], false, CocoaError(.userCancelled))
             } catch {
                 let code = FPError.classify(error)
                 FileProviderExtension.log.error(
                     "modifyItem failed: \(error.localizedDescription, privacy: .public)"
                 )
-                completionHandler(nil, [], false, nsFileProviderError(for: code))
+                ch.fn(nil, [], false, nsFileProviderError(for: code))
             }
         }
         progress.cancellationHandler = { task.cancel() }
@@ -484,20 +513,24 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             "deleteItem \(ofemID.identifierString, privacy: .public)"
         )
 
+        // NSFileProviderReplicatedExtension completion handlers are @escaping but
+        // not @Sendable. Box to cross the Task isolation boundary safely.
+        struct CH: @unchecked Sendable { let fn: (Error?) -> Void }
+        let ch = CH(fn: completionHandler)
         let task = Task {
             do {
                 let engine = try await hostCopy.engine()
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
                 try await engine.sync.delete(key: key)
-                completionHandler(nil)
+                ch.fn(nil)
             } catch is CancellationError {
-                completionHandler(CocoaError(.userCancelled))
+                ch.fn(CocoaError(.userCancelled))
             } catch {
                 let code = FPError.classify(error)
                 FileProviderExtension.log.error(
                     "deleteItem failed: \(error.localizedDescription, privacy: .public)"
                 )
-                completionHandler(nsFileProviderError(for: code))
+                ch.fn(nsFileProviderError(for: code))
             }
         }
         progress.cancellationHandler = { task.cancel() }
