@@ -376,8 +376,11 @@ final class OfemFPEClient {
         }
 
         // Get the NSFileProviderService object for the control service.
-        let service: NSFileProviderService = try await withCheckedThrowingContinuation { rawCont in
-            let cont = OneShotContinuation(rawCont)
+        // NSFileProviderService is @_nonSendable; box it so it can cross the
+        // continuation boundary. The box is discarded after unwrapping below.
+        struct ServiceBox: @unchecked Sendable { let value: NSFileProviderService }
+        let serviceBox: ServiceBox = try await withCheckedThrowingContinuation { rawCont in
+            let cont = OneShotContinuation<ServiceBox>(rawCont)
             manager.getService(
                 named: NSFileProviderServiceName(ofemControlServiceName),
                 for: .rootContainer
@@ -385,7 +388,7 @@ final class OfemFPEClient {
                 if let error {
                     cont.resume(throwing: error)
                 } else if let svc {
-                    cont.resume(returning: svc)
+                    cont.resume(returning: ServiceBox(value: svc))
                 } else {
                     cont.resume(throwing: OfemFPEClientError.connectionFailed(
                         "getService returned nil for \(domainIdentifier)"
@@ -393,15 +396,18 @@ final class OfemFPEClient {
                 }
             }
         }
+        let service = serviceBox.value
 
         // Obtain the NSXPCConnection from the service.
-        let connection: NSXPCConnection = try await withCheckedThrowingContinuation { rawCont in
-            let cont = OneShotContinuation(rawCont)
+        // NSXPCConnection is @_nonSendable; wrap it in XPCConnectionBox so the
+        // continuation return type satisfies the T: Sendable constraint.
+        let connBox: XPCConnectionBox = try await withCheckedThrowingContinuation { rawCont in
+            let cont = OneShotContinuation<XPCConnectionBox>(rawCont)
             service.getFileProviderConnection(completionHandler: { conn, error in
                 if let error {
                     cont.resume(throwing: error)
                 } else if let conn {
-                    cont.resume(returning: conn)
+                    cont.resume(returning: XPCConnectionBox(conn))
                 } else {
                     cont.resume(throwing: OfemFPEClientError.connectionFailed(
                         "getFileProviderConnection returned nil for \(domainIdentifier)"
@@ -409,6 +415,7 @@ final class OfemFPEClient {
                 }
             })
         }
+        let connection = connBox.connection
 
         // Configure the connection interface.
         connection.remoteObjectInterface = makeInterface()
