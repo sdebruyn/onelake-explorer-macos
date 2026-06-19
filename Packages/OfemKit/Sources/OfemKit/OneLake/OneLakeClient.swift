@@ -724,7 +724,7 @@ public final class OneLakeClient: Sendable {
                 defer { try? src.close() }
                 let chunkSize = 65_536
                 while true {
-                    let chunk = try src.read(upToCount: chunkSize)
+                    let chunk = src.readData(ofLength: chunkSize)
                     if chunk.isEmpty { break }
                     try fileHandle.write(contentsOf: chunk)
                 }
