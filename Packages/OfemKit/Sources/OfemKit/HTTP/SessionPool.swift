@@ -70,7 +70,7 @@ public actor SessionPool {
     ///
     /// Call this when an account is removed so a stale session cannot reuse a
     /// purged token.
-    func invalidate(alias: String) {
+    public func invalidate(alias: String) {
         let toRemove = sessions.keys.filter { $0.alias == alias }
         for key in toRemove {
             sessions[key]?.cancelAllRequests()
