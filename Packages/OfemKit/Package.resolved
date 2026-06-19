@@ -1,13 +1,13 @@
 {
-  "originHash" : "202e7b0cb374bacee4f154c1b794e3ea9c5968eaa2119212f3e75ef72f6baf9b",
+  "originHash" : "d6c695b6d6337032849db1b73c699f7282f33a92e624bf76306327f3222db2f6",
   "pins" : [
     {
       "identity" : "grdb.swift",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/groue/GRDB.swift.git",
       "state" : {
-        "revision" : "9ed8c8457e00ff9c7aedb3bf213f20a2cfdf509e",
-        "version" : "7.11.0"
+        "revision" : "b83108d10f42680d78f23fe4d4d80fc88dab3212",
+        "version" : "7.11.1"
       }
     },
     {
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/AzureAD/microsoft-authentication-library-for-objc",
       "state" : {
-        "revision" : "19c3c7d48c9fa73f9ef6384b53c1e9da53c07dd0",
-        "version" : "2.12.1"
+        "revision" : "856a252c77b5d92fd3f2352497c96a9bed15ba4e",
+        "version" : "2.13.0"
       }
     },
     {
