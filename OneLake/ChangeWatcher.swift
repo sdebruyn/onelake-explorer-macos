@@ -31,11 +31,98 @@
 //
 // This class is @MainActor because NSFileProviderManager calls are documented
 // as main-thread-only.
+//
+// Continuation hardening — resume-once guard:
+//   Apple does not guarantee that NSFileProviderManager.signalEnumerator(for:completionHandler:)
+//   always calls its completion handler (fileproviderd crash / domain teardown).
+//   A plain withCheckedThrowingContinuation would leak the continuation forever.
+//   signalEnumeratorOnce wraps the call with a lock-guarded optional continuation
+//   that is nil'd before every resume (exactly-one guarantee) and a
+//   withTaskCancellationHandler so a cancelled caller escapes immediately.
+//   See ContainerSignaller.swift for the matching FPE-side implementation and
+//   a fuller rationale.
 
 @preconcurrency import FileProvider
 import Foundation
 import OfemKit
 import os.log
+
+// MARK: - ResumeOnceBox (resume-once guard)
+
+/// A lock-guarded box that ensures a `CheckedContinuation` is resumed at most
+/// once across concurrent callers.
+///
+/// Both the "work completed" path and the "task cancelled" path call `take()`.
+/// `take()` atomically reads and clears the stored continuation, returning it
+/// to the caller only when it has not yet been claimed — so exactly one of the
+/// two paths ever calls `resume` on the continuation.
+///
+/// `@unchecked Sendable`: the class is safe to pass across isolation domains
+/// because all access to `stored` is protected by `lock`.
+final class ResumeOnceBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: CheckedContinuation<Void, Error>?
+
+    /// Stores `cont`. Must be called exactly once before any call to `take()`.
+    func store(_ cont: CheckedContinuation<Void, Error>) {
+        lock.withLock { stored = cont }
+    }
+
+    /// Atomically claims the stored continuation.  Returns the continuation the
+    /// first time it is called; returns `nil` on every subsequent call.
+    func take() -> CheckedContinuation<Void, Error>? {
+        lock.withLock { let c = stored; stored = nil; return c }
+    }
+}
+
+// MARK: - withCallbackOnce (testable resume-once primitive)
+
+/// Awaits a callback-style operation exactly once, with a resume-once guard
+/// and task-cancellation support.
+///
+/// `work` receives a `deliver` closure that it must call exactly once with
+/// `nil` for success or an `Error` for failure.  `withCallbackOnce` wraps the
+/// call in `withTaskCancellationHandler` so a cancelled caller is released
+/// immediately via `CancellationError` rather than hanging.
+///
+/// The resume-once guarantee is enforced by `ResumeOnceBox`: both the
+/// `deliver` path and the `onCancel` path call `box.take()`, which
+/// atomically claims the stored continuation only once.  The second path
+/// always receives `nil` and is a no-op, preventing both leaks and the
+/// double-resume trap.
+///
+/// This primitive is `internal` (not `private`) so unit tests can exercise the
+/// guard logic directly without requiring a real `NSFileProviderManager`.
+func withCallbackOnce(
+    work: @Sendable @escaping (_ deliver: @escaping @Sendable (Error?) -> Void) -> Void
+) async throws {
+    let box = ResumeOnceBox()
+
+    try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            box.store(cont)
+            work { error in
+                guard let c = box.take() else { return }
+                if let error { c.resume(throwing: error) } else { c.resume() }
+            }
+        }
+    } onCancel: {
+        box.take()?.resume(throwing: CancellationError())
+    }
+}
+
+// MARK: - signalEnumeratorOnce
+
+/// Calls `manager.signalEnumerator(for:completionHandler:)` with the
+/// resume-once guard provided by `withCallbackOnce`.
+func signalEnumeratorOnce(
+    manager: NSFileProviderManager,
+    container: NSFileProviderItemIdentifier
+) async throws {
+    try await withCallbackOnce { deliver in
+        manager.signalEnumerator(for: container) { error in deliver(error) }
+    }
+}
 
 // MARK: - Workspace set signature helpers (pure, testable)
 
@@ -344,15 +431,7 @@ final class ChangeWatcher {
         }
 
         do {
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                manager.signalEnumerator(for: itemIdentifier) { error in
-                    if let error = error {
-                        cont.resume(throwing: error)
-                    } else {
-                        cont.resume()
-                    }
-                }
-            }
+            try await signalEnumeratorOnce(manager: manager, container: itemIdentifier)
             Self.log.debug(
                 "ChangeWatcher: signalled \(domainId, privacy: .public)/\(containerId, privacy: .public)"
             )
