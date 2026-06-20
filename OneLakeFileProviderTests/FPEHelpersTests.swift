@@ -167,23 +167,47 @@ final class FPEHelpersTests: XCTestCase {
 ///
 /// `makeContainerChangeHandler` dispatches `signal` on a detached `Task`, so a
 /// test cannot read `identifiers` immediately. `nextIdentifier()` awaits the
-/// next recorded signal deterministically via an `AsyncStream`.
+/// next recorded signal deterministically.
+///
+/// Delivery is an actor-owned buffer + single FIFO waiter rather than an
+/// `AsyncStream`: `AsyncStream` allows only one iterator, so creating one per
+/// `nextIdentifier()` call is undefined behaviour (a second call could hang).
 private final class SignalRecorder: @unchecked Sendable {
+    /// Actor-owned delivery queue: buffers ids until consumed, or parks a single
+    /// waiter until the next id arrives.
+    private actor Inbox {
+        private var buffer: [NSFileProviderItemIdentifier] = []
+        private var waiter: CheckedContinuation<NSFileProviderItemIdentifier?, Never>?
+
+        func deliver(_ id: NSFileProviderItemIdentifier) {
+            if let w = waiter {
+                waiter = nil
+                w.resume(returning: id)
+            } else {
+                buffer.append(id)
+            }
+        }
+
+        func next() async -> NSFileProviderItemIdentifier? {
+            if !buffer.isEmpty { return buffer.removeFirst() }
+            return await withCheckedContinuation { cont in waiter = cont }
+        }
+    }
+
     private let lock = NSLock()
     private var _identifiers: [NSFileProviderItemIdentifier] = []
-    private let stream = AsyncStream<NSFileProviderItemIdentifier>.makeStream()
+    private let inbox = Inbox()
 
     var identifiers: [NSFileProviderItemIdentifier] { lock.withLock { _identifiers } }
     var count: Int { lock.withLock { _identifiers.count } }
 
     func record(_ id: NSFileProviderItemIdentifier) {
         lock.withLock { _identifiers.append(id) }
-        stream.continuation.yield(id)
+        Task { await inbox.deliver(id) }
     }
 
-    /// Awaits the next recorded signal identifier.
+    /// Awaits the next recorded signal identifier (FIFO).
     func nextIdentifier() async -> NSFileProviderItemIdentifier? {
-        var iter = stream.stream.makeAsyncIterator()
-        return await iter.next()
+        await inbox.next()
     }
 }
