@@ -13,6 +13,14 @@ public struct Diff: Sendable {
     public var removed: Int = 0
     /// `added + updated + removed`.
     public var total: Int { added + updated + removed }
+
+    /// Creates a `Diff`. Public so callers that receive a `Diff` through
+    /// ``ContainerChangeHandler`` (the FPE) can construct one in tests.
+    public init(added: Int = 0, updated: Int = 0, removed: Int = 0) {
+        self.added = added
+        self.updated = updated
+        self.removed = removed
+    }
 }
 
 // MARK: - EnumerateResult

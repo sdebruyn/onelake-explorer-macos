@@ -268,6 +268,11 @@ public actor SyncEngine {
             )
         }
         await batchUpsert(rows, context: "listWorkspaces")
+        // Deliberately NO notifyContainerChanged here: the parent of the
+        // workspaces listing is the domain root, which must never be signalled
+        // (a root signal forces `.syncAnchorExpired` → full re-enumeration).
+        // Root stays remount-driven via ChangeWatcher; only the per-workspace
+        // item listing (listItems, below) signals its `.workspace` container.
         await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
 
         await track(eventName: "workspace_list", alias: alias, start: start, outcome: .success())
@@ -340,7 +345,14 @@ public actor SyncEngine {
             )
         }
         await batchUpsert(rows, context: "listItems")
-        await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
+        let removed = await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
+        // A removed discovery row (e.g. a now-filtered SQLEndpoint that left a
+        // `<name> 2` duplicate behind) must make Finder re-pull this workspace
+        // so the tombstone surfaces. parentKey maps to the `.workspace`
+        // container on the FPE side.
+        if removed > 0 {
+            notifyContainerChanged(key: parentKey, diff: Diff(removed: removed))
+        }
 
         await track(eventName: "item_list", alias: alias, start: start, outcome: .success())
         return storageItems
@@ -1365,17 +1377,29 @@ public actor SyncEngine {
         return (false, props)
     }
 
-    /// Deletes discovery rows for `parent` that are absent from `seen`.
+    /// Deletes discovery rows for `parent` that are absent from `seen`, and
+    /// returns how many rows were expired.
     ///
     /// Uses the authoritative `seen` set from the current listing: any row
     /// not in `seen` was not returned by the remote and should be expired,
     /// regardless of its `syncedAt` timestamp (sync-25 fix: removes the
     /// time-window guard that coupled folder-content TTL with discovery expiry).
-    private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String) async {
+    ///
+    /// The count lets the discovery callers fire ``onContainerChanged`` for the
+    /// parent container so the FPE re-pulls it — this is what clears a
+    /// now-filtered item (e.g. a SQLEndpoint surfacing as `<name> 2`) from
+    /// Finder without a remount.
+    @discardableResult
+    private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String) async -> Int {
         guard let kids = try? await cache.children(of: parent) else {
             Self.log.warning("expireDiscoveryRows: cache.children failed, stale rows may persist")
-            return
+            return 0
         }
+        // `kids` are rows that currently EXIST in the cache (from
+        // cache.children), so every key built here targets a present row that
+        // gets deleted. The count therefore equals the real number of evictions
+        // — it is not inflated by already-absent rows — so callers can fire the
+        // change callback only on a genuine eviction.
         let deleteBatch = kids
             .filter { !seen.contains($0.path) }
             .map { k in
@@ -1387,6 +1411,7 @@ public actor SyncEngine {
                 )
             }
         await batchDelete(deleteBatch, context: "expireDiscoveryRows")
+        return deleteBatch.count
     }
 
     // MARK: - Shared remote-operation error handler
