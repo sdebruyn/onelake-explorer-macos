@@ -10,15 +10,20 @@ import Testing
 ///
 /// ## What these tests cover
 ///
-/// ``SyncEngine/refreshMaterializedContainer(key:)`` and the underlying
-/// ``SyncEngine/refreshFolder(key:)`` are exercised against a live Fabric
-/// lakehouse. A real ``OneLakeClient`` mutates the remote state; assertions
-/// run against the ``CacheStore`` and ``SyncEngine`` APIs so no Finder or GUI
-/// is involved.
+/// Three scenarios exercise the full detection pipeline against a live Fabric
+/// lakehouse. A real ``OneLakeClient`` mutates the remote state; assertions run
+/// against ``CacheStore`` and ``SyncEngine`` so no Finder or GUI is involved.
+///
+/// - **Scenario A** — remote add detected by ``SyncEngine/refreshMaterializedContainer(key:)``
+/// - **Scenario B** — remote delete detected; cache row removed
+/// - **Scenario C** — full poll-loop emulation: `setMaterialized` registers a
+///   container, `refreshMaterialized(alias:keys:concurrencyCap:)` (the batch poller
+///   the host loop calls) detects a remote add and a remote replace,
+///   `itemsChangedAfter` surfaces both via the `updated` set
 ///
 /// ## Gate
 ///
-/// Both tests are skipped unless `OFEM_INTEGRATION=1` and all required env
+/// All tests are skipped unless `OFEM_INTEGRATION=1` and all required env
 /// vars are set (see ``ConditionTrait/integration``). They must not run or fail
 /// in the standard CI pipeline.
 ///
@@ -28,24 +33,34 @@ import Testing
 /// `.workingSet` signal?"
 ///
 /// This cannot be automated in CI because it requires a real FPE mount and an
-/// open Finder window. Manual steps:
+/// open Finder window. Steps:
 ///
-/// 1. Build and launch the app. Sign in with an account (alias e.g. `test`).
-/// 2. Open the lakehouse's `Files/` folder in Finder so the FPE materialises it.
-/// 3. In a terminal, write a new file directly to OneLake:
+/// 1. Build and launch the app (`make app`). Sign in with an account
+///    (alias e.g. `ci`).
+/// 2. Navigate into the lakehouse's `Files/ofem-ci/` folder in Finder so the
+///    FPE materialises it (the folder appears in `materialized_containers`).
+/// 3. Lower the poll cadence to its minimum to speed up observation:
+///    edit `~/Library/Group Containers/dev.debruyn.ofem/ofem.toml`:
+///    ```toml
+///    [sync]
+///    materialized_poll_interval_s = 30
 ///    ```
-///    az storage blob upload \
+/// 4. In a terminal, write a new file directly to OneLake (needs `az login`):
+///    ```
+///    az storage fs file upload \
 ///      --account-name onelake \
-///      --container-name <workspaceGUID> \
-///      --name <lakehouseGUID>/Files/probe.txt \
-///      --data "hello" \
+///      --file-system <workspaceGUID> \
+///      --path <lakehouseGUID>/Files/ofem-ci/probe.txt \
+///      --source /dev/stdin <<< "hello" \
 ///      --auth-mode login
 ///    ```
-/// 4. Wait up to the poll interval (default 30 s). Verify that `probe.txt`
-///    appears in the Finder window without a manual reload.
+/// 5. Wait up to 30 s. Verify that `probe.txt` appears in the Finder window
+///    without a manual reload.
 ///
 /// Acceptance: the file appears automatically. If it does not, the
 /// `.workingSet` signal path or the FPE's `enumerateChanges` is broken.
+/// Document the observed behaviour (appears / does not appear, delay in
+/// seconds) as a comment on issue #346.
 @Suite("RefreshMaterialized integration", .integration, .serialized)
 struct RefreshMaterializedIntegrationTests {
 
@@ -261,6 +276,108 @@ struct RefreshMaterializedIntegrationTests {
                 ns: nsBefore
             )
             #expect(!changes.updated.isEmpty, "itemsChangedAfter must surface at least one updated row")
+        } catch {
+            await lake.rmBestEffort(dir)
+            throw error
+        }
+        try await lake.rm(dir)
+    }
+
+    // MARK: - Scenario C: full poll-loop emulation
+
+    /// Emulates one complete poll-loop iteration end-to-end:
+    ///
+    /// 1. Creates a unique live directory, registers it as a materialized
+    ///    container via ``CacheStore/setMaterialized(alias:identifiers:)``.
+    /// 2. Seeds two files and performs an initial
+    ///    ``SyncEngine/refreshMaterialized(alias:keys:concurrencyCap:)`` pass to
+    ///    populate the cache baseline (simulates the state after Finder has
+    ///    materialised the folder).
+    /// 3. Remotely adds one new file and overwrites another (etag change).
+    /// 4. Reads the materialized set back from the cache, then calls
+    ///    ``SyncEngine/refreshMaterialized(alias:keys:concurrencyCap:)`` — the
+    ///    exact call the host poll loop makes — and asserts it returns `true`
+    ///    (at least one container changed).
+    /// 5. Verifies that ``CacheStore/itemsChangedAfter(accountAlias:ns:)``
+    ///    (anchored before step 3) surfaces both the new file and the updated
+    ///    file in the `updated` set.
+    ///
+    /// This test exercises the boundary between the engine and the poll loop
+    /// coordinator without requiring a running FPE or Finder window.
+    @Test("full poll-loop emulation: setMaterialized + refreshMaterialized + itemsChangedAfter")
+    func testPollLoopEmulation() async throws {
+        let lake = try liveLakehouse()
+        let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
+        let dir = "Files/ofem-ci/\(UUID().uuidString)"
+
+        defer {
+            try? FileManager.default.removeItem(at: store.root)
+            try? FileManager.default.removeItem(at: scratchBase)
+        }
+
+        do {
+            // Step 1: create the remote directory and register it as materialized.
+            try await lake.mkdir(dir)
+
+            // The identifier string the FPE uses for this path container.
+            let identifierString = ItemIdentifier
+                .path(workspaceID: lake.workspace, itemID: lake.item, path: dir)
+                .identifierString
+            try await store.setMaterialized(alias: lake.alias, identifiers: [identifierString])
+
+            // Step 2: seed baseline files and perform an initial batch refresh.
+            try await lake.write("\(dir)/stable.bin",  Data(repeating: 0xAA, count: 16))
+            try await lake.write("\(dir)/update.bin",  Data(repeating: 0xBB, count: 16))
+
+            let dirKey   = cacheKey(lake: lake, path: dir)
+            let keysFromCache1 = try await store.materializedContainers(alias: lake.alias)
+            #expect(!keysFromCache1.isEmpty, "materializedContainers must return at least one key after setMaterialized")
+            let firstPoll = await engine.refreshMaterialized(
+                alias: lake.alias,
+                keys: keysFromCache1,
+                concurrencyCap: 2
+            )
+            // First pass: the cache was empty → at least one container changed.
+            #expect(firstPoll == true, "initial refreshMaterialized must report true (cold cache)")
+
+            // Verify baseline is cached.
+            let kidsAfterSeed = try await store.children(of: dirKey)
+            #expect(kidsAfterSeed.map(\.name).contains("stable.bin"), "stable.bin must be cached after first poll")
+            #expect(kidsAfterSeed.map(\.name).contains("update.bin"), "update.bin must be cached after first poll")
+
+            // Step 3: record anchor, then mutate the remote state.
+            let nsBefore = try await store.maxSyncedAtNs(accountAlias: lake.alias)
+
+            // Add a new file.
+            try await lake.write("\(dir)/added.bin", Data(repeating: 0xCC, count: 32))
+            // Overwrite update.bin with different content → new etag.
+            try await lake.write("\(dir)/update.bin", Data(repeating: 0xDD, count: 64))
+
+            // Step 4: re-read the materialized set (mimics the poll loop) and call
+            // the batch refresher.
+            let keysFromCache2 = try await store.materializedContainers(alias: lake.alias)
+            #expect(!keysFromCache2.isEmpty, "materializedContainers must still return keys after baseline poll")
+            let secondPoll = await engine.refreshMaterialized(
+                alias: lake.alias,
+                keys: keysFromCache2,
+                concurrencyCap: 2
+            )
+            #expect(secondPoll == true, "refreshMaterialized must return true when remote state changed")
+
+            // Step 5: verify itemsChangedAfter surfaces both mutations.
+            let changes = try await store.itemsChangedAfter(
+                accountAlias: lake.alias,
+                ns: nsBefore
+            )
+            let changedNames = Set(changes.updated.map(\.name))
+            #expect(
+                changedNames.contains("added.bin"),
+                "added.bin must appear in itemsChangedAfter.updated after remote add"
+            )
+            #expect(
+                changedNames.contains("update.bin"),
+                "update.bin must appear in itemsChangedAfter.updated after remote overwrite"
+            )
         } catch {
             await lake.rmBestEffort(dir)
             throw error
