@@ -1382,7 +1382,7 @@ struct SyncEngineTests {
 
     @Test("listItems() fires onContainerChanged for the .workspace container when a discovery row is evicted")
     func testListItemsFiresContainerChangedOnEviction() async throws {
-        let recorder = ContainerChangeSpy()
+        let recorder = ContainerChangeRecorder()
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric, onContainerChanged: recorder.handler)
@@ -1421,7 +1421,7 @@ struct SyncEngineTests {
 
     @Test("listItems() does NOT fire onContainerChanged when nothing is evicted")
     func testListItemsNoCallbackWhenNothingEvicted() async throws {
-        let recorder = ContainerChangeSpy()
+        let recorder = ContainerChangeRecorder()
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric, onContainerChanged: recorder.handler)
@@ -1773,31 +1773,6 @@ struct SyncEngineTests {
     }
 }
 
-// MARK: - ContainerChangeSpy
-
-/// Thread-safe collector for `ContainerChangeHandler` invocations.
-///
-/// The engine invokes the handler from a detached task (off the actor), so a
-/// test cannot read `calls()` immediately after the engine call returns when a
-/// callback is expected. `nextCall()` awaits the next invocation deterministically.
-private final class ContainerChangeSpy: @unchecked Sendable {
-    struct Call: Sendable { let container: CacheKey; let diff: Diff }
-    private let lock = NSLock()
-    private var _calls: [Call] = []
-    private let stream = AsyncStream<Call>.makeStream()
-
-    var handler: ContainerChangeHandler {
-        { [self] container, diff in
-            let call = Call(container: container, diff: diff)
-            lock.withLock { _calls.append(call) }
-            stream.continuation.yield(call)
-        }
-    }
-
-    func calls() -> [Call] { lock.withLock { _calls } }
-
-    func nextCall() async -> Call? {
-        var iter = stream.stream.makeAsyncIterator()
-        return await iter.next()
-    }
-}
+// `ContainerChangeRecorder` (Sync/ContainerChangeRecorder.swift) is the shared
+// spy for `ContainerChangeHandler` invocations used by this suite and
+// `SyncEngineRevalidateTests`.

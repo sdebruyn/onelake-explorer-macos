@@ -229,7 +229,7 @@ struct SyncEngineRevalidateTests {
 
     @Test("Change handler fires once with the container key when a revalidate finds a change")
     func testChangeHandlerFiresOnDrift() async throws {
-        let recorder = ChangeRecorder()
+        let recorder = ContainerChangeRecorder()
         let ol = BlockingListMockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol, onContainerChanged: recorder.handler)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -258,7 +258,7 @@ struct SyncEngineRevalidateTests {
 
     @Test("Change handler does NOT fire when the revalidate finds no change")
     func testChangeHandlerSilentOnNoChange() async throws {
-        let recorder = ChangeRecorder()
+        let recorder = ContainerChangeRecorder()
         let ol = BlockingListMockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol, onContainerChanged: recorder.handler)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -299,7 +299,7 @@ struct SyncEngineRevalidateTests {
 
     @Test("Shutdown while a revalidate is blocked at listPath leaves the cache intact and emits no failure telemetry")
     func testShutdownWhileBlockedAtListPathLeavesCacheIntact() async throws {
-        let recorder = ChangeRecorder()
+        let recorder = ContainerChangeRecorder()
         let sink = MemoryTelemetrySink()
         let telemetry = TelemetryClient(
             sink: sink, appVersion: "test", installID: "test",
@@ -347,7 +347,7 @@ struct SyncEngineRevalidateTests {
 
     @Test("Offline revalidate keeps cached rows and enumerate still returns the cached listing")
     func testOfflineRevalidateKeepsCacheRows() async throws {
-        let recorder = ChangeRecorder()
+        let recorder = ContainerChangeRecorder()
         let sink = MemoryTelemetrySink()
         let telemetry = TelemetryClient(
             sink: sink, appVersion: "test", installID: "test",
@@ -460,7 +460,7 @@ struct SyncEngineRevalidateTests {
 
     @Test("A revalidate whose only change is itemType reports a diff and fires the handler")
     func testItemTypeOnlyChangeFiresHandler() async throws {
-        let recorder = ChangeRecorder()
+        let recorder = ContainerChangeRecorder()
         let ol = BlockingListMockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol, onContainerChanged: recorder.handler)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -580,38 +580,6 @@ struct SyncEngineRevalidateTests {
         _ = try await engine.enumerate(key: Self.folderKey)
         #expect(await engine.revalidationTask(for: Self.folderKey) == nil)
         #expect(ol.listPathCallCount == 1)
-    }
-}
-
-// MARK: - ChangeRecorder
-
-/// Thread-safe collector for `ContainerChangeHandler` invocations.
-///
-/// The engine invokes the handler from a detached task (OFF the actor), so a
-/// test cannot assert on `calls()` immediately after joining the revalidate
-/// task — the notification may not have run yet. `nextCall()` awaits the next
-/// invocation deterministically via an `AsyncStream`.
-private final class ChangeRecorder: @unchecked Sendable {
-    struct Call: Sendable { let container: CacheKey; let diff: Diff }
-    private let lock = NSLock()
-    private var _calls: [Call] = []
-    private let stream = AsyncStream<Call>.makeStream()
-
-    var handler: ContainerChangeHandler {
-        { [self] container, diff in
-            let call = Call(container: container, diff: diff)
-            lock.withLock { _calls.append(call) }
-            stream.continuation.yield(call)
-        }
-    }
-
-    /// Snapshot of invocations recorded so far.
-    func calls() -> [Call] { lock.withLock { _calls } }
-
-    /// Awaits and returns the next handler invocation.
-    func nextCall() async -> Call? {
-        var iter = stream.stream.makeAsyncIterator()
-        return await iter.next()
     }
 }
 
