@@ -96,11 +96,9 @@ protocol EngineProviding: AnyObject, Sendable {
 
 // MARK: - EngineProviding default implementations
 
-/// Default no-op implementations of the auth-state members and signal so that
-/// test doubles (e.g. `MockEngineHost`) that were written before this
-/// extension do not need to be updated. Production hosts override
-/// `needsSignIn`, `markNeedsSignIn()`, and `signal(container:)` with the
-/// real behaviour below.
+/// Default no-op implementations for conformers that do not need auth-state
+/// tracking or container signalling. Production hosts (`FPEEngineHost`) override
+/// all three with real behaviour; test doubles that omit them compile unchanged.
 extension EngineProviding {
     var needsSignIn: Bool { false }
     func markNeedsSignIn() {}

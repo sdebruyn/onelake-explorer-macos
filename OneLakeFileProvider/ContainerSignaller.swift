@@ -9,6 +9,18 @@
 // Actor isolation: ContainerSignaller has no actor isolation and makes no
 // assumptions about which executor its methods run on.  Callers may call
 // signal(container:) from any context.
+//
+// Sendable + @preconcurrency rationale:
+//   NSFileProviderDomain and NSFileProviderManager are ObjC types that predate
+//   Swift concurrency and carry no Sendable annotation.  ContainerSignaller wraps
+//   the domain in an @unchecked Sendable box (DomainBox) because:
+//   (a) the domain is effectively immutable after construction — nothing here
+//       mutates it, and macOS owns its lifecycle,
+//   (b) signalEnumerator(for:) is called via a checked continuation on whatever
+//       executor the caller supplies; no internal state is mutated concurrently.
+//   @preconcurrency import suppresses the strict-concurrency warnings that would
+//   otherwise fire on NSFileProviderDomain/NSFileProviderManager references.
+//   See also: ChangeWatcher.signalContainer (host-side equivalent, OneLake/ChangeWatcher.swift).
 
 @preconcurrency import FileProvider
 import Foundation
@@ -33,8 +45,8 @@ struct ContainerSignaller: Sendable {
         category: "container-signaller"
     )
 
-    // NSFileProviderDomain is not Sendable; box it with @unchecked Sendable
-    // following the same pattern as OfemFPEEnumerator (lines 211/288).
+    // NSFileProviderDomain carries no Sendable annotation; box it so the
+    // enclosing struct satisfies Swift 6 Sendable (see file-header rationale).
     private struct DomainBox: @unchecked Sendable {
         let value: NSFileProviderDomain
     }
@@ -52,6 +64,11 @@ struct ContainerSignaller: Sendable {
     /// manager cannot be created (domain removed/unregistered) the call is a
     /// no-op.  Any error from `signalEnumerator(for:)` is logged at `.warning`
     /// and swallowed — Finder's own periodic refresh will catch up.
+    ///
+    /// Task cancellation is handled via `withTaskCancellationHandler`: if the
+    /// calling task is cancelled before the completion handler fires, the
+    /// continuation is resumed immediately with `CancellationError` so the
+    /// task does not suspend indefinitely.
     func signal(container: NSFileProviderItemIdentifier) async {
         let domain = domainBox.value
         let domainId = domain.identifier.rawValue
@@ -63,19 +80,37 @@ struct ContainerSignaller: Sendable {
             return
         }
 
+        // Guard early so a pre-cancelled task returns immediately without
+        // scheduling the signalEnumerator callback.
+        guard !Task.isCancelled else { return }
+
         do {
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                manager.signalEnumerator(for: container) { error in
-                    if let error = error {
-                        cont.resume(throwing: error)
-                    } else {
-                        cont.resume()
+            // nonisolated(unsafe): shared between the continuation body and the
+            // onCancel handler.  withCheckedThrowingContinuation invokes its
+            // body synchronously, so `cont` is always assigned before the task
+            // can be cancelled from another thread.  The pre-cancellation guard
+            // above handles the case where the task is already cancelled.
+            // CheckedContinuation enforces the single-resume contract at runtime.
+            nonisolated(unsafe) var cont: CheckedContinuation<Void, Error>? = nil
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                    cont = c
+                    manager.signalEnumerator(for: container) { error in
+                        if let error = error {
+                            c.resume(throwing: error)
+                        } else {
+                            c.resume()
+                        }
                     }
                 }
+            } onCancel: {
+                cont?.resume(throwing: CancellationError())
             }
             Self.log.debug(
                 "ContainerSignaller: signalled \(domainId, privacy: .public)/\(container.rawValue, privacy: .public)"
             )
+        } catch is CancellationError {
+            // Task was cancelled; nothing further to do.
         } catch {
             // Non-fatal: Finder's own periodic refresh will catch up.
             Self.log.warning(
