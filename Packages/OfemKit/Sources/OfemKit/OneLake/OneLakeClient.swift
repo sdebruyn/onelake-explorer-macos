@@ -653,7 +653,14 @@ public final class OneLakeClient: Sendable {
                 urlRequest.httpBody = body
             }
             .validate()
-            let dataResponse = await req.serializingData().response
+            // OneLake/ADLS Gen2 returns empty bodies on successful mutating calls
+            // (PUT create-directory/file, PATCH flush, DELETE) and on 0-byte
+            // reads (GET).  Allow empty bodies for all methods used by this
+            // client so Alamofire yields Data() rather than an error.
+            // .validate() above already rejects non-2xx.
+            let dataResponse = await req.serializingData(
+                emptyRequestMethods: [.get, .put, .patch, .delete, .post, .head]
+            ).response
             switch dataResponse.result {
             case .success(let data):
                 guard let httpResponse = dataResponse.response else {
