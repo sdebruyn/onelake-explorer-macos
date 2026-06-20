@@ -2,6 +2,22 @@ import Foundation
 import CryptoKit
 import os.log
 
+// MARK: - ContainerChangeHandler
+
+/// Notified when a background revalidate finds the cached listing of a
+/// container drifted from OneLake.
+///
+/// The closure receives the container ``CacheKey`` and the ``Diff`` the
+/// revalidate applied (`diff.total > 0` is guaranteed). It is invoked exactly
+/// once per revalidate that changed something — never for a no-op revalidate,
+/// a cancelled task, or an offline/failed fetch.
+///
+/// The closure must be `Sendable`: it runs from a detached revalidate task, not
+/// on the actor. It deliberately takes only a ``CacheKey`` (and ``Diff``) so no
+/// FileProvider type leaks into OfemKit — the FPE maps the key to a container
+/// identifier and signals it on its side.
+public typealias ContainerChangeHandler = @Sendable (_ container: CacheKey, _ diff: Diff) -> Void
+
 // MARK: - SyncEngine
 
 /// The top-level sync coordinator.
@@ -29,8 +45,15 @@ public actor SyncEngine {
 
     // MARK: - Configuration
 
-    /// Default refresh interval for recently-visited folders.
-    public static let defaultRecentFolderTTL: TimeInterval = 5 * 60  // 5 min
+    /// Default debounce window for revalidate-on-open.
+    ///
+    /// After a folder is served from the cache, a background revalidate is
+    /// scheduled unless one ran (or started) within this window. Listings are
+    /// stale-while-revalidate: the cache is served instantly on every open and
+    /// a fresh listing is fetched in the background, so this is a coalescing
+    /// window (suppress a burst of opens into one DFS `listPath`), not a
+    /// freshness TTL — the cache is never withheld because it is "too old".
+    public static let defaultRevalidateDebounce: TimeInterval = 10  // 10 s
 
     /// Default per-account cap on concurrent downloads.
     public static let defaultMaxConcurrentDownloads = 8
@@ -61,10 +84,31 @@ public actor SyncEngine {
 
     // MARK: - Internal state
 
-    private let recentFolderTTL: TimeInterval
+    private let revalidateDebounce: TimeInterval
     private let pauseManager: PauseManager
     private let offlineTracker: OfflineTracker
     private let partials: PartialManager
+
+    /// Invoked when a background revalidate finds a changed listing. `nil` when
+    /// no observer is wired (e.g. standalone / test engines).
+    private let onContainerChanged: ContainerChangeHandler?
+
+    /// In-flight background revalidations keyed by ``CacheKey/stableKeyString``.
+    ///
+    /// A second open for the same container that arrives while a revalidate is
+    /// running joins the existing task instead of spawning a second one. The
+    /// task never throws (errors are handled inside it), so its value is the
+    /// applied ``Diff`` — `Diff()` (total 0) for a no-op, cancelled, offline, or
+    /// failed revalidate. The map entry is removed when the task value is
+    /// delivered, not when the spawning frame unwinds, so late joiners always
+    /// find a live entry (mirrors the in-flight download coalescing).
+    private var inFlightRevalidations: [String: Task<Diff, Never>] = [:]
+
+    /// Wall-clock instant of the last revalidate START per container key. Written
+    /// BEFORE the first `await` in ``scheduleRevalidate(key:)`` so a burst of
+    /// opens within ``revalidateDebounce`` cannot each spawn a task (no
+    /// double-spawn across the suspension point).
+    private var lastRevalidateStarted: [String: Date] = [:]
 
     /// Per-account semaphores for downloads and uploads.
     ///
@@ -104,30 +148,35 @@ public actor SyncEngine {
     /// - fabric: Fabric REST client (required).
     /// - logger: Structured logger.
     /// - telemetry: Optional telemetry sink.
-    /// - recentFolderTTL: Freshness window for recently-visited folders.
+    /// - revalidateDebounce: Coalescing window for revalidate-on-open.
     /// - maxConcurrentDownloads: Per-account download cap.
     /// - maxConcurrentUploads: Per-account upload cap.
     /// - scratchBase: Directory for download spill files. Defaults to
     /// `<tmp>/ofem-download-partials/<pid>`.
     /// - pauseProbeInterval: Minimum gap between workspace-recovery probes.
+    /// - onContainerChanged: Optional `Sendable` observer invoked with the
+    /// container ``CacheKey`` and applied ``Diff`` when a background revalidate
+    /// changes the cached listing (`diff.total > 0`). Defaults to `nil`.
     public init(
         cache: CacheStore,
         onelake: any OneLakeClientProtocol,
         fabric: any FabricClientProtocol,
         logger: OfemLogger = OfemLogger(),
         telemetry: TelemetryClient? = nil,
-        recentFolderTTL: TimeInterval = SyncEngine.defaultRecentFolderTTL,
+        revalidateDebounce: TimeInterval = SyncEngine.defaultRevalidateDebounce,
         maxConcurrentDownloads: Int = SyncEngine.defaultMaxConcurrentDownloads,
         maxConcurrentUploads: Int = SyncEngine.defaultMaxConcurrentUploads,
         scratchBase: URL? = nil,
-        pauseProbeInterval: Duration = SyncEngine.defaultPauseProbeInterval
+        pauseProbeInterval: Duration = SyncEngine.defaultPauseProbeInterval,
+        onContainerChanged: ContainerChangeHandler? = nil
     ) {
         self.cache = cache
         self.onelake = onelake
         self.fabric = fabric
         self.logger = logger
         self.telemetry = telemetry
-        self.recentFolderTTL = max(1, recentFolderTTL)
+        self.revalidateDebounce = max(0, revalidateDebounce)
+        self.onContainerChanged = onContainerChanged
         self.maxDownloads = max(1, maxConcurrentDownloads)
         self.maxUploads   = max(1, maxConcurrentUploads)
 
@@ -294,8 +343,11 @@ public actor SyncEngine {
 
     /// Returns the children of the container identified by `key`.
     ///
-    /// Uses the cache when the listing is within `recentFolderTTL`; otherwise
-    /// calls ``refreshFolder(key:)`` first.
+    /// Stale-while-revalidate: when the cache already holds children for `key`,
+    /// they are returned immediately AND a background ``refreshFolder(key:)`` is
+    /// scheduled (debounced + coalesced — see ``scheduleRevalidate(key:parent:)``).
+    /// Only on a cold cache (no cached children) does a blocking refresh run
+    /// before returning, so first open still yields live entries.
     ///
     /// Throws ``FPError/wrongItemKind(_:)`` when `key` refers to a file, not a
     /// directory. The error propagates rather than falling through to a remote
@@ -303,16 +355,16 @@ public actor SyncEngine {
     public func enumerate(key: CacheKey) async throws -> [MetadataRecord] {
         let start = Date()
 
-        // Fast path: serve from cache when fresh.
-        // `enumerateFromCache` throws `FPError.wrongItemKind` for files —
+        // Fast path: serve from cache whenever children are present.
+        // `cachedListingIfPresent` throws `FPError.wrongItemKind` for files —
         // propagate that error directly instead of swallowing it.
-        let fastPathResult = try await enumerateFromCache(key: key)
-        if let (fresh, cached) = fastPathResult, fresh {
+        if let present = try await cachedListingIfPresent(key: key) {
+            scheduleRevalidate(key: key, parent: present.parent)
             await track(eventName: "folder_list", alias: key.accountAlias, start: start, outcome: .success())
-            return cached
+            return present.children
         }
 
-        // Slow path: refresh from remote.
+        // Cold cache (first open): blocking refresh, then return live entries.
         do {
             _ = try await refreshFolder(key: key)
         } catch {
@@ -838,6 +890,16 @@ public actor SyncEngine {
         get async { await offlineTracker.currentlyOffline() }
     }
 
+    // MARK: - Revalidate observability (internal — tests / diagnostics)
+
+    /// The in-flight background revalidation task for `key`, or `nil` when none
+    /// is running. Lets a caller deterministically join a fire-and-forget
+    /// revalidate (tests `await` its value to assert the applied ``Diff`` and the
+    /// resulting cache state without polling).
+    func revalidationTask(for key: CacheKey) -> Task<Diff, Never>? {
+        inFlightRevalidations[key.stableKeyString]
+    }
+
     // MARK: - Private: in-flight cleanup (sync-24)
 
     /// Removes the coalescing map entry for `keyString` if it still belongs to
@@ -1108,17 +1170,130 @@ public actor SyncEngine {
 
     // MARK: - Private helpers
 
-    /// Returns `(isFresh, children)` from the metadata cache.
-    private func enumerateFromCache(key: CacheKey) async throws -> (Bool, [MetadataRecord])? {
-        guard let parent = try? await cache.fetch(key: key) else { return (false, []) }
+    /// A present cached listing: the parent directory row plus its children.
+    private struct CachedListing {
+        let parent: MetadataRecord
+        let children: [MetadataRecord]
+    }
+
+    /// Returns the cached listing of `key` when present, or `nil` when the cache
+    /// is cold (no parent row, or a parent row that has never had its children
+    /// enumerated and currently has none).
+    ///
+    /// Presence — not freshness — gates the cache: a populated listing is always
+    /// served, however old, and revalidated in the background. Throws
+    /// ``FPError/wrongItemKind(_:)`` when `key` refers to a file.
+    private func cachedListingIfPresent(key: CacheKey) async throws -> CachedListing? {
+        guard let parent = try? await cache.fetch(key: key) else { return nil }
         guard parent.isDir else {
             throw FPError.wrongItemKind("\(key.path) is not a directory")
         }
-        guard Enumerator.isFresh(record: parent, ttl: recentFolderTTL) else {
-            return (false, [])
-        }
         let children = try await cache.children(of: key)
-        return (true, children)
+        // A folder whose children have been enumerated at least once is "present"
+        // even when genuinely empty — serve it (empty listing) and revalidate in
+        // the background rather than blocking on a refresh every open.
+        if children.isEmpty && !Enumerator.childrenEnumerated(record: parent) {
+            return nil
+        }
+        return CachedListing(parent: parent, children: children)
+    }
+
+    // MARK: - Background revalidate (stale-while-revalidate)
+
+    /// Schedules a debounced, coalesced background ``refreshFolder(key:)`` for
+    /// `key` after the cache has already been served.
+    ///
+    /// Debounce + coalescing rules (all synchronous — no `await`, so there is no
+    /// suspension point at which a sibling open could double-spawn):
+    /// - If one is already in flight for this key, skip (the running task will
+    ///   apply the latest remote state and fire the change handler).
+    /// - If the cache row was reconciled within ``revalidateDebounce`` (its
+    ///   `childrenSyncedAt`, via ``Enumerator/isFresh(record:ttl:now:)``), skip —
+    ///   a fresh-enough listing does not warrant another round-trip.
+    /// - If a revalidate started within ``revalidateDebounce`` of now (process
+    ///   stamp), skip — coalesces a burst of opens before the first refresh has
+    ///   written `childrenSyncedAt` back to the cache.
+    /// - Otherwise record the start stamp and insert the in-flight task.
+    ///
+    /// The task is fire-and-forget: `enumerate` never awaits it. All errors
+    /// (offline, cancellation, list failure) are absorbed inside the task as
+    /// silent no-ops that leave the cache intact (``refreshFolder`` rethrows
+    /// before its destructive reconcile, so a failed fetch deletes nothing).
+    private func scheduleRevalidate(key: CacheKey, parent: MetadataRecord) {
+        let keyString = key.stableKeyString
+
+        // Already running for this key → the in-flight task covers this open.
+        if inFlightRevalidations[keyString] != nil { return }
+
+        let now = Date()
+
+        // Cache row reconciled within the debounce window → already fresh enough.
+        if Enumerator.isFresh(record: parent, ttl: revalidateDebounce, now: now) {
+            return
+        }
+
+        // A revalidate started within the debounce window → coalesce this open.
+        // (Covers the gap before the first refresh writes childrenSyncedAt back.)
+        if let last = lastRevalidateStarted[keyString],
+           now.timeIntervalSince(last) < revalidateDebounce {
+            return
+        }
+
+        // Record the start stamp + in-flight entry synchronously so a burst of
+        // opens (which run serially on the actor with no await between the
+        // checks above and here) cannot each pass the debounce check.
+        lastRevalidateStarted[keyString] = now
+
+        let task = Task<Diff, Never> { [self] in
+            await self.runRevalidate(key: key, keyString: keyString)
+        }
+        inFlightRevalidations[keyString] = task
+    }
+
+    /// Body of a single background revalidate. Never throws: cancellation,
+    /// offline, and live-fetch failures are silent no-ops that return `Diff()`.
+    /// Fires ``onContainerChanged`` exactly once when the applied diff is
+    /// non-empty.
+    private func runRevalidate(key: CacheKey, keyString: String) async -> Diff {
+        // Remove the in-flight entry once the value is produced so late joiners
+        // always found a live entry while the task was running, and a future
+        // open can spawn a fresh revalidate.
+        defer { inFlightRevalidations.removeValue(forKey: keyString) }
+
+        // Honour a shutdown / cancellation that landed before we ran.
+        if Task.isCancelled { return Diff() }
+
+        let diff: Diff
+        do {
+            diff = try await refreshFolder(key: key)
+        } catch is CancellationError {
+            // Shutdown / cancellation: silent no-op, no failure telemetry.
+            return Diff()
+        } catch {
+            // Offline or any live-fetch failure: refreshFolder already observed
+            // offline state and rethrew BEFORE its destructive reconcile, so the
+            // cache is intact. Stay silent (this is a background refresh — the
+            // cache was already served to the caller); no failure telemetry.
+            return Diff()
+        }
+
+        // A cancellation that raced the network read still leaves the cache
+        // intact (refreshFolder's reconcile only runs on a full live result);
+        // suppress the change notification so a torn-down domain is not signalled.
+        if Task.isCancelled { return Diff() }
+
+        if diff.total > 0 {
+            onContainerChanged?(key, diff)
+        }
+        return diff
+    }
+
+    /// Cancels all outstanding background revalidations. Called on engine
+    /// shutdown so a torn-down domain leaves no revalidate task running.
+    func cancelRevalidations() {
+        for task in inFlightRevalidations.values {
+            task.cancel()
+        }
     }
 
     private func isBlobFresh(key: CacheKey, cached: MetadataRecord) async throws -> (Bool, PathProperties?) {

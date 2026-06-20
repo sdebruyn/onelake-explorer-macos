@@ -274,6 +274,12 @@ public actor OfemEngine {
     /// deallocated after `shutdown()` returns.  The `HTTPGateRegistry` holds
     /// no persistent resources, so no explicit close is needed.
     public func shutdown() async {
+        // Cancel any in-flight background revalidations first so no revalidate
+        // task writes to the (possibly about-to-be-torn-down) shared cache or
+        // signals a container after the domain is gone (mirrors the #315 race
+        // fix: cancellation discipline applied at shutdown).
+        await sync.cancelRevalidations()
+
         switch subsystemOwnership {
         case .shared:
             // Shared subsystems stay alive for other engines — do not touch them.
