@@ -1,0 +1,92 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly on Monday at 08:00 UTC
+    - cron: "0 8 * * 1"
+
+permissions:
+  security-events: write
+  actions: read
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (Swift)
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Assert Xcode 16.3 is present
+        # Fail fast if the runner image no longer ships Xcode 16.3 rather
+        # than silently falling back to a different Xcode version.
+        run: |
+          set -euo pipefail
+          if [ ! -d /Applications/Xcode_16.3.app ]; then
+            echo "ERROR: Xcode_16.3.app not found at /Applications/Xcode_16.3.app" >&2
+            echo "Available Xcode installations:" >&2
+            ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
+            exit 1
+          fi
+          xcodebuild -version
+
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            ~/Library/Caches/Homebrew/downloads
+            ~/Library/Caches/Homebrew/api
+          key: brew-${{ runner.os }}-xcodegen-${{ hashFiles('.github/workflows/codeql.yml') }}
+          restore-keys: |
+            brew-${{ runner.os }}-xcodegen-
+
+      - name: Cache SwiftPM build artifacts
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            Packages/OfemKit/.build
+            DerivedData/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Bootstrap local xcconfig
+        # CI has no signing identity; the sample file's placeholder
+        # DEVELOPMENT_TEAM is harmless because xcodebuild runs with
+        # CODE_SIGNING_ALLOWED=NO via make build-ci.
+        run: make bootstrap
+
+      - name: Generate Xcode project
+        run: make gen
+
+      - name: Initialize CodeQL
+        # Must run AFTER environment setup (Xcode, xcodegen, bootstrap, gen)
+        # but BEFORE the actual build so the tracer wraps xcodebuild.
+        # build-mode: manual ensures the tracer observes our explicit build
+        # step rather than attempting autobuild, which is unreliable for
+        # Xcode projects and produces "No source code was seen" errors.
+        uses: github/codeql-action/init@v3
+        with:
+          languages: swift
+          build-mode: manual
+
+      - name: Build app + extension (under CodeQL tracer)
+        # CodeQL's tracer wraps this xcodebuild invocation to extract Swift
+        # source files for the database. make build-ci compiles the OneLake
+        # app and the File Provider .appex with code signing disabled.
+        run: make build-ci
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:swift"
