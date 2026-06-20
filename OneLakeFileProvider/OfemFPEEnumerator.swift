@@ -122,8 +122,16 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
     let alias: String
     let engineHost: any EngineProviding
 
-    /// Guards mutations to all in-flight task handles.
+    /// Guards mutations to all in-flight task handles and `isInvalidated`.
     private let taskLock = NSLock()
+    /// Set to `true` inside `invalidate()` under `taskLock`. Every
+    /// `enumerate*`/`currentSyncAnchor` method checks this flag — under the
+    /// same lock acquisition that would store the new task handle — and cancels
+    /// the just-created task instead of storing it when the flag is set.  This
+    /// closes the create-before-lock window: a task racing with `invalidate()`
+    /// is guaranteed to be cancelled even if `invalidate()` ran to completion
+    /// before the new handle was stored.
+    private nonisolated(unsafe) var isInvalidated = false
     /// The current items-enumeration Task (started by enumerateItems).
     private nonisolated(unsafe) var inFlightTask: Task<Void, Never>?
     /// The current change-observation Task (started by enumerateChanges, fpe-15).
@@ -163,7 +171,11 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
     func invalidate() {
         // Cancel all tracked tasks synchronously — invalidate() is synchronous
         // per the NSFileProviderEnumerator contract; do NOT await here.
+        // Set `isInvalidated` so any task created concurrently (after the lock
+        // is released here) is guaranteed to be cancelled when it acquires the
+        // lock to store its handle.
         taskLock.withLock {
+            isInvalidated = true
             inFlightTask?.cancel()
             inFlightTask = nil
             inFlightChangesTask?.cancel()
@@ -205,6 +217,9 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
         // *items* enumeration — not on change observation — so concurrent
         // change-observation and items-enumeration tasks remain independent.
         let newTask = Task<Void, Never> {
+            // Bail out immediately if the enumerator was invalidated in the
+            // narrow window between Task creation and the lock-store check.
+            guard !Task.isCancelled else { return }
             do {
                 let engine = try await hostCopy.engine()
                 let items = try await Self.enumerate(
@@ -238,7 +253,11 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
 
         taskLock.withLock {
             inFlightTask?.cancel()
-            inFlightTask = newTask
+            if isInvalidated {
+                newTask.cancel()
+            } else {
+                inFlightTask = newTask
+            }
         }
     }
 
@@ -274,6 +293,13 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
         // enumeration for an unrelated change observer). Store the new task in
         // inFlightChangesTask so invalidate() can cancel it (fpe-15).
         let changesTask = Task<Void, Never> {
+            // Bail out immediately if the enumerator was invalidated in the
+            // narrow window between Task creation and the lock-store check.
+            // This is especially important for the synchronous `.root` early-
+            // return below: Swift cooperative cancellation only fires at
+            // suspension points, so cancelling the handle alone would not
+            // prevent the synchronous observer call on a torn-down observer.
+            guard !Task.isCancelled else { return }
             let containerLogID = identifierCopy.opaqueLogPrefix
             Self.log.debug(
                 "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges entry — container=\(containerLogID, privacy: .public) anchor=\(previousNs, privacy: .public)"
@@ -370,7 +396,11 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
         }
         taskLock.withLock {
             inFlightChangesTask?.cancel()
-            inFlightChangesTask = changesTask
+            if isInvalidated {
+                changesTask.cancel()
+            } else {
+                inFlightChangesTask = changesTask
+            }
         }
     }
 
@@ -387,6 +417,9 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
                 let engine = try await hostCopy.engine()
                 let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
                 ch.fn(encodeSyncAnchor(ns))
+            } catch is CancellationError {
+                // Task was cancelled (enumerator invalidated); do not call the
+                // completion handler on a torn-down enumerator.
             } catch {
                 // Engine unavailable; return a zero anchor so the next poll
                 // gets a full diff rather than an opaque failure.
@@ -395,7 +428,11 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
         }
         taskLock.withLock {
             inFlightAnchorTask?.cancel()
-            inFlightAnchorTask = anchorTask
+            if isInvalidated {
+                anchorTask.cancel()
+            } else {
+                inFlightAnchorTask = anchorTask
+            }
         }
     }
 
@@ -516,8 +553,14 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
     private let alias: String
     private let engineHost: any EngineProviding
 
-    /// Guards mutations to task handles.
+    /// Guards mutations to task handles and `isInvalidated`.
     private let taskLock = NSLock()
+    /// Set to `true` inside `invalidate()` under `taskLock`. Every
+    /// `enumerateChanges`/`currentSyncAnchor` method checks this flag — under
+    /// the same lock acquisition that would store the new task handle — and
+    /// cancels the just-created task instead of storing it when the flag is
+    /// set.  Closes the create-before-lock window (mirrors OfemFPEEnumerator).
+    private nonisolated(unsafe) var isInvalidated = false
     private nonisolated(unsafe) var inFlightChangesTask: Task<Void, Never>?
     private nonisolated(unsafe) var inFlightAnchorTask: Task<Void, Never>?
 
@@ -549,7 +592,11 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
     func invalidate() {
         // Cancel tracked tasks synchronously — invalidate() is synchronous
         // per the NSFileProviderEnumerator contract (fpe-15).
+        // Set `isInvalidated` so any task created concurrently (after the lock
+        // is released here) is guaranteed to be cancelled when it acquires the
+        // lock to store its handle.
         taskLock.withLock {
+            isInvalidated = true
             inFlightChangesTask?.cancel()
             inFlightChangesTask = nil
             inFlightAnchorTask?.cancel()
@@ -564,6 +611,10 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
         for observer: NSFileProviderEnumerationObserver,
         startingAt _: NSFileProviderPage
     ) {
+        // Guard against calling a torn-down observer after invalidation.
+        // enumerateItems is synchronous here (no Task), so check the flag
+        // directly under the lock before touching the observer.
+        guard taskLock.withLock({ !isInvalidated }) else { return }
         OfemWorkingSetEnumerator.log.debug(
             "WorkingSet[\(self.alias, privacy: .public)]: enumerateItems entry — working set always returns empty"
         )
@@ -615,6 +666,9 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
 
         // Store the task so invalidate() can cancel it (fpe-15).
         let changesTask = Task<Void, Never> {
+            // Bail out immediately if the enumerator was invalidated in the
+            // narrow window between Task creation and the lock-store check.
+            guard !Task.isCancelled else { return }
             Self.log.debug(
                 "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges entry — anchor=\(previousNs, privacy: .public)"
             )
@@ -727,7 +781,11 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
         }
         taskLock.withLock {
             inFlightChangesTask?.cancel()
-            inFlightChangesTask = changesTask
+            if isInvalidated {
+                changesTask.cancel()
+            } else {
+                inFlightChangesTask = changesTask
+            }
         }
     }
 
@@ -746,13 +804,20 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                 let engine = try await hostCopy.engine()
                 let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
                 ch.fn(encodeSyncAnchor(ns))
+            } catch is CancellationError {
+                // Task was cancelled (enumerator invalidated); do not call the
+                // completion handler on a torn-down enumerator.
             } catch {
                 ch.fn(encodeSyncAnchor(0))
             }
         }
         taskLock.withLock {
             inFlightAnchorTask?.cancel()
-            inFlightAnchorTask = anchorTask
+            if isInvalidated {
+                anchorTask.cancel()
+            } else {
+                inFlightAnchorTask = anchorTask
+            }
         }
     }
 }
