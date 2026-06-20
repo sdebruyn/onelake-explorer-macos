@@ -67,8 +67,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         self.alias = FileProviderExtension.extractAlias(from: domain)
         self.engineHost = FPEEngineHost(alias: self.alias, domain: domain)
         super.init()
+        let ts = BuildInfo.buildTimestamp ?? "unknown"
         FileProviderExtension.log.info(
-            "Initialised extension for domain \(domain.identifier.rawValue, privacy: .public) (alias=\(self.alias, privacy: .public))"
+            "OneLake FPE starting — version \(BuildInfo.version, privacy: .public) built \(ts, privacy: .public) domain=\(domain.identifier.rawValue, privacy: .public) alias=\(self.alias, privacy: .public)"
         )
     }
 

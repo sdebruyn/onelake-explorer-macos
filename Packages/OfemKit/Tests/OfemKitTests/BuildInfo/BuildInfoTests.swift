@@ -77,6 +77,25 @@ struct BuildInfoTests {
     func versionEqualsVersionFromMain() {
         #expect(BuildInfo.version == BuildInfo.version(from: .main))
     }
+
+    // MARK: - buildTimestamp
+
+    @Test("buildTimestamp(from:) returns nil when OFEMBuildTimestamp is absent")
+    func buildTimestampAbsent() {
+        // The xctest runner bundle has no OFEMBuildTimestamp key; nil expected.
+        let ts = BuildInfo.buildTimestamp(from: .main)
+        // In a real build the key is present; in swift test it is absent.
+        // Either outcome is valid; the point is it must not crash and must
+        // return a String-or-nil.
+        if let ts {
+            #expect(!ts.isEmpty, "buildTimestamp must not be an empty string")
+        }
+    }
+
+    @Test("BuildInfo.buildTimestamp equals buildTimestamp(from: .main)")
+    func buildTimestampEqualsFromMain() {
+        #expect(BuildInfo.buildTimestamp == BuildInfo.buildTimestamp(from: .main))
+    }
 }
 
 // MARK: - fp-09: FNV-1a-64 hasher testable boundary

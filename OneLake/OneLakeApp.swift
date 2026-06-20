@@ -17,8 +17,9 @@
 //   .regular (Dock icon visible, while an app window is open). This lets
 //   users raise buried windows via the Dock, Cmd-Tab, or Mission Control.
 
-import SwiftUI
 import AppKit
+import OfemKit
+import SwiftUI
 import os.log
 
 // MARK: - DockIconManager
@@ -96,7 +97,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let log = Logger(subsystem: ofemSubsystem, category: "app-delegate")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        AppDelegate.log.info("OneLake host app did finish launching")
+        let ts = BuildInfo.buildTimestamp ?? "unknown"
+        AppDelegate.log.info("OneLake host app starting — version \(BuildInfo.version, privacy: .public) built \(ts, privacy: .public)")
 
         // Start the Dock-icon manager so window open/close events toggle the
         // activation policy between .accessory and .regular automatically.

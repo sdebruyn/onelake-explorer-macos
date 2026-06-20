@@ -40,6 +40,28 @@ public enum BuildInfo {
             as? String ?? "0.0.0-dev"
     }
 
+    // MARK: - Build timestamp
+
+    /// The ISO-8601 UTC build timestamp injected by the build system
+    /// (e.g. `"2026-06-20T14:03:12Z"`).
+    ///
+    /// Reads `OFEMBuildTimestamp` from `Bundle.main`, which the
+    /// `inject-build-timestamp.sh` build phase writes into the compiled
+    /// bundle's Info.plist at build time. Returns `nil` when the key is
+    /// absent (xctest runner, command-line builds without the script phase).
+    public static let buildTimestamp: String? = buildTimestamp(from: .main)
+
+    /// Returns the build timestamp from the given bundle, or `nil`.
+    ///
+    /// Exposed for testing so the lookup + fallback path can be exercised
+    /// with a synthetic `Bundle`.
+    ///
+    /// - Parameter bundle: The bundle to read `OFEMBuildTimestamp` from.
+    /// - Returns: The ISO-8601 timestamp string, or `nil` if the key is absent.
+    public static func buildTimestamp(from bundle: Bundle) -> String? {
+        bundle.object(forInfoDictionaryKey: "OFEMBuildTimestamp") as? String
+    }
+
     // MARK: - Telemetry
 
     /// The Application Insights connection string used for opt-out telemetry.
