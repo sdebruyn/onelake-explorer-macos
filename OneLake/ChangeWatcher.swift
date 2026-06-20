@@ -9,19 +9,35 @@
 // login-item boot), covering any changes that accumulated while the host was
 // stopped.
 //
-// Additionally, ChangeWatcher runs a repeating loop that periodically:
+// Additionally, ChangeWatcher runs two repeating loops:
 //
-//  1. Signals the working set for every registered domain. The FPE's
-//     OfemWorkingSetEnumerator.enumerateChanges refreshes the workspace list
-//     from Fabric (throttled) and updates the shared SQLite cache.
+//  Loop A — workspace-set refresh (every workingSetRefreshInterval = 90 s):
+//   1. Signals the working set for every registered domain. The FPE's
+//      OfemWorkingSetEnumerator.enumerateChanges refreshes the workspace list
+//      from Fabric (throttled) and updates the shared SQLite cache.
+//   2. Reads the cached workspace set for each registered account and computes a
+//      stable signature. When the signature changes (add/remove/rename), the
+//      account's File Provider domain is remounted
+//      (removeDomain + addDomain with .preserveDownloadedUserData). The remount
+//      forces a fresh root enumeration (enumerateItems(.root) / listWorkspaces),
+//      which is the only mechanism that introduces new top-level workspaces into
+//      the Finder sidebar. Downloaded files are preserved across the remount.
 //
-//  2. Reads the cached workspace set for each registered account and computes a
-//     stable signature. When the signature changes (add/remove/rename), the
-//     account's File Provider domain is remounted
-//     (removeDomain + addDomain with .preserveDownloadedUserData). The remount
-//     forces a fresh root enumeration (enumerateItems(.root) / listWorkspaces),
-//     which is the only mechanism that introduces new top-level workspaces into
-//     the Finder sidebar. Downloaded files are preserved across the remount.
+//  Loop B — materialized-container poll (every materializedPollInterval = 60 s default):
+//   Calls pollMaterialized(alias:) over XPC for each registered account. The FPE
+//   reads the materialized_containers table, calls SyncEngine.refreshMaterialized,
+//   and returns true when at least one container had a non-zero diff. When any
+//   account returns true, the host signals .workingSet on that account's domain so
+//   the FPE's OfemWorkingSetEnumerator.enumerateChanges surfaces the new items.
+//
+//   The poll interval is configurable via TOML [sync] materialized_poll_interval_s
+//   (default 60 s, min 30 s, max 600 s). MenuStatusModel propagates changes to
+//   materializedPollInterval so the loop cadence updates without restart.
+//
+//   Testability: the static pollOnce(_:) method is the canonical body of one loop
+//   iteration — the timer is a thin wrapper around it. Tests inject mock pollers
+//   and signallers to verify the exact set of containers polled and the signal
+//   count without a live FPE or NSFileProviderManager.
 //
 // Launch refresh: to catch workspace changes that accumulated while the host
 // was stopped, the first tick compares the cache signature against a baseline
@@ -46,6 +62,63 @@
 import Foundation
 import OfemKit
 import os.log
+
+// MARK: - Testability seams
+
+/// Asks the FPE whether any materialized container changed for an alias.
+/// In production: `OfemFPEClient.shared.pollMaterialized(alias:)`.
+/// In tests: a mock that records which aliases were polled.
+protocol MaterializedPoller: Sendable {
+    func pollMaterialized(alias: String) async -> Bool
+}
+
+/// Signals a `.workingSet` enumeration change for a domain.
+/// In production: calls `signalEnumeratorOnce(manager:container:)`.
+/// In tests: a spy that records which domain identifiers received signals.
+protocol WorkingSetSignaller: Sendable {
+    func signal(domainIdentifier: String) async
+}
+
+// MARK: - Production conformances
+
+extension OfemFPEClient: MaterializedPoller {}
+
+/// Signals `.workingSet` via a live `NSFileProviderManager` for the given domain.
+struct LiveWorkingSetSignaller: WorkingSetSignaller, Sendable {
+    private static let log = Logger(subsystem: ofemSubsystem, category: "change-watcher")
+
+    func signal(domainIdentifier: String) async {
+        let domains: [NSFileProviderDomain]
+        do { domains = try await ofemGetAllDomains() } catch {
+            Self.log.error(
+                "pollOnce: could not list domains for signal: \(error.localizedDescription, privacy: .public)"
+            )
+            return
+        }
+        guard let domain = domains.first(where: { $0.identifier.rawValue == domainIdentifier }) else {
+            Self.log.debug(
+                "pollOnce: domain not found for identifier \(domainIdentifier, privacy: .public) — skipping signal"
+            )
+            return
+        }
+        guard let manager = NSFileProviderManager(for: domain) else {
+            Self.log.debug(
+                "pollOnce: no manager for domain \(domainIdentifier, privacy: .public)"
+            )
+            return
+        }
+        do {
+            try await signalEnumeratorOnce(manager: manager, container: .workingSet)
+            Self.log.debug(
+                "pollOnce: signalled .workingSet for \(domainIdentifier, privacy: .public)"
+            )
+        } catch {
+            Self.log.warning(
+                "pollOnce: signalEnumerator failed for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+}
 
 // MARK: - ResumeOnceBox (resume-once guard)
 
@@ -169,10 +242,19 @@ final class ChangeWatcher {
     /// checked for changes.
     static let workingSetRefreshInterval: Duration = .seconds(90)
 
+    /// How often the materialized-container poll loop fires.
+    /// Defaults to `SyncConfig.defaultMaterializedPollIntervalS` seconds.
+    /// Updated by `MenuStatusModel` when the config value is refreshed from the FPE.
+    var materializedPollInterval: Duration = .seconds(SyncConfig.defaultMaterializedPollIntervalS)
+
     /// Handle for the periodic working-set + remount-check loop.  Stored so a
     /// second `start()` call can cancel the previous loop before launching a new
     /// one.
     private var workingSetRefreshTask: Task<Void, Never>?
+
+    /// Handle for the periodic materialized-container poll loop.  Stored so a
+    /// second `start()` call can cancel the previous loop before launching a new one.
+    private var materializedPollTask: Task<Void, Never>?
 
     /// Last-seen workspace-set signatures, keyed by account alias.
     ///
@@ -217,6 +299,7 @@ final class ChangeWatcher {
         Self.log.info("ChangeWatcher: one-shot launch resync triggered")
 
         startWorkingSetRefreshLoop()
+        startMaterializedPollLoop()
     }
 
     // MARK: - Periodic working-set refresh + workspace-set detection
@@ -412,6 +495,111 @@ final class ChangeWatcher {
         }
         cacheReader = r
         return r
+    }
+
+    // MARK: - Materialized-container poll loop
+
+    /// Starts (or restarts) the repeating materialized-container poll loop.
+    ///
+    /// On each tick: calls `pollMaterialized(alias:)` over XPC for every registered
+    /// account. When the FPE reports a delta (any container changed), signals
+    /// `.workingSet` on that account's domain so the system calls
+    /// `enumerateChanges(.workingSet)` and the new items appear in Finder.
+    ///
+    /// The interval is read from `materializedPollInterval` at the start of each
+    /// sleep so a Settings change takes effect on the next tick without restarting
+    /// the loop.
+    private func startMaterializedPollLoop() {
+        materializedPollTask?.cancel()
+        materializedPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let interval = self.materializedPollInterval
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled else { break }
+                await self.pollMaterializedAndSignal()
+            }
+        }
+        Self.log.info(
+            "ChangeWatcher: materialized-container poll loop started (interval=\(self.materializedPollInterval, privacy: .public))"
+        )
+    }
+
+    /// One poll iteration: ask the FPE whether any materialized container changed
+    /// for each registered account; signal `.workingSet` for domains with a delta.
+    ///
+    /// Delegates to `pollOnce` using the production poller and signaller.
+    private func pollMaterializedAndSignal() async {
+        let accounts = await SharedOfemAuth.shared.auth.listAccounts()
+        guard !accounts.isEmpty else { return }
+
+        let domains: [NSFileProviderDomain]
+        do { domains = try await ofemGetAllDomains() } catch {
+            Self.log.error(
+                "ChangeWatcher: pollMaterializedAndSignal: cannot list domains: \(error.localizedDescription, privacy: .public)"
+            )
+            return
+        }
+
+        // Pre-compute alias → domain identifier map on the @MainActor before
+        // entering the nonisolated pollOnce. DomainSyncManager.shared is
+        // @MainActor-isolated; the closure passed to pollOnce must be @Sendable,
+        // so we capture the pure-value dictionary instead of a live reference.
+        let domainMap: [String: String] = Dictionary(
+            uniqueKeysWithValues: accounts.map { ($0.alias, DomainSyncManager.shared.domainIdentifier(for: $0.alias)) }
+        )
+
+        await Self.pollOnce(
+            accounts: accounts,
+            domains: domains,
+            domainIdentifierFor: { domainMap[$0] ?? "ofem.\($0)" },
+            poller: OfemFPEClient.shared,
+            signaller: LiveWorkingSetSignaller()
+        )
+    }
+
+    /// Deterministic testability seam: body of one poll-loop iteration.
+    ///
+    /// For each account in `accounts`, calls `poller.pollMaterialized(alias:)`.
+    /// When the poller returns `true` for an alias, looks up the domain identifier
+    /// (via `domainIdentifierFor`) in `domains` and calls
+    /// `signaller.signal(domainIdentifier:)` exactly once for that domain.
+    ///
+    /// Marked `nonisolated` so tests can call it directly from a non-`@MainActor`
+    /// context without wrapping in `MainActor.run`. The method accesses no class
+    /// state; all collaborators are passed as parameters.
+    ///
+    /// - Parameters:
+    ///   - accounts:            The accounts to poll this iteration.
+    ///   - domains:             All currently registered File Provider domains.
+    ///   - domainIdentifierFor: Maps an alias to its OFEM domain identifier string.
+    ///   - poller:              Asks the FPE whether any container changed for an alias.
+    ///   - signaller:           Signals `.workingSet` for a domain when a delta is found.
+    nonisolated static func pollOnce(
+        accounts: [Account],
+        domains: [NSFileProviderDomain],
+        domainIdentifierFor: @Sendable (String) -> String,
+        poller: any MaterializedPoller,
+        signaller: any WorkingSetSignaller
+    ) async {
+        let log = Logger(subsystem: ofemSubsystem, category: "change-watcher")
+        for account in accounts {
+            let alias = account.alias
+            let changed = await poller.pollMaterialized(alias: alias)
+            guard changed else {
+                log.debug("pollOnce: no delta for \(alias, privacy: .public)")
+                continue
+            }
+            let domainId = domainIdentifierFor(alias)
+            guard domains.contains(where: { $0.identifier.rawValue == domainId }) else {
+                log.warning(
+                    "pollOnce: delta for \(alias, privacy: .public) but domain \(domainId, privacy: .public) not found — skipping signal"
+                )
+                continue
+            }
+            log.info("pollOnce: delta for \(alias, privacy: .public) — signalling .workingSet")
+            await signaller.signal(domainIdentifier: domainId)
+        }
     }
 
     // MARK: - Signaling

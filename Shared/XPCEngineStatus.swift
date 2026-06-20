@@ -18,6 +18,9 @@
 // - needsSignIn — true when a recent enumeration failed with notAuthenticated,
 //   meaning the account's token can no longer be acquired silently and the user
 //   must sign in again. False by default (backward-compatible decode).
+// - materializedPollIntervalS — cadence of the materialized-container poll
+//   loop in seconds. Decoded as 0 when absent (backward-compatible); the host
+//   treats 0 as "use the built-in default".
 
 import Foundation
 
@@ -42,6 +45,10 @@ import Foundation
     /// interactive sign-in is required. Decoded as false when the key is
     /// absent (backward-compatible with FPE builds that predate this field).
     @objc public let needsSignIn: Bool
+    /// Cadence of the materialized-container poll loop in seconds.
+    /// Decoded as 0 when absent (backward-compatible); the host treats 0 as
+    /// "use the built-in default" (SyncConfig.defaultMaterializedPollIntervalS).
+    @objc public let materializedPollIntervalS: Int
 
     // MARK: - Init
 
@@ -54,7 +61,8 @@ import Foundation
         netMaxDownloads: Int,
         logLevel: String,
         pausedWorkspaces: [XPCPausedWorkspace] = [],
-        needsSignIn: Bool = false
+        needsSignIn: Bool = false,
+        materializedPollIntervalS: Int = 0
     ) {
         self.cacheBytes = cacheBytes
         self.cacheMaxBytes = cacheMaxBytes
@@ -65,6 +73,7 @@ import Foundation
         self.logLevel = logLevel
         self.pausedWorkspaces = pausedWorkspaces
         self.needsSignIn = needsSignIn
+        self.materializedPollIntervalS = materializedPollIntervalS
         super.init()
     }
 
@@ -77,6 +86,7 @@ import Foundation
         case logLevel
         case pausedWorkspaces
         case needsSignIn
+        case materializedPollIntervalS
     }
 
     @objc public func encode(with coder: NSCoder) {
@@ -89,6 +99,7 @@ import Foundation
         coder.encode(logLevel, forKey: Keys.logLevel.rawValue)
         coder.encode(pausedWorkspaces as NSArray, forKey: Keys.pausedWorkspaces.rawValue)
         coder.encode(needsSignIn, forKey: Keys.needsSignIn.rawValue)
+        coder.encode(materializedPollIntervalS, forKey: Keys.materializedPollIntervalS.rawValue)
     }
 
     @objc public required init?(coder: NSCoder) {
@@ -106,6 +117,9 @@ import Foundation
         pausedWorkspaces = decoded ?? []
         // Default false for archives written before this field was added.
         needsSignIn = coder.decodeBool(forKey: Keys.needsSignIn.rawValue)
+        // Default 0 for archives written before this field was added;
+        // the host treats 0 as "use the built-in default".
+        materializedPollIntervalS = coder.decodeInteger(forKey: Keys.materializedPollIntervalS.rawValue)
         super.init()
     }
 }

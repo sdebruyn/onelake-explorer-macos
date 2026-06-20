@@ -320,6 +320,18 @@ private struct AdvancedSettingsTab: View {
         )
     }
 
+    /// True once the FPE status has been fetched and the poll interval is loaded.
+    private var pollIntervalLoaded: Bool { model.materializedPollIntervalS > 0 }
+
+    private var pollIntervalBinding: Binding<Int> {
+        Binding(
+            get: { model.materializedPollIntervalS > 0
+                ? model.materializedPollIntervalS
+                : SyncConfig.defaultMaterializedPollIntervalS },
+            set: { model.setMaterializedPollInterval($0) }
+        )
+    }
+
     var body: some View {
         Form {
             Section {
@@ -341,6 +353,24 @@ private struct AdvancedSettingsTab: View {
                     .disabled(!model.hasAccounts)
                 } else {
                     LabeledContent("Log level") {
+                        Text("Loading…").foregroundStyle(.secondary)
+                    }
+                }
+
+                if pollIntervalLoaded {
+                    Stepper(value: pollIntervalBinding,
+                            in: SyncConfig.minMaterializedPollIntervalS...SyncConfig.maxMaterializedPollIntervalS,
+                            step: 15) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Content refresh interval: \(model.materializedPollIntervalS) s")
+                            Text("How often open folders are polled for new files (\(SyncConfig.minMaterializedPollIntervalS)–\(SyncConfig.maxMaterializedPollIntervalS) s).")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .disabled(!model.hasAccounts)
+                } else {
+                    LabeledContent("Content refresh interval") {
                         Text("Loading…").foregroundStyle(.secondary)
                     }
                 }

@@ -186,6 +186,39 @@ final class OfemFPEClient {
         }
     }
 
+    // MARK: - Materialized poll
+
+    /// Asks the FPE to refresh all materialized containers for `alias`.
+    ///
+    /// Returns `true` when at least one container produced a non-empty diff,
+    /// meaning the SQLite cache was updated and `.workingSet` should be
+    /// signalled.  Returns `false` when no containers changed, no containers
+    /// are materialized, or the FPE is unavailable.
+    ///
+    /// Non-fatal: failures (engine unavailable, XPC interrupted) are absorbed
+    /// and treated as `false` so the poll loop skips signalling gracefully
+    /// rather than propagating transient errors to the caller.
+    ///
+    /// - Parameter alias: Account alias identifying the domain.
+    func pollMaterialized(alias: String) async -> Bool {
+        do {
+            return try await withProxy(alias: alias) { proxy, cont in
+                proxy.pollMaterialized(alias: alias) { changed, error in
+                    if let error {
+                        cont.resume(throwing: error)
+                    } else {
+                        cont.resume(returning: changed)
+                    }
+                }
+            }
+        } catch {
+            Self.log.warning(
+                "pollMaterialized non-fatal failure for alias=\(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            return false
+        }
+    }
+
     // MARK: - Protocol version check
 
     /// Queries the FPE's protocol version via an already-typed proxy and

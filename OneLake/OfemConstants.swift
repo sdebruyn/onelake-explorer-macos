@@ -33,9 +33,10 @@ let ofemDomainIdentifierPrefix = "ofem."
 /// Config key names for the shared config.toml.
 /// Must match the key names the FPE-side OfemConfigStore parses.
 enum OfemConfigKey {
-    static let cacheMaxSizeGB           = "cache.max_size_gb"
-    static let telemetry                = "telemetry"
-    static let netMaxUploads            = "net.max_concurrent_uploads_per_account"
-    static let netMaxDownloads          = "net.max_concurrent_downloads_per_account"
-    static let logLevel                 = "log.level"
+    static let cacheMaxSizeGB                 = "cache.max_size_gb"
+    static let telemetry                      = "telemetry"
+    static let netMaxUploads                  = "net.max_concurrent_uploads_per_account"
+    static let netMaxDownloads                = "net.max_concurrent_downloads_per_account"
+    static let logLevel                       = "log.level"
+    static let syncMaterializedPollIntervalS  = "sync.materialized_poll_interval_s"
 }

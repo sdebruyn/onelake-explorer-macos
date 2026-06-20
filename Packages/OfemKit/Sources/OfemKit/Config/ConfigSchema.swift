@@ -28,6 +28,9 @@ public struct OfemConfig: Sendable {
     /// Logging settings.
     public var log: LogConfig
 
+    /// Sync / freshness-poll settings.
+    public var sync: SyncConfig
+
     /// Per-account registry. The key is the user-chosen alias.
     public var accounts: [String: Account]
 
@@ -48,6 +51,7 @@ public struct OfemConfig: Sendable {
                 maxConcurrentDownloadsPerAccount: 8
             ),
             log: LogConfig(level: "info"),
+            sync: SyncConfig(),
             accounts: [:]
         )
     }
@@ -59,6 +63,7 @@ public struct OfemConfig: Sendable {
         cache: CacheConfig,
         net: NetConfig,
         log: LogConfig,
+        sync: SyncConfig = SyncConfig(),
         accounts: [String: Account]
     ) {
         self.installID = installID
@@ -67,6 +72,7 @@ public struct OfemConfig: Sendable {
         self.cache = cache
         self.net = net
         self.log = log
+        self.sync = sync
         self.accounts = accounts
     }
 }
@@ -153,6 +159,30 @@ public struct LogConfig: Sendable {
 
     public init(level: String) {
         self.level = level
+    }
+}
+
+// MARK: - SyncConfig
+
+/// Controls the freshness-poll cadence for materialized containers.
+public struct SyncConfig: Sendable {
+    /// Default cadence between polls in seconds.
+    public static let defaultMaterializedPollIntervalS = 60
+    /// Minimum allowed cadence in seconds.
+    public static let minMaterializedPollIntervalS = 30
+    /// Maximum allowed cadence in seconds (10 minutes).
+    public static let maxMaterializedPollIntervalS = 600
+
+    /// How often the host polls each account's materialized containers for
+    /// remote changes and signals `.workingSet` when a delta is found.
+    /// Values below `minMaterializedPollIntervalS` are clamped up at load time.
+    public var materializedPollIntervalS: Int
+
+    public init(materializedPollIntervalS: Int = SyncConfig.defaultMaterializedPollIntervalS) {
+        self.materializedPollIntervalS = max(
+            SyncConfig.minMaterializedPollIntervalS,
+            min(SyncConfig.maxMaterializedPollIntervalS, materializedPollIntervalS)
+        )
     }
 }
 
