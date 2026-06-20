@@ -299,7 +299,13 @@ public final class FabricClient: Sendable {
         let req = session
             .request(url, method: httpMethod, headers: headers)
             .validate()
-        let dataResponse = await req.serializingData().response
+        // Fabric REST can return empty bodies on successful responses (200/201/
+        // 202).  Allow empty bodies for all methods used by this client so
+        // Alamofire yields Data() rather than an error.
+        // .validate() above already rejects non-2xx.
+        let dataResponse = await req.serializingData(
+            emptyRequestMethods: [.get, .put, .patch, .delete, .post, .head]
+        ).response
 
         switch dataResponse.result {
         case .success(let data):
