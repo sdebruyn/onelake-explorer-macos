@@ -117,7 +117,7 @@ public actor SyncEngine {
     /// re-spawn a revalidate that would write to the about-to-close cache.
     private var isShutdown = false
 
-    /// Per-account semaphores for downloads and uploads.
+    /// Per-account semaphores for downloads, uploads, and materialized-set refreshes.
     ///
     /// Entries are allocated lazily on first use per alias. Growth is bounded
     /// by the number of distinct account aliases active in this process
@@ -126,6 +126,7 @@ public actor SyncEngine {
     /// (sync-16).
     private var downloadSlots: [String: AsyncSemaphore] = [:]
     private var uploadSlots:   [String: AsyncSemaphore] = [:]
+    private var refreshSlots:  [String: AsyncSemaphore] = [:]
     private let maxDownloads: Int
     private let maxUploads:   Int
 
@@ -558,6 +559,96 @@ public actor SyncEngine {
             ]
         )
         return diff
+    }
+
+    // MARK: - Materialized-set refresh
+
+    /// Refreshes a single materialized container, bypassing the open-time
+    /// revalidate debounce.
+    ///
+    /// Unlike ``enumerate(key:)``, which debounces background revalidates so
+    /// that a burst of opens triggers at most one round-trip, this entry point
+    /// always fetches from OneLake regardless of when the last revalidate ran.
+    /// The poll cadence (driven by the host loop) is the throttle; the debounce
+    /// window is not appropriate here.
+    ///
+    /// The pause/offline guards in ``refreshFolder(key:)`` are preserved: a
+    /// paused workspace throws ``SyncError/workspacePaused`` and an offline
+    /// `listPath` rethrows BEFORE the destructive reconcile, so the cache is
+    /// never torn on a partial result.
+    ///
+    /// - Returns: The ``Diff`` produced by ``refreshFolder(key:)``.
+    public func refreshMaterializedContainer(key: CacheKey) async throws -> Diff {
+        try await refreshFolder(key: key)
+    }
+
+    /// Refreshes a set of materialized containers with a per-alias concurrency cap.
+    ///
+    /// Fans out over `keys`, calling ``refreshMaterializedContainer(key:)`` for
+    /// each with at most `concurrencyCap` concurrent DFS round-trips for `alias`.
+    /// The cap is stored per alias (mirroring the `downloadSlots`/`uploadSlots`
+    /// pattern) so concurrent calls for the same account share the same gate.
+    ///
+    /// Per-key errors (offline, cancellation, workspace paused) are treated as
+    /// non-fatal: they are silently swallowed and do not abort the remaining
+    /// keys. No failure telemetry is emitted for individual key failures here;
+    /// the caller (host poll loop) owns the lifecycle.
+    ///
+    /// - Parameters:
+    ///   - alias: Account alias owning all `keys`; also the per-alias semaphore key.
+    ///   - keys: Containers to refresh; no FileProvider types.
+    ///   - concurrencyCap: Maximum concurrent ``refreshMaterializedContainer(key:)``
+    ///     calls for this alias. Ignored on subsequent calls once the semaphore is
+    ///     created (the stored semaphore retains its original cap).
+    /// - Returns: `true` iff at least one container produced `diff.total > 0`.
+    public func refreshMaterialized(
+        alias: String,
+        keys: [CacheKey],
+        concurrencyCap: Int
+    ) async -> Bool {
+        guard !keys.isEmpty else { return false }
+
+        let semaphore = refreshSemaphore(for: alias, cap: concurrencyCap)
+
+        // Accumulate per-task diff totals via an actor-isolated counter.
+        //
+        // Swift 6 strict-concurrency inside a `SyncEngine` actor method:
+        // `withTaskGroup(of: Int.self)` trips "sending 'group' risks causing data
+        // races" because child closures capture actor-isolated `self` and the
+        // group itself is sent across isolation boundaries. The DiffTotalCounter
+        // actor is the correct pattern here — each child task calls `await
+        // counter.add(n)` which is a well-typed actor hop rather than a raw send.
+        let counter = DiffTotalCounter()
+
+        await withTaskGroup(of: Void.self) { group in
+            for key in keys {
+                group.addTask {
+                    do {
+                        try await semaphore.wait()
+                    } catch {
+                        // Cancellation while waiting for a slot — non-fatal.
+                        return
+                    }
+                    defer { semaphore.signal() }
+
+                    let diff: Diff
+                    do {
+                        diff = try await self.refreshMaterializedContainer(key: key)
+                    } catch {
+                        // Offline, cancellation, or workspace-paused: silent no-op.
+                        // refreshFolder rethrows before its destructive reconcile, so
+                        // the cache is intact.
+                        return
+                    }
+
+                    if diff.total > 0 {
+                        await counter.add(diff.total)
+                    }
+                }
+            }
+        }
+
+        return await counter.total > 0
     }
 
     // MARK: - Open (download)
@@ -1565,6 +1656,33 @@ public actor SyncEngine {
         let s = AsyncSemaphore(value: maxUploads)
         uploadSlots[alias] = s
         return s
+    }
+
+    private func refreshSemaphore(for alias: String, cap: Int) -> AsyncSemaphore {
+        if let s = refreshSlots[alias] { return s }
+        let s = AsyncSemaphore(value: max(1, cap))
+        refreshSlots[alias] = s
+        return s
+    }
+}
+
+// MARK: - DiffTotalCounter
+
+/// An actor that accumulates a running total of ``Diff/total`` values from
+/// the concurrent child tasks in
+/// ``SyncEngine/refreshMaterialized(alias:keys:concurrencyCap:)``.
+///
+/// `withTaskGroup(of: Int.self)` trips a Swift 6 "sending 'group' risks
+/// causing data races" error inside a `SyncEngine` actor method because child
+/// closures capture actor-isolated `self` and the group is sent across
+/// isolation boundaries. A dedicated counter actor avoids that: each child
+/// calls `await counter.add(n)` — a clean actor hop with no shared mutable
+/// state crossing isolation boundaries.
+private actor DiffTotalCounter {
+    private(set) var total: Int = 0
+
+    func add(_ n: Int) {
+        total += n
     }
 }
 
