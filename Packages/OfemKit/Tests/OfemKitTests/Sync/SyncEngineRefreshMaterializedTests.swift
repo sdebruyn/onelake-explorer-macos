@@ -99,7 +99,7 @@ struct SyncEngineRefreshMaterializedTests {
             path: "data.csv"
         )
         let rowBefore = try await store.fetch(key: childKey)
-        let syncedBefore = rowBefore?.syncedAtNs ?? 0
+        let syncedBefore = rowBefore.syncedAtNs
 
         let diff = try await engine.refreshMaterializedContainer(key: key)
         #expect(diff.updated > 0)
