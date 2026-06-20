@@ -75,31 +75,54 @@ enum Enumerator {
         return EnumerateResult(items: slice, nextCursor: nil)
     }
 
-    // MARK: - Freshness
+    // MARK: - Listing presence / debounce
 
-    /// Returns `true` when the parent's children were listed within `ttl`.
+    /// Returns `true` when this directory's children have been listed at least
+    /// once (`childrenSyncedAtNs > 0`).
+    ///
+    /// Distinguishes a genuinely-empty-but-enumerated folder (serve the empty
+    /// listing, revalidate in the background) from a cold cache that has never
+    /// been listed (block on a refresh on first open). Presence — not freshness
+    /// — gates whether the cache is served.
+    static func childrenEnumerated(record: MetadataRecord) -> Bool {
+        record.childrenSyncedAt != nil
+    }
+
+    /// Returns `true` when the parent's children were listed within `window`.
+    ///
+    /// Used as the revalidate-debounce input: a folder whose last listing is
+    /// younger than the debounce window does not warrant a fresh background
+    /// revalidate yet. (Listings are never withheld for being stale — see
+    /// ``childrenEnumerated(record:)`` — so this is purely a coalescing helper.)
     ///
     /// - Parameters:
     ///   - record: The metadata record to check.
-    ///   - ttl: The maximum age (in seconds) before a cached listing is considered stale.
+    ///   - window: The debounce window (in seconds).
     ///   - now: The current time. Defaults to `Date()` in production; pass an
     ///     explicit value in tests to exercise boundary behaviour deterministically.
-    static func isFresh(record: MetadataRecord, ttl: TimeInterval, now: Date = Date()) -> Bool {
+    static func isFresh(record: MetadataRecord, ttl window: TimeInterval, now: Date = Date()) -> Bool {
         guard let childrenSyncedAt = record.childrenSyncedAt else { return false }
-        return now.timeIntervalSince(childrenSyncedAt) <= ttl
+        return now.timeIntervalSince(childrenSyncedAt) <= window
     }
 
     // MARK: - Diff helpers
 
-    /// Returns `true` when `next` differs from `current` on any field the
-    /// remote can change.
+    /// Returns `true` when `next` differs from `current` on any field that
+    /// affects the listing the FPE presents.
+    ///
+    /// `itemType` is included: it drives capability computation
+    /// (`DomainItem.computeCapabilities`), so an item whose type changes is a
+    /// real capability-only drift that must surface as a diff — otherwise the
+    /// new type is persisted but `onContainerChanged` never fires and the
+    /// cache / FPE view diverge silently.
     static func entryChanged(current: MetadataRecord, next: MetadataRecord) -> Bool {
         current.isDir != next.isDir ||
         current.contentLength != next.contentLength ||
         current.etag != next.etag ||
         current.lastModifiedNs != next.lastModifiedNs ||
         current.name != next.name ||
-        current.parentPath != next.parentPath
+        current.parentPath != next.parentPath ||
+        current.itemType != next.itemType
     }
 
     // MARK: - Path helpers
