@@ -295,10 +295,10 @@ struct SyncEngineRevalidateTests {
         #expect(recorder.calls().isEmpty)
     }
 
-    // MARK: - AC5: cancelling the revalidate (shutdown) leaves cache intact, no failure telemetry
+    // MARK: - AC5: shutdown while a revalidate is blocked at listPath — cache intact, no failure telemetry
 
-    @Test("Cancelling the revalidate leaves the cache intact and emits no failure telemetry")
-    func testCancelledRevalidateLeavesCacheIntactNoFailureTelemetry() async throws {
+    @Test("Shutdown while a revalidate is blocked at listPath leaves the cache intact and emits no failure telemetry")
+    func testShutdownWhileBlockedAtListPathLeavesCacheIntact() async throws {
         let recorder = ChangeRecorder()
         let sink = MemoryTelemetrySink()
         let telemetry = TelemetryClient(
@@ -317,22 +317,28 @@ struct SyncEngineRevalidateTests {
         var iter = ol.listEntered.makeAsyncIterator()
         _ = await iter.next()
 
-        // Cancel + drain via the shutdown hook. cancelRevalidations() cancels the
-        // task (the mock resumes the blocked listPath with CancellationError) and
-        // awaits it, so it returns only after the revalidate has fully unwound.
-        await engine.cancelRevalidations()
+        // quiesceRevalidations() does NOT cancel — it drains, so it awaits the
+        // still-blocked task. In production a stuck listPath is bounded by the
+        // HTTP request timeout (it returns/throws); model that here by failing the
+        // listPath offline once the drain is waiting. Run the drain concurrently
+        // and release listPath so it can complete.
+        async let drain: Void = engine.quiesceRevalidations()
+        let offlineTransport = HTTPClientError.transport(URLError(.notConnectedToInternet))
+        ol.fail(with: OneLakeError.httpError(offlineTransport))
+        await drain
 
-        // Cache untouched: still exactly the seeded child.
+        // listPath threw before the reconcile, so the cache is untouched.
         let children = try await store.children(of: Self.folderKey)
         #expect(children.map(\.name) == ["a.txt"])
 
-        // No change notification for a cancelled revalidate.
+        // No change notification, and no failure telemetry from the revalidate.
         #expect(recorder.calls().isEmpty)
-
-        // No failure telemetry was emitted by the revalidate.
         await telemetry.flush()
-        let failures = sink.drain().filter { $0.success == false }
-        #expect(failures.isEmpty)
+        #expect(sink.drain().filter { $0.success == false }.isEmpty)
+
+        // After shutdown a late enumerate must not re-spawn a revalidate.
+        _ = try await engine.enumerate(key: Self.folderKey)
+        #expect(await engine.revalidationTask(for: Self.folderKey) == nil)
 
         await telemetry.shutdown()  // cancel the flush timer; don't leak it
     }
@@ -417,9 +423,9 @@ struct SyncEngineRevalidateTests {
         #expect(after.map(\.name) == ["new.txt"])
     }
 
-    // MARK: - shutdown drains the reconcile (not just the listPath suspension)
+    // MARK: - shutdown drains the reconcile (write completes, not aborted mid-flight)
 
-    @Test("cancelRevalidations awaits an in-flight reconcile so the cache write completes before shutdown returns")
+    @Test("quiesceRevalidations drains an in-flight reconcile so its write completes before shutdown returns")
     func testShutdownDrainsInFlightReconcile() async throws {
         let ol = BlockingListMockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
@@ -432,17 +438,15 @@ struct SyncEngineRevalidateTests {
         _ = await iter.next()
 
         // Let listPath SUCCEED with a changed listing so the destructive reconcile
-        // (batchUpsert/batchDelete) actually runs to completion. The reconcile has
-        // no cancellation checkpoint, so once listPath returns it always finishes.
+        // (batchUpsert/batchDelete) runs. Then drain. quiesceRevalidations() does
+        // NOT cancel, so the committed reconcile completes its write cleanly — it
+        // must not be torn mid-flight (a cancel would make GRDB's write throw and
+        // b.txt would never land).
         ol.unblock(with: listing(["a.txt", "b.txt"]))
+        await engine.quiesceRevalidations()
 
-        // Drain. If cancelRevalidations did NOT await the task, this could return
-        // while the reconcile write is still in flight; the assertion below would
-        // then race. With the await, the reconcile is guaranteed complete here.
-        await engine.cancelRevalidations()
-
-        // The reconcile ran to completion (both children present) — never a torn
-        // half-write, and definitely no write left running past shutdown.
+        // The reconcile ran to completion (both children present), and the await
+        // guarantees no write is still in flight past shutdown.
         let after = try await store.children(of: Self.folderKey)
         #expect(Set(after.map(\.name)) == ["a.txt", "b.txt"])
 

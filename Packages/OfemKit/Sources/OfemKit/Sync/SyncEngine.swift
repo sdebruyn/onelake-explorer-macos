@@ -113,7 +113,7 @@ public actor SyncEngine {
     private var lastRevalidateStarted: [String: Date] = [:]
 
     /// Set once the engine is shutting down. A late ``enumerate(key:)`` arriving
-    /// after ``cancelRevalidations()`` has drained the in-flight tasks must not
+    /// while ``quiesceRevalidations()`` is draining the in-flight tasks must not
     /// re-spawn a revalidate that would write to the about-to-close cache.
     private var isShutdown = false
 
@@ -1278,24 +1278,25 @@ public actor SyncEngine {
         }
     }
 
-    /// Body of a single background revalidate. Never throws: cancellation,
-    /// offline, and live-fetch failures are silent no-ops that return `Diff()`.
-    /// Fires ``onContainerChanged`` exactly once when the applied diff is
-    /// non-empty.
+    /// Body of a single background revalidate. Never throws: offline and
+    /// live-fetch failures are silent no-ops that return `Diff()`. Fires
+    /// ``onContainerChanged`` exactly once when the applied diff is non-empty.
+    ///
+    /// Shutdown does not cancel this task (see ``quiesceRevalidations()``): once
+    /// started it runs to a consistent end, so a reconcile that has passed
+    /// `listPath` always completes its write rather than tearing it mid-flight.
     private func runRevalidate(key: CacheKey, keyString: String) async -> Diff {
         // Remove the in-flight entry once the value is produced so late joiners
         // always found a live entry while the task was running, and a future
         // open can spawn a fresh revalidate.
         defer { inFlightRevalidations.removeValue(forKey: keyString) }
 
-        // Honour a shutdown / cancellation that landed before we ran.
-        if Task.isCancelled { return Diff() }
-
         let diff: Diff
         do {
             diff = try await refreshFolder(key: key)
         } catch is CancellationError {
-            // Shutdown / cancellation: silent no-op, no failure telemetry.
+            // Defensive: a stray cancellation is a silent no-op (no failure
+            // telemetry). Shutdown does not cancel, so this is not the normal path.
             return Diff()
         } catch {
             // Offline or any live-fetch failure: refreshFolder already observed
@@ -1304,11 +1305,6 @@ public actor SyncEngine {
             // cache was already served to the caller); no failure telemetry.
             return Diff()
         }
-
-        // A cancellation that raced the network read still leaves the cache
-        // intact (refreshFolder's reconcile only runs on a full live result);
-        // suppress the change notification so a torn-down domain is not signalled.
-        if Task.isCancelled { return Diff() }
 
         if diff.total > 0 {
             notifyContainerChanged(key: key, diff: diff)
@@ -1322,33 +1318,36 @@ public actor SyncEngine {
     /// ran on the actor it would serialise the engine for the IPC duration and
     /// risk a deadlock. The handler is `@Sendable`, so dispatching it on a
     /// detached task keeps the notification independent of the engine's executor
-    /// — and of ``cancelRevalidations()``, which awaits only the reconcile (cache
+    /// — and of ``quiesceRevalidations()``, which drains only the reconcile (cache
     /// writes), never this fire-and-forget notification.
     private func notifyContainerChanged(key: CacheKey, diff: Diff) {
         guard let handler = onContainerChanged else { return }
         Task.detached { handler(key, diff) }
     }
 
-    /// Cancels every outstanding background revalidation and waits for the
-    /// in-flight reconciles to finish before returning.
+    /// Quiesces background revalidation for shutdown: blocks new revalidates and
+    /// waits for the in-flight ones to finish before returning.
     ///
-    /// Cancellation is cooperative: a revalidate already past its `listPath`
-    /// suspension keeps writing to the cache through its reconcile. Shutdown must
-    /// not return while such a write is in flight (GRDB closes the pool on
-    /// dealloc and relies on no further writes). So this cancels each task and
-    /// then `await`s its value, draining the reconciles. `isShutdown` is set
-    /// first so a late ``enumerate(key:)`` arriving during the drain cannot
-    /// re-spawn a revalidate after the maps are cleared.
-    func cancelRevalidations() async {
+    /// The contract is *complete, don't abort*. A revalidate that has passed
+    /// `listPath` is committed to writing; its reconcile (`batchUpsert` /
+    /// `batchDelete` → GRDB `dbPool.write`) honours `Task.isCancelled` and would
+    /// throw mid-write if cancelled, leaving a torn/no-op write. So this does NOT
+    /// cancel the tasks — it sets `isShutdown` (so no NEW revalidate spawns, even
+    /// from a late ``enumerate(key:)`` arriving during the drain) and then
+    /// `await`s each in-flight task to completion, draining a consistent write.
+    /// GRDB's pool is closed on dealloc only after this returns, so no write
+    /// outlives shutdown.
+    ///
+    /// A still-running `listPath` bounds the wait: the HTTP client uses a finite
+    /// per-request timeout, so a genuinely stuck call returns or throws (the task
+    /// then completes via the offline/failed no-op path) rather than hanging
+    /// shutdown indefinitely.
+    func quiesceRevalidations() async {
         isShutdown = true
         lastRevalidateStarted.removeAll()
+        // Snapshot the tasks: each task's own defer prunes inFlightRevalidations
+        // as it finishes, so iterate a copy rather than the live map.
         let tasks = Array(inFlightRevalidations.values)
-        for task in tasks {
-            task.cancel()
-        }
-        // Await outside the loop is fine: each cancelled task resolves to Diff()
-        // once its reconcile (if any) completes. The tasks' own defer prunes
-        // inFlightRevalidations as they finish.
         for task in tasks {
             _ = await task.value
         }
