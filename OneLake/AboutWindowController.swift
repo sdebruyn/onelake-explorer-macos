@@ -14,6 +14,7 @@
 // fixed size, Cmd-W / close button to dismiss.
 
 import AppKit
+import OfemKit
 import SwiftUI
 
 // MARK: - Copyright derivation (testable free function)
@@ -88,6 +89,7 @@ private struct AboutView: View {
     private let version: String
     private let build: String
     private let copyright: String
+    private let buildTimestamp: String?
 
     init() {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -97,6 +99,12 @@ private struct AboutView: View {
         build = b
         // Delegate year/copyright derivation to the testable free function.
         copyright = copyrightString(version: v)
+        // Build timestamp is only shown in DEBUG builds; always nil in release.
+        #if DEBUG
+        buildTimestamp = BuildInfo.buildTimestamp
+        #else
+        buildTimestamp = nil
+        #endif
     }
 
     var body: some View {
@@ -128,6 +136,15 @@ private struct AboutView: View {
             .font(.subheadline)
             .foregroundStyle(.secondary)
             .padding(.top, 2)
+
+            // Build timestamp — DEBUG builds only, so dev can confirm which
+            // binary is running without checking logs.
+            if let ts = buildTimestamp {
+                Text("Built \(ts)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 1)
+            }
 
             Spacer()
 

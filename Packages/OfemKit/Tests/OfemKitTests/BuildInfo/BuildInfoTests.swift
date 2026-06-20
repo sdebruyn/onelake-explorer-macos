@@ -77,6 +77,44 @@ struct BuildInfoTests {
     func versionEqualsVersionFromMain() {
         #expect(BuildInfo.version == BuildInfo.version(from: .main))
     }
+
+    // MARK: - buildTimestamp
+
+    @Test("buildTimestamp(from:) returns nil when OFEMBuildTimestamp is absent")
+    func buildTimestampAbsent() {
+        // The xctest runner bundle has no OFEMBuildTimestamp key; nil expected.
+        #expect(BuildInfo.buildTimestamp(from: .main) == nil)
+    }
+
+    @Test("BuildInfo.buildTimestamp equals buildTimestamp(from: .main)")
+    func buildTimestampEqualsFromMain() {
+        #expect(BuildInfo.buildTimestamp == BuildInfo.buildTimestamp(from: .main))
+    }
+
+    @Test("buildTimestamp(from:) returns the value when OFEMBuildInfo.plist is present")
+    func buildTimestampPresent() throws {
+        // Synthesise a fake bundle directory containing OFEMBuildInfo.plist in its
+        // Resources subdirectory — mirroring what the build phase produces.
+        // This exercises the non-nil parse path that the xctest-runner tests cannot
+        // reach (the runner bundle has no sidecar).
+        let bundleDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BuildInfoTests-\(UUID().uuidString)", isDirectory: true)
+        let resourcesDir = bundleDir.appendingPathComponent("Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resourcesDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: bundleDir) }
+
+        let plist: [String: Any] = ["OFEMBuildTimestamp": "2026-06-20T14:03:12Z"]
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: plist,
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: resourcesDir.appendingPathComponent("OFEMBuildInfo.plist"))
+
+        let bundle = try #require(Bundle(path: bundleDir.path))
+        let ts = try #require(BuildInfo.buildTimestamp(from: bundle))
+        #expect(ts == "2026-06-20T14:03:12Z")
+    }
 }
 
 // MARK: - fp-09: FNV-1a-64 hasher testable boundary
