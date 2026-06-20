@@ -12,7 +12,6 @@
 //      CancellationError; the subsequent deliver() call is a no-op.
 //   5. Completion never fires: task cancellation releases the caller.
 
-@testable import OneLake
 import XCTest
 
 final class CallbackOnceTests: XCTestCase {
