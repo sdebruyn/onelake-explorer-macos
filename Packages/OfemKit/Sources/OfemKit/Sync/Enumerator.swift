@@ -15,7 +15,7 @@ public struct Diff: Sendable {
     public var total: Int { added + updated + removed }
 
     /// Creates a `Diff`.
-    public init(added: Int = 0, updated: Int = 0, removed: Int = 0) {
+    init(added: Int = 0, updated: Int = 0, removed: Int = 0) {
         self.added = added
         self.updated = updated
         self.removed = removed
@@ -82,34 +82,16 @@ enum Enumerator {
         return EnumerateResult(items: slice, nextCursor: nil)
     }
 
-    // MARK: - Listing presence / debounce
+    // MARK: - Listing presence
 
     /// Returns `true` when this directory's children have been listed at least
     /// once (`childrenSyncedAtNs > 0`).
     ///
     /// Distinguishes a genuinely-empty-but-enumerated folder (serve the empty
-    /// listing, revalidate in the background) from a cold cache that has never
-    /// been listed (block on a refresh on first open). Presence — not freshness
-    /// — gates whether the cache is served.
+    /// listing) from a cold cache that has never been listed (block on a refresh
+    /// on first open). Presence — not freshness — gates whether the cache is served.
     static func childrenEnumerated(record: MetadataRecord) -> Bool {
         record.childrenSyncedAt != nil
-    }
-
-    /// Returns `true` when the parent's children were listed within `window`.
-    ///
-    /// Used as the revalidate-debounce input: a folder whose last listing is
-    /// younger than the debounce window does not warrant a fresh background
-    /// revalidate yet. (Listings are never withheld for being stale — see
-    /// ``childrenEnumerated(record:)`` — so this is purely a coalescing helper.)
-    ///
-    /// - Parameters:
-    ///   - record: The metadata record to check.
-    ///   - window: The debounce window (in seconds).
-    ///   - now: The current time. Defaults to `Date()` in production; pass an
-    ///     explicit value in tests to exercise boundary behaviour deterministically.
-    static func isFresh(record: MetadataRecord, ttl window: TimeInterval, now: Date = Date()) -> Bool {
-        guard let childrenSyncedAt = record.childrenSyncedAt else { return false }
-        return now.timeIntervalSince(childrenSyncedAt) <= window
     }
 
     // MARK: - Diff helpers
