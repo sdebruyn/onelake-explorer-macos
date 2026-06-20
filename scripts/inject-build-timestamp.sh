@@ -1,41 +1,33 @@
 #!/usr/bin/env bash
-# inject-build-timestamp.sh — Post-compile build phase: stamps OFEMBuildTimestamp
-# into the compiled bundle's Info.plist.
+# inject-build-timestamp.sh — Post-compile build phase: writes OFEMBuildInfo.plist
+# into the built bundle's Resources directory.
+#
+# This is a pure-output script: it writes a SIDECAR file rather than modifying
+# an existing one. Because the output does not overlap with any Xcode built-in
+# step (Process Info.plist, codesign), there is no dependency cycle and no
+# mutable-output error.
 #
 # Build-system wiring (project.yml):
-#   inputFiles:  [plist]         — ordering edge; forces "Process Info.plist" first
-#   outputFiles: [plist, stamp]  — plist: sandbox write permission
-#                                  stamp: distinct output node required by llbuild
-#                                  when the task is alwaysOutOfDate (mutable output)
+#   inputFiles:  none             — timestamp is generated fresh; no input needed
+#   outputFiles: [sidecar plist]  — pure distinct output; sandbox write permission
 #   basedOnDependencyAnalysis: false — runs every build so the timestamp is current
 #
-# The stamp file (${DERIVED_FILE_DIR}/ofem-build-timestamp.stamp) is the "other
-# virtual output node" llbuild requires to schedule an always-run task that also
-# has a mutable (in-place) output. Without it the build fails with:
-#   "invalid task … with mutable output but no other virtual output node"
+# The sidecar is read at runtime via Bundle.url(forResource:withExtension:).
 #
 # Format: ISO-8601 UTC, e.g. "2026-06-20T14:03:12Z".
 
 set -euo pipefail
 
-# Guard: INFOPLIST_PATH must be set and non-empty (Xcode injects it; an
-# absent or empty value means the build environment is misconfigured).
-: "${INFOPLIST_PATH:?INFOPLIST_PATH is not set — is this script running outside an Xcode build phase?}"
+# Guard: UNLOCALIZED_RESOURCES_FOLDER_PATH must be set and non-empty.
+: "${UNLOCALIZED_RESOURCES_FOLDER_PATH:?UNLOCALIZED_RESOURCES_FOLDER_PATH is not set — is this script running outside an Xcode build phase?}"
 
-PLIST="${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
-STAMP="${DERIVED_FILE_DIR}/ofem-build-timestamp.stamp"
-
-# Guard: the plist must already exist (written by Xcode's Process Info.plist
-# step, which this script's input-file declaration orders before us).
-if [[ ! -f "${PLIST}" ]]; then
-    echo "error: Info.plist not found at '${PLIST}' — Process Info.plist step may not have run yet" >&2
-    exit 1
-fi
-
+DEST="${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/OFEMBuildInfo.plist"
 TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-/usr/libexec/PlistBuddy -c "Delete :OFEMBuildTimestamp" "${PLIST}" 2>/dev/null || true
-/usr/libexec/PlistBuddy -c "Add :OFEMBuildTimestamp string ${TIMESTAMP}" "${PLIST}"
+# The Resources directory may not exist yet at post-compile time.
+mkdir -p "$(dirname "${DEST}")"
 
-# Write the stamp so the declared output node exists (required by llbuild).
-touch "${STAMP}"
+# Write a fresh plist each build. Delete any prior value first so
+# PlistBuddy can always use the Add command.
+/usr/libexec/PlistBuddy -c "Delete :OFEMBuildTimestamp" "${DEST}" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :OFEMBuildTimestamp string ${TIMESTAMP}" "${DEST}"

@@ -91,15 +91,17 @@ struct BuildInfoTests {
         #expect(BuildInfo.buildTimestamp == BuildInfo.buildTimestamp(from: .main))
     }
 
-    @Test("buildTimestamp(from:) returns the value when OFEMBuildTimestamp is present")
+    @Test("buildTimestamp(from:) returns the value when OFEMBuildInfo.plist is present")
     func buildTimestampPresent() throws {
-        // Write a synthetic Info.plist to a temp directory so we can construct a
-        // Bundle whose infoDictionary contains OFEMBuildTimestamp. This exercises
-        // the non-nil parse path that the xctest-runner-bundle tests cannot reach.
-        let dir = FileManager.default.temporaryDirectory
+        // Synthesise a fake bundle directory containing OFEMBuildInfo.plist in its
+        // Resources subdirectory — mirroring what the build phase produces.
+        // This exercises the non-nil parse path that the xctest-runner tests cannot
+        // reach (the runner bundle has no sidecar).
+        let bundleDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("BuildInfoTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
+        let resourcesDir = bundleDir.appendingPathComponent("Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resourcesDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: bundleDir) }
 
         let plist: [String: Any] = ["OFEMBuildTimestamp": "2026-06-20T14:03:12Z"]
         let data = try PropertyListSerialization.data(
@@ -107,10 +109,10 @@ struct BuildInfoTests {
             format: .xml,
             options: 0
         )
-        try data.write(to: dir.appendingPathComponent("Info.plist"))
+        try data.write(to: resourcesDir.appendingPathComponent("OFEMBuildInfo.plist"))
 
-        let bundle = Bundle(path: dir.path)
-        let ts = try #require(BuildInfo.buildTimestamp(from: bundle!))
+        let bundle = try #require(Bundle(path: bundleDir.path))
+        let ts = try #require(BuildInfo.buildTimestamp(from: bundle))
         #expect(ts == "2026-06-20T14:03:12Z")
     }
 }

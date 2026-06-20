@@ -112,29 +112,23 @@ targets:
           CODE_SIGN_IDENTITY: "Developer ID Application"
           PROVISIONING_PROFILE_SPECIFIER: "OFEM distribution developer ID"
     postCompileScripts:
-      # Stamps OFEMBuildTimestamp into the built bundle's Info.plist at build
-      # time. Runs after Xcode processes Info.plist substitutions and before
-      # codesigning, so the value is included in the signed bundle.
+      # Writes OFEMBuildInfo.plist into the built bundle's Resources directory.
       #
       # Wiring rationale:
-      #   inputFiles  = [plist]         — ordering edge; forces "Process Info.plist"
-      #                                   before this script
-      #   outputFiles = [plist, stamp]  — plist gives sandbox write permission;
-      #                                   stamp is the distinct output node that
-      #                                   llbuild requires when a task is
-      #                                   alwaysOutOfDate AND has a mutable (in-place)
-      #                                   output. Without it the build fails with
-      #                                   "mutable output but no other virtual output
-      #                                   node".
-      #   basedOnDependencyAnalysis: false — alwaysOutOfDate; runs every build so the
-      #                                   timestamp is always current.
+      #   inputFiles:  none — the timestamp is computed fresh; no input dependency.
+      #   outputFiles: the sidecar plist — a pure, distinct output with no overlap
+      #                with any Xcode built-in step (Process Info.plist, codesign),
+      #                so there is no dependency cycle and no mutable-output error.
+      #   basedOnDependencyAnalysis: false — runs every build; timestamp is never
+      #                stale from a prior incremental build.
+      #
+      # The sidecar is read at runtime via Bundle.url(forResource:withExtension:).
+      # ENABLE_USER_SCRIPT_SANDBOXING is satisfied: the sidecar path is the sole
+      # declared output and the only filesystem write the script performs.
       - name: "Inject build timestamp"
         path: scripts/inject-build-timestamp.sh
-        inputFiles:
-          - "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
         outputFiles:
-          - "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
-          - "${DERIVED_FILE_DIR}/ofem-build-timestamp.stamp"
+          - "${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/OFEMBuildInfo.plist"
         basedOnDependencyAnalysis: false
     dependencies:
       - package: OfemKit
@@ -163,16 +157,12 @@ targets:
           CODE_SIGN_IDENTITY: "Developer ID Application"
           PROVISIONING_PROFILE_SPECIFIER: "OFEM FP distribution developer ID"
     postCompileScripts:
-      # Stamps OFEMBuildTimestamp into the built bundle's Info.plist at build
-      # time. See the host-app target above for the full rationale (inputFiles,
-      # outputFiles = [plist, stamp], basedOnDependencyAnalysis: false).
+      # Writes OFEMBuildInfo.plist into the built bundle's Resources directory.
+      # See the host-app target above for the full rationale.
       - name: "Inject build timestamp"
         path: scripts/inject-build-timestamp.sh
-        inputFiles:
-          - "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
         outputFiles:
-          - "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
-          - "${DERIVED_FILE_DIR}/ofem-build-timestamp.stamp"
+          - "${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/OFEMBuildInfo.plist"
         basedOnDependencyAnalysis: false
     dependencies:
       - package: OfemKit
