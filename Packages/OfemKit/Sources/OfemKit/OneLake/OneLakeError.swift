@@ -79,8 +79,21 @@ extension OneLakeError {
     /// Converts an ``HTTPClientError`` (or any error from the Net layer) to
     /// an ``OneLakeError``.
     ///
-    /// Handles wrapped errors by unwrapping one level of `apiError` to match
-    /// the inner sentinel where possible.
+    /// - First unwraps one level of ``HTTPClientError/apiError(_:)`` to reach
+    ///   the inner sentinel, mirroring `FabricError.from`.
+    /// - Maps bare ``CancellationError`` (Swift Concurrency cancellation) to
+    ///   `.cancelled`.
+    /// - Adds an explicit ``HTTPClientError/tokenAcquisitionFailed(_:)`` arm
+    ///   (onelake-01-fix-276): a direct `tokenAcquisitionFailed` previously fell
+    ///   through to `default` → `.httpError(resolved)`, which `FPError.oneLakeCode`
+    ///   then delegated to `FPError.httpCode` — which already mapped
+    ///   `tokenAcquisitionFailed` to `.notAuthenticated`. So the direct path was
+    ///   not a silent sync-failure regression; the explicit arm is a structural
+    ///   clarity improvement that makes the intent unambiguous and prevents any
+    ///   future `oneLakeCode` refactor from accidentally breaking the path.
+    ///   The real behavioral fix is onelake-02 (the `retriesExhausted` unwrap).
+    ///   Mirrors the `fabric-03-fix-272` arm in `FabricError.from`; see that
+    ///   comment for the transient-outage tradeoff.
     static func from(_ error: any Error) -> OneLakeError {
         // Unwrap apiError wrapper to reach the sentinel first.
         let resolved: any Error
@@ -104,9 +117,24 @@ extension OneLakeError {
         case HTTPClientError.throttled:           return .rateLimited
         case HTTPClientError.cancelled:           return .cancelled
         case is CancellationError:                return .cancelled
+        case HTTPClientError.tokenAcquisitionFailed:
+            // onelake-01-fix-276: explicit arm for clarity. The old default path
+            // already reached FPError.notAuthenticated via
+            //   .httpError(resolved) → oneLakeCode → httpCode → .notAuthenticated
+            // but spelling it out removes the dependency on that indirection and
+            // prevents future refactors from silently regressing it.
+            return .unauthorized
         case let HTTPClientError.serverError(code):
             return .serverError(code)
-        case let HTTPClientError.retriesExhausted(attempts, _):
+        case let HTTPClientError.retriesExhausted(attempts, last):
+            // onelake-02-fix-276: unwrap the last error so that a retry loop
+            // that exits because token acquisition failed surfaces as
+            // .unauthorized rather than .retriesExhausted. Without this unwrap
+            // FPError.oneLakeCode maps .retriesExhausted to .serverUnreachable,
+            // hiding the auth failure behind an offline indicator.
+            if case HTTPClientError.tokenAcquisitionFailed = last {
+                return .unauthorized
+            }
             return .retriesExhausted(attempts: attempts)
         default:
             return .httpError(resolved)
