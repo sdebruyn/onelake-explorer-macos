@@ -107,15 +107,22 @@ enum Enumerator {
 
     // MARK: - Diff helpers
 
-    /// Returns `true` when `next` differs from `current` on any field the
-    /// remote can change.
+    /// Returns `true` when `next` differs from `current` on any field that
+    /// affects the listing the FPE presents.
+    ///
+    /// `itemType` is included: it drives capability computation
+    /// (`DomainItem.computeCapabilities`), so an item whose type changes is a
+    /// real capability-only drift that must surface as a diff — otherwise the
+    /// new type is persisted but `onContainerChanged` never fires and the
+    /// cache / FPE view diverge silently.
     static func entryChanged(current: MetadataRecord, next: MetadataRecord) -> Bool {
         current.isDir != next.isDir ||
         current.contentLength != next.contentLength ||
         current.etag != next.etag ||
         current.lastModifiedNs != next.lastModifiedNs ||
         current.name != next.name ||
-        current.parentPath != next.parentPath
+        current.parentPath != next.parentPath ||
+        current.itemType != next.itemType
     }
 
     // MARK: - Path helpers

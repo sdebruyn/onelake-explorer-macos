@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import OfemKit
 
-// MARK: - SyncEngine stale-while-revalidate tests (issue-320)
+// MARK: - SyncEngine stale-while-revalidate tests
 
 /// Covers the stale-while-revalidate enumeration redesign: serve cache on
 /// presence, revalidate in the background with debounce + coalescing, fire the
@@ -65,6 +65,30 @@ struct SyncEngineRevalidateTests {
                 accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
                 path: n, parentPath: "", name: n, isDir: false,
                 etag: "seed-\(n)"
+            )
+            try await store.upsert(child)
+        }
+    }
+
+    /// Seeds an arbitrary directory `key` + its children, `ageSeconds` ago.
+    private func seedDir(
+        in store: CacheStore,
+        key: CacheKey,
+        childNames: [String],
+        ageSeconds: TimeInterval
+    ) async throws {
+        let syncedNs = Int64(Date().addingTimeInterval(-ageSeconds).timeIntervalSince1970 * 1_000_000_000)
+        let parent = MetadataRecord(
+            accountAlias: key.accountAlias, workspaceID: key.workspaceID, itemID: key.itemID,
+            path: key.path, parentPath: Enumerator.parentPath(key.path),
+            name: Enumerator.baseName(key.path), isDir: true, childrenSyncedAtNs: syncedNs
+        )
+        try await store.upsert(parent)
+        for n in childNames {
+            let childPath = key.path.isEmpty ? n : "\(key.path)/\(n)"
+            let child = MetadataRecord(
+                accountAlias: key.accountAlias, workspaceID: key.workspaceID, itemID: key.itemID,
+                path: childPath, parentPath: key.path, name: n, isDir: false, etag: "seed-\(n)"
             )
             try await store.upsert(child)
         }
@@ -218,12 +242,14 @@ struct SyncEngineRevalidateTests {
         _ = await iter.next()
         let task = try #require(await engine.revalidationTask(for: Self.folderKey))
         ol.unblock(with: listing(["a.txt", "b.txt"]))
-        _ = await task.value
+        let diff = await task.value
+        #expect(diff.total > 0)
 
-        let calls = recorder.calls()
-        #expect(calls.count == 1)
-        #expect(calls.first?.container == Self.folderKey)
-        #expect((calls.first?.diff.total ?? 0) > 0)
+        // The handler runs OFF the actor (detached); await it deterministically.
+        let call = try #require(await recorder.nextCall())
+        #expect(call.container == Self.folderKey)
+        #expect(call.diff.total > 0)
+        #expect(recorder.calls().count == 1)
 
         // The revalidate persisted the new child into the cache.
         let children = try await store.children(of: Self.folderKey)
@@ -261,8 +287,11 @@ struct SyncEngineRevalidateTests {
         _ = await iter.next()
         let task = try #require(await engine.revalidationTask(for: Self.folderKey))
         ol.unblock(with: identical)
-        _ = await task.value
+        let diff = await task.value
 
+        // No diff → runRevalidate never spawns the notification task, so the
+        // recorder staying empty is deterministic (not a timing artefact).
+        #expect(diff.total == 0)
         #expect(recorder.calls().isEmpty)
     }
 
@@ -288,15 +317,10 @@ struct SyncEngineRevalidateTests {
         var iter = ol.listEntered.makeAsyncIterator()
         _ = await iter.next()
 
-        let task = try #require(await engine.revalidationTask(for: Self.folderKey))
-
-        // Cancel via the shutdown hook, then unblock listPath so the task can
-        // observe the cancellation and exit. The mock resumes a cancelled
-        // listPath with CancellationError. Join the captured handle so the
-        // assertions below run only after the revalidate has fully unwound.
+        // Cancel + drain via the shutdown hook. cancelRevalidations() cancels the
+        // task (the mock resumes the blocked listPath with CancellationError) and
+        // awaits it, so it returns only after the revalidate has fully unwound.
         await engine.cancelRevalidations()
-        ol.unblock(with: listing(["a.txt", "b.txt", "c.txt"]))  // would be a big diff if applied
-        _ = await task.value
 
         // Cache untouched: still exactly the seeded child.
         let children = try await store.children(of: Self.folderKey)
@@ -309,6 +333,8 @@ struct SyncEngineRevalidateTests {
         await telemetry.flush()
         let failures = sink.drain().filter { $0.success == false }
         #expect(failures.isEmpty)
+
+        await telemetry.shutdown()  // cancel the flush timer; don't leak it
     }
 
     // MARK: - AC6: offline revalidate keeps cache rows; enumerate still serves cache
@@ -355,6 +381,8 @@ struct SyncEngineRevalidateTests {
         // a second revalidate, but presence still wins).
         let again = try await engine.enumerate(key: Self.folderKey)
         #expect(Set(again.map(\.name)) == ["a.txt", "b.txt"])
+
+        await telemetry.shutdown()  // cancel the flush timer; don't leak it
     }
 
     // MARK: - empty-but-enumerated folder is present (served), cold folder is not
@@ -388,34 +416,215 @@ struct SyncEngineRevalidateTests {
         let after = try await store.children(of: Self.folderKey)
         #expect(after.map(\.name) == ["new.txt"])
     }
+
+    // MARK: - shutdown drains the reconcile (not just the listPath suspension)
+
+    @Test("cancelRevalidations awaits an in-flight reconcile so the cache write completes before shutdown returns")
+    func testShutdownDrainsInFlightReconcile() async throws {
+        let ol = BlockingListMockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        try await seedFolder(in: store, childNames: ["a.txt"], childrenAgeSeconds: 60)
+
+        _ = try await engine.enumerate(key: Self.folderKey)
+        var iter = ol.listEntered.makeAsyncIterator()
+        _ = await iter.next()
+
+        // Let listPath SUCCEED with a changed listing so the destructive reconcile
+        // (batchUpsert/batchDelete) actually runs to completion. The reconcile has
+        // no cancellation checkpoint, so once listPath returns it always finishes.
+        ol.unblock(with: listing(["a.txt", "b.txt"]))
+
+        // Drain. If cancelRevalidations did NOT await the task, this could return
+        // while the reconcile write is still in flight; the assertion below would
+        // then race. With the await, the reconcile is guaranteed complete here.
+        await engine.cancelRevalidations()
+
+        // The reconcile ran to completion (both children present) — never a torn
+        // half-write, and definitely no write left running past shutdown.
+        let after = try await store.children(of: Self.folderKey)
+        #expect(Set(after.map(\.name)) == ["a.txt", "b.txt"])
+
+        // After shutdown, a late enumerate must not re-spawn a revalidate.
+        _ = try await engine.enumerate(key: Self.folderKey)
+        #expect(await engine.revalidationTask(for: Self.folderKey) == nil)
+        #expect(ol.listPathCallCount == 1)  // no second DFS call post-shutdown
+    }
+
+    // MARK: - itemType-only drift surfaces as a change
+
+    @Test("A revalidate whose only change is itemType reports a diff and fires the handler")
+    func testItemTypeOnlyChangeFiresHandler() async throws {
+        let recorder = ChangeRecorder()
+        let ol = BlockingListMockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol, onContainerChanged: recorder.handler)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // refreshFolder derives the child's itemType from the discovery row
+        // (itemID = VirtualIDs.itemID, path = the item GUID), not the folder row.
+        // Seed that discovery row with "Lakehouse" so the refresh stamps the child
+        // with a type it did not have before.
+        let syncedNs = Int64(Date().addingTimeInterval(-60).timeIntervalSince1970 * 1_000_000_000)
+        let discovery = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: VirtualIDs.itemID,
+            path: Self.itID, parentPath: "", name: "MyLH", isDir: true, itemType: "Lakehouse"
+        )
+        let parent = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: "", parentPath: "", name: "root", isDir: true,
+            childrenSyncedAtNs: syncedNs
+        )
+        // Child predates listItems: empty itemType, but matches the remote on
+        // every other diffed field.
+        let child = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: "a.txt", parentPath: "", name: "a.txt", isDir: false,
+            contentLength: 100, etag: "same", lastModifiedNs: 0, itemType: ""
+        )
+        try await store.upsert(discovery)
+        try await store.upsert(parent)
+        try await store.upsert(child)
+        // Remote entry identical on every field except the type the refresh
+        // derives from the discovery row (Lakehouse).
+        let sameButTyped = ListResult(entries: [
+            PathEntry(name: "a.txt", isDirectory: false, contentLength: 100,
+                      eTag: "same", lastModified: Date(timeIntervalSince1970: 0))
+        ])
+
+        _ = try await engine.enumerate(key: Self.folderKey)
+        var iter = ol.listEntered.makeAsyncIterator()
+        _ = await iter.next()
+        let task = try #require(await engine.revalidationTask(for: Self.folderKey))
+        ol.unblock(with: sameButTyped)
+        let diff = await task.value
+
+        // itemType "" -> "Lakehouse" is the only delta, but it must register.
+        #expect(diff.total > 0)
+        let call = try #require(await recorder.nextCall())
+        #expect(call.container == Self.folderKey)
+
+        // The child row now carries the resolved type.
+        let rows = try await store.children(of: Self.folderKey)
+        #expect(rows.first(where: { $0.name == "a.txt" })?.itemType == "Lakehouse")
+    }
+
+    // MARK: - cross-key isolation
+
+    @Test("A revalidate on one key does not suppress or affect a revalidate on another key")
+    func testCrossKeyIsolation() async throws {
+        let ol = BlockingListMockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Two distinct folders (different paths under the same item).
+        let keyA = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "A")
+        let keyB = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "B")
+        try await seedDir(in: store, key: keyA, childNames: ["a1.txt"], ageSeconds: 60)
+        try await seedDir(in: store, key: keyB, childNames: ["b1.txt"], ageSeconds: 60)
+
+        var iter = ol.listEntered.makeAsyncIterator()
+
+        // Open A → schedules a revalidate for A (blocks in listPath).
+        _ = try await engine.enumerate(key: keyA)
+        _ = await iter.next()
+        let taskA = try #require(await engine.revalidationTask(for: keyA))
+
+        // Open B while A is in flight → B is a different key, so it spawns its own
+        // revalidate (A's debounce/in-flight must NOT suppress B).
+        _ = try await engine.enumerate(key: keyB)
+        _ = await iter.next()
+        let taskB = try #require(await engine.revalidationTask(for: keyB))
+
+        // Resolve both independently. listPath returns item-relative paths, so a
+        // child of folder "A" is "A/<name>" (refreshFolder filters to direct
+        // children of the requested directory).
+        ol.unblock(with: listing(["A/a1.txt", "A/a2.txt"]))  // first waiter is A
+        _ = await taskA.value
+        ol.unblock(with: listing(["B/b1.txt", "B/b2.txt"]))  // then B
+        _ = await taskB.value
+
+        #expect(ol.listPathCallCount == 2)
+        let aKids = try await store.children(of: keyA)
+        let bKids = try await store.children(of: keyB)
+        #expect(Set(aKids.map(\.name)) == ["a1.txt", "a2.txt"])
+        #expect(Set(bKids.map(\.name)) == ["b1.txt", "b2.txt"])
+    }
+
+    // MARK: - sequential post-completion suppression
+
+    @Test("Re-opening within the debounce window after a completed revalidate does not re-spawn")
+    func testPostCompletionDebounceSuppressesReopen() async throws {
+        let ol = BlockingListMockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        try await seedFolder(in: store, childNames: ["a.txt"], childrenAgeSeconds: 60)
+
+        // First open → revalidate runs to completion (writes childrenSyncedAt=now).
+        _ = try await engine.enumerate(key: Self.folderKey)
+        var iter = ol.listEntered.makeAsyncIterator()
+        _ = await iter.next()
+        let task = try #require(await engine.revalidationTask(for: Self.folderKey))
+        ol.unblock(with: listing(["a.txt"]))
+        _ = await task.value
+        #expect(ol.listPathCallCount == 1)
+
+        // Re-open immediately: the freshly-written childrenSyncedAt (now) is within
+        // the debounce window, so isFresh suppresses a second revalidate — no new
+        // in-flight task, no second listPath.
+        _ = try await engine.enumerate(key: Self.folderKey)
+        #expect(await engine.revalidationTask(for: Self.folderKey) == nil)
+        #expect(ol.listPathCallCount == 1)
+    }
 }
 
 // MARK: - ChangeRecorder
 
-/// Thread-safe collector for `ContainerChangeHandler` invocations (the handler
-/// runs from a detached revalidate task, off the actor).
+/// Thread-safe collector for `ContainerChangeHandler` invocations.
+///
+/// The engine invokes the handler from a detached task (OFF the actor), so a
+/// test cannot assert on `calls()` immediately after joining the revalidate
+/// task — the notification may not have run yet. `nextCall()` awaits the next
+/// invocation deterministically via an `AsyncStream`.
 private final class ChangeRecorder: @unchecked Sendable {
-    struct Call { let container: CacheKey; let diff: Diff }
+    struct Call: Sendable { let container: CacheKey; let diff: Diff }
     private let lock = NSLock()
     private var _calls: [Call] = []
+    private let stream = AsyncStream<Call>.makeStream()
 
     var handler: ContainerChangeHandler {
         { [self] container, diff in
-            lock.withLock { _calls.append(Call(container: container, diff: diff)) }
+            let call = Call(container: container, diff: diff)
+            lock.withLock { _calls.append(call) }
+            stream.continuation.yield(call)
         }
     }
 
+    /// Snapshot of invocations recorded so far.
     func calls() -> [Call] { lock.withLock { _calls } }
+
+    /// Awaits and returns the next handler invocation.
+    func nextCall() async -> Call? {
+        var iter = stream.stream.makeAsyncIterator()
+        return await iter.next()
+    }
 }
 
 // MARK: - BlockingListMockOneLakeClient
 
 /// A `OneLakeClientProtocol` mock whose `listPath` blocks until `unblock(with:)`
-/// is called, so a test can hold a background revalidate suspended inside the
-/// DFS call and assert in-flight coalescing / cancellation deterministically.
+/// (or `fail(with:)`) is called, so a test can hold a background revalidate
+/// suspended inside the DFS call and assert in-flight coalescing / cancellation
+/// deterministically.
+///
+/// Supports multiple concurrently-blocked `listPath` calls: pending
+/// continuations form a FIFO queue, and `unblock`/`fail` resolve the oldest.
+/// `listEntered` yields once per call as it suspends, so a test can sequence
+/// blocked calls by awaiting the stream.
 private final class BlockingListMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
 
-    private var pending: CheckedContinuation<ListResult, any Error>?
+    private var pending: [CheckedContinuation<ListResult, any Error>] = []
     private let lock = NSLock()
     private var _listPathCallCount = 0
 
@@ -424,19 +633,15 @@ private final class BlockingListMockOneLakeClient: OneLakeClientProtocol, @unche
 
     var listPathCallCount: Int { lock.withLock { _listPathCallCount } }
 
-    /// Resolves the blocked `listPath` with `result`.
+    /// Resolves the oldest blocked `listPath` with `result`.
     func unblock(with result: ListResult) {
-        let cont = lock.withLock { () -> CheckedContinuation<ListResult, any Error>? in
-            let c = pending; pending = nil; return c
-        }
+        let cont = lock.withLock { pending.isEmpty ? nil : pending.removeFirst() }
         cont?.resume(returning: result)
     }
 
-    /// Resolves the blocked `listPath` by throwing `error`.
+    /// Resolves the oldest blocked `listPath` by throwing `error`.
     func fail(with error: any Error) {
-        let cont = lock.withLock { () -> CheckedContinuation<ListResult, any Error>? in
-            let c = pending; pending = nil; return c
-        }
+        let cont = lock.withLock { pending.isEmpty ? nil : pending.removeFirst() }
         cont?.resume(throwing: error)
     }
 
@@ -448,14 +653,14 @@ private final class BlockingListMockOneLakeClient: OneLakeClientProtocol, @unche
         return try await withTaskCancellationHandler(
             operation: {
                 try await withCheckedThrowingContinuation { cont in
-                    lock.withLock { pending = cont }
+                    lock.withLock { pending.append(cont) }
                     listEnteredStream.continuation.yield(())
                 }
             },
             onCancel: {
-                let cont = lock.withLock { () -> CheckedContinuation<ListResult, any Error>? in
-                    let c = pending; pending = nil; return c
-                }
+                // On cancellation resolve the oldest pending with a
+                // CancellationError so the blocked task can unwind.
+                let cont = lock.withLock { pending.isEmpty ? nil : pending.removeFirst() }
                 cont?.resume(throwing: CancellationError())
             }
         )

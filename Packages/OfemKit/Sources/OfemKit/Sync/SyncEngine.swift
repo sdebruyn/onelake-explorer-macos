@@ -105,10 +105,17 @@ public actor SyncEngine {
     private var inFlightRevalidations: [String: Task<Diff, Never>] = [:]
 
     /// Wall-clock instant of the last revalidate START per container key. Written
-    /// BEFORE the first `await` in ``scheduleRevalidate(key:)`` so a burst of
-    /// opens within ``revalidateDebounce`` cannot each spawn a task (no
-    /// double-spawn across the suspension point).
+    /// synchronously in ``scheduleRevalidate(key:parent:)`` (no `await` between
+    /// the debounce checks and the write) so a burst of opens within
+    /// ``revalidateDebounce`` cannot each spawn a task. Pruned opportunistically
+    /// of entries older than the debounce window so it does not grow unbounded
+    /// with the number of distinct folders ever opened.
     private var lastRevalidateStarted: [String: Date] = [:]
+
+    /// Set once the engine is shutting down. A late ``enumerate(key:)`` arriving
+    /// after ``cancelRevalidations()`` has drained the in-flight tasks must not
+    /// re-spawn a revalidate that would write to the about-to-close cache.
+    private var isShutdown = false
 
     /// Per-account semaphores for downloads and uploads.
     ///
@@ -1205,6 +1212,7 @@ public actor SyncEngine {
     ///
     /// Debounce + coalescing rules (all synchronous — no `await`, so there is no
     /// suspension point at which a sibling open could double-spawn):
+    /// - If the engine is shutting down, skip (no new writes to a closing cache).
     /// - If one is already in flight for this key, skip (the running task will
     ///   apply the latest remote state and fire the change handler).
     /// - If the cache row was reconciled within ``revalidateDebounce`` (its
@@ -1220,6 +1228,10 @@ public actor SyncEngine {
     /// silent no-ops that leave the cache intact (``refreshFolder`` rethrows
     /// before its destructive reconcile, so a failed fetch deletes nothing).
     private func scheduleRevalidate(key: CacheKey, parent: MetadataRecord) {
+        // After shutdown started, never spawn a task that would write to the
+        // about-to-close cache (a late enumerate must not re-arm a revalidate).
+        if isShutdown { return }
+
         let keyString = key.stableKeyString
 
         // Already running for this key → the in-flight task covers this open.
@@ -1235,9 +1247,14 @@ public actor SyncEngine {
         // A revalidate started within the debounce window → coalesce this open.
         // (Covers the gap before the first refresh writes childrenSyncedAt back.)
         if let last = lastRevalidateStarted[keyString],
-           now.timeIntervalSince(last) < revalidateDebounce {
+           now.timeIntervalSince(last) <= revalidateDebounce {
             return
         }
+
+        // Drop stamps older than the debounce window so the map stays bounded by
+        // the number of folders opened within one window, not all folders ever
+        // opened. The just-set stamp below survives (it is younger than now).
+        pruneStaleRevalidateStamps(now: now)
 
         // Record the start stamp + in-flight entry synchronously so a burst of
         // opens (which run serially on the actor with no await between the
@@ -1248,6 +1265,17 @@ public actor SyncEngine {
             await self.runRevalidate(key: key, keyString: keyString)
         }
         inFlightRevalidations[keyString] = task
+    }
+
+    /// Evicts `lastRevalidateStarted` entries older than ``revalidateDebounce``.
+    ///
+    /// An evicted stamp can no longer suppress a revalidate (its window has
+    /// elapsed), so dropping it changes nothing about debounce semantics while
+    /// bounding the map to folders touched within the current window.
+    private func pruneStaleRevalidateStamps(now: Date) {
+        lastRevalidateStarted = lastRevalidateStarted.filter {
+            now.timeIntervalSince($0.value) <= revalidateDebounce
+        }
     }
 
     /// Body of a single background revalidate. Never throws: cancellation,
@@ -1283,16 +1311,46 @@ public actor SyncEngine {
         if Task.isCancelled { return Diff() }
 
         if diff.total > 0 {
-            onContainerChanged?(key, diff)
+            notifyContainerChanged(key: key, diff: diff)
         }
         return diff
     }
 
-    /// Cancels all outstanding background revalidations. Called on engine
-    /// shutdown so a torn-down domain leaves no revalidate task running.
-    func cancelRevalidations() {
-        for task in inFlightRevalidations.values {
+    /// Invokes ``onContainerChanged`` OFF the actor.
+    ///
+    /// The real handler (FPE side) signals the container via an async IPC; if it
+    /// ran on the actor it would serialise the engine for the IPC duration and
+    /// risk a deadlock. The handler is `@Sendable`, so dispatching it on a
+    /// detached task keeps the notification independent of the engine's executor
+    /// — and of ``cancelRevalidations()``, which awaits only the reconcile (cache
+    /// writes), never this fire-and-forget notification.
+    private func notifyContainerChanged(key: CacheKey, diff: Diff) {
+        guard let handler = onContainerChanged else { return }
+        Task.detached { handler(key, diff) }
+    }
+
+    /// Cancels every outstanding background revalidation and waits for the
+    /// in-flight reconciles to finish before returning.
+    ///
+    /// Cancellation is cooperative: a revalidate already past its `listPath`
+    /// suspension keeps writing to the cache through its reconcile. Shutdown must
+    /// not return while such a write is in flight (GRDB closes the pool on
+    /// dealloc and relies on no further writes). So this cancels each task and
+    /// then `await`s its value, draining the reconciles. `isShutdown` is set
+    /// first so a late ``enumerate(key:)`` arriving during the drain cannot
+    /// re-spawn a revalidate after the maps are cleared.
+    func cancelRevalidations() async {
+        isShutdown = true
+        lastRevalidateStarted.removeAll()
+        let tasks = Array(inFlightRevalidations.values)
+        for task in tasks {
             task.cancel()
+        }
+        // Await outside the loop is fine: each cancelled task resolves to Diff()
+        // once its reconcile (if any) completes. The tasks' own defer prunes
+        // inFlightRevalidations as they finish.
+        for task in tasks {
+            _ = await task.value
         }
     }
 

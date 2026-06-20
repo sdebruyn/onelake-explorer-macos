@@ -116,7 +116,7 @@ A user double-clicks a folder in Finder. macOS calls `enumerator(for: containerI
 3. If workspace → call Fabric REST `GET /workspaces/{id}/items` + `GET /workspaces/{id}/folders`, return items + folders.
 4. If item/path → call OneLake DFS `GET /{workspaceGUID}/{itemGUID}/{path}?resource=filesystem&recursive=false`, return files + folders.
 
-Results are cached in SQLite with a TTL appropriate for the level: 30 seconds for currently-open folders, 5 minutes for the rest.
+Listings are **stale-while-revalidate**. When a folder is opened, the SQLite cache is served immediately if it already holds that folder's children (presence, not age, decides), and a background refresh against OneLake is kicked off at the same time. Only a folder that has never been listed blocks on a refresh before returning, so the first open still shows live entries. When a background refresh finds the listing drifted, the engine notifies the FPE, which signals the affected container so Finder re-enumerates. The cache therefore serves two roles only: instant first paint and an offline fallback. A short revalidate debounce coalesces a burst of opens of the same folder into a single OneLake call.
 
 ## Working set updates
 
