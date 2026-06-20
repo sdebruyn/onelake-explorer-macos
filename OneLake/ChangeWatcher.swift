@@ -29,18 +29,18 @@
 // the signal (FPE refreshed from Fabric) the domain is remounted in that first
 // tick rather than waiting for the next full interval.
 //
-// This class is @MainActor because NSFileProviderManager calls are documented
-// as main-thread-only.
+// This class is @MainActor because its mutable state (lastWorkspaceSignatures,
+// remountInFlight, workingSetRefreshTask) must be accessed on the main actor.
+// signalContainer itself calls signalEnumeratorOnce which is not main-thread-bound;
+// the @MainActor constraint is on the class, not on the underlying API.
 //
 // Continuation hardening — resume-once guard:
 //   Apple does not guarantee that NSFileProviderManager.signalEnumerator(for:completionHandler:)
 //   always calls its completion handler (fileproviderd crash / domain teardown).
 //   A plain withCheckedThrowingContinuation would leak the continuation forever.
-//   signalEnumeratorOnce wraps the call with a lock-guarded optional continuation
-//   that is nil'd before every resume (exactly-one guarantee) and a
-//   withTaskCancellationHandler so a cancelled caller escapes immediately.
-//   See ContainerSignaller.swift for the matching FPE-side implementation and
-//   a fuller rationale.
+//   signalEnumeratorOnce delegates to withCallbackOnce, which uses ResumeOnceBox
+//   and a post-store Task.isCancelled check to cover all cancellation interleavings
+//   (in-flight and pre-cancelled). See ContainerSignaller.swift for the full rationale.
 
 @preconcurrency import FileProvider
 import Foundation
@@ -80,19 +80,29 @@ final class ResumeOnceBox: @unchecked Sendable {
 /// Awaits a callback-style operation exactly once, with a resume-once guard
 /// and task-cancellation support.
 ///
-/// `work` receives a `deliver` closure that it must call exactly once with
-/// `nil` for success or an `Error` for failure.  `withCallbackOnce` wraps the
-/// call in `withTaskCancellationHandler` so a cancelled caller is released
-/// immediately via `CancellationError` rather than hanging.
+/// `work` receives a `deliver` closure that it must call with `nil` for
+/// success or an `Error` for failure.  `withCallbackOnce` guarantees that
+/// the underlying `CheckedContinuation` is resumed exactly once regardless
+/// of the interleaving of `deliver` and task cancellation:
 ///
-/// The resume-once guarantee is enforced by `ResumeOnceBox`: both the
-/// `deliver` path and the `onCancel` path call `box.take()`, which
-/// atomically claims the stored continuation only once.  The second path
-/// always receives `nil` and is a no-op, preventing both leaks and the
-/// double-resume trap.
+/// - **Normal path**: `deliver(nil/error)` claims the continuation via
+///   `box.take()` and resumes it. A subsequent `onCancel` call sees `nil`
+///   and is a no-op.
+/// - **In-flight cancellation**: `onCancel` fires while the continuation is
+///   suspended, claims it via `box.take()`, and resumes with
+///   `CancellationError`. A subsequent `deliver` call sees `nil` and is a
+///   no-op.
+/// - **Pre-cancelled task** (the task was already cancelled before entering
+///   `withCallbackOnce`): `withTaskCancellationHandler` runs `onCancel`
+///   synchronously BEFORE the operation body, so `box.take()` sees `nil`
+///   and no-ops. The body then stores the continuation and calls `work`.
+///   To cover this interleaving, the body immediately re-checks
+///   `Task.isCancelled`; if set, it calls `box.take()` and resumes with
+///   `CancellationError` itself — releasing the continuation before
+///   `work`'s callback can ever fire.
 ///
-/// This primitive is `internal` (not `private`) so unit tests can exercise the
-/// guard logic directly without requiring a real `NSFileProviderManager`.
+/// This primitive is `internal` (not `private`) so unit tests can exercise
+/// the guard logic directly without requiring a real `NSFileProviderManager`.
 func withCallbackOnce(
     work: @Sendable @escaping (_ deliver: @escaping @Sendable (Error?) -> Void) -> Void
 ) async throws {
@@ -101,6 +111,14 @@ func withCallbackOnce(
     try await withTaskCancellationHandler {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             box.store(cont)
+            // Pre-cancelled-task path: onCancel ran before the continuation
+            // was stored, so its box.take() returned nil and was a no-op.
+            // Re-check here and self-cancel so the continuation is not left
+            // hanging when work's callback never fires.
+            if Task.isCancelled {
+                box.take()?.resume(throwing: CancellationError())
+                return
+            }
             work { error in
                 guard let c = box.take() else { return }
                 if let error { c.resume(throwing: error) } else { c.resume() }
