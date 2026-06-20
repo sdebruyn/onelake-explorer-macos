@@ -36,6 +36,9 @@ import Combine
     func clearCache(reply: @escaping (Int64, Error?) -> Void) {
         reply(0, nil)
     }
+    func pollMaterialized(alias: String, reply: @escaping (Bool, Error?) -> Void) {
+        reply(false, nil)
+    }
 }
 
 // MARK: - Tests
@@ -115,3 +118,4 @@ final class XPCVersionHandshakeTests: XCTestCase, @unchecked Sendable {
         }
     }
 }
+

@@ -25,6 +25,7 @@ extension OfemConfig: Codable {
         case cache
         case net
         case log
+        case sync
         case accounts
     }
 
@@ -37,6 +38,7 @@ extension OfemConfig: Codable {
         cache          = try c.decodeIfPresent(CacheConfig.self,       forKey: .cache)          ?? defaults.cache
         net            = try c.decodeIfPresent(NetConfig.self,         forKey: .net)            ?? defaults.net
         log            = try c.decodeIfPresent(LogConfig.self,         forKey: .log)            ?? defaults.log
+        sync           = try c.decodeIfPresent(SyncConfig.self,        forKey: .sync)           ?? defaults.sync
         accounts       = try c.decodeIfPresent([String: Account].self, forKey: .accounts)       ?? defaults.accounts
     }
 
@@ -48,6 +50,7 @@ extension OfemConfig: Codable {
         try c.encode(cache,          forKey: .cache)
         try c.encode(net,            forKey: .net)
         try c.encode(log,            forKey: .log)
+        try c.encode(sync,           forKey: .sync)
         try c.encode(accounts,       forKey: .accounts)
     }
 }
@@ -128,6 +131,30 @@ extension LogConfig: Codable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(level, forKey: .level)
+    }
+}
+
+// MARK: SyncConfig
+
+extension SyncConfig: Codable {
+    enum CodingKeys: String, CodingKey {
+        case materializedPollIntervalS = "materialized_poll_interval_s"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try c.decodeIfPresent(Int.self, forKey: .materializedPollIntervalS)
+            ?? SyncConfig.defaultMaterializedPollIntervalS
+        // Clamp to [min, max] so a hand-edited value is always valid.
+        materializedPollIntervalS = max(
+            SyncConfig.minMaterializedPollIntervalS,
+            min(SyncConfig.maxMaterializedPollIntervalS, raw)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(materializedPollIntervalS, forKey: .materializedPollIntervalS)
     }
 }
 

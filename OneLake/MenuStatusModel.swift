@@ -182,6 +182,10 @@ final class MenuStatusModel: ObservableObject {
     /// FPE log level (Settings → Advanced). One of "debug", "info", "warn", "error".
     @Published private(set) var logLevel: String = ""
 
+    /// Materialized-container poll interval in seconds (Settings → Advanced).
+    /// 0 means "not yet fetched"; once populated stays in [30, 600].
+    @Published private(set) var materializedPollIntervalS: Int = 0
+
     /// Last action error for display to the user. nil if the last action succeeded.
     /// Set by destructive actions (removeAccount, cacheClear, setDefaultAccount)
     /// when they fail so the UI can surface a non-intrusive inline message.
@@ -270,6 +274,8 @@ final class MenuStatusModel: ObservableObject {
     private var setNetUploadsTask: Task<Void, Never>?
     /// In-flight debounce timer for setNetMaxDownloads.
     private var setNetDownloadsTask: Task<Void, Never>?
+    /// In-flight debounce timer for setMaterializedPollInterval.
+    private var setMaterializedPollTask: Task<Void, Never>?
 
     // MARK: - Write fence (snapshot vs setter race)
     //
@@ -291,6 +297,7 @@ final class MenuStatusModel: ObservableObject {
         case netMaxDownloads
         case logLevel
         case telemetry
+        case materializedPollInterval
     }
     // Counted multiset: each concurrent writer for the same key increments the
     // counter; endWrite decrements. The fence lifts only when the count reaches
@@ -320,6 +327,8 @@ final class MenuStatusModel: ObservableObject {
     static let setCacheLimitDebounce: Duration = .milliseconds(750)
     /// Debounce window for parallel uploads/downloads Steppers.
     static let setNetConcurrencyDebounce: Duration = .milliseconds(750)
+    /// Debounce window for the poll-interval Stepper.
+    static let setPollIntervalDebounce: Duration = .milliseconds(750)
 
     // MARK: - Refresh
 
@@ -423,6 +432,10 @@ final class MenuStatusModel: ObservableObject {
             }
             if !status.logLevel.isEmpty, !isFenced(.logLevel) {
                 logLevel = status.logLevel
+            }
+            if status.materializedPollIntervalS > 0, !isFenced(.materializedPollInterval) {
+                materializedPollIntervalS = status.materializedPollIntervalS
+                ChangeWatcher.shared.materializedPollInterval = .seconds(status.materializedPollIntervalS)
             }
 
             // Map XPCPausedWorkspace entries to PausedWorkspaceInfo.
@@ -670,6 +683,32 @@ final class MenuStatusModel: ObservableObject {
             guard let self, !Task.isCancelled else { return }
             await self.writeConfig(
                 key: OfemConfigKey.netMaxDownloads,
+                value: String(clamped)
+            )
+            refresh()
+        }
+    }
+
+    /// Stage a new materialized-container poll interval (in seconds).
+    ///
+    /// Optimistically updates `materializedPollIntervalS` and the ChangeWatcher
+    /// loop cadence immediately, then debounces the actual XPC + TOML write so a
+    /// held Stepper does not flood the FPE.
+    func setMaterializedPollInterval(_ seconds: Int) {
+        let clamped = max(
+            SyncConfig.minMaterializedPollIntervalS,
+            min(SyncConfig.maxMaterializedPollIntervalS, seconds)
+        )
+        beginWrite(.materializedPollInterval)
+        materializedPollIntervalS = clamped
+        ChangeWatcher.shared.materializedPollInterval = .seconds(clamped)
+        setMaterializedPollTask?.cancel()
+        setMaterializedPollTask = Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.endWrite(.materializedPollInterval) } }
+            try? await Task.sleep(for: MenuStatusModel.setPollIntervalDebounce)
+            guard let self, !Task.isCancelled else { return }
+            await self.writeConfig(
+                key: OfemConfigKey.syncMaterializedPollIntervalS,
                 value: String(clamped)
             )
             refresh()

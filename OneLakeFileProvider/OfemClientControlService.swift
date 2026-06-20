@@ -283,7 +283,8 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                     netMaxDownloads: cfg.net.maxConcurrentDownloadsPerAccount,
                     logLevel: cfg.log.level,
                     pausedWorkspaces: pausedWorkspaces,
-                    needsSignIn: engineHost.needsSignIn
+                    needsSignIn: engineHost.needsSignIn,
+                    materializedPollIntervalS: cfg.sync.materializedPollIntervalS
                 )
                 replyOnce.callOnce { rb.fn(status, nil) }
             } catch {
@@ -311,6 +312,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             case netMaxUploads(Int)
             case netMaxDownloads(Int)
             case logLevel(String)
+            case syncMaterializedPollIntervalS(Int)
         }
 
         let result: Result<ValidatedConfig, SetConfigError>
@@ -360,6 +362,15 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                 break
             }
             result = .success(.logLevel(value))
+        case "sync.materialized_poll_interval_s":
+            guard let n = Int(value) else {
+                result = .failure(.invalidValue(key: key, value: value,
+                    reason: "expected an integer"))
+                break
+            }
+            let clamped = max(SyncConfig.minMaterializedPollIntervalS,
+                              min(SyncConfig.maxMaterializedPollIntervalS, n))
+            result = .success(.syncMaterializedPollIntervalS(clamped))
         default:
             result = .failure(.unknownKey(key))
         }
@@ -401,6 +412,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                     case .netMaxUploads(let n):     cfg.net.maxConcurrentUploadsPerAccount = n
                     case .netMaxDownloads(let n):   cfg.net.maxConcurrentDownloadsPerAccount = n
                     case .logLevel(let lvl):        cfg.log.level = lvl
+                    case .syncMaterializedPollIntervalS(let n): cfg.sync.materializedPollIntervalS = n
                     }
                 }
 
@@ -421,6 +433,41 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                     "setConfig failed: key='\(key, privacy: .public)' error=\(error.localizedDescription, privacy: .public)"
                 )
                 replyOnce.callOnce { rb.fn(error) }
+            }
+        }
+    }
+
+    // MARK: - pollMaterialized
+
+    func pollMaterialized(alias: String, reply: @escaping (Bool, Error?) -> Void) {
+        // xpc-02: reply-once guard — fires exactly once on every path.
+        //
+        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
+        // @unchecked Sendable so the Task body can capture it safely — the
+        // ReplyOnce guard ensures the closure is called at most once.
+        struct ReplyBox: @unchecked Sendable { let fn: (Bool, Error?) -> Void }
+        let rb = ReplyBox(fn: reply)
+        let replyOnce = ReplyOnce()
+        Task { [self] in
+            defer { replyOnce.callOnce { rb.fn(false, NSFileProviderError(.cannotSynchronize)) } }
+            do {
+                let engine = try await engineHost.engine()
+                // Read the materialized-container set for `alias` from the
+                // cache. The FPE is the sole writer; no host-side cache access.
+                let keys = try await engine.cache.materializedContainers(alias: alias)
+                // Fan out refreshes with a per-alias concurrency cap that
+                // mirrors the download-semaphore cap used elsewhere in the engine.
+                let changed = await engine.sync.refreshMaterialized(
+                    alias: alias,
+                    keys: keys,
+                    concurrencyCap: 4
+                )
+                replyOnce.callOnce { rb.fn(changed, nil) }
+            } catch {
+                Self.log.error(
+                    "pollMaterialized failed alias=\(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                replyOnce.callOnce { rb.fn(false, error) }
             }
         }
     }
