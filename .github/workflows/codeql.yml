@@ -14,6 +14,10 @@ permissions:
   actions: read
   contents: read
 
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   analyze:
     name: Analyze (Swift)
@@ -43,7 +47,10 @@ jobs:
           path: |
             ~/Library/Caches/Homebrew/downloads
             ~/Library/Caches/Homebrew/api
-          key: brew-${{ runner.os }}-xcodegen-${{ hashFiles('.github/workflows/codeql.yml') }}
+          # Key on a stable string rather than the workflow file so unrelated
+          # edits (cron tweaks, comment changes) don't bust the cache. The
+          # restore-key still matches any prior xcodegen entry on this OS.
+          key: brew-${{ runner.os }}-xcodegen
           restore-keys: |
             brew-${{ runner.os }}-xcodegen-
 
@@ -53,9 +60,12 @@ jobs:
           path: |
             Packages/OfemKit/.build
             DerivedData/SourcePackages
-          key: spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
+          # Distinct prefix from ci.yml's "spm-" key so the CodeQL tracer's
+          # instrumented artifacts never pollute the clean-build cache used
+          # by the main CI workflow.
+          key: codeql-spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
           restore-keys: |
-            spm-${{ runner.os }}-
+            codeql-spm-${{ runner.os }}-
 
       - name: Install xcodegen
         run: brew install xcodegen
@@ -75,7 +85,7 @@ jobs:
         # build-mode: manual ensures the tracer observes our explicit build
         # step rather than attempting autobuild, which is unreliable for
         # Xcode projects and produces "No source code was seen" errors.
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v3.36.2
         with:
           languages: swift
           build-mode: manual
@@ -87,6 +97,6 @@ jobs:
         run: make build-ci
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v3.36.2
         with:
           category: "/language:swift"
