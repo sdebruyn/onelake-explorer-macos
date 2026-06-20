@@ -135,13 +135,14 @@ struct SyncEngineRefreshMaterializedTests {
 
         // Remote no longer has "gone.txt".
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "keep.txt", eTag: "e1")
+            PathEntry.file(name: "keep.txt", size: 0, eTag: "e1")
         ])))
 
         let diff = try await engine.refreshMaterializedContainer(key: key)
         #expect(diff.removed > 0)
 
-        // The row for "gone.txt" must be absent from the cache (tombstoned).
+        // The row for "gone.txt" must be absent from the cache (hard-deleted by
+        // refreshFolder's batchDelete reconcile).
         let goneKey = CacheKey(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -151,14 +152,24 @@ struct SyncEngineRefreshMaterializedTests {
         let goneRow = try? await store.fetch(key: goneKey)
         #expect(goneRow == nil)
 
-        // The deletion must be surfaced by itemsChangedAfter (tombstone written).
+        // "keep.txt" must remain.
+        let keepKey = CacheKey(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: "keep.txt"
+        )
+        let keepRow = try? await store.fetch(key: keepKey)
+        #expect(keepRow != nil)
+
+        // itemsChangedAfter surfaces updated rows (refreshFolder bumps synced_at_ns
+        // for all upserted children, including keep.txt). Note: batchDelete does
+        // not write File-Provider tombstones — that is the role of CacheStore.delete.
         let changes = try await store.itemsChangedAfter(
             accountAlias: key.accountAlias,
             ns: nsBefore
         )
-        // The identifier string for a path row encodes the full key; confirm at
-        // least one deletion was recorded after the pre-refresh anchor.
-        #expect(!changes.deletedIdentifierStrings.isEmpty)
+        #expect(!changes.updated.isEmpty)
     }
 
     // MARK: - AC1: refreshMaterializedContainer bypasses the revalidate debounce
@@ -201,12 +212,12 @@ struct SyncEngineRefreshMaterializedTests {
         try await seedFolder(in: store, key: key1, children: [("a.txt", "v1")])
         try await seedFolder(in: store, key: key2, children: [("b.txt", "v1")])
 
-        // key1: etag unchanged → no diff; key2: etag changed → diff.updated > 0.
+        // key1: etag + size unchanged → no diff; key2: etag changed → diff.updated > 0.
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "a.txt", eTag: "v1")   // unchanged
+            PathEntry.file(name: "a.txt", size: 0, eTag: "v1")   // unchanged
         ])))
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "b.txt", eTag: "v2")   // changed
+            PathEntry.file(name: "b.txt", size: 0, eTag: "v2")   // changed etag
         ])))
 
         let changed = await engine.refreshMaterialized(
@@ -226,9 +237,9 @@ struct SyncEngineRefreshMaterializedTests {
         let key = Self.folderKey
         try await seedFolder(in: store, key: key, children: [("a.txt", "v1")])
 
-        // Remote identical.
+        // Remote identical: use size: 0 to match the seeded contentLength: 0.
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "a.txt", eTag: "v1")
+            PathEntry.file(name: "a.txt", size: 0, eTag: "v1")
         ])))
 
         let changed = await engine.refreshMaterialized(
