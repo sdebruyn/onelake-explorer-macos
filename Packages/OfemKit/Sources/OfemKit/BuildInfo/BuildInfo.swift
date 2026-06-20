@@ -49,6 +49,11 @@ public enum BuildInfo {
     /// `inject-build-timestamp.sh` build phase writes into the compiled
     /// bundle's Info.plist at build time. Returns `nil` when the key is
     /// absent (xctest runner, command-line builds without the script phase).
+    ///
+    /// The value is populated for **all build configurations** (Debug and
+    /// Release). Each consumer decides how to surface it: the startup log
+    /// always includes it; the About window shows it only in `#if DEBUG`
+    /// builds so the release UI stays uncluttered.
     public static let buildTimestamp: String? = buildTimestamp(from: .main)
 
     /// Returns the build timestamp from the given bundle, or `nil`.

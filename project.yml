@@ -21,8 +21,9 @@ settings:
     # "Update to recommended settings" banner persists by design — do NOT "fix" it
     # by deleting this line or accepting Xcode's architectures recommendation.
     ARCHS: arm64
-    # Sandbox run-script build phases (Xcode recommended setting). There are
-    # no Run Script phases in this project; this matches the recommended baseline.
+    # Sandbox run-script build phases (Xcode recommended setting). Both targets
+    # carry a post-compile script that stamps OFEMBuildTimestamp into the built
+    # bundle's Info.plist; the output path is declared so the sandbox allows it.
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     # Enable symbol generation for String Catalog (.xcstrings) files
     # (Xcode recommended setting). Matches the recommended baseline.
@@ -113,12 +114,28 @@ targets:
     postCompileScripts:
       # Stamps OFEMBuildTimestamp into the built bundle's Info.plist at build
       # time. Runs after Xcode processes Info.plist substitutions and before
-      # codesigning, so the value is included in the signed bundle. The output
-      # file declaration satisfies ENABLE_USER_SCRIPT_SANDBOXING.
+      # codesigning, so the value is included in the signed bundle.
+      #
+      # Ordering: declaring the plist as both inputFiles AND outputFiles
+      # creates an in-place modify-in-place dependency edge so Xcode's build
+      # system guarantees "Process Info.plist" runs before this script.
+      # Without the input edge the ordering is not enforced, and the script
+      # can race or clobber the processed plist.
+      #
+      # basedOnDependencyAnalysis: false forces the script to run on every
+      # build so the timestamp reflects the actual build and is never stale
+      # from a previous incremental build — which is the point of the feature.
+      #
+      # ENABLE_USER_SCRIPT_SANDBOXING is satisfied: the plist path is listed
+      # in both inputFiles and outputFiles, which are the only filesystem
+      # accesses the script performs.
       - name: "Inject build timestamp"
         path: scripts/inject-build-timestamp.sh
+        inputFiles:
+          - "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
         outputFiles:
           - "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+        basedOnDependencyAnalysis: false
     dependencies:
       - package: OfemKit
       - target: OneLakeFileProvider
@@ -147,11 +164,14 @@ targets:
           PROVISIONING_PROFILE_SPECIFIER: "OFEM FP distribution developer ID"
     postCompileScripts:
       # Stamps OFEMBuildTimestamp into the built bundle's Info.plist at build
-      # time. See the host-app target above for the rationale.
+      # time. See the host-app target above for the full rationale.
       - name: "Inject build timestamp"
         path: scripts/inject-build-timestamp.sh
+        inputFiles:
+          - "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
         outputFiles:
           - "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+        basedOnDependencyAnalysis: false
     dependencies:
       - package: OfemKit
   # Host-app unit-test bundle: compiles host-app non-UI source files for

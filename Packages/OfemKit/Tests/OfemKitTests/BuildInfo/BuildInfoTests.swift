@@ -83,18 +83,35 @@ struct BuildInfoTests {
     @Test("buildTimestamp(from:) returns nil when OFEMBuildTimestamp is absent")
     func buildTimestampAbsent() {
         // The xctest runner bundle has no OFEMBuildTimestamp key; nil expected.
-        let ts = BuildInfo.buildTimestamp(from: .main)
-        // In a real build the key is present; in swift test it is absent.
-        // Either outcome is valid; the point is it must not crash and must
-        // return a String-or-nil.
-        if let ts {
-            #expect(!ts.isEmpty, "buildTimestamp must not be an empty string")
-        }
+        #expect(BuildInfo.buildTimestamp(from: .main) == nil)
     }
 
     @Test("BuildInfo.buildTimestamp equals buildTimestamp(from: .main)")
     func buildTimestampEqualsFromMain() {
         #expect(BuildInfo.buildTimestamp == BuildInfo.buildTimestamp(from: .main))
+    }
+
+    @Test("buildTimestamp(from:) returns the value when OFEMBuildTimestamp is present")
+    func buildTimestampPresent() throws {
+        // Write a synthetic Info.plist to a temp directory so we can construct a
+        // Bundle whose infoDictionary contains OFEMBuildTimestamp. This exercises
+        // the non-nil parse path that the xctest-runner-bundle tests cannot reach.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BuildInfoTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let plist: [String: Any] = ["OFEMBuildTimestamp": "2026-06-20T14:03:12Z"]
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: plist,
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: dir.appendingPathComponent("Info.plist"))
+
+        let bundle = Bundle(path: dir.path)
+        let ts = try #require(BuildInfo.buildTimestamp(from: bundle!))
+        #expect(ts == "2026-06-20T14:03:12Z")
     }
 }
 
