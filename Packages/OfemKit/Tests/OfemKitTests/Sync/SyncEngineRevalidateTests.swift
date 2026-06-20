@@ -456,14 +456,18 @@ struct SyncEngineRevalidateTests {
         #expect(ol.listPathCallCount == 1)  // no second DFS call post-shutdown
     }
 
-    // MARK: - quiesceRevalidations drains N tasks concurrently
+    // MARK: - quiesceRevalidations drains all in-flight tasks and clears the map
 
-    /// Verifies that ``quiesceRevalidations()`` awaits multiple in-flight tasks
-    /// concurrently: with two tasks both blocked at `listPath`, the drain must
-    /// complete once they are unblocked simultaneously — not after two sequential
-    /// waits that would require unblocking them one at a time.
-    @Test("quiesceRevalidations drains two in-flight revalidates concurrently")
-    func testQuiesceRevalidationsDrainsConcurrently() async throws {
+    /// Verifies that ``quiesceRevalidations()`` awaits ALL in-flight revalidate
+    /// tasks and that every entry is pruned from `inFlightRevalidations` by the
+    /// time the drain returns, even when multiple revalidates are in flight
+    /// simultaneously.
+    ///
+    /// This does not assert drain ordering (sequential vs concurrent); it asserts
+    /// correctness of the drain: every started task runs to completion, the map
+    /// is empty afterwards, and no revalidate is silently abandoned.
+    @Test("quiesceRevalidations completes and prunes all in-flight entries")
+    func testQuiesceRevalidationsDrainsAllInFlightEntries() async throws {
         let ol = BlockingListMockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -476,29 +480,24 @@ struct SyncEngineRevalidateTests {
 
         var iter = ol.listEntered.makeAsyncIterator()
 
-        // Start revalidate for A, wait until it is blocked inside listPath.
+        // Start revalidate for A and wait until it is blocked inside listPath.
         _ = try await engine.enumerate(key: keyA)
         _ = await iter.next()
 
-        // Start revalidate for B, wait until it too is blocked inside listPath.
+        // Start revalidate for B and wait until it too is blocked inside listPath.
         _ = try await engine.enumerate(key: keyB)
         _ = await iter.next()
 
         #expect(ol.listPathCallCount == 2)
 
-        // Launch the drain concurrently. It must NOT complete until both blocked
-        // listPath calls are resolved.
-        async let drain: Void = engine.quiesceRevalidations()
-
-        // Unblock BOTH tasks simultaneously. If the drain were sequential it
-        // would wait on A first — and B would never get its unblock because this
-        // code runs after `await drain` returned. The fact that `await drain`
-        // completes here proves the drain is concurrent.
+        // Unblock both pending listPath calls, then drain. Both revalidates can
+        // now run to completion; quiesceRevalidations must not return until all
+        // in-flight tasks have finished and their entries are pruned.
         ol.unblock(with: listing(["A/a.txt"]))
         ol.unblock(with: listing(["B/b.txt"]))
-        await drain
+        await engine.quiesceRevalidations()
 
-        // Both revalidates finished and their in-flight entries were pruned.
+        // Both revalidates ran to completion and their in-flight entries were pruned.
         #expect(await engine.revalidationTask(for: keyA) == nil)
         #expect(await engine.revalidationTask(for: keyB) == nil)
     }

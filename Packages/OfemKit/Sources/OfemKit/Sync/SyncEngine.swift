@@ -1360,11 +1360,12 @@ public actor SyncEngine {
         // Snapshot the tasks: each task's own defer prunes inFlightRevalidations
         // as it finishes, so iterate a copy rather than the live map.
         let tasks = Array(inFlightRevalidations.values)
-        // Await all in-flight tasks concurrently so the drain is bounded by a
-        // single worst-case timeout rather than N×timeout in the sequential case.
-        await withTaskGroup(of: Diff.self) { group in
+        // Await all in-flight tasks concurrently: all group children suspend
+        // simultaneously, so the drain is bounded by a single worst-case timeout
+        // regardless of how many revalidations are in flight.
+        await withDiscardingTaskGroup { group in
             for task in tasks {
-                group.addTask { await task.value }
+                group.addTask { _ = await task.value }
             }
         }
     }
