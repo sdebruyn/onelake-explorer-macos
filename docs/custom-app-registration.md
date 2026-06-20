@@ -36,7 +36,7 @@ After saving the registration, copy the **Application (client) ID** GUID from th
 
 ## Faster path — Azure CLI
 
-If you have [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) installed and you can sign in to the target tenant with permission to create app registrations, the steps above collapse into one snippet. Permission GUIDs are fetched live from the service principals so the script keeps working when Microsoft renumbers anything.
+If you have [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli?WT.mc_id=MVP_310840) installed and you can sign in to the target tenant with permission to create app registrations, the steps above collapse into one snippet. Permission GUIDs are fetched live from the service principals so the script keeps working when Microsoft renumbers anything.
 
 ```bash
 # Sign in to the right tenant.

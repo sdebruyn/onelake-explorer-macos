@@ -4,7 +4,7 @@ Browse your Microsoft Fabric **OneLake** data lake from Finder, the same way One
 
 ## Why this exists
 
-Microsoft ships a [OneLake File Explorer](https://learn.microsoft.com/fabric/onelake/onelake-file-explorer) for Windows only. There is no native macOS equivalent. This project fills that gap as an open-source `.app` distributed through Homebrew, with these explicit improvements:
+Microsoft ships a [OneLake File Explorer](https://learn.microsoft.com/fabric/onelake/onelake-file-explorer?WT.mc_id=MVP_310840) for Windows only. There is no native macOS equivalent. This project fills that gap as an open-source `.app` distributed through Homebrew, with these explicit improvements:
 
 - **Multi-account, multi-tenant** simultaneously visible side by side.
 - **macOS-native UX** through a File Provider Extension — Finder sidebar, online-only placeholders, on-demand download, Spotlight integration.
