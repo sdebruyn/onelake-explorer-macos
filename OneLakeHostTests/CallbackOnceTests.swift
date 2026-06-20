@@ -35,29 +35,31 @@ final class CallbackOnceTests: XCTestCase {
     // MARK: - 1. Normal success
 
     func testSuccessPath_resumesNormally() async throws {
-        var workRan = false
+        // BoolBox is @unchecked Sendable so it can be mutated inside a
+        // @Sendable work closure without a Swift 6 concurrency error.
+        let ran = BoolBox()
         try await withCallbackOnce { deliver in
-            workRan = true
+            ran.set()
             deliver(nil)
         }
-        XCTAssertTrue(workRan, "work closure must have run")
+        XCTAssertTrue(ran.value, "work closure must have run")
     }
 
     // MARK: - 2. Normal failure
 
     func testFailurePath_throwsSuppliedError() async throws {
         struct Sentinel: Error {}
-        var workRan = false
+        let ran = BoolBox()
         do {
             try await withCallbackOnce { deliver in
-                workRan = true
+                ran.set()
                 deliver(Sentinel())
             }
             XCTFail("Expected withCallbackOnce to throw Sentinel")
         } catch is Sentinel {
             // Expected.
         }
-        XCTAssertTrue(workRan, "work closure must have run before throwing")
+        XCTAssertTrue(ran.value, "work closure must have run before throwing")
     }
 
     // MARK: - 3. Completion fires first, then task cancelled
@@ -75,6 +77,7 @@ final class CallbackOnceTests: XCTestCase {
         deliverBox.fire(error: nil)
         task.cancel()
 
+        // task must complete successfully (not throw CancellationError)
         try await task.value
     }
 
@@ -101,11 +104,13 @@ final class CallbackOnceTests: XCTestCase {
 
         await deliverBox.waitUntilStored()
 
+        // Fire both paths without sequencing — let the scheduler decide.
         async let _ = Task { deliverBox.fire(error: nil) }.value
         task.cancel()
 
         await exited.waitUntilSet()
 
+        // Exactly one of the two paths must have won.
         let exactly1 = (succeeded && !threwCancellation) || (!succeeded && threwCancellation)
         XCTAssertTrue(exactly1, "Exactly one of success/cancellation must win")
     }
@@ -136,6 +141,7 @@ final class CallbackOnceTests: XCTestCase {
 
         XCTAssertTrue(gotCancellation, "Caller must receive CancellationError")
 
+        // Late deliver() — must be a silent no-op (no crash, no second resume).
         deliverBox.fire(error: nil)
         try? await Task.sleep(nanoseconds: 10_000_000)
     }
@@ -189,17 +195,35 @@ final class CallbackOnceTests: XCTestCase {
     // MARK: - 8. Double deliver(): second call is a no-op
 
     func testDoubleDeliver_secondCallIsNoOp() async throws {
-        var resumeCount = 0
+        let resumeCount = CounterBox()
         try await withCallbackOnce { deliver in
-            deliver(nil)
-            deliver(nil)
-            resumeCount += 1
+            deliver(nil)   // first deliver: resumes the continuation
+            deliver(nil)   // second deliver: must be a silent no-op
+            resumeCount.increment()
         }
-        XCTAssertEqual(resumeCount, 1, "work closure body must complete once")
+        XCTAssertEqual(resumeCount.value, 1, "work closure body must complete once")
     }
 }
 
 // MARK: - Test helpers
+
+/// Minimal @unchecked Sendable bool flag for use in @Sendable work closures.
+private final class BoolBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = false
+
+    func set() { lock.withLock { _value = true } }
+    var value: Bool { lock.withLock { _value } }
+}
+
+/// Minimal @unchecked Sendable integer counter for use in @Sendable closures.
+private final class CounterBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count = 0
+
+    func increment() { lock.withLock { _count += 1 } }
+    var value: Int { lock.withLock { _count } }
+}
 
 /// Thread-safe store for the deliver closure passed by withCallbackOnce.
 /// `fire()` captures and invokes deliver OUTSIDE the lock to avoid the
@@ -237,6 +261,7 @@ private final class DeliverBox: @unchecked Sendable {
     }
 }
 
+/// Actor-based flag used to await test-task completion across isolation domains.
 private actor ExitedFlag {
     private var _isSet = false
     private var _waiter: CheckedContinuation<Void, Never>?

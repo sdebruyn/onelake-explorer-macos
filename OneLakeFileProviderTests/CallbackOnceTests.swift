@@ -35,29 +35,31 @@ final class CallbackOnceTests: XCTestCase {
     // MARK: - 1. Normal success
 
     func testSuccessPath_resumesNormally() async throws {
-        var workRan = false
+        // BoolBox is @unchecked Sendable so it can be mutated inside a
+        // @Sendable work closure without a Swift 6 concurrency error.
+        let ran = BoolBox()
         try await withCallbackOnce { deliver in
-            workRan = true
+            ran.set()
             deliver(nil)
         }
-        XCTAssertTrue(workRan, "work closure must have run")
+        XCTAssertTrue(ran.value, "work closure must have run")
     }
 
     // MARK: - 2. Normal failure
 
     func testFailurePath_throwsSuppliedError() async throws {
         struct Sentinel: Error {}
-        var workRan = false
+        let ran = BoolBox()
         do {
             try await withCallbackOnce { deliver in
-                workRan = true
+                ran.set()
                 deliver(Sentinel())
             }
             XCTFail("Expected withCallbackOnce to throw Sentinel")
         } catch is Sentinel {
             // Expected.
         }
-        XCTAssertTrue(workRan, "work closure must have run before throwing")
+        XCTAssertTrue(ran.value, "work closure must have run before throwing")
     }
 
     // MARK: - 3. Completion fires first, then task cancelled
@@ -84,9 +86,6 @@ final class CallbackOnceTests: XCTestCase {
 
     // MARK: - 4. Concurrent race: completion and cancellation simultaneously
 
-    /// Fire completion and cancel concurrently (without sequencing). Exactly
-    /// one of the two paths must claim the continuation; the other must be a
-    /// no-op. No crash, no hang.
     func testConcurrentCompletionAndCancellation_noDoubleResume() async throws {
         let deliverBox = DeliverBox()
         let exited = ExitedFlag()
@@ -121,9 +120,6 @@ final class CallbackOnceTests: XCTestCase {
 
     // MARK: - 5. Task cancelled before completion fires
 
-    /// Cancel while work is in flight but deliver has not yet been called.
-    /// Caller must receive CancellationError; the subsequent deliver() must
-    /// be a no-op.
     func testCancellationBeforeCompletion_callerGetsCancellationError() async throws {
         let deliverBox = DeliverBox()
         let exited = ExitedFlag()
@@ -155,29 +151,18 @@ final class CallbackOnceTests: XCTestCase {
 
     // MARK: - 6. Pre-cancelled task
 
-    /// The task is already cancelled BEFORE withCallbackOnce is entered.
+    /// The task is already cancelled before withCallbackOnce is entered.
     /// withTaskCancellationHandler fires onCancel synchronously before the
-    /// body runs, so box.take() in onCancel sees nil (nothing stored yet).
-    /// The body must detect Task.isCancelled and self-resume with
-    /// CancellationError — even if work's callback never fires.
-    func testPreCancelledTask_callerGetsCancellationError_evenWhenCallbackNeverFires() async throws {
+    /// body, so box.take() in onCancel sees nil (nothing stored yet).
+    /// The post-store Task.isCancelled check must self-resume with
+    /// CancellationError even when the callback never fires.
+    func testPreCancelledTask_callerGetsCancellationError_evenWhenCallbackNeverFires() async {
         let expectation = XCTestExpectation(description: "pre-cancelled task exits")
 
-        let task = Task<Void, Error> {
-            // Cancel immediately before yielding to the executor.
-            // Swift's cooperative executor will see the task as already
-            // cancelled when withCallbackOnce runs.
-            try await Task.sleep(nanoseconds: 0)  // yields so cancel is observable
-        }
-        task.cancel()
-        // Drain any pending work so the task's cancellation is committed.
-        await Task.yield()
-
-        // Now create a fresh already-cancelled task that runs withCallbackOnce.
         let cancelledTask = Task<Void, Error> {
             do {
                 try await withCallbackOnce { _ in
-                    // Never call deliver — simulates a permanently missing callback.
+                    // Never call deliver.
                 }
                 XCTFail("Expected CancellationError from pre-cancelled task")
             } catch is CancellationError {
@@ -206,6 +191,7 @@ final class CallbackOnceTests: XCTestCase {
             }
         }
 
+        // Give the task time to enter withCallbackOnce and suspend.
         try? await Task.sleep(nanoseconds: 5_000_000)
         task.cancel()
 
@@ -215,28 +201,42 @@ final class CallbackOnceTests: XCTestCase {
     // MARK: - 8. Double deliver(): second call is a no-op
 
     func testDoubleDeliver_secondCallIsNoOp() async throws {
-        var resumeCount = 0
-        // Use a sentinel to count resumes via a second channel — we cannot
-        // observe the continuation directly, so we instead verify the caller
-        // returns exactly once and the second deliver does not throw/crash.
+        let resumeCount = CounterBox()
         try await withCallbackOnce { deliver in
             deliver(nil)   // first deliver: resumes the continuation
             deliver(nil)   // second deliver: must be a silent no-op
-            resumeCount += 1
+            resumeCount.increment()
         }
-        XCTAssertEqual(resumeCount, 1, "work closure body must complete once")
+        XCTAssertEqual(resumeCount.value, 1, "work closure body must complete once")
     }
 }
 
 // MARK: - Test helpers
+
+/// Minimal @unchecked Sendable bool flag for use in @Sendable work closures.
+private final class BoolBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = false
+
+    func set() { lock.withLock { _value = true } }
+    var value: Bool { lock.withLock { _value } }
+}
+
+/// Minimal @unchecked Sendable integer counter for use in @Sendable closures.
+private final class CounterBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count = 0
+
+    func increment() { lock.withLock { _count += 1 } }
+    var value: Int { lock.withLock { _count } }
+}
 
 /// Thread-safe store for the deliver closure passed by withCallbackOnce.
 /// Provides an async suspension point (`waitUntilStored`) so tests can wait
 /// deterministically until withCallbackOnce has installed the continuation.
 ///
 /// `fire()` captures and invokes deliver OUTSIDE the lock to avoid the
-/// reentrancy deadlock that arises when `deliver` internally takes the same
-/// `NSLock` (as `ResumeOnceBox` does).
+/// reentrancy deadlock that arises when `deliver` internally takes a lock.
 private final class DeliverBox: @unchecked Sendable {
     private let lock = NSLock()
     private var _deliver: ((Error?) -> Void)?
@@ -264,7 +264,6 @@ private final class DeliverBox: @unchecked Sendable {
         }
     }
 
-    /// Invokes deliver outside the lock to prevent reentrancy deadlocks.
     func fire(error: Error?) {
         let deliver: ((Error?) -> Void)? = lock.withLock { _deliver }
         deliver?(error)
