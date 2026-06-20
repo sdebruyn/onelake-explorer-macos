@@ -91,7 +91,7 @@ Returns, per shortcut, the path within the item and the target type (`OneLake`, 
 
 ## File I/O — OneLake DFS API (ADLS Gen2–compatible)
 
-OneLake speaks the [ADLS Gen2 REST API](https://learn.microsoft.com/rest/api/storageservices/data-lake-storage-gen2). Mapping:
+OneLake speaks the [ADLS Gen2 REST API](https://learn.microsoft.com/rest/api/storageservices/data-lake-storage-gen2?WT.mc_id=MVP_310840). Mapping:
 
 | ADLS concept | OneLake equivalent |
 |---|---|
