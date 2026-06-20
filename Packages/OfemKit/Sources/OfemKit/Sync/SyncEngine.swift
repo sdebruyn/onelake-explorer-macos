@@ -340,7 +340,14 @@ public actor SyncEngine {
             )
         }
         await batchUpsert(rows, context: "listItems")
-        await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
+        let removed = await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
+        // A removed discovery row (e.g. a now-filtered SQLEndpoint that left a
+        // `<name> 2` duplicate behind) must make Finder re-pull this workspace
+        // so the tombstone surfaces. parentKey maps to the `.workspace`
+        // container on the FPE side.
+        if removed > 0 {
+            notifyContainerChanged(key: parentKey, diff: Diff(removed: removed))
+        }
 
         await track(eventName: "item_list", alias: alias, start: start, outcome: .success())
         return storageItems
@@ -1365,16 +1372,23 @@ public actor SyncEngine {
         return (false, props)
     }
 
-    /// Deletes discovery rows for `parent` that are absent from `seen`.
+    /// Deletes discovery rows for `parent` that are absent from `seen`, and
+    /// returns how many rows were expired.
     ///
     /// Uses the authoritative `seen` set from the current listing: any row
     /// not in `seen` was not returned by the remote and should be expired,
     /// regardless of its `syncedAt` timestamp (sync-25 fix: removes the
     /// time-window guard that coupled folder-content TTL with discovery expiry).
-    private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String) async {
+    ///
+    /// The count lets the discovery callers fire ``onContainerChanged`` for the
+    /// parent container so the FPE re-pulls it — this is what clears a
+    /// now-filtered item (e.g. a SQLEndpoint surfacing as `<name> 2`) from
+    /// Finder without a remount.
+    @discardableResult
+    private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String) async -> Int {
         guard let kids = try? await cache.children(of: parent) else {
             Self.log.warning("expireDiscoveryRows: cache.children failed, stale rows may persist")
-            return
+            return 0
         }
         let deleteBatch = kids
             .filter { !seen.contains($0.path) }
@@ -1387,6 +1401,7 @@ public actor SyncEngine {
                 )
             }
         await batchDelete(deleteBatch, context: "expireDiscoveryRows")
+        return deleteBatch.count
     }
 
     // MARK: - Shared remote-operation error handler

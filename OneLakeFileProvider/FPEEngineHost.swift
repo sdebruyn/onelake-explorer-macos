@@ -649,12 +649,24 @@ final class FPEEngineHost: EngineProviding {
             let telemetry = try FPEEngineHost.sharedTelemetry()
             let sessionPool = try FPEEngineHost.sharedSessionPool()
 
+            // Wire the engine's revalidation change-callback to per-container
+            // signalling: when a background refresh (or a discovery reconcile)
+            // changes a container, ask Finder to re-pull exactly that folder.
+            // The signal sink captures `self` weakly so a callback that fires
+            // after teardown is a no-op rather than resurrecting the host. Root
+            // and other non-signallable containers are skipped inside the handler
+            // (root stays remount-driven via ChangeWatcher).
+            let onContainerChanged = makeContainerChangeHandler { [weak self] identifier in
+                await self?.signal(container: identifier)
+            }
+
             let engine = try OfemEngine(
                 configStore: cs,
                 paths: paths,
                 sharedCache: cache,
                 sharedTelemetry: telemetry,
-                sharedSessionPool: sessionPool
+                sharedSessionPool: sessionPool,
+                onContainerChanged: onContainerChanged
             )
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine built")
             // Start background tasks (telemetry flush timer). Create the Task
