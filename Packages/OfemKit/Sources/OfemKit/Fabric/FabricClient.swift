@@ -299,7 +299,12 @@ public final class FabricClient: Sendable {
         let req = session
             .request(url, method: httpMethod, headers: headers)
             .validate()
-        let dataResponse = await req.serializingData().response
+        // net-01: same fix as OneLakeClient — accept empty 2xx response bodies
+        // so Fabric REST calls that return 200/201/202 with no body do not fail
+        // with AFError.responseSerializationFailed.
+        let dataResponse = await req.serializingData(
+            emptyResponseMethods: [.get, .put, .patch, .delete, .post, .head]
+        ).response
 
         switch dataResponse.result {
         case .success(let data):
