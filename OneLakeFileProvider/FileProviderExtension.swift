@@ -561,6 +561,97 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         return progress
     }
 
+    // MARK: - Materialized items tracking
+
+    /// Guards against overlapping rescans when macOS fires the callback in bursts
+    /// (e.g. during bulk materialization). Access is serialised by `materializeLock`.
+    private let materializeLock = NSLock()
+    private nonisolated(unsafe) var materializeTaskInFlight: Task<Void, Never>?
+
+    /// Called by macOS when the set of materialized (on-disk, non-dataless) containers changes.
+    ///
+    /// **Re-entry / coalescing contract**: macOS fires this callback repeatedly during burst
+    /// materializations. Each call cancels any still-pending scan and starts a fresh one so
+    /// overlapping calls collapse into a single re-enumeration. Because `setMaterialized` is
+    /// a full replace, the last completed scan always wins — no partial updates are possible.
+    ///
+    /// Enumerates `NSFileProviderManager(for:).enumeratorForMaterializedItems` across all
+    /// pages, filters to directory-bearing containers (`.workspace`, `.item`, `.path`),
+    /// excludes the root and working-set sentinels, and persists the resulting set via
+    /// `CacheStore.setMaterialized`. Unexpected or unparseable identifiers are logged and
+    /// skipped, not fatal.
+    func materializedItemsDidChange(completionHandler: @escaping () -> Void) {
+        let aliasCopy = alias
+        let domainCopy = domain
+        let hostCopy = engineHost
+
+        // NSFileProviderReplicatedExtension completion handlers are @escaping but
+        // not @Sendable. Box to cross the Task isolation boundary safely.
+        struct CH: @unchecked Sendable { let fn: () -> Void }
+        let ch = CH(fn: completionHandler)
+
+        // Coalesce: cancel any in-flight scan; this call's result supersedes it.
+        materializeLock.withLock {
+            materializeTaskInFlight?.cancel()
+            let task = Task {
+                defer { ch.fn() }
+                do {
+                    guard let manager = NSFileProviderManager(for: domainCopy) else {
+                        FileProviderExtension.log.error(
+                            "materializedItemsDidChange: no manager for domain \(aliasCopy, privacy: .public)"
+                        )
+                        return
+                    }
+
+                    // Enumerate the full materialized set, spanning all pages.
+                    let collected = try await enumerateMaterializedIdentifiers(
+                        enumerator: manager.enumeratorForMaterializedItems()
+                    )
+
+                    // Parse and filter: keep .workspace, .item, .path only.
+                    // Exclude root, trash, and workingSet sentinels.
+                    var containerIdentStrings: [String] = []
+                    for raw in collected {
+                        guard let parsed = try? parseOfemItemIdentifier(raw) else {
+                            FileProviderExtension.log.error(
+                                "materializedItemsDidChange[\(aliasCopy, privacy: .public)]: skip unparseable identifier"
+                            )
+                            continue
+                        }
+                        switch parsed {
+                        case .root, .trash, .workingSet:
+                            // Sentinels are not trackable containers — skip silently.
+                            continue
+                        case .workspace, .item, .path:
+                            // Store the raw string directly: for these cases
+                            // identifierString is a round-trip no-op, but `raw` avoids
+                            // an unnecessary re-serialization through ItemIdentifier.
+                            containerIdentStrings.append(raw)
+                        }
+                    }
+
+                    // Bail out if this scan was superseded while enumerating.
+                    guard !Task.isCancelled else { return }
+
+                    // Persist via the engine's cache store (full-replace).
+                    let engine = try await hostCopy.engine()
+                    try await engine.cache.setMaterialized(alias: aliasCopy, identifiers: containerIdentStrings)
+
+                    FileProviderExtension.log.info(
+                        "materializedItemsDidChange[\(aliasCopy, privacy: .public)]: persisted \(containerIdentStrings.count, privacy: .public) container(s)"
+                    )
+                } catch is CancellationError {
+                    // Superseded by a newer call — completionHandler still fires via defer.
+                } catch {
+                    FileProviderExtension.log.error(
+                        "materializedItemsDidChange[\(aliasCopy, privacy: .public)] failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
+            materializeTaskInFlight = task
+        }
+    }
+
     // MARK: - Enumeration
 
     func enumerator(
@@ -589,6 +680,68 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             alias: alias,
             engineHost: engineHost
         )
+    }
+}
+
+// MARK: - Materialized-items enumeration helper
+
+/// Drives `enumerator` to completion across all pages and returns the raw
+/// identifier strings of every item it delivers.
+///
+/// The materialized-items enumerator is a pull-based callback API
+/// (`NSFileProviderEnumerationObserver`). This helper bridges the multi-page
+/// loop to async/await using a checked continuation. `didEnumerate` accumulates
+/// items; `finishEnumerating(upTo:nextPage)` either issues the next page request
+/// (when `nextPage != nil`) or resolves the continuation with the full set (when
+/// `nextPage == nil`). Errors resolve the continuation via `throw`.
+///
+/// Passing `NSFileProviderPage(Data())` as the start page is required by the
+/// `enumeratorForMaterializedItems` contract (documented in
+/// `NSFileProviderManager.h`); the standard sort-page constants do not apply to
+/// the materialized-set enumerator. Apple gives no single-page guarantee for
+/// large materialized sets.
+private func enumerateMaterializedIdentifiers(
+    enumerator: NSFileProviderEnumerator
+) async throws -> [String] {
+    // `NSFileProviderEnumerationObserver` is `@_nonSendable`. The Collector is
+    // marked `@unchecked Sendable` because the system-vended enumerator delivers
+    // all observer callbacks serially on its own internal GCD queue, so `collected`
+    // and `continuation` are never accessed concurrently. The `CheckedContinuation`
+    // is resumed exactly once per the `withCheckedThrowingContinuation` contract.
+    final class Collector: NSObject, NSFileProviderEnumerationObserver, @unchecked Sendable {
+        var collected: [String] = []
+        var continuation: CheckedContinuation<[String], Error>?
+        // Retained so the paging loop can issue subsequent page requests.
+        var enumerator: NSFileProviderEnumerator?
+
+        func didEnumerate(_ updatedItems: [any NSFileProviderItem]) {
+            for item in updatedItems {
+                collected.append(item.itemIdentifier.rawValue)
+            }
+        }
+
+        func finishEnumerating(upTo nextPage: NSFileProviderPage?) {
+            if let page = nextPage {
+                // More pages available — fetch the next one on the same observer.
+                enumerator?.enumerateItems(for: self, startingAt: page)
+            } else {
+                // All pages delivered — resolve the continuation.
+                continuation?.resume(returning: collected)
+                continuation = nil
+            }
+        }
+
+        func finishEnumeratingWithError(_ error: Error) {
+            continuation?.resume(throwing: error)
+            continuation = nil
+        }
+    }
+
+    let collector = Collector()
+    collector.enumerator = enumerator
+    return try await withCheckedThrowingContinuation { continuation in
+        collector.continuation = continuation
+        enumerator.enumerateItems(for: collector, startingAt: NSFileProviderPage(Data()))
     }
 }
 

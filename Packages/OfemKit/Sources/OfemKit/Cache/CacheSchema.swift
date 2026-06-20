@@ -11,6 +11,8 @@ import GRDB
 ///   `deletion_tombstones`, and their associated indexes.
 /// - `v2` — adds `idx_pm_path` to guarantee a B-tree range scan for the
 ///   `path LIKE 'prefix/%'` subtree queries in `delete(key:)` / `batchDelete`.
+/// - `v3` — adds `item_type` column to `path_metadata`.
+/// - `v4` — adds `materialized_containers` table and `idx_mc_alias` index.
 ///
 /// Key indexes:
 /// - `idx_pm_synced_at`: composite on `(account_alias, synced_at_ns)` used
@@ -19,6 +21,8 @@ import GRDB
 ///   to serve the `path LIKE 'prefix/%'` prefix scan in subtree deletes.
 /// - `idx_dt_deleted_at`: composite on `(account_alias, deleted_at_ns)` used
 ///   by `itemsChangedAfter` to avoid full `deletion_tombstones` scans.
+/// - `materialized_containers` PK `(account_alias, identifier_string)`: its
+///   B-tree prefix serves the `WHERE account_alias = ?` scan; no separate index.
 public enum CacheSchema {
 
     // MARK: - Migrator
@@ -132,6 +136,27 @@ public enum CacheSchema {
             try db.execute(sql: """
                 ALTER TABLE path_metadata
                     ADD COLUMN item_type TEXT NOT NULL DEFAULT '';
+                """)
+        }
+
+        // v4: add materialized_containers to track the set of containers that
+        // the user has expanded locally. Written by the FPE's
+        // materializedItemsDidChange callback; read by the freshness poll loop
+        // to know which containers to keep fresh. Keyed by identifier_string
+        // (the opaque File Provider identifier) rather than a CacheKey because
+        // materialised directories include item roots whose CacheKey uses
+        // VirtualIDs sentinels, making a separate identifier-keyed table simpler.
+        //
+        // No explicit alias index: the composite PK (account_alias, identifier_string)
+        // B-tree prefix already serves `WHERE account_alias = ?` efficiently.
+        m.registerMigration("v4") { db in
+            try db.execute(sql: """
+                CREATE TABLE materialized_containers (
+                    account_alias       TEXT    NOT NULL,
+                    identifier_string   TEXT    NOT NULL,
+                    materialized_at_ns  INTEGER NOT NULL,
+                    PRIMARY KEY (account_alias, identifier_string)
+                );
                 """)
         }
 

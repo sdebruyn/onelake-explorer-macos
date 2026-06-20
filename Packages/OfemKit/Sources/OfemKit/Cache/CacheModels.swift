@@ -353,6 +353,56 @@ public struct DeletionTombstoneRecord: FetchableRecord, PersistableRecord, Senda
     }
 }
 
+// MARK: - MaterializedContainerRecord
+
+/// One row in the `materialized_containers` table.
+///
+/// Tracks the set of containers that are locally materialized (have been
+/// expanded by the user in Finder), keyed by the opaque
+/// `ItemIdentifier.identifierString`. The FPE's
+/// `materializedItemsDidChange(completionHandler:)` callback writes this table
+/// via a full-replace reconcile so the freshness poll loop (a follow-up PR)
+/// knows which containers to keep fresh.
+///
+/// The `identifier_string` is stored verbatim (the opaque string produced by
+/// ``ItemIdentifier/identifierString``). Re-parsing to a ``CacheKey`` is done
+/// in ``CacheReader/materializedContainers(alias:)``.
+public struct MaterializedContainerRecord: FetchableRecord, PersistableRecord, Sendable {
+
+    public static let databaseTableName = "materialized_containers"
+
+    public enum Columns {
+        public static let accountAlias = Column("account_alias")
+        public static let identifierString = Column("identifier_string")
+        public static let materializedAtNs = Column("materialized_at_ns")
+    }
+
+    /// Account alias this row belongs to.
+    public var accountAlias: String
+    /// Opaque `ItemIdentifier.identifierString` for the materialized container.
+    public var identifierString: String
+    /// Unix nanoseconds at which this entry was recorded. Used for diagnostics.
+    public var materializedAtNs: Int64
+
+    public init(accountAlias: String, identifierString: String, materializedAtNs: Int64) {
+        self.accountAlias = accountAlias
+        self.identifierString = identifierString
+        self.materializedAtNs = materializedAtNs
+    }
+
+    public init(row: Row) throws {
+        accountAlias = row[Columns.accountAlias]
+        identifierString = row[Columns.identifierString]
+        materializedAtNs = row[Columns.materializedAtNs]
+    }
+
+    public func encode(to container: inout PersistenceContainer) {
+        container[Columns.accountAlias] = accountAlias
+        container[Columns.identifierString] = identifierString
+        container[Columns.materializedAtNs] = materializedAtNs
+    }
+}
+
 // MARK: - Private helpers
 
 /// Converts Unix nanoseconds to `Date`. Returns `nil` for zero (= "unset").
