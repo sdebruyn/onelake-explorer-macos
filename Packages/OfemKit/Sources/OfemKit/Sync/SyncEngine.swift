@@ -610,35 +610,45 @@ public actor SyncEngine {
 
         let semaphore = refreshSemaphore(for: alias, cap: concurrencyCap)
 
-        // Each child task returns its diff.total (0 on error or no change).
-        // withTaskGroup(of: Int.self) collects the values without any shared
-        // mutable state — idiomatic Swift 6 strict-concurrency.
-        let total = await withTaskGroup(of: Int.self) { group in
+        // Accumulate per-task diff totals via an actor-isolated counter.
+        //
+        // Swift 6 strict-concurrency inside a `SyncEngine` actor method:
+        // `withTaskGroup(of: Int.self)` trips "sending 'group' risks causing data
+        // races" because child closures capture actor-isolated `self` and the
+        // group itself is sent across isolation boundaries. The DiffTotalCounter
+        // actor is the correct pattern here — each child task calls `await
+        // counter.add(n)` which is a well-typed actor hop rather than a raw send.
+        let counter = DiffTotalCounter()
+
+        await withTaskGroup(of: Void.self) { group in
             for key in keys {
                 group.addTask {
                     do {
                         try await semaphore.wait()
                     } catch {
                         // Cancellation while waiting for a slot — non-fatal.
-                        return 0
+                        return
                     }
                     defer { semaphore.signal() }
 
+                    let diff: Diff
                     do {
-                        let diff = try await self.refreshMaterializedContainer(key: key)
-                        return diff.total
+                        diff = try await self.refreshMaterializedContainer(key: key)
                     } catch {
                         // Offline, cancellation, or workspace-paused: silent no-op.
                         // refreshFolder rethrows before its destructive reconcile, so
                         // the cache is intact.
-                        return 0
+                        return
+                    }
+
+                    if diff.total > 0 {
+                        await counter.add(diff.total)
                     }
                 }
             }
-            return await group.reduce(0, +)
         }
 
-        return total > 0
+        return await counter.total > 0
     }
 
     // MARK: - Open (download)
@@ -1648,6 +1658,26 @@ public actor SyncEngine {
         let s = AsyncSemaphore(value: max(1, cap))
         refreshSlots[alias] = s
         return s
+    }
+}
+
+// MARK: - DiffTotalCounter
+
+/// An actor that accumulates a running total of ``Diff/total`` values from
+/// the concurrent child tasks in
+/// ``SyncEngine/refreshMaterialized(alias:keys:concurrencyCap:)``.
+///
+/// `withTaskGroup(of: Int.self)` trips a Swift 6 "sending 'group' risks
+/// causing data races" error inside a `SyncEngine` actor method because child
+/// closures capture actor-isolated `self` and the group is sent across
+/// isolation boundaries. A dedicated counter actor avoids that: each child
+/// calls `await counter.add(n)` — a clean actor hop with no shared mutable
+/// state crossing isolation boundaries.
+private actor DiffTotalCounter {
+    private(set) var total: Int = 0
+
+    func add(_ n: Int) {
+        total += n
     }
 }
 
