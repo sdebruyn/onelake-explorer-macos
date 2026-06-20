@@ -456,6 +456,53 @@ struct SyncEngineRevalidateTests {
         #expect(ol.listPathCallCount == 1)  // no second DFS call post-shutdown
     }
 
+    // MARK: - quiesceRevalidations drains N tasks concurrently
+
+    /// Verifies that ``quiesceRevalidations()`` awaits multiple in-flight tasks
+    /// concurrently: with two tasks both blocked at `listPath`, the drain must
+    /// complete once they are unblocked simultaneously — not after two sequential
+    /// waits that would require unblocking them one at a time.
+    @Test("quiesceRevalidations drains two in-flight revalidates concurrently")
+    func testQuiesceRevalidationsDrainsConcurrently() async throws {
+        let ol = BlockingListMockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Two distinct folders so each gets its own in-flight revalidate.
+        let keyA = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "A")
+        let keyB = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "B")
+        try await seedDir(in: store, key: keyA, childNames: ["a.txt"], ageSeconds: 60)
+        try await seedDir(in: store, key: keyB, childNames: ["b.txt"], ageSeconds: 60)
+
+        var iter = ol.listEntered.makeAsyncIterator()
+
+        // Start revalidate for A, wait until it is blocked inside listPath.
+        _ = try await engine.enumerate(key: keyA)
+        _ = await iter.next()
+
+        // Start revalidate for B, wait until it too is blocked inside listPath.
+        _ = try await engine.enumerate(key: keyB)
+        _ = await iter.next()
+
+        #expect(ol.listPathCallCount == 2)
+
+        // Launch the drain concurrently. It must NOT complete until both blocked
+        // listPath calls are resolved.
+        async let drain: Void = engine.quiesceRevalidations()
+
+        // Unblock BOTH tasks simultaneously. If the drain were sequential it
+        // would wait on A first — and B would never get its unblock because this
+        // code runs after `await drain` returned. The fact that `await drain`
+        // completes here proves the drain is concurrent.
+        ol.unblock(with: listing(["A/a.txt"]))
+        ol.unblock(with: listing(["B/b.txt"]))
+        await drain
+
+        // Both revalidates finished and their in-flight entries were pruned.
+        #expect(await engine.revalidationTask(for: keyA) == nil)
+        #expect(await engine.revalidationTask(for: keyB) == nil)
+    }
+
     // MARK: - itemType-only drift surfaces as a change
 
     @Test("A revalidate whose only change is itemType reports a diff and fires the handler")
