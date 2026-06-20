@@ -2,10 +2,17 @@
 # inject-build-timestamp.sh — Post-compile build phase: stamps OFEMBuildTimestamp
 # into the compiled bundle's Info.plist.
 #
-# The script phase declares the plist as both an input and output file, which
-# creates a dependency edge that forces Xcode to run "Process Info.plist"
-# before this script. basedOnDependencyAnalysis is false so the script runs
-# on every build and the timestamp is always current.
+# Build-system wiring (project.yml):
+#   inputFiles:  [plist]         — ordering edge; forces "Process Info.plist" first
+#   outputFiles: [plist, stamp]  — plist: sandbox write permission
+#                                  stamp: distinct output node required by llbuild
+#                                  when the task is alwaysOutOfDate (mutable output)
+#   basedOnDependencyAnalysis: false — runs every build so the timestamp is current
+#
+# The stamp file (${DERIVED_FILE_DIR}/ofem-build-timestamp.stamp) is the "other
+# virtual output node" llbuild requires to schedule an always-run task that also
+# has a mutable (in-place) output. Without it the build fails with:
+#   "invalid task … with mutable output but no other virtual output node"
 #
 # Format: ISO-8601 UTC, e.g. "2026-06-20T14:03:12Z".
 
@@ -16,6 +23,7 @@ set -euo pipefail
 : "${INFOPLIST_PATH:?INFOPLIST_PATH is not set — is this script running outside an Xcode build phase?}"
 
 PLIST="${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+STAMP="${DERIVED_FILE_DIR}/ofem-build-timestamp.stamp"
 
 # Guard: the plist must already exist (written by Xcode's Process Info.plist
 # step, which this script's input-file declaration orders before us).
@@ -28,3 +36,6 @@ TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 /usr/libexec/PlistBuddy -c "Delete :OFEMBuildTimestamp" "${PLIST}" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :OFEMBuildTimestamp string ${TIMESTAMP}" "${PLIST}"
+
+# Write the stamp so the declared output node exists (required by llbuild).
+touch "${STAMP}"
