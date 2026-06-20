@@ -560,6 +560,89 @@ public actor SyncEngine {
         return diff
     }
 
+    // MARK: - Materialized-set refresh
+
+    /// Refreshes a single materialized container, bypassing the open-time
+    /// revalidate debounce.
+    ///
+    /// Unlike ``enumerate(key:)``, which debounces background revalidates so
+    /// that a burst of opens triggers at most one round-trip, this entry point
+    /// always fetches from OneLake regardless of when the last revalidate ran.
+    /// The poll cadence (driven by the host loop) is the throttle; the debounce
+    /// window is not appropriate here.
+    ///
+    /// The pause/offline guards in ``refreshFolder(key:)`` are preserved: a
+    /// paused workspace throws ``SyncError/workspacePaused`` and an offline
+    /// `listPath` rethrows BEFORE the destructive reconcile, so the cache is
+    /// never torn on a partial result.
+    ///
+    /// - Returns: The ``Diff`` produced by ``refreshFolder(key:)``.
+    public func refreshMaterializedContainer(key: CacheKey) async throws -> Diff {
+        try await refreshFolder(key: key)
+    }
+
+    /// Refreshes a set of materialized containers with a bounded concurrency cap.
+    ///
+    /// Fans out over `keys`, calling ``refreshMaterializedContainer(key:)`` for
+    /// each, with at most `concurrencyCap` concurrent DFS round-trips. Mirrors
+    /// the `maxDownloads` semaphore pattern used by the download path.
+    ///
+    /// Per-key errors (offline, cancellation, workspace paused) are treated as
+    /// non-fatal: they are silently swallowed and do not abort the remaining
+    /// keys. No failure telemetry is emitted for individual key failures here;
+    /// the caller (host poll loop) owns the lifecycle.
+    ///
+    /// - Parameters:
+    ///   - alias: Account alias owning all `keys` (used for the per-alias semaphore).
+    ///   - keys: Containers to refresh; no FileProvider types.
+    ///   - concurrencyCap: Maximum number of concurrent ``refreshMaterializedContainer(key:)`` calls.
+    /// - Returns: `true` iff at least one container produced `diff.total > 0`.
+    public func refreshMaterialized(
+        alias: String,
+        keys: [CacheKey],
+        concurrencyCap: Int
+    ) async -> Bool {
+        guard !keys.isEmpty else { return false }
+
+        let semaphore = AsyncSemaphore(value: max(1, concurrencyCap))
+
+        // Accumulate per-task diff totals. Using an actor-isolated counter avoids
+        // mutating a captured var from concurrently-executing closures (Swift 6
+        // strict-concurrency: mutation of captured var in concurrently-executing
+        // code is an error).
+        let counter = DiffTotalCounter()
+
+        await withTaskGroup(of: Void.self) { group in
+            for key in keys {
+                group.addTask {
+                    do {
+                        try await semaphore.wait()
+                    } catch {
+                        // Cancellation while waiting for a slot — non-fatal.
+                        return
+                    }
+                    defer { semaphore.signal() }
+
+                    let diff: Diff
+                    do {
+                        diff = try await self.refreshMaterializedContainer(key: key)
+                    } catch {
+                        // Offline, cancellation, or workspace-paused: silent no-op.
+                        // refreshFolder rethrows before its destructive reconcile, so
+                        // the cache is intact.
+                        return
+                    }
+
+                    if diff.total > 0 {
+                        await counter.add(diff.total)
+                    }
+                }
+            }
+        }
+
+        return await counter.total > 0
+    }
+
     // MARK: - Open (download)
 
     /// Downloads a file, serving from the local blob cache when fresh.
@@ -1573,6 +1656,22 @@ private let elapsedMsMinimum: Int64 = 1
 private func elapsedMs(since start: Date) -> Int64 {
     let d = Int64(Date().timeIntervalSince(start) * 1000)
     return max(elapsedMsMinimum, d)
+}
+
+// MARK: - DiffTotalCounter
+
+/// An actor that accumulates a running total of ``Diff/total`` values from
+/// concurrent tasks in ``SyncEngine/refreshMaterialized(alias:keys:concurrencyCap:)``.
+///
+/// Using an actor (rather than mutating a captured `var` from a `@Sendable`
+/// task closure) avoids the Swift 6 strict-concurrency error: "mutation of
+/// captured var in concurrently-executing code".
+private actor DiffTotalCounter {
+    private(set) var total: Int = 0
+
+    func add(_ n: Int) {
+        total += n
+    }
 }
 
 // MARK: - nowNs helper (sync-21)
