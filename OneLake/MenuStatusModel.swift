@@ -327,6 +327,8 @@ final class MenuStatusModel: ObservableObject {
     static let setCacheLimitDebounce: Duration = .milliseconds(750)
     /// Debounce window for parallel uploads/downloads Steppers.
     static let setNetConcurrencyDebounce: Duration = .milliseconds(750)
+    /// Debounce window for the poll-interval Stepper.
+    static let setPollIntervalDebounce: Duration = .milliseconds(750)
 
     // MARK: - Refresh
 
@@ -703,7 +705,7 @@ final class MenuStatusModel: ObservableObject {
         setMaterializedPollTask?.cancel()
         setMaterializedPollTask = Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.endWrite(.materializedPollInterval) } }
-            try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
+            try? await Task.sleep(for: MenuStatusModel.setPollIntervalDebounce)
             guard let self, !Task.isCancelled else { return }
             await self.writeConfig(
                 key: OfemConfigKey.syncMaterializedPollIntervalS,

@@ -74,9 +74,14 @@ protocol MaterializedPoller: Sendable {
 
 /// Signals a `.workingSet` enumeration change for a domain.
 /// In production: calls `signalEnumeratorOnce(manager:container:)`.
-/// In tests: a spy that records which domain identifiers received signals.
+/// In tests: a spy that records which domains received signals.
 protocol WorkingSetSignaller: Sendable {
-    func signal(domainIdentifier: String) async
+    /// Signal `.workingSet` for a resolved domain.
+    /// Receiving a pre-resolved `NSFileProviderDomain` avoids a second
+    /// `ofemGetAllDomains()` call and eliminates the TOCTOU gap where a
+    /// concurrent remount could change the domain set between the poll check
+    /// and the signal.
+    func signal(domain: NSFileProviderDomain) async
 }
 
 // MARK: - Production conformances
@@ -87,20 +92,8 @@ extension OfemFPEClient: MaterializedPoller {}
 struct LiveWorkingSetSignaller: WorkingSetSignaller, Sendable {
     private static let log = Logger(subsystem: ofemSubsystem, category: "change-watcher")
 
-    func signal(domainIdentifier: String) async {
-        let domains: [NSFileProviderDomain]
-        do { domains = try await ofemGetAllDomains() } catch {
-            Self.log.error(
-                "pollOnce: could not list domains for signal: \(error.localizedDescription, privacy: .public)"
-            )
-            return
-        }
-        guard let domain = domains.first(where: { $0.identifier.rawValue == domainIdentifier }) else {
-            Self.log.debug(
-                "pollOnce: domain not found for identifier \(domainIdentifier, privacy: .public) — skipping signal"
-            )
-            return
-        }
+    func signal(domain: NSFileProviderDomain) async {
+        let domainIdentifier = domain.identifier.rawValue
         guard let manager = NSFileProviderManager(for: domain) else {
             Self.log.debug(
                 "pollOnce: no manager for domain \(domainIdentifier, privacy: .public)"
@@ -245,7 +238,18 @@ final class ChangeWatcher {
     /// How often the materialized-container poll loop fires.
     /// Defaults to `SyncConfig.defaultMaterializedPollIntervalS` seconds.
     /// Updated by `MenuStatusModel` when the config value is refreshed from the FPE.
-    var materializedPollInterval: Duration = .seconds(SyncConfig.defaultMaterializedPollIntervalS)
+    ///
+    /// Always enforced to be at least `SyncConfig.minMaterializedPollIntervalS`.
+    /// A zero or sub-floor value (e.g. from an older FPE that omits the field)
+    /// would cause the loop to busy-spin; this setter prevents that.
+    var materializedPollInterval: Duration = .seconds(SyncConfig.defaultMaterializedPollIntervalS) {
+        didSet {
+            let floor: Duration = .seconds(SyncConfig.minMaterializedPollIntervalS)
+            if materializedPollInterval < floor {
+                materializedPollInterval = floor
+            }
+        }
+    }
 
     /// Handle for the periodic working-set + remount-check loop.  Stored so a
     /// second `start()` call can cancel the previous loop before launching a new
@@ -514,7 +518,14 @@ final class ChangeWatcher {
         materializedPollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let interval = self.materializedPollInterval
+                // Enforce floor at the point of use: an absent or legacy-zero
+                // field in XPCEngineStatus decodes as 0, which the property setter
+                // clamps to the floor, but an explicit sub-floor assignment would
+                // cause a busy-spin. This max() is the last line of defense.
+                let interval = max(
+                    .seconds(SyncConfig.minMaterializedPollIntervalS),
+                    self.materializedPollInterval
+                )
                 try? await Task.sleep(for: interval)
                 guard !Task.isCancelled else { break }
                 await self.pollMaterializedAndSignal()
@@ -561,9 +572,11 @@ final class ChangeWatcher {
     /// Deterministic testability seam: body of one poll-loop iteration.
     ///
     /// For each account in `accounts`, calls `poller.pollMaterialized(alias:)`.
-    /// When the poller returns `true` for an alias, looks up the domain identifier
-    /// (via `domainIdentifierFor`) in `domains` and calls
-    /// `signaller.signal(domainIdentifier:)` exactly once for that domain.
+    /// When the poller returns `true` for an alias, resolves the domain once via
+    /// `domains.first(where:)` and passes it directly to `signaller.signal(domain:)`.
+    /// Passing the resolved domain avoids a second `ofemGetAllDomains()` round-trip
+    /// in the signaller and closes the TOCTOU gap where a concurrent remount could
+    /// change the domain set between the poll check and the signal.
     ///
     /// Marked `nonisolated` so tests can call it directly from a non-`@MainActor`
     /// context without wrapping in `MainActor.run`. The method accesses no class
@@ -591,14 +604,14 @@ final class ChangeWatcher {
                 continue
             }
             let domainId = domainIdentifierFor(alias)
-            guard domains.contains(where: { $0.identifier.rawValue == domainId }) else {
+            guard let domain = domains.first(where: { $0.identifier.rawValue == domainId }) else {
                 log.warning(
                     "pollOnce: delta for \(alias, privacy: .public) but domain \(domainId, privacy: .public) not found — skipping signal"
                 )
                 continue
             }
             log.info("pollOnce: delta for \(alias, privacy: .public) — signalling .workingSet")
-            await signaller.signal(domainIdentifier: domainId)
+            await signaller.signal(domain: domain)
         }
     }
 

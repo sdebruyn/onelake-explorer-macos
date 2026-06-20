@@ -118,3 +118,4 @@ final class XPCVersionHandshakeTests: XCTestCase, @unchecked Sendable {
         }
     }
 }
+

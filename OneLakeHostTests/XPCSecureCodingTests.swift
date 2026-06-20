@@ -252,6 +252,48 @@ final class XPCEngineStatusTests: XCTestCase {
         XCTAssertEqual(status.logLevel, "info", "missing logLevel key must fall back to \"info\"")
     }
 
+    func testRoundTripMaterializedPollIntervalS() throws {
+        let original = XPCEngineStatus(
+            cacheBytes: 0,
+            cacheMaxBytes: 0,
+            cacheMaxSizeGB: 0,
+            telemetryEnabled: false,
+            netMaxUploads: 0,
+            netMaxDownloads: 0,
+            logLevel: "info",
+            materializedPollIntervalS: 90
+        )
+        let decoded = try roundTrip(original)
+        XCTAssertEqual(decoded.materializedPollIntervalS, 90,
+                       "materializedPollIntervalS must survive the NSCoder round-trip")
+    }
+
+    func testMaterializedPollIntervalSFallsBackToZeroWhenKeyMissing() throws {
+        // Verify the backward-compat default (0) when decoding an archive
+        // produced by a FPE build that predates the materializedPollIntervalS field.
+        // Uses NSKeyedArchiver directly — no subclassing of the final class needed.
+        let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+        archiver.encode(Int64(0),   forKey: "cacheBytes")
+        archiver.encode(Int64(0),   forKey: "cacheMaxBytes")
+        archiver.encode(0,          forKey: "cacheMaxSizeGB")
+        archiver.encode(false,      forKey: "telemetryEnabled")
+        archiver.encode(0,          forKey: "netMaxUploads")
+        archiver.encode(0,          forKey: "netMaxDownloads")
+        archiver.encode("info" as NSString, forKey: "logLevel")
+        archiver.encode([] as NSArray, forKey: "pausedWorkspaces")
+        archiver.encode(false,      forKey: "needsSignIn")
+        // "materializedPollIntervalS" intentionally omitted — simulates an older FPE archive.
+        archiver.finishEncoding()
+        let data = archiver.encodedData
+
+        let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
+        unarchiver.requiresSecureCoding = true  // matches production XPC security boundary
+        let decoded = XPCEngineStatus(coder: unarchiver)
+        let status = try XCTUnwrap(decoded, "XPCEngineStatus(coder:) returned nil")
+        XCTAssertEqual(status.materializedPollIntervalS, 0,
+                       "missing materializedPollIntervalS key must decode as 0 (backward compat)")
+    }
+
     func testSupportsSecureCodingIsTrue() {
         XCTAssertTrue(XPCEngineStatus.supportsSecureCoding)
     }

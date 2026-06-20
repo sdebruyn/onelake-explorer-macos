@@ -44,8 +44,8 @@ private actor RecordingPoller: MaterializedPoller {
 private actor RecordingSignaller: WorkingSetSignaller {
     private(set) var signalledDomainIDs: [String] = []
 
-    nonisolated func signal(domainIdentifier: String) async {
-        await _signal(domainIdentifier: domainIdentifier)
+    nonisolated func signal(domain: NSFileProviderDomain) async {
+        await _signal(domainIdentifier: domain.identifier.rawValue)
     }
 
     private func _signal(domainIdentifier: String) {

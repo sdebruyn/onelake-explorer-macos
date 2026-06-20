@@ -324,10 +324,10 @@ private struct AdvancedSettingsTab: View {
     private var pollIntervalLoaded: Bool { model.materializedPollIntervalS > 0 }
 
     private var pollIntervalBinding: Binding<Int> {
+        // `pollIntervalLoaded` guards the Stepper; this binding is only
+        // evaluated when materializedPollIntervalS > 0.
         Binding(
-            get: { model.materializedPollIntervalS > 0
-                ? model.materializedPollIntervalS
-                : SyncConfig.defaultMaterializedPollIntervalS },
+            get: { model.materializedPollIntervalS },
             set: { model.setMaterializedPollInterval($0) }
         )
     }
