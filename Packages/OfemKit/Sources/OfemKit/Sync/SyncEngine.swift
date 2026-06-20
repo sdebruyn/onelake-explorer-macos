@@ -117,7 +117,7 @@ public actor SyncEngine {
     /// re-spawn a revalidate that would write to the about-to-close cache.
     private var isShutdown = false
 
-    /// Per-account semaphores for downloads and uploads.
+    /// Per-account semaphores for downloads, uploads, and materialized-set refreshes.
     ///
     /// Entries are allocated lazily on first use per alias. Growth is bounded
     /// by the number of distinct account aliases active in this process
@@ -126,6 +126,7 @@ public actor SyncEngine {
     /// (sync-16).
     private var downloadSlots: [String: AsyncSemaphore] = [:]
     private var uploadSlots:   [String: AsyncSemaphore] = [:]
+    private var refreshSlots:  [String: AsyncSemaphore] = [:]
     private let maxDownloads: Int
     private let maxUploads:   Int
 
@@ -581,11 +582,12 @@ public actor SyncEngine {
         try await refreshFolder(key: key)
     }
 
-    /// Refreshes a set of materialized containers with a bounded concurrency cap.
+    /// Refreshes a set of materialized containers with a per-alias concurrency cap.
     ///
     /// Fans out over `keys`, calling ``refreshMaterializedContainer(key:)`` for
-    /// each, with at most `concurrencyCap` concurrent DFS round-trips. Mirrors
-    /// the `maxDownloads` semaphore pattern used by the download path.
+    /// each with at most `concurrencyCap` concurrent DFS round-trips for `alias`.
+    /// The cap is stored per alias (mirroring the `downloadSlots`/`uploadSlots`
+    /// pattern) so concurrent calls for the same account share the same gate.
     ///
     /// Per-key errors (offline, cancellation, workspace paused) are treated as
     /// non-fatal: they are silently swallowed and do not abort the remaining
@@ -593,9 +595,11 @@ public actor SyncEngine {
     /// the caller (host poll loop) owns the lifecycle.
     ///
     /// - Parameters:
-    ///   - alias: Account alias owning all `keys` (used for the per-alias semaphore).
+    ///   - alias: Account alias owning all `keys`; also the per-alias semaphore key.
     ///   - keys: Containers to refresh; no FileProvider types.
-    ///   - concurrencyCap: Maximum number of concurrent ``refreshMaterializedContainer(key:)`` calls.
+    ///   - concurrencyCap: Maximum concurrent ``refreshMaterializedContainer(key:)``
+    ///     calls for this alias. Ignored on subsequent calls once the semaphore is
+    ///     created (the stored semaphore retains its original cap).
     /// - Returns: `true` iff at least one container produced `diff.total > 0`.
     public func refreshMaterialized(
         alias: String,
@@ -604,43 +608,37 @@ public actor SyncEngine {
     ) async -> Bool {
         guard !keys.isEmpty else { return false }
 
-        let semaphore = AsyncSemaphore(value: max(1, concurrencyCap))
+        let semaphore = refreshSemaphore(for: alias, cap: concurrencyCap)
 
-        // Accumulate per-task diff totals. Using an actor-isolated counter avoids
-        // mutating a captured var from concurrently-executing closures (Swift 6
-        // strict-concurrency: mutation of captured var in concurrently-executing
-        // code is an error).
-        let counter = DiffTotalCounter()
-
-        await withTaskGroup(of: Void.self) { group in
+        // Each child task returns its diff.total (0 on error or no change).
+        // withTaskGroup(of: Int.self) collects the values without any shared
+        // mutable state — idiomatic Swift 6 strict-concurrency.
+        let total = await withTaskGroup(of: Int.self) { group in
             for key in keys {
                 group.addTask {
                     do {
                         try await semaphore.wait()
                     } catch {
                         // Cancellation while waiting for a slot — non-fatal.
-                        return
+                        return 0
                     }
                     defer { semaphore.signal() }
 
-                    let diff: Diff
                     do {
-                        diff = try await self.refreshMaterializedContainer(key: key)
+                        let diff = try await self.refreshMaterializedContainer(key: key)
+                        return diff.total
                     } catch {
                         // Offline, cancellation, or workspace-paused: silent no-op.
                         // refreshFolder rethrows before its destructive reconcile, so
                         // the cache is intact.
-                        return
-                    }
-
-                    if diff.total > 0 {
-                        await counter.add(diff.total)
+                        return 0
                     }
                 }
             }
+            return await group.reduce(0, +)
         }
 
-        return await counter.total > 0
+        return total > 0
     }
 
     // MARK: - Open (download)
@@ -1644,6 +1642,13 @@ public actor SyncEngine {
         uploadSlots[alias] = s
         return s
     }
+
+    private func refreshSemaphore(for alias: String, cap: Int) -> AsyncSemaphore {
+        if let s = refreshSlots[alias] { return s }
+        let s = AsyncSemaphore(value: max(1, cap))
+        refreshSlots[alias] = s
+        return s
+    }
 }
 
 // MARK: - Elapsed helper
@@ -1656,22 +1661,6 @@ private let elapsedMsMinimum: Int64 = 1
 private func elapsedMs(since start: Date) -> Int64 {
     let d = Int64(Date().timeIntervalSince(start) * 1000)
     return max(elapsedMsMinimum, d)
-}
-
-// MARK: - DiffTotalCounter
-
-/// An actor that accumulates a running total of ``Diff/total`` values from
-/// concurrent tasks in ``SyncEngine/refreshMaterialized(alias:keys:concurrencyCap:)``.
-///
-/// Using an actor (rather than mutating a captured `var` from a `@Sendable`
-/// task closure) avoids the Swift 6 strict-concurrency error: "mutation of
-/// captured var in concurrently-executing code".
-private actor DiffTotalCounter {
-    private(set) var total: Int = 0
-
-    func add(_ n: Int) {
-        total += n
-    }
 }
 
 // MARK: - nowNs helper (sync-21)

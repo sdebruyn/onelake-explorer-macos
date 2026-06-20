@@ -594,7 +594,7 @@ struct SyncEngineRevalidateTests {
 /// continuations form a FIFO queue, and `unblock`/`fail` resolve the oldest.
 /// `listEntered` yields once per call as it suspends, so a test can sequence
 /// blocked calls by awaiting the stream.
-private final class BlockingListMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
+final class BlockingListMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
 
     private var pending: [CheckedContinuation<ListResult, any Error>] = []
     private let lock = NSLock()
