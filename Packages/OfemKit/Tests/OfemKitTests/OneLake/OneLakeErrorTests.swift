@@ -229,6 +229,41 @@ struct OneLakeErrorTests {
         else { Issue.record("expected .httpError, got \(result)") }
     }
 
+    @Test("from(.gone) → .gone")
+    func fromGone() {
+        let result = OneLakeError.from(HTTPClientError.gone)
+        if case .gone = result { /* correct */ }
+        else { Issue.record("expected .gone, got \(result)") }
+    }
+
+    @Test("from(.conflict) → .conflict")
+    func fromConflict() {
+        let result = OneLakeError.from(HTTPClientError.conflict)
+        if case .conflict = result { /* correct */ }
+        else { Issue.record("expected .conflict, got \(result)") }
+    }
+
+    @Test("from(.preconditionFailed) → .preconditionFailed")
+    func fromPreconditionFailed() {
+        let result = OneLakeError.from(HTTPClientError.preconditionFailed)
+        if case .preconditionFailed = result { /* correct */ }
+        else { Issue.record("expected .preconditionFailed, got \(result)") }
+    }
+
+    @Test("from(.payloadTooLarge) → .payloadTooLarge")
+    func fromPayloadTooLarge() {
+        let result = OneLakeError.from(HTTPClientError.payloadTooLarge)
+        if case .payloadTooLarge = result { /* correct */ }
+        else { Issue.record("expected .payloadTooLarge, got \(result)") }
+    }
+
+    @Test("from(.rangeNotSatisfiable) → .rangeNotSatisfiable")
+    func fromRangeNotSatisfiable() {
+        let result = OneLakeError.from(HTTPClientError.rangeNotSatisfiable)
+        if case .rangeNotSatisfiable = result { /* correct */ }
+        else { Issue.record("expected .rangeNotSatisfiable, got \(result)") }
+    }
+
     // MARK: - OneLakeError.from(_:) — non-HTTPClientError errors
 
     @Test("from(URLError) → .httpError wrapping URLError")

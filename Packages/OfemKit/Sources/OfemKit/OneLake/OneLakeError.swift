@@ -83,12 +83,17 @@ extension OneLakeError {
     ///   the inner sentinel, mirroring `FabricError.from`.
     /// - Maps bare ``CancellationError`` (Swift Concurrency cancellation) to
     ///   `.cancelled`.
-    /// - Maps ``HTTPClientError/tokenAcquisitionFailed(_:)`` to `.unauthorized`
-    ///   (onelake-01-fix-276): ANY token-acquisition failure means the process
-    ///   cannot authenticate for the OneLake/storage audience and must surface as
-    ///   an auth error, not as a generic sync failure. Mirrors the
-    ///   `fabric-03-fix-272` arm in `FabricError.from`; see that comment for the
-    ///   transient-outage tradeoff.
+    /// - Adds an explicit ``HTTPClientError/tokenAcquisitionFailed(_:)`` arm
+    ///   (onelake-01-fix-276): a direct `tokenAcquisitionFailed` previously fell
+    ///   through to `default` → `.httpError(resolved)`, which `FPError.oneLakeCode`
+    ///   then delegated to `FPError.httpCode` — which already mapped
+    ///   `tokenAcquisitionFailed` to `.notAuthenticated`. So the direct path was
+    ///   not a silent sync-failure regression; the explicit arm is a structural
+    ///   clarity improvement that makes the intent unambiguous and prevents any
+    ///   future `oneLakeCode` refactor from accidentally breaking the path.
+    ///   The real behavioral fix is onelake-02 (the `retriesExhausted` unwrap).
+    ///   Mirrors the `fabric-03-fix-272` arm in `FabricError.from`; see that
+    ///   comment for the transient-outage tradeoff.
     static func from(_ error: any Error) -> OneLakeError {
         // Unwrap apiError wrapper to reach the sentinel first.
         let resolved: any Error
@@ -113,15 +118,11 @@ extension OneLakeError {
         case HTTPClientError.cancelled:           return .cancelled
         case is CancellationError:                return .cancelled
         case HTTPClientError.tokenAcquisitionFailed:
-            // onelake-01-fix-276: map ALL token-acquisition failures to
-            // .unauthorized. Any failure here means the process could not
-            // obtain a storage access token — whether because the refresh token
-            // has expired (.interactionRequired), Conditional Access fired, or
-            // a local MSAL configuration error prevented even the silent call
-            // from starting (e.g. FPE bundle-ID mismatch, MSAL -42011).
-            // In every case the correct surface is .unauthorized →
-            // FPError.notAuthenticated so Finder shows an auth-required
-            // indicator rather than a silent empty folder.
+            // onelake-01-fix-276: explicit arm for clarity. The old default path
+            // already reached FPError.notAuthenticated via
+            //   .httpError(resolved) → oneLakeCode → httpCode → .notAuthenticated
+            // but spelling it out removes the dependency on that indirection and
+            // prevents future refactors from silently regressing it.
             return .unauthorized
         case let HTTPClientError.serverError(code):
             return .serverError(code)
@@ -131,8 +132,7 @@ extension OneLakeError {
             // .unauthorized rather than .retriesExhausted. Without this unwrap
             // FPError.oneLakeCode maps .retriesExhausted to .serverUnreachable,
             // hiding the auth failure behind an offline indicator.
-            if let lastHTTP = last as? HTTPClientError,
-               case HTTPClientError.tokenAcquisitionFailed = lastHTTP {
+            if case HTTPClientError.tokenAcquisitionFailed = last {
                 return .unauthorized
             }
             return .retriesExhausted(attempts: attempts)
