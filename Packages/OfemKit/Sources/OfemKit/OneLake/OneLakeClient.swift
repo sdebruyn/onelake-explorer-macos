@@ -653,15 +653,11 @@ public final class OneLakeClient: Sendable {
                 urlRequest.httpBody = body
             }
             .validate()
-            // net-01: Alamofire's default DataResponseSerializer treats an empty
-            // body as an error unless the status code is 204/205 or the request
-            // method is HEAD (defaultEmptyRequestMethods).  ADLS Gen2 returns
-            // empty bodies on 200/201/202 for PUT create, PATCH flush, DELETE,
-            // and 0-byte GET.  Expanding emptyRequestMethods to all methods this
-            // client uses lets Alamofire return Data() instead of
-            // AFError.responseSerializationFailed.  The .validate() call above
-            // already rejects non-2xx, so this only relaxes the body-length gate
-            // on successful responses.
+            // OneLake/ADLS Gen2 returns empty bodies on successful mutating calls
+            // (PUT create-directory/file, PATCH flush, DELETE) and on 0-byte
+            // reads (GET).  Allow empty bodies for all methods used by this
+            // client so Alamofire yields Data() rather than an error.
+            // .validate() above already rejects non-2xx.
             let dataResponse = await req.serializingData(
                 emptyRequestMethods: [.get, .put, .patch, .delete, .post, .head]
             ).response
