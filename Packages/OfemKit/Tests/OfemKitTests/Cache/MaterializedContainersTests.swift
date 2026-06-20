@@ -19,12 +19,14 @@ struct MaterializedContainersTests {
         #expect(exists)
     }
 
-    @Test("v4 migration creates idx_mc_alias index")
-    func v4MigrationCreatesIndex() async throws {
+    @Test("v4 migration does not create a separate alias index (PK prefix suffices)")
+    func v4NoSeparateAliasIndex() async throws {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let indexes = try await store.indexes(on: "materialized_containers")
-        #expect(indexes.contains("idx_mc_alias"))
+        // The PK (account_alias, identifier_string) already serves WHERE account_alias = ?;
+        // no additional index should be present.
+        #expect(!indexes.contains("idx_mc_alias"))
     }
 
     @Test("fresh database lists v4 in applied migrations")

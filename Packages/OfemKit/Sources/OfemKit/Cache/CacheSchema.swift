@@ -21,8 +21,8 @@ import GRDB
 ///   to serve the `path LIKE 'prefix/%'` prefix scan in subtree deletes.
 /// - `idx_dt_deleted_at`: composite on `(account_alias, deleted_at_ns)` used
 ///   by `itemsChangedAfter` to avoid full `deletion_tombstones` scans.
-/// - `idx_mc_alias`: on `(account_alias)` in `materialized_containers`; used
-///   by the freshness poll loop to scan the full materialized set for an alias.
+/// - `materialized_containers` PK `(account_alias, identifier_string)`: its
+///   B-tree prefix serves the `WHERE account_alias = ?` scan; no separate index.
 public enum CacheSchema {
 
     // MARK: - Migrator
@@ -146,6 +146,9 @@ public enum CacheSchema {
         // (the opaque File Provider identifier) rather than a CacheKey because
         // materialised directories include item roots whose CacheKey uses
         // VirtualIDs sentinels, making a separate identifier-keyed table simpler.
+        //
+        // No explicit alias index: the composite PK (account_alias, identifier_string)
+        // B-tree prefix already serves `WHERE account_alias = ?` efficiently.
         m.registerMigration("v4") { db in
             try db.execute(sql: """
                 CREATE TABLE materialized_containers (
@@ -154,13 +157,6 @@ public enum CacheSchema {
                     materialized_at_ns  INTEGER NOT NULL,
                     PRIMARY KEY (account_alias, identifier_string)
                 );
-                """)
-
-            // Index supports the `WHERE account_alias = ?` scan used by the
-            // freshness poll loop to fetch the full materialized set for an alias.
-            try db.execute(sql: """
-                CREATE INDEX idx_mc_alias
-                    ON materialized_containers (account_alias);
                 """)
         }
 
