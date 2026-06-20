@@ -244,11 +244,11 @@ public actor SyncEngine {
             )
         }
         await batchUpsert(rows, context: "listWorkspaces")
-        // Deliberately NO notifyContainerChanged here: the parent of the
-        // workspaces listing is the domain root, which must never be signalled
-        // (a root signal forces `.syncAnchorExpired` → full re-enumeration).
-        // Root stays remount-driven via ChangeWatcher; only the per-workspace
-        // item listing (listItems, below) signals its `.workspace` container.
+        // The parent of the workspaces listing is the domain root — root must
+        // never be signalled (a root signal forces `.syncAnchorExpired` →
+        // full re-enumeration). Root stays remount-driven via ChangeWatcher.
+        // Container freshness for sub-containers is surfaced by the host
+        // working-set poll loop rather than any per-container signal.
         await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
 
         await track(eventName: "workspace_list", alias: alias, start: start, outcome: .success())
@@ -1444,8 +1444,9 @@ public actor SyncEngine {
         // `kids` are rows that currently EXIST in the cache (from
         // cache.children), so every key built here targets a present row that
         // gets deleted. The count therefore equals the real number of evictions
-        // — it is not inflated by already-absent rows — so callers can fire the
-        // change callback only on a genuine eviction.
+        // — it is not inflated by already-absent rows. The next working-set
+        // poll will re-pull the affected container so the cleared rows leave
+        // Finder without any per-container signal.
         let deleteBatch = kids
             .filter { !seen.contains($0.path) }
             .map { k in
