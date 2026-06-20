@@ -21,8 +21,9 @@ settings:
     # "Update to recommended settings" banner persists by design — do NOT "fix" it
     # by deleting this line or accepting Xcode's architectures recommendation.
     ARCHS: arm64
-    # Sandbox run-script build phases (Xcode recommended setting). There are
-    # no Run Script phases in this project; this matches the recommended baseline.
+    # Sandbox run-script build phases (Xcode recommended setting). Both targets
+    # carry a post-compile script that stamps OFEMBuildTimestamp into the built
+    # bundle's Info.plist; the output path is declared so the sandbox allows it.
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     # Enable symbol generation for String Catalog (.xcstrings) files
     # (Xcode recommended setting). Matches the recommended baseline.
@@ -110,6 +111,25 @@ targets:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "Developer ID Application"
           PROVISIONING_PROFILE_SPECIFIER: "OFEM distribution developer ID"
+    postCompileScripts:
+      # Writes OFEMBuildInfo.plist into the built bundle's Resources directory.
+      #
+      # Wiring rationale:
+      #   inputFiles:  none — the timestamp is computed fresh; no input dependency.
+      #   outputFiles: the sidecar plist — a pure, distinct output with no overlap
+      #                with any Xcode built-in step (Process Info.plist, codesign),
+      #                so there is no dependency cycle and no mutable-output error.
+      #   basedOnDependencyAnalysis: false — runs every build; timestamp is never
+      #                stale from a prior incremental build.
+      #
+      # The sidecar is read at runtime via Bundle.url(forResource:withExtension:).
+      # ENABLE_USER_SCRIPT_SANDBOXING is satisfied: the sidecar path is the sole
+      # declared output and the only filesystem write the script performs.
+      - name: "Inject build timestamp"
+        path: scripts/inject-build-timestamp.sh
+        outputFiles:
+          - "${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/OFEMBuildInfo.plist"
+        basedOnDependencyAnalysis: false
     dependencies:
       - package: OfemKit
       - target: OneLakeFileProvider
@@ -136,6 +156,14 @@ targets:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "Developer ID Application"
           PROVISIONING_PROFILE_SPECIFIER: "OFEM FP distribution developer ID"
+    postCompileScripts:
+      # Writes OFEMBuildInfo.plist into the built bundle's Resources directory.
+      # See the host-app target above for the full rationale.
+      - name: "Inject build timestamp"
+        path: scripts/inject-build-timestamp.sh
+        outputFiles:
+          - "${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/OFEMBuildInfo.plist"
+        basedOnDependencyAnalysis: false
     dependencies:
       - package: OfemKit
   # Host-app unit-test bundle: compiles host-app non-UI source files for

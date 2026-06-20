@@ -204,6 +204,72 @@ public final class CacheReader: Sendable {
         return result
     }
 
+    // MARK: - Materialized containers
+
+    /// Returns the materialized-container set for `alias` as ``CacheKey`` values.
+    ///
+    /// Queries `materialized_containers`, parses each `identifier_string` back
+    /// to an ``ItemIdentifier`` via ``ItemIdentifierParser``, and maps directory-
+    /// bearing cases (`.item`, `.path`) to a ``CacheKey``. Workspace-level
+    /// identifiers (`.workspace`) map to a ``CacheKey`` with
+    /// ``VirtualIDs/itemID`` as the item component so the freshness poller can
+    /// address the workspace's item listing.
+    ///
+    /// Identifiers that cannot be parsed or that are not directory containers
+    /// (`.root`, `.trash`, `.workingSet`) are silently skipped — the same
+    /// tolerant policy applied throughout the FPE enumerate paths.
+    ///
+    /// - Parameter alias: The account alias (non-empty).
+    /// - Returns: The set of ``CacheKey`` values for each known-good materialized
+    ///   container, in unspecified order.
+    public func materializedContainers(alias: String) async throws -> [CacheKey] {
+        let rows = try await db.read { db in
+            try MaterializedContainerRecord
+                .filter(MaterializedContainerRecord.Columns.accountAlias == alias)
+                .fetchAll(db)
+        }
+        var keys: [CacheKey] = []
+        keys.reserveCapacity(rows.count)
+        for row in rows {
+            guard let key = Self.cacheKey(alias: alias, identifierString: row.identifierString) else {
+                logger.debug("materializedContainers: skip unresolvable identifier", metadata: [
+                    "accountAlias": alias,
+                    "identifierString": row.identifierString,
+                ])
+                continue
+            }
+            keys.append(key)
+        }
+        return keys
+    }
+
+    /// Parses `identifierString` to a ``CacheKey`` for directory containers.
+    ///
+    /// Returns `nil` for sentinels (`.root`, `.trash`, `.workingSet`) and for
+    /// identifiers that fail to parse. `.workspace` identifiers are mapped to
+    /// the workspace's item-listing container (``VirtualIDs/itemID``).
+    private static func cacheKey(alias: String, identifierString: String) -> CacheKey? {
+        guard let parsed = try? ItemIdentifierParser.parse(identifierString) else {
+            return nil
+        }
+        switch parsed {
+        case .root, .trash, .workingSet:
+            return nil
+        case let .workspace(workspaceID):
+            // The workspace's item listing is stored under VirtualIDs.itemID.
+            return CacheKey(
+                accountAlias: alias,
+                workspaceID: workspaceID,
+                itemID: VirtualIDs.itemID,
+                path: ""
+            )
+        case let .item(workspaceID, itemID):
+            return CacheKey(accountAlias: alias, workspaceID: workspaceID, itemID: itemID, path: "")
+        case let .path(workspaceID, itemID, path):
+            return CacheKey(accountAlias: alias, workspaceID: workspaceID, itemID: itemID, path: path)
+        }
+    }
+
     // MARK: - Blob byte totals
 
     /// Returns the sum of `blob_size` across distinct `blob_sha256` values.

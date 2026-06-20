@@ -11,7 +11,7 @@ import Foundation
 /// App Insights connection strings are semicolon-separated `Key=Value` pairs
 /// (case-insensitive keys). We need `InstrumentationKey` and
 /// `IngestionEndpoint`. See:
-/// https://learn.microsoft.com/azure/azure-monitor/app/sdk-connection-string
+/// https://learn.microsoft.com/azure/azure-monitor/app/sdk-connection-string?WT.mc_id=MVP_310840
 ///
 /// ### HTTP client
 ///

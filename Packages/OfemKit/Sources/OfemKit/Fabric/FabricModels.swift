@@ -84,7 +84,7 @@ public struct Item: Sendable, Equatable {
     /// response can never hide a user's storage item.
     ///
     /// Source: Fabric REST API `ItemType` enumeration
-    /// (https://learn.microsoft.com/en-us/rest/api/fabric/core/items/list-items#itemtype)
+    /// (https://learn.microsoft.com/en-us/rest/api/fabric/core/items/list-items?WT.mc_id=MVP_310840#itemtype)
     public var hasOneLakeStorage: Bool {
         Self.allowedStorageTypes.contains(type.lowercased(with: Self.posixLocale))
     }

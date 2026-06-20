@@ -456,6 +456,52 @@ struct SyncEngineRevalidateTests {
         #expect(ol.listPathCallCount == 1)  // no second DFS call post-shutdown
     }
 
+    // MARK: - quiesceRevalidations drains all in-flight tasks and clears the map
+
+    /// Verifies that ``quiesceRevalidations()`` awaits ALL in-flight revalidate
+    /// tasks and that every entry is pruned from `inFlightRevalidations` by the
+    /// time the drain returns, even when multiple revalidates are in flight
+    /// simultaneously.
+    ///
+    /// This does not assert drain ordering (sequential vs concurrent); it asserts
+    /// correctness of the drain: every started task runs to completion, the map
+    /// is empty afterwards, and no revalidate is silently abandoned.
+    @Test("quiesceRevalidations completes and prunes all in-flight entries")
+    func testQuiesceRevalidationsDrainsAllInFlightEntries() async throws {
+        let ol = BlockingListMockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Two distinct folders so each gets its own in-flight revalidate.
+        let keyA = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "A")
+        let keyB = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "B")
+        try await seedDir(in: store, key: keyA, childNames: ["a.txt"], ageSeconds: 60)
+        try await seedDir(in: store, key: keyB, childNames: ["b.txt"], ageSeconds: 60)
+
+        var iter = ol.listEntered.makeAsyncIterator()
+
+        // Start revalidate for A and wait until it is blocked inside listPath.
+        _ = try await engine.enumerate(key: keyA)
+        _ = await iter.next()
+
+        // Start revalidate for B and wait until it too is blocked inside listPath.
+        _ = try await engine.enumerate(key: keyB)
+        _ = await iter.next()
+
+        #expect(ol.listPathCallCount == 2)
+
+        // Unblock both pending listPath calls, then drain. Both revalidates can
+        // now run to completion; quiesceRevalidations must not return until all
+        // in-flight tasks have finished and their entries are pruned.
+        ol.unblock(with: listing(["A/a.txt"]))
+        ol.unblock(with: listing(["B/b.txt"]))
+        await engine.quiesceRevalidations()
+
+        // Both revalidates ran to completion and their in-flight entries were pruned.
+        #expect(await engine.revalidationTask(for: keyA) == nil)
+        #expect(await engine.revalidationTask(for: keyB) == nil)
+    }
+
     // MARK: - itemType-only drift surfaces as a change
 
     @Test("A revalidate whose only change is itemType reports a diff and fires the handler")
