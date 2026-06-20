@@ -92,9 +92,23 @@ jobs:
 
       - name: Build app + extension (under CodeQL tracer)
         # CodeQL's tracer wraps this xcodebuild invocation to extract Swift
-        # source files for the database. make build-ci compiles the OneLake
-        # app and the File Provider .appex with code signing disabled.
-        run: make build-ci
+        # source files for the database.
+        #
+        # Use 'name=Any Mac' instead of 'arch=arm64': under the CodeQL
+        # DYLD_INSERT_LIBRARIES tracer, xcodebuild cannot resolve the
+        # arch-specific destination and emits "Unable to find a device
+        # matching { platform:macOS, arch:arm64 }". 'name=Any Mac' is the
+        # destination GitHub-hosted macOS runners always advertise and is
+        # equivalent for a compile-only, unsigned build.
+        run: |
+          xcodebuild \
+            -project OneLake.xcodeproj \
+            -scheme OneLake \
+            -configuration Debug \
+            -destination 'platform=macOS,name=Any Mac' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3.36.2
