@@ -56,7 +56,7 @@
 //   A plain withCheckedThrowingContinuation would leak the continuation forever.
 //   signalEnumeratorOnce delegates to withCallbackOnce, which uses ResumeOnceBox
 //   and a post-store Task.isCancelled check to cover all cancellation interleavings
-//   (in-flight and pre-cancelled). See ContainerSignaller.swift for the full rationale.
+//   (in-flight and pre-cancelled).
 
 @preconcurrency import FileProvider
 import Foundation

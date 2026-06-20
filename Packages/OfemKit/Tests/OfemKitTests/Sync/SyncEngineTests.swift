@@ -13,8 +13,7 @@ struct SyncEngineTests {
     private func makeEngine(
         onelake: any OneLakeClientProtocol = MockOneLakeClient(),
         fabric: MockFabricClient = MockFabricClient(),
-        store: CacheStore? = nil,
-        onContainerChanged: ContainerChangeHandler? = nil
+        store: CacheStore? = nil
     ) throws -> (SyncEngine, CacheStore) {
         let s = try store ?? makeTempStore()
         // tests-07: nest the scratch dir under store.root so the single
@@ -26,8 +25,7 @@ struct SyncEngineTests {
             cache: s,
             onelake: onelake,
             fabric: fabric,
-            scratchBase: scratchDir,
-            onContainerChanged: onContainerChanged
+            scratchBase: scratchDir
         )
         return (engine, s)
     }
@@ -1378,14 +1376,13 @@ struct SyncEngineTests {
         #expect(paths.contains("lh-1"), "Lakehouse must remain in cache")
     }
 
-    // MARK: - listItems: fires onContainerChanged for the workspace on eviction
+    // MARK: - listItems: evicts stale discovery rows
 
-    @Test("listItems() fires onContainerChanged for the .workspace container when a discovery row is evicted")
-    func testListItemsFiresContainerChangedOnEviction() async throws {
-        let recorder = ContainerChangeRecorder()
+    @Test("listItems() evicts a stale discovery row that was filtered out by the allowlist")
+    func testListItemsEvictsFilteredDiscoveryRow() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
-        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric, onContainerChanged: recorder.handler)
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // A pre-cached SQLEndpoint that will be filtered out by the allowlist —
@@ -1402,14 +1399,6 @@ struct SyncEngineTests {
         ]))
         _ = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
 
-        // The callback fires off-actor; await it deterministically.
-        let call = try #require(await recorder.nextCall())
-        // The container key must map to the .workspace listing (itemID == VirtualIDs.itemID).
-        #expect(call.container.workspaceID == Self.wsID)
-        #expect(call.container.itemID == VirtualIDs.itemID)
-        #expect(call.container.path == "")
-        #expect(call.diff.removed >= 1)
-
         // The stale row is hard-deleted (not resurrected).
         let parentKey = CacheKey(
             accountAlias: Self.alias, workspaceID: Self.wsID, itemID: VirtualIDs.itemID, path: ""
@@ -1419,12 +1408,11 @@ struct SyncEngineTests {
         #expect(paths.contains("lh-1"))
     }
 
-    @Test("listItems() does NOT fire onContainerChanged when nothing is evicted")
-    func testListItemsNoCallbackWhenNothingEvicted() async throws {
-        let recorder = ContainerChangeRecorder()
+    @Test("listItems() does not evict rows when all remote items are present in cache")
+    func testListItemsNoEvictionWhenNothingRemoved() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
-        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric, onContainerChanged: recorder.handler)
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // Empty cache, single allowed item → nothing to expire.
@@ -1433,9 +1421,11 @@ struct SyncEngineTests {
         ]))
         _ = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
 
-        // No eviction → no callback. listItems has no other await on the handler,
-        // so the recorder staying empty is deterministic.
-        #expect(recorder.calls().isEmpty)
+        let parentKey = CacheKey(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: VirtualIDs.itemID, path: ""
+        )
+        let paths = try await store.children(of: parentKey).map(\.path)
+        #expect(paths.contains("lh-1"))
     }
 
     // MARK: - enumerate: stale cache triggers refresh
@@ -1772,7 +1762,3 @@ struct SyncEngineTests {
         #expect(row.itemType == "Lakehouse", "mkdir() must carry Lakehouse item_type so the new directory is immediately writable")
     }
 }
-
-// `ContainerChangeRecorder` (Sync/ContainerChangeRecorder.swift) is the shared
-// spy for `ContainerChangeHandler` invocations used by this suite and
-// `SyncEngineRevalidateTests`.

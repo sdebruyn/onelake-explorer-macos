@@ -89,21 +89,4 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
         }
     }
 
-    // MARK: - Container signal tracking
-
-    /// Guards the signal spy fields so concurrent async callers are safe.
-    private let signalLock = NSLock()
-    private var _signalledContainers: [NSFileProviderItemIdentifier] = []
-
-    /// All container identifiers passed to `signal(container:)`, in call order.
-    var signalledContainers: [NSFileProviderItemIdentifier] {
-        signalLock.withLock { _signalledContainers }
-    }
-
-    /// The number of times `signal(container:)` was called.
-    var signalCallCount: Int { signalLock.withLock { _signalledContainers.count } }
-
-    func signal(container: NSFileProviderItemIdentifier) async {
-        signalLock.withLock { _signalledContainers.append(container) }
-    }
 }

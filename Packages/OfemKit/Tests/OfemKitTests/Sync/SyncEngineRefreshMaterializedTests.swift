@@ -27,8 +27,7 @@ struct SyncEngineRefreshMaterializedTests {
     // MARK: - Helpers
 
     private func makeEngine(
-        onelake: any OneLakeClientProtocol,
-        onContainerChanged: ContainerChangeHandler? = nil
+        onelake: any OneLakeClientProtocol
     ) throws -> (SyncEngine, CacheStore) {
         let store = try makeTempStore()
         let scratchDir = store.root.appending(path: "scratch", directoryHint: .isDirectory)
@@ -36,8 +35,7 @@ struct SyncEngineRefreshMaterializedTests {
             cache: store,
             onelake: onelake,
             fabric: MockFabricClient(),
-            scratchBase: scratchDir,
-            onContainerChanged: onContainerChanged
+            scratchBase: scratchDir
         )
         return (engine, store)
     }

@@ -2,22 +2,6 @@ import Foundation
 import CryptoKit
 import os.log
 
-// MARK: - ContainerChangeHandler
-
-/// Notified when a background revalidate finds the cached listing of a
-/// container drifted from OneLake.
-///
-/// The closure receives the container ``CacheKey`` and the ``Diff`` the
-/// revalidate applied (`diff.total > 0` is guaranteed). It is invoked exactly
-/// once per revalidate that changed something — never for a no-op revalidate,
-/// a cancelled task, or an offline/failed fetch.
-///
-/// The closure must be `Sendable`: it runs from a detached revalidate task, not
-/// on the actor. It deliberately takes only a ``CacheKey`` (and ``Diff``) so no
-/// FileProvider type leaks into OfemKit — the FPE maps the key to a container
-/// identifier and signals it on its side.
-public typealias ContainerChangeHandler = @Sendable (_ container: CacheKey, _ diff: Diff) -> Void
-
 // MARK: - SyncEngine
 
 /// The top-level sync coordinator.
@@ -89,10 +73,6 @@ public actor SyncEngine {
     private let offlineTracker: OfflineTracker
     private let partials: PartialManager
 
-    /// Invoked when a background revalidate finds a changed listing. `nil` when
-    /// no observer is wired (e.g. standalone / test engines).
-    private let onContainerChanged: ContainerChangeHandler?
-
     /// In-flight background revalidations keyed by ``CacheKey/stableKeyString``.
     ///
     /// A second open for the same container that arrives while a revalidate is
@@ -162,9 +142,6 @@ public actor SyncEngine {
     /// - scratchBase: Directory for download spill files. Defaults to
     /// `<tmp>/ofem-download-partials/<pid>`.
     /// - pauseProbeInterval: Minimum gap between workspace-recovery probes.
-    /// - onContainerChanged: Optional `Sendable` observer invoked with the
-    /// container ``CacheKey`` and applied ``Diff`` when a background revalidate
-    /// changes the cached listing (`diff.total > 0`). Defaults to `nil`.
     public init(
         cache: CacheStore,
         onelake: any OneLakeClientProtocol,
@@ -175,8 +152,7 @@ public actor SyncEngine {
         maxConcurrentDownloads: Int = SyncEngine.defaultMaxConcurrentDownloads,
         maxConcurrentUploads: Int = SyncEngine.defaultMaxConcurrentUploads,
         scratchBase: URL? = nil,
-        pauseProbeInterval: Duration = SyncEngine.defaultPauseProbeInterval,
-        onContainerChanged: ContainerChangeHandler? = nil
+        pauseProbeInterval: Duration = SyncEngine.defaultPauseProbeInterval
     ) {
         self.cache = cache
         self.onelake = onelake
@@ -184,7 +160,6 @@ public actor SyncEngine {
         self.logger = logger
         self.telemetry = telemetry
         self.revalidateDebounce = max(0, revalidateDebounce)
-        self.onContainerChanged = onContainerChanged
         self.maxDownloads = max(1, maxConcurrentDownloads)
         self.maxUploads   = max(1, maxConcurrentUploads)
 
@@ -346,14 +321,7 @@ public actor SyncEngine {
             )
         }
         await batchUpsert(rows, context: "listItems")
-        let removed = await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
-        // A removed discovery row (e.g. a now-filtered SQLEndpoint that left a
-        // `<name> 2` duplicate behind) must make Finder re-pull this workspace
-        // so the tombstone surfaces. parentKey maps to the `.workspace`
-        // container on the FPE side.
-        if removed > 0 {
-            notifyContainerChanged(key: parentKey, diff: Diff(removed: removed))
-        }
+        await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
 
         await track(eventName: "item_list", alias: alias, start: start, outcome: .success())
         return storageItems
@@ -1382,8 +1350,7 @@ public actor SyncEngine {
     }
 
     /// Body of a single background revalidate. Never throws: offline and
-    /// live-fetch failures are silent no-ops that return `Diff()`. Fires
-    /// ``onContainerChanged`` exactly once when the applied diff is non-empty.
+    /// live-fetch failures are silent no-ops that return `Diff()`.
     ///
     /// Shutdown does not cancel this task (see ``quiesceRevalidations()``): once
     /// started it runs to a consistent end, so a reconcile that has passed
@@ -1409,23 +1376,7 @@ public actor SyncEngine {
             return Diff()
         }
 
-        if diff.total > 0 {
-            notifyContainerChanged(key: key, diff: diff)
-        }
         return diff
-    }
-
-    /// Invokes ``onContainerChanged`` OFF the actor.
-    ///
-    /// The real handler (FPE side) signals the container via an async IPC; if it
-    /// ran on the actor it would serialise the engine for the IPC duration and
-    /// risk a deadlock. The handler is `@Sendable`, so dispatching it on a
-    /// detached task keeps the notification independent of the engine's executor
-    /// — and of ``quiesceRevalidations()``, which drains only the reconcile (cache
-    /// writes), never this fire-and-forget notification.
-    private func notifyContainerChanged(key: CacheKey, diff: Diff) {
-        guard let handler = onContainerChanged else { return }
-        Task.detached { handler(key, diff) }
     }
 
     /// Quiesces background revalidation for shutdown: blocks new revalidates and
@@ -1481,10 +1432,9 @@ public actor SyncEngine {
     /// regardless of its `syncedAt` timestamp (sync-25 fix: removes the
     /// time-window guard that coupled folder-content TTL with discovery expiry).
     ///
-    /// The count lets the discovery callers fire ``onContainerChanged`` for the
-    /// parent container so the FPE re-pulls it — this is what clears a
-    /// now-filtered item (e.g. a SQLEndpoint surfacing as `<name> 2`) from
-    /// Finder without a remount.
+    /// The count lets callers decide whether something actually changed; the
+    /// next working-set poll will re-pull the container so the cleared item
+    /// (e.g. a now-filtered SQLEndpoint surfacing as `<name> 2`) leaves Finder.
     @discardableResult
     private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String) async -> Int {
         guard let kids = try? await cache.children(of: parent) else {

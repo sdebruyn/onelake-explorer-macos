@@ -133,18 +133,13 @@ public actor OfemEngine {
     ///   - sharedSessionPool: Process-wide SessionPool to share across engines.
     ///   - httpBaseURLs: Override the default DFS / Fabric base URLs. Pass
     ///     `nil` to use the production endpoints.
-    ///   - onContainerChanged: Optional `Sendable` observer forwarded to the
-    ///     `SyncEngine`; invoked when a background revalidate (or a discovery
-    ///     reconcile) changes a container so the FPE can signal it. `nil` by
-    ///     default, so tests and standalone callers are unaffected.
     public init(
         configStore: OfemConfigStore,
         paths: OfemPaths,
         sharedCache: CacheStore,
         sharedTelemetry: TelemetryClient,
         sharedSessionPool: SessionPool,
-        httpBaseURLs: (oneLake: URL, fabric: URL)? = nil,
-        onContainerChanged: ContainerChangeHandler? = nil
+        httpBaseURLs: (oneLake: URL, fabric: URL)? = nil
     ) throws {
         // Read the config snapshot exactly once so all subsystems see the same
         // generation (engine-01).
@@ -158,8 +153,7 @@ public actor OfemEngine {
             cache: sharedCache,
             telemetry: sharedTelemetry,
             sessionPool: sharedSessionPool,
-            httpBaseURLs: httpBaseURLs,
-            onContainerChanged: onContainerChanged
+            httpBaseURLs: httpBaseURLs
         )
 
         self.logger = perAlias.logger
@@ -190,8 +184,7 @@ public actor OfemEngine {
     public init(
         configStore: OfemConfigStore,
         paths: OfemPaths,
-        httpBaseURLs: (oneLake: URL, fabric: URL)? = nil,
-        onContainerChanged: ContainerChangeHandler? = nil
+        httpBaseURLs: (oneLake: URL, fabric: URL)? = nil
     ) throws {
         let cfg = configStore.snapshot()
 
@@ -236,8 +229,7 @@ public actor OfemEngine {
             cache: ownedCache,
             telemetry: ownedTelemetry,
             sessionPool: ownedPool,
-            httpBaseURLs: httpBaseURLs,
-            onContainerChanged: onContainerChanged
+            httpBaseURLs: httpBaseURLs
         )
 
         self.logger = perAlias.logger
@@ -332,8 +324,7 @@ public actor OfemEngine {
         cache: CacheStore,
         telemetry: TelemetryClient,
         sessionPool: SessionPool,
-        httpBaseURLs: (oneLake: URL, fabric: URL)?,
-        onContainerChanged: ContainerChangeHandler?
+        httpBaseURLs: (oneLake: URL, fabric: URL)?
     ) throws -> PerAliasSubsystems {
 
         // 1. Logger (per-alias).
@@ -370,8 +361,7 @@ public actor OfemEngine {
             fabric: fabric,
             logger: logger,
             telemetry: telemetry,
-            scratchBase: scratchBase,
-            onContainerChanged: onContainerChanged
+            scratchBase: scratchBase
         )
 
         return PerAliasSubsystems(logger: logger, auth: auth, sync: syncEngine)

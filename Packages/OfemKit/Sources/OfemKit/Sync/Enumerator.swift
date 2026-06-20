@@ -14,8 +14,7 @@ public struct Diff: Sendable {
     /// `added + updated + removed`.
     public var total: Int { added + updated + removed }
 
-    /// Creates a `Diff`. Public so callers that receive a `Diff` through
-    /// ``ContainerChangeHandler`` (the FPE) can construct one in tests.
+    /// Creates a `Diff`.
     public init(added: Int = 0, updated: Int = 0, removed: Int = 0) {
         self.added = added
         self.updated = updated
@@ -120,9 +119,8 @@ enum Enumerator {
     ///
     /// `itemType` is included: it drives capability computation
     /// (`DomainItem.computeCapabilities`), so an item whose type changes is a
-    /// real capability-only drift that must surface as a diff — otherwise the
-    /// new type is persisted but `onContainerChanged` never fires and the
-    /// cache / FPE view diverge silently.
+    /// real capability-only drift that must surface as a diff and be flushed
+    /// to Finder via the next working-set poll.
     static func entryChanged(current: MetadataRecord, next: MetadataRecord) -> Bool {
         current.isDir != next.isDir ||
         current.contentLength != next.contentLength ||

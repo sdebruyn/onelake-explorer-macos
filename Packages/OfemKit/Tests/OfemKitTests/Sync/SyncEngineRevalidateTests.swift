@@ -28,8 +28,7 @@ struct SyncEngineRevalidateTests {
     /// `store.root` in a `defer`).
     private func makeEngine(
         onelake: any OneLakeClientProtocol,
-        telemetry: TelemetryClient? = nil,
-        onContainerChanged: ContainerChangeHandler? = nil
+        telemetry: TelemetryClient? = nil
     ) throws -> (SyncEngine, CacheStore) {
         let store = try makeTempStore()
         let scratchDir = store.root.appending(path: "scratch", directoryHint: .isDirectory)
@@ -38,8 +37,7 @@ struct SyncEngineRevalidateTests {
             onelake: onelake,
             fabric: MockFabricClient(),
             telemetry: telemetry,
-            scratchBase: scratchDir,
-            onContainerChanged: onContainerChanged
+            scratchBase: scratchDir
         )
         return (engine, store)
     }
@@ -225,13 +223,12 @@ struct SyncEngineRevalidateTests {
         #expect(await engine.revalidationTask(for: Self.folderKey) == nil)
     }
 
-    // MARK: - AC4: change handler fires on drift, stays silent on no-op
+    // MARK: - AC4: revalidate reports diff on drift, no diff on no-op
 
-    @Test("Change handler fires once with the container key when a revalidate finds a change")
-    func testChangeHandlerFiresOnDrift() async throws {
-        let recorder = ContainerChangeRecorder()
+    @Test("A revalidate that finds a change returns a non-zero diff and persists the change")
+    func testRevalidatePersistsDriftedChange() async throws {
         let ol = BlockingListMockOneLakeClient()
-        let (engine, store) = try makeEngine(onelake: ol, onContainerChanged: recorder.handler)
+        let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // Cached has [a]; remote now has [a, b] → diff.added == 1.
@@ -245,22 +242,15 @@ struct SyncEngineRevalidateTests {
         let diff = await task.value
         #expect(diff.total > 0)
 
-        // The handler runs OFF the actor (detached); await it deterministically.
-        let call = try #require(await recorder.nextCall())
-        #expect(call.container == Self.folderKey)
-        #expect(call.diff.total > 0)
-        #expect(recorder.calls().count == 1)
-
         // The revalidate persisted the new child into the cache.
         let children = try await store.children(of: Self.folderKey)
         #expect(Set(children.map(\.name)) == ["a.txt", "b.txt"])
     }
 
-    @Test("Change handler does NOT fire when the revalidate finds no change")
-    func testChangeHandlerSilentOnNoChange() async throws {
-        let recorder = ContainerChangeRecorder()
+    @Test("A revalidate that finds no change returns a zero diff")
+    func testRevalidateZeroDiffOnNoChange() async throws {
         let ol = BlockingListMockOneLakeClient()
-        let (engine, store) = try makeEngine(onelake: ol, onContainerChanged: recorder.handler)
+        let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // Cached child matches the remote entry on every diffed field (isDir,
@@ -288,25 +278,20 @@ struct SyncEngineRevalidateTests {
         let task = try #require(await engine.revalidationTask(for: Self.folderKey))
         ol.unblock(with: identical)
         let diff = await task.value
-
-        // No diff → runRevalidate never spawns the notification task, so the
-        // recorder staying empty is deterministic (not a timing artefact).
         #expect(diff.total == 0)
-        #expect(recorder.calls().isEmpty)
     }
 
     // MARK: - AC5: shutdown while a revalidate is blocked at listPath — cache intact, no failure telemetry
 
     @Test("Shutdown while a revalidate is blocked at listPath leaves the cache intact and emits no failure telemetry")
     func testShutdownWhileBlockedAtListPathLeavesCacheIntact() async throws {
-        let recorder = ContainerChangeRecorder()
         let sink = MemoryTelemetrySink()
         let telemetry = TelemetryClient(
             sink: sink, appVersion: "test", installID: "test",
             configuration: TelemetryConfiguration(maxBatchSize: 1000, flushInterval: .seconds(3600))
         )
         let ol = BlockingListMockOneLakeClient()
-        let (engine, store) = try makeEngine(onelake: ol, telemetry: telemetry, onContainerChanged: recorder.handler)
+        let (engine, store) = try makeEngine(onelake: ol, telemetry: telemetry)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         try await seedFolder(in: store, childNames: ["a.txt"], childrenAgeSeconds: 60)
@@ -331,8 +316,7 @@ struct SyncEngineRevalidateTests {
         let children = try await store.children(of: Self.folderKey)
         #expect(children.map(\.name) == ["a.txt"])
 
-        // No change notification, and no failure telemetry from the revalidate.
-        #expect(recorder.calls().isEmpty)
+        // No failure telemetry from the revalidate.
         await telemetry.flush()
         #expect(sink.drain().filter { $0.success == false }.isEmpty)
 
@@ -347,14 +331,13 @@ struct SyncEngineRevalidateTests {
 
     @Test("Offline revalidate keeps cached rows and enumerate still returns the cached listing")
     func testOfflineRevalidateKeepsCacheRows() async throws {
-        let recorder = ContainerChangeRecorder()
         let sink = MemoryTelemetrySink()
         let telemetry = TelemetryClient(
             sink: sink, appVersion: "test", installID: "test",
             configuration: TelemetryConfiguration(maxBatchSize: 1000, flushInterval: .seconds(3600))
         )
         let ol = BlockingListMockOneLakeClient()
-        let (engine, store) = try makeEngine(onelake: ol, telemetry: telemetry, onContainerChanged: recorder.handler)
+        let (engine, store) = try makeEngine(onelake: ol, telemetry: telemetry)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         try await seedFolder(in: store, childNames: ["a.txt", "b.txt"], childrenAgeSeconds: 60)
@@ -376,10 +359,9 @@ struct SyncEngineRevalidateTests {
         let after = try await store.children(of: Self.folderKey)
         #expect(Set(after.map(\.name)) == ["a.txt", "b.txt"])
 
-        // Engine flipped to offline (refreshFolder fed the tracker) but the
-        // revalidate stayed silent: no change handler, no failure telemetry.
+        // Engine flipped to offline (refreshFolder fed the tracker) and no
+        // failure telemetry from the revalidate.
         #expect(await engine.currentlyOffline == true)
-        #expect(recorder.calls().isEmpty)
         await telemetry.flush()
         #expect(sink.drain().filter { $0.success == false }.isEmpty)
 
@@ -504,11 +486,10 @@ struct SyncEngineRevalidateTests {
 
     // MARK: - itemType-only drift surfaces as a change
 
-    @Test("A revalidate whose only change is itemType reports a diff and fires the handler")
-    func testItemTypeOnlyChangeFiresHandler() async throws {
-        let recorder = ContainerChangeRecorder()
+    @Test("A revalidate whose only change is itemType reports a diff")
+    func testItemTypeOnlyChangeReportsDiff() async throws {
         let ol = BlockingListMockOneLakeClient()
-        let (engine, store) = try makeEngine(onelake: ol, onContainerChanged: recorder.handler)
+        let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // refreshFolder derives the child's itemType from the discovery row
@@ -551,8 +532,6 @@ struct SyncEngineRevalidateTests {
 
         // itemType "" -> "Lakehouse" is the only delta, but it must register.
         #expect(diff.total > 0)
-        let call = try #require(await recorder.nextCall())
-        #expect(call.container == Self.folderKey)
 
         // The child row now carries the resolved type.
         let rows = try await store.children(of: Self.folderKey)
