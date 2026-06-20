@@ -64,11 +64,6 @@ struct ContainerSignaller: Sendable {
     /// manager cannot be created (domain removed/unregistered) the call is a
     /// no-op.  Any error from `signalEnumerator(for:)` is logged at `.warning`
     /// and swallowed — Finder's own periodic refresh will catch up.
-    ///
-    /// Task cancellation is handled via `withTaskCancellationHandler`: if the
-    /// calling task is cancelled before the completion handler fires, the
-    /// continuation is resumed immediately with `CancellationError` so the
-    /// task does not suspend indefinitely.
     func signal(container: NSFileProviderItemIdentifier) async {
         let domain = domainBox.value
         let domainId = domain.identifier.rawValue
@@ -80,37 +75,19 @@ struct ContainerSignaller: Sendable {
             return
         }
 
-        // Guard early so a pre-cancelled task returns immediately without
-        // scheduling the signalEnumerator callback.
-        guard !Task.isCancelled else { return }
-
         do {
-            // nonisolated(unsafe): shared between the continuation body and the
-            // onCancel handler.  withCheckedThrowingContinuation invokes its
-            // body synchronously, so `cont` is always assigned before the task
-            // can be cancelled from another thread.  The pre-cancellation guard
-            // above handles the case where the task is already cancelled.
-            // CheckedContinuation enforces the single-resume contract at runtime.
-            nonisolated(unsafe) var cont: CheckedContinuation<Void, Error>? = nil
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-                    cont = c
-                    manager.signalEnumerator(for: container) { error in
-                        if let error = error {
-                            c.resume(throwing: error)
-                        } else {
-                            c.resume()
-                        }
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                manager.signalEnumerator(for: container) { error in
+                    if let error = error {
+                        cont.resume(throwing: error)
+                    } else {
+                        cont.resume()
                     }
                 }
-            } onCancel: {
-                cont?.resume(throwing: CancellationError())
             }
             Self.log.debug(
                 "ContainerSignaller: signalled \(domainId, privacy: .public)/\(container.rawValue, privacy: .public)"
             )
-        } catch is CancellationError {
-            // Task was cancelled; nothing further to do.
         } catch {
             // Non-fatal: Finder's own periodic refresh will catch up.
             Self.log.warning(
