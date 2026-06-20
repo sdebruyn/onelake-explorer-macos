@@ -94,18 +94,18 @@ jobs:
         # CodeQL's tracer wraps this xcodebuild invocation to extract Swift
         # source files for the database.
         #
-        # Use 'name=Any Mac' instead of 'arch=arm64': under the CodeQL
-        # DYLD_INSERT_LIBRARIES tracer, xcodebuild cannot resolve the
-        # arch-specific destination and emits "Unable to find a device
-        # matching { platform:macOS, arch:arm64 }". 'name=Any Mac' is the
-        # destination GitHub-hosted macOS runners always advertise and is
-        # equivalent for a compile-only, unsigned build.
+        # Use 'generic/platform=macOS' instead of 'platform=macOS,arch=arm64':
+        # under the CodeQL DYLD_INSERT_LIBRARIES tracer, the macOS simulator
+        # device DB is not initialised and xcodebuild cannot match either
+        # arch-specific or name-specific destinations. The generic platform
+        # destination bypasses device lookup entirely and works on any
+        # GitHub-hosted macOS runner regardless of architecture.
         run: |
           xcodebuild \
             -project OneLake.xcodeproj \
             -scheme OneLake \
             -configuration Debug \
-            -destination 'platform=macOS,name=Any Mac' \
+            -destination 'generic/platform=macOS' \
             -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             build
