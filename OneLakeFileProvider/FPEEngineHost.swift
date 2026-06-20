@@ -85,24 +85,16 @@ protocol EngineProviding: AnyObject, Sendable {
     /// Records that an enumeration failed with a `notAuthenticated` code so
     /// the host-app menu can surface a "Sign-in required" indicator.
     func markNeedsSignIn()
-
-    /// Signals the enumerator for a specific sub-container so Finder re-pulls
-    /// that folder's contents.
-    ///
-    /// Only sub-containers should be signalled; `.rootContainer` intentionally
-    /// throws `.syncAnchorExpired` and is excluded from this path.
-    func signal(container: NSFileProviderItemIdentifier) async
 }
 
 // MARK: - EngineProviding default implementations
 
 /// Default no-op implementations for conformers that do not need auth-state
-/// tracking or container signalling. Production hosts (`FPEEngineHost`) override
-/// all three with real behaviour; test doubles that omit them compile unchanged.
+/// tracking. Production hosts (`FPEEngineHost`) override both with real
+/// behaviour; test doubles that omit them compile unchanged.
 extension EngineProviding {
     var needsSignIn: Bool { false }
     func markNeedsSignIn() {}
-    func signal(container: NSFileProviderItemIdentifier) async {}
 }
 
 /// Per-domain engine container.
@@ -126,12 +118,6 @@ final class FPEEngineHost: EngineProviding {
     /// `Sendable`-conforming `FPEEngineHost` needs no `nonisolated(unsafe)`
     /// escape hatch, and nothing here reads back the rest of the domain.
     let domainIdentifier: NSFileProviderDomainIdentifier
-
-    /// Signals specific sub-container enumerators on behalf of this domain.
-    ///
-    /// Stored here so background revalidation can call `signal(container:)`
-    /// without rebuilding the domain reference each time.
-    private let containerSignaller: ContainerSignaller
 
     // MARK: - Process-wide shared config store
 
@@ -380,7 +366,6 @@ final class FPEEngineHost: EngineProviding {
     init(alias: String, domain: NSFileProviderDomain) {
         self.alias = alias
         self.domainIdentifier = domain.identifier
-        self.containerSignaller = ContainerSignaller(domain: domain)
         // Register this host instance in the process-wide reference count so
         // the last shutdown() can call shutdownSharedSubsystems() automatically.
         Self.activeHostLock.withLock { Self._activeHostCount += 1 }
@@ -431,16 +416,6 @@ final class FPEEngineHost: EngineProviding {
         Self.log.notice(
             "FPEEngineHost[\(self.alias, privacy: .public)]: marked needsSignIn — interactive re-authentication required"
         )
-    }
-
-    // MARK: - Container signalling
-
-    /// Signals the enumerator for `container` so Finder re-pulls that folder.
-    ///
-    /// Delegates to `ContainerSignaller`, which wraps `signalEnumerator(for:)`
-    /// in a continuation and logs+swallows failures (non-fatal).
-    func signal(container: NSFileProviderItemIdentifier) async {
-        await containerSignaller.signal(container: container)
     }
 
     /// Returns the engine, building it on first call.
@@ -649,24 +624,12 @@ final class FPEEngineHost: EngineProviding {
             let telemetry = try FPEEngineHost.sharedTelemetry()
             let sessionPool = try FPEEngineHost.sharedSessionPool()
 
-            // Wire the engine's revalidation change-callback to per-container
-            // signalling: when a background refresh (or a discovery reconcile)
-            // changes a container, ask Finder to re-pull exactly that folder.
-            // The signal sink captures `self` weakly so a callback that fires
-            // after teardown is a no-op rather than resurrecting the host. Root
-            // and other non-signallable containers are skipped inside the handler
-            // (root stays remount-driven via ChangeWatcher).
-            let onContainerChanged = makeContainerChangeHandler { [weak self] identifier in
-                await self?.signal(container: identifier)
-            }
-
             let engine = try OfemEngine(
                 configStore: cs,
                 paths: paths,
                 sharedCache: cache,
                 sharedTelemetry: telemetry,
-                sharedSessionPool: sessionPool,
-                onContainerChanged: onContainerChanged
+                sharedSessionPool: sessionPool
             )
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine built")
             // Start background tasks (telemetry flush timer). Create the Task
