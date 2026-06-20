@@ -217,6 +217,9 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
         // *items* enumeration — not on change observation — so concurrent
         // change-observation and items-enumeration tasks remain independent.
         let newTask = Task<Void, Never> {
+            // Bail out immediately if the enumerator was invalidated in the
+            // narrow window between Task creation and the lock-store check.
+            guard !Task.isCancelled else { return }
             do {
                 let engine = try await hostCopy.engine()
                 let items = try await Self.enumerate(
@@ -290,6 +293,13 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
         // enumeration for an unrelated change observer). Store the new task in
         // inFlightChangesTask so invalidate() can cancel it (fpe-15).
         let changesTask = Task<Void, Never> {
+            // Bail out immediately if the enumerator was invalidated in the
+            // narrow window between Task creation and the lock-store check.
+            // This is especially important for the synchronous `.root` early-
+            // return below: Swift cooperative cancellation only fires at
+            // suspension points, so cancelling the handle alone would not
+            // prevent the synchronous observer call on a torn-down observer.
+            guard !Task.isCancelled else { return }
             let containerLogID = identifierCopy.opaqueLogPrefix
             Self.log.debug(
                 "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges entry — container=\(containerLogID, privacy: .public) anchor=\(previousNs, privacy: .public)"
@@ -407,6 +417,9 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
                 let engine = try await hostCopy.engine()
                 let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
                 ch.fn(encodeSyncAnchor(ns))
+            } catch is CancellationError {
+                // Task was cancelled (enumerator invalidated); do not call the
+                // completion handler on a torn-down enumerator.
             } catch {
                 // Engine unavailable; return a zero anchor so the next poll
                 // gets a full diff rather than an opaque failure.
@@ -598,6 +611,10 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
         for observer: NSFileProviderEnumerationObserver,
         startingAt _: NSFileProviderPage
     ) {
+        // Guard against calling a torn-down observer after invalidation.
+        // enumerateItems is synchronous here (no Task), so check the flag
+        // directly under the lock before touching the observer.
+        guard taskLock.withLock({ !isInvalidated }) else { return }
         OfemWorkingSetEnumerator.log.debug(
             "WorkingSet[\(self.alias, privacy: .public)]: enumerateItems entry — working set always returns empty"
         )
@@ -649,6 +666,9 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
 
         // Store the task so invalidate() can cancel it (fpe-15).
         let changesTask = Task<Void, Never> {
+            // Bail out immediately if the enumerator was invalidated in the
+            // narrow window between Task creation and the lock-store check.
+            guard !Task.isCancelled else { return }
             Self.log.debug(
                 "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges entry — anchor=\(previousNs, privacy: .public)"
             )
@@ -784,6 +804,9 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                 let engine = try await hostCopy.engine()
                 let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
                 ch.fn(encodeSyncAnchor(ns))
+            } catch is CancellationError {
+                // Task was cancelled (enumerator invalidated); do not call the
+                // completion handler on a torn-down enumerator.
             } catch {
                 ch.fn(encodeSyncAnchor(0))
             }
