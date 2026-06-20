@@ -605,7 +605,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
                     // Enumerate the full materialized set, spanning all pages.
                     let collected = try await enumerateMaterializedIdentifiers(
-                        enumerator: manager.enumeratorForMaterializedItems
+                        enumerator: manager.enumeratorForMaterializedItems()
                     )
 
                     // Parse and filter: keep .workspace, .item, .path only.
