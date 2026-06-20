@@ -461,6 +461,48 @@ public actor CacheStore {
         }
     }
 
+    // MARK: - Materialized containers
+
+    /// Full-replace reconcile of the materialized-container set for `alias`.
+    ///
+    /// Deletes all existing rows for `alias` and inserts one row per identifier
+    /// string in `identifiers`. An empty `identifiers` array clears the set.
+    ///
+    /// The write is atomic (single transaction) so readers never see a partial
+    /// state. Timestamp `materializedAtNs` is set to the current wall clock for
+    /// all inserted rows.
+    ///
+    /// - Parameters:
+    ///   - alias: The account alias (non-empty).
+    ///   - identifiers: The complete set of materialized container identifier
+    ///     strings for this alias (as produced by `ItemIdentifier.identifierString`).
+    public func setMaterialized(alias: String, identifiers: [String]) async throws {
+        guard !alias.isEmpty else { throw CacheError.missingArgument("alias") }
+        let nowNs = clock()
+        try await dbPool.write { db in
+            // Full replace: delete the alias's current set, then insert the new one.
+            try db.execute(
+                sql: "DELETE FROM materialized_containers WHERE account_alias = ?",
+                arguments: [alias]
+            )
+            for identStr in identifiers {
+                let record = MaterializedContainerRecord(
+                    accountAlias: alias,
+                    identifierString: identStr,
+                    materializedAtNs: nowNs
+                )
+                try record.save(db)
+            }
+        }
+    }
+
+    /// Returns the materialized-container set for `alias` as ``CacheKey`` values.
+    ///
+    /// Delegates to ``CacheReader/materializedContainers(alias:)``.
+    public func materializedContainers(alias: String) async throws -> [CacheKey] {
+        try await reader().materializedContainers(alias: alias)
+    }
+
     // MARK: - Blob: store
 
     /// Writes `data` to the blob store and updates the `blob_sha256` /
