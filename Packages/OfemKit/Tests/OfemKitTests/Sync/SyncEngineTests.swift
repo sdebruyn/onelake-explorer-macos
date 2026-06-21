@@ -1664,10 +1664,6 @@ struct SyncEngineTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // Write the discovery row that listItems would produce (Lakehouse).
-        let discoveryKey = CacheKey(
-            accountAlias: Self.alias, workspaceID: Self.wsID,
-            itemID: VirtualIDs.itemID, path: Self.itID
-        )
         let discoveryRow = MetadataRecord(
             accountAlias: Self.alias, workspaceID: Self.wsID,
             itemID: VirtualIDs.itemID, path: Self.itID,
@@ -1719,7 +1715,6 @@ struct SyncEngineTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // Pre-seed parent directory row with Lakehouse item_type.
-        let parentKey = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files")
         let parentRow = MetadataRecord(
             accountAlias: Self.alias, workspaceID: Self.wsID,
             itemID: Self.itID, path: "Files", parentPath: "",
@@ -1748,7 +1743,6 @@ struct SyncEngineTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // Pre-seed parent directory row with Lakehouse item_type.
-        let parentKey = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files")
         let parentRow = MetadataRecord(
             accountAlias: Self.alias, workspaceID: Self.wsID,
             itemID: Self.itID, path: "Files", parentPath: "",

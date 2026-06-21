@@ -36,7 +36,7 @@ private func requestBody(_ request: URLRequest) -> Data? {
 ///
 /// Call `reset()` at the start of each test to clear stale handler state left
 /// by a previous test.
-final class StubURLProtocol: URLProtocol, @unchecked Sendable {
+final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var currentHandler: ((URLRequest) -> (Data, HTTPURLResponse))?
     static let lock = NSLock()
 
