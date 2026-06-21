@@ -333,3 +333,60 @@ extension PathEntry {
         PathEntry(name: name, isDirectory: true, contentLength: 0, eTag: "", lastModified: Date(timeIntervalSince1970: 0))
     }
 }
+
+// MARK: - BlockingListMockOneLakeClient
+
+/// An ``OneLakeClientProtocol`` mock whose `listPath` suspends until explicitly
+/// unblocked. Used to test concurrency-cap enforcement in
+/// ``SyncEngine/refreshMaterialized(alias:keys:concurrencyCap:)``.
+final class BlockingListMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
+
+    private var pending: [CheckedContinuation<ListResult, any Error>] = []
+    private let lock = NSLock()
+    private var _listPathCallCount = 0
+
+    private let listEnteredStream = AsyncStream<Void>.makeStream()
+    var listEntered: AsyncStream<Void> { listEnteredStream.stream }
+
+    var listPathCallCount: Int { lock.withLock { _listPathCallCount } }
+
+    /// Resolves the oldest blocked `listPath` with `result`.
+    func unblock(with result: ListResult) {
+        let cont = lock.withLock { pending.isEmpty ? nil : pending.removeFirst() }
+        cont?.resume(returning: result)
+    }
+
+    /// Resolves the oldest blocked `listPath` by throwing `error`.
+    func fail(with error: any Error) {
+        let cont = lock.withLock { pending.isEmpty ? nil : pending.removeFirst() }
+        cont?.resume(throwing: error)
+    }
+
+    func listPath(
+        alias: String, workspaceGUID: String, itemGUID: String,
+        directory: String, recursive: Bool
+    ) async throws -> ListResult {
+        lock.withLock { _listPathCallCount += 1 }
+        return try await withTaskCancellationHandler(
+            operation: {
+                try await withCheckedThrowingContinuation { cont in
+                    lock.withLock { pending.append(cont) }
+                    listEnteredStream.continuation.yield(())
+                }
+            },
+            onCancel: {
+                let cont = lock.withLock { pending.isEmpty ? nil : pending.removeFirst() }
+                cont?.resume(throwing: CancellationError())
+            }
+        )
+    }
+
+    // Remaining protocol surface is unused by these tests.
+    func getProperties(alias: String, workspaceGUID: String, itemGUID: String, path: String) async throws -> PathProperties { PathProperties.make() }
+    func read(alias: String, workspaceGUID: String, itemGUID: String, path: String, range: Range<Int64>?, ifMatch: String) async throws -> (Data, PathProperties) { (Data(), PathProperties.make()) }
+    func read(alias: String, workspaceGUID: String, itemGUID: String, path: String, range: Range<Int64>?, ifMatch: String, destination: FileHandle) async throws -> PathProperties { PathProperties.make() }
+    func write(alias: String, workspaceGUID: String, itemGUID: String, path: String, content: Data, size: Int64) async throws {}
+    func write(alias: String, workspaceGUID: String, itemGUID: String, path: String, sourceURL: URL, size: Int64) async throws {}
+    func createDirectory(alias: String, workspaceGUID: String, itemGUID: String, path: String) async throws {}
+    func delete(alias: String, workspaceGUID: String, itemGUID: String, path: String, recursive: Bool) async throws {}
+}
