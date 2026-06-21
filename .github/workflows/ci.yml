@@ -109,6 +109,10 @@ jobs:
         # OneLake scheme lists both test targets in its test: action. The
         # DerivedData/Index.noindex/DataStore written here is also consumed by
         # the periphery scan below, so the entire job shares a single compile.
+        # -enableCodeCoverage YES instruments the test bundles at build time so
+        # the resulting xcresult files contain coverage data that xcresultparser
+        # can export; without this flag, test-without-building produces an
+        # xcresult with no coverage archive and xcresultparser exits non-zero.
         run: |
           xcodebuild build-for-testing \
             -project OneLake.xcodeproj \
@@ -116,6 +120,7 @@ jobs:
             -configuration Debug \
             -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath DerivedData \
+            -enableCodeCoverage YES \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
 
       - name: Run host-app tests (no rebuild)
