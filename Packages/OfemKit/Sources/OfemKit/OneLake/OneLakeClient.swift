@@ -31,6 +31,7 @@ public final class OneLakeClient: Sendable {
     /// Default DFS endpoint.
     public static let defaultBaseURL = URL(string: "https://onelake.dfs.fabric.microsoft.com")!
 
+    // periphery:ignore
     /// Default body size for a single append call. 4 MiB is well under Azure's
     /// per-append limit (100 MiB) and aligns with typical FS block sizes.
     static let defaultChunkSize = 4 * 1024 * 1024

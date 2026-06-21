@@ -178,6 +178,7 @@ public actor OfemEngine {
     /// - Parameters:
     ///   - configStore: The loaded TOML config.
     ///   - paths: Resolved on-disk paths (cache dir, log dir, etc.).
+    // periphery:ignore
     ///   - httpBaseURLs: Override the default DFS / Fabric base URLs. Pass
     ///     `nil` to use the production endpoints.
     public init(

@@ -34,7 +34,6 @@ final class SharedOfemAuth {
 
     private static let log = Logger(subsystem: ofemSubsystem, category: "shared-auth")
 
-    let configStore: OfemConfigStore
     let auth: OfemAuth
 
     /// Designated initialiser. `@MainActor` is inherited from the class;
@@ -90,7 +89,6 @@ final class SharedOfemAuth {
         } else {
             fatalError("SharedOfemAuth: cannot initialise OfemConfigStore even after removing corrupt file — App Group container may be inaccessible")
         }
-        self.configStore = finalStore
         self.auth = OfemAuth(configStore: finalStore)
 
         // Surface the problem non-modally after init so the app can finish launching.

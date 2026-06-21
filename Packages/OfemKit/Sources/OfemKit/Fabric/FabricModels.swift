@@ -89,14 +89,6 @@ public struct Item: Sendable, Equatable {
         Self.allowedStorageTypes.contains(type.lowercased(with: Self.posixLocale))
     }
 
-    /// `true` when the item type is `"Lakehouse"` (case-insensitive).
-    ///
-    /// Use this predicate wherever `"lakehouse"` must be checked to avoid
-    /// duplicating the locale-independent string comparison.
-    public var isLakehouse: Bool {
-        type.lowercased(with: Self.posixLocale) == "lakehouse"
-    }
-
     /// Shared POSIX locale for case-insensitive item-type comparisons.
     private static let posixLocale = Locale(identifier: "en_US_POSIX")
 
@@ -111,6 +103,7 @@ public struct Item: Sendable, Equatable {
 
 // MARK: - Folder
 
+// periphery:ignore
 /// A Fabric workspace-folder — the workspace-level organisational container
 /// that groups items. Distinct from item-internal folders served by the DFS API.
 public struct Folder: Sendable, Equatable {
@@ -149,6 +142,7 @@ public struct Folder: Sendable, Equatable {
 /// URI cannot be represented as an opaque token. Use
 /// ``FabricClient/listAllWorkspaces(alias:)`` to follow pagination exhaustively
 /// via either continuation form.
+// periphery:ignore
 public struct WorkspacePage: Sendable {
     /// The workspaces on this page.
     public let items: [Workspace]
@@ -170,6 +164,7 @@ public struct WorkspacePage: Sendable {
 ///
 /// **fabric-04:** see `hasContinuation` — a `nil` token does not always mean
 /// last page.
+// periphery:ignore
 public struct ItemPage: Sendable {
     /// The items on this page.
     public let items: [Item]
@@ -190,6 +185,7 @@ public struct ItemPage: Sendable {
 ///
 /// **fabric-04:** see `hasContinuation` — a `nil` token does not always mean
 /// last page.
+// periphery:ignore
 public struct FolderPage: Sendable {
     /// The folders on this page.
     public let items: [Folder]

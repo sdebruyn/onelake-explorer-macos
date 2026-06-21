@@ -58,6 +58,7 @@ final class ConfigFileLock: @unchecked Sendable {
         Darwin.close(fd)
     }
 
+    // periphery:ignore
     /// Acquires the lock, executes `body`, then releases the lock.
     @discardableResult
     func withLock<T>(_ body: () throws -> T) rethrows -> T {

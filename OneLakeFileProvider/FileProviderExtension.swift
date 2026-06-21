@@ -82,6 +82,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         )
     }
 
+    // periphery:ignore
     /// Internal init for testing: accepts any EngineProviding.
     init(domain: NSFileProviderDomain, engineHost: any EngineProviding) {
         self.domain = domain

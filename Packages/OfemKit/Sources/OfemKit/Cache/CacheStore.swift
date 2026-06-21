@@ -171,6 +171,7 @@ public actor CacheStore {
 
     // MARK: - Orphan sweep
 
+    // periphery:ignore
     /// Runs the orphan-blob sweep synchronously (blocking the actor).
     ///
     /// The background `Task` started at `init` time runs the same sweep but
@@ -411,6 +412,7 @@ public actor CacheStore {
 
     // MARK: - Metadata: hotItems
 
+    // periphery:ignore
     /// Returns item roots that had at least one cache hit at or after `since`.
     public func hotItems(since: Date) async throws -> [CacheKey] {
         try await reader().hotItems(since: since)
@@ -441,6 +443,7 @@ public actor CacheStore {
 
     // MARK: - Deletion tombstones
 
+    // periphery:ignore
     /// Writes a deletion tombstone for `identifierString` at the current time.
     ///
     /// Called by `delete(key:)` before the hard-delete so the change path can
@@ -514,6 +517,7 @@ public actor CacheStore {
     /// blob link — if the row is absent the blob write is still on disk but
     /// will be reclaimed by the next orphan sweep (same guarantee as a crash
     /// mid-write).
+    // periphery:ignore
     public func storeBlob(key: CacheKey, data: Data) async throws {
         try validateKey(key)
         let nowNs = clock()
@@ -564,6 +568,7 @@ public actor CacheStore {
     /// detected as a missing file rather than silently returning stale data.
     /// If `touch` finds the row gone (concurrent delete), it throws `notFound`;
     /// `clearBlobLink` is also called in that path to handle any dangling link.
+    // periphery:ignore
     public func loadBlob(key: CacheKey) async throws -> Data {
         try validateKey(key)
         let record = try await fetch(key: key)
@@ -715,6 +720,7 @@ public actor CacheStore {
 
     // MARK: - Blob: diskUsage
 
+    // periphery:ignore
     /// Walks the blob root and returns the file count and total bytes on disk.
     public func diskUsage() async throws -> (count: Int, bytes: Int64) {
         try blobs.diskUsage()
@@ -916,6 +922,7 @@ public actor CacheStore {
         try await reader().workspaceStatus(accountAlias: accountAlias, workspaceID: workspaceID)
     }
 
+    // periphery:ignore
     /// Returns all persisted workspace status rows ordered by
     /// `(account_alias, workspace_id)`.
     public func allWorkspaceStatuses() async throws -> [WorkspaceStatusRecord] {

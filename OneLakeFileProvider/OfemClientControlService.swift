@@ -144,10 +144,6 @@ final class OfemClientControlService: NSObject, NSFileProviderServiceSource, @un
 /// requirement in OfemKit).
 private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     private let engineHost: any EngineProviding
-    private static let log = Logger(
-        subsystem: "dev.debruyn.ofem.fileprovider",
-        category: "control-service"
-    )
 
     init(engineHost: any EngineProviding) {
         self.engineHost = engineHost

@@ -330,6 +330,7 @@ public struct InteractiveSignInResult: Sendable {
         }
     }
 
+    // periphery:ignore
     /// Discards this sign-in result and cleans up any scratch blob.
     ///
     /// Call when the user cancels the account-naming step after a successful

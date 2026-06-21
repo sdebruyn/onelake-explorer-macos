@@ -124,11 +124,13 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         nsToDate(lastModifiedNs)
     }
 
+    // periphery:ignore
     /// `lastAccessedNs` as a `Date`. `nil` when zero.
     public var lastAccessed: Date? {
         nsToDate(lastAccessedNs)
     }
 
+    // periphery:ignore
     /// `syncedAtNs` as a `Date`. `nil` when zero.
     public var syncedAt: Date? {
         nsToDate(syncedAtNs)
@@ -269,6 +271,7 @@ public struct WorkspaceStatusRecord: FetchableRecord, PersistableRecord, Sendabl
 
     // MARK: Computed helpers
 
+    // periphery:ignore
     public var detectedAt: Date? {
         nsToDate(detectedAtNs)
     }

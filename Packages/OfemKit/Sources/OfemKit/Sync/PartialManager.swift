@@ -28,7 +28,6 @@ final class PartialManager: Sendable {
     // MARK: - State
 
     private let scratchDir: URL
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "PartialManager")
 
     // MARK: - Init
 

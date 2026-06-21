@@ -38,6 +38,11 @@ retain_objc_accessible: true
 # package and its public API must be verified as actually used.
 retain_public: false
 
+# OfemKit is a local package (not a published library) — "public" is used for
+# testability and architectural layering, not as a published API boundary. The
+# redundant-public analysis is noise here; suppress it.
+disable_redundant_public_analysis: true
+
 # Report unused code as warnings (exit 0) rather than errors (exit 1).
 # Promoted to strict (exit 1) after the initial triage baseline is clean.
 strict: false

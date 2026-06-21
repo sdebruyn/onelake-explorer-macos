@@ -283,6 +283,7 @@ public extension DomainItem {
 
     // MARK: Stub directory
 
+    // periphery:ignore
     /// Builds a placeholder directory item used before the first enumerate
     /// populates the cache.
     static func stubDirectory(
@@ -431,6 +432,7 @@ enum ContentVersion {
     }
 }
 
+// periphery:ignore
 /// Free-function alias of ``ContentVersion/fallback(seed:size:mtime:)``
 /// retained for binary/source compatibility with existing callers (fp-04).
 ///

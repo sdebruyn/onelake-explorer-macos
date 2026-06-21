@@ -113,6 +113,7 @@ final class FPEEngineHost: EngineProviding {
     /// The account alias this host serves.
     let alias: String
 
+    // periphery:ignore
     /// Identifier of the File Provider domain this host serves. Retained for
     /// diagnostics.
     ///
@@ -302,6 +303,7 @@ final class FPEEngineHost: EngineProviding {
     // background task holds a reference to a shared subsystem will silently
     // revert to the N-pools bug for any engine rebuilt after the reset.
     #if DEBUG
+        // periphery:ignore
         static func resetSharedSubsystems() {
             // Acquire locks in a consistent order (subsystems first, then store,
             // then activeHost) so the reset is atomic with respect to concurrent

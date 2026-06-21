@@ -152,6 +152,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
         super.init()
     }
 
+    // periphery:ignore
     /// Convenience init that parses the raw identifier via OfemKit's
     /// ItemIdentifierParser.
     convenience init(

@@ -920,6 +920,7 @@ public actor SyncEngine {
 
     // MARK: - Offline status
 
+    // periphery:ignore
     /// Returns `true` when the engine is currently considered offline (recently
     /// observed an offline-class error and the cooldown has not yet expired).
     ///
