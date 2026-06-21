@@ -23,7 +23,7 @@ gh repo clone sdebruyn/onelake-explorer-macos
 cd onelake-explorer-macos
 
 # install dev tools
-brew install commitlint xcodegen
+brew install commitlint xcodegen swiftformat
 
 # generate the Xcode project
 make gen
@@ -74,6 +74,7 @@ The release workflow uses these to auto-generate the release notes on each GitHu
 
 ### Swift
 
+- SwiftFormat (nicklockwood/SwiftFormat 0.61.1) enforced in CI. Run `make format` to reformat in place; `make format-lint` to check without modifying (mirrors the CI gate). The `.swiftformat` config at the repo root controls rules and excludes.
 - SwiftLint with the included `.swiftlint.yml`.
 - Use `os.log` (unified logging) for everything that should land in Console.app.
 - Avoid blocking the File Provider Extension's main queue; everything should be async via `Task { … }`.

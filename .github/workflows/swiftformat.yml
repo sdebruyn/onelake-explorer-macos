@@ -1,0 +1,29 @@
+name: SwiftFormat
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swiftformat-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  swiftformat:
+    name: SwiftFormat lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/nicklockwood/swiftformat:0.61.1
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Lint formatting
+        # --lint exits non-zero if any file would be changed.
+        # The .swiftformat config at the repo root is picked up automatically.
+        run: swiftformat --lint .
