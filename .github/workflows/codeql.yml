@@ -3,8 +3,6 @@ name: CodeQL
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
   schedule:
     # Weekly on Monday at 08:00 UTC
     - cron: "0 8 * * 1"
@@ -16,7 +14,7 @@ permissions:
 
 concurrency:
   group: codeql-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   analyze:
@@ -24,22 +22,23 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     env:
-      DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - uses: actions/checkout@v7.0.0
 
-      - name: Assert Xcode 16.3 is present
-        # Fail fast if the runner image no longer ships Xcode 16.3 rather
+      - name: Assert Xcode 16.4 and Swift 6.1.2 are present
+        # Fail fast if the runner image no longer ships Xcode 16.4 rather
         # than silently falling back to a different Xcode version.
         run: |
           set -euo pipefail
-          if [ ! -d /Applications/Xcode_16.3.app ]; then
-            echo "ERROR: Xcode_16.3.app not found at /Applications/Xcode_16.3.app" >&2
+          if [ ! -d /Applications/Xcode_16.4.app ]; then
+            echo "ERROR: Xcode_16.4.app not found at /Applications/Xcode_16.4.app" >&2
             echo "Available Xcode installations:" >&2
             ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
             exit 1
           fi
           xcodebuild -version
+          swift --version
 
       - name: Cache Homebrew downloads
         uses: actions/cache@v5.0.5
@@ -85,10 +84,13 @@ jobs:
         # build-mode: manual ensures the tracer observes our explicit build
         # step rather than attempting autobuild, which is unreliable for
         # Xcode projects and produces "No source code was seen" errors.
+        # security-and-quality enables the full extended query suite so
+        # analysis on main and the weekly schedule catches deeper issues.
         uses: github/codeql-action/init@v3.36.2
         with:
           languages: swift
           build-mode: manual
+          queries: security-and-quality
 
       - name: Build app + extension (under CodeQL tracer)
         # CodeQL's tracer wraps this xcodebuild invocation to extract Swift
