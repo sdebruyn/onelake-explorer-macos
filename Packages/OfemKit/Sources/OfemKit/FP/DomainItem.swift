@@ -60,6 +60,8 @@ public struct DomainItem: Sendable, Equatable {
     /// Allocated once and reused across calls — the same optimisation applied
     /// to `ContentVersion`'s date formatter (see comment in `ContentVersion`).
     /// `Locale` is a `Sendable` value type, so no isolation annotation is needed.
+    /// (Contrast `ContentVersion.formatter`: `ISO8601DateFormatter` is not
+    /// `Sendable`, so that static must keep `nonisolated(unsafe)`.)
     private static let posixLocale = Locale(identifier: "en_US_POSIX")
 
     /// Computes the capability set for a path-level record according to the
