@@ -363,12 +363,18 @@ private struct AdvancedSettingsTab: View {
                 }
 
                 if pollIntervalLoaded {
-                    Stepper(value: pollIntervalBinding,
-                            in: SyncConfig.minMaterializedPollIntervalS ... SyncConfig.maxMaterializedPollIntervalS,
-                            step: 15)
-                    {
+                    LabeledContent {
+                        HStack(spacing: 8) {
+                            Text("\(model.materializedPollIntervalS) s")
+                                .font(.body.monospacedDigit())
+                            Stepper("", value: pollIntervalBinding,
+                                    in: SyncConfig.minMaterializedPollIntervalS ... SyncConfig.maxMaterializedPollIntervalS,
+                                    step: 15)
+                                .labelsHidden()
+                        }
+                    } label: {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Content refresh interval: \(model.materializedPollIntervalS) s")
+                            Text("Content refresh interval")
                             Text("How often open folders are polled for new files (\(SyncConfig.minMaterializedPollIntervalS)–\(SyncConfig.maxMaterializedPollIntervalS) s).")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)

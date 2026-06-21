@@ -73,9 +73,11 @@ final class DockIconManager {
     ///
     /// `canBecomeMain` is `false` for system-private windows (NSStatusBarWindow,
     /// _NSPopoverWindow) and `true` for all ordinary app windows (Settings,
-    /// About panel, Add Account). This is more robust than matching on private
-    /// class-name substrings, which could accidentally exclude a future Apple
-    /// NSPanel subclass whose name happens to contain "Popover".
+    /// Add Account, and the About panel — which is an `AboutPanel` NSPanel
+    /// subclass that explicitly overrides `canBecomeMain` to return `true`).
+    /// This is more robust than matching on private class-name substrings,
+    /// which could accidentally exclude a future Apple NSPanel subclass whose
+    /// name happens to contain "Popover".
     private var hasVisibleAppWindow: Bool {
         NSApp.windows.contains { $0.isVisible && $0.canBecomeMain }
     }

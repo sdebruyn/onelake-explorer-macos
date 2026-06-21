@@ -45,6 +45,26 @@ func copyrightString(version: String) -> String {
     "Copyright © \(copyrightYear(from: version)) Debruyn Consultancy BV. MIT licensed."
 }
 
+// MARK: - AboutPanel
+
+/// An NSPanel subclass that opts into becoming main and key.
+///
+/// NSPanel's default `canBecomeMain` returns `false`, which means
+/// `DockIconManager.hasVisibleAppWindow` would never count the About panel
+/// and the app would stay in `.accessory` policy (no Dock icon) while it is
+/// open. Overriding both `canBecomeMain` and `canBecomeKey` to return `true`
+/// makes the panel behave like an ordinary app window for policy purposes
+/// while still preserving NSPanel's floating / Cmd-W semantics.
+private final class AboutPanel: NSPanel {
+    override var canBecomeMain: Bool {
+        true
+    }
+
+    override var canBecomeKey: Bool {
+        true
+    }
+}
+
 // MARK: - Singleton controller
 
 @MainActor
@@ -68,7 +88,10 @@ final class AboutWindowController: NSObject {
         let size = CGSize(width: 300, height: 220)
         hostingView.frame = NSRect(origin: .zero, size: size)
 
-        let win = NSPanel(
+        // Use AboutPanel so canBecomeMain returns true; DockIconManager
+        // uses canBecomeMain to detect visible app windows and switch to
+        // .regular activation policy (Dock icon visible).
+        let win = AboutPanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable],
             backing: .buffered,
@@ -77,8 +100,8 @@ final class AboutWindowController: NSObject {
         win.title = "About OFEM"
         win.isReleasedWhenClosed = false
         win.contentView = hostingView
-        // Cmd-W closes the panel: NSPanel routes key events through the
-        // responder chain when canBecomeKey is true (default for NSPanel).
+        // Cmd-W closes the panel: AboutPanel routes key events through the
+        // responder chain because canBecomeKey returns true.
         win.center()
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
