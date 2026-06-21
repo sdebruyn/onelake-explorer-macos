@@ -17,7 +17,10 @@ jobs:
   periphery:
     name: Dead-code scan
     # periphery requires a macOS runner: it invokes xcodebuild to build the
-    # index store, which in turn needs Xcode and a valid signing environment.
+    # index store, which in turn needs Xcode and the Xcode toolchain's
+    # libIndexStore.dylib. Running on macOS with Homebrew install is the
+    # supported path — the release binary does not bundle the Xcode-provided
+    # dylib and would require manual rpath/DYLD_LIBRARY_PATH configuration.
     runs-on: macos-15
     timeout-minutes: 30
     env:
@@ -41,7 +44,7 @@ jobs:
           path: |
             ~/Library/Caches/Homebrew/downloads
             ~/Library/Caches/Homebrew/api
-          key: brew-${{ runner.os }}-xcodegen-periphery-${{ hashFiles('.github/workflows/periphery.yml') }}
+          key: brew-${{ runner.os }}-xcodegen-periphery-3.7.4-${{ hashFiles('.github/workflows/periphery.yml') }}
           restore-keys: |
             brew-${{ runner.os }}-xcodegen-
 
@@ -55,20 +58,23 @@ jobs:
           restore-keys: |
             spm-${{ runner.os }}-
 
-      - name: Install xcodegen
-        run: brew install xcodegen
+      - name: Install dependencies
+        run: brew install xcodegen periphery
 
-      - name: Install periphery 3.7.4
-        # Download the versioned release binary directly to guarantee 3.7.4
-        # on every run regardless of what Homebrew currently ships.
+      - name: Assert periphery 3.7.4
+        # Fail fast if Homebrew installs a different version than expected.
+        # This catches unexpected Homebrew formula updates before they silently
+        # change rule behaviour. Update this assertion when intentionally
+        # upgrading periphery.
         run: |
           set -euo pipefail
-          curl -sSL \
-            https://github.com/peripheryapp/periphery/releases/download/3.7.4/periphery-3.7.4.zip \
-            -o /tmp/periphery.zip
-          unzip -q /tmp/periphery.zip -d /tmp/periphery-bin
-          sudo mv /tmp/periphery-bin/periphery /usr/local/bin/periphery
-          periphery version
+          got=$(periphery version)
+          want="3.7.4"
+          if [ "$got" != "$want" ]; then
+            echo "ERROR: periphery version is $got, expected $want" >&2
+            exit 1
+          fi
+          echo "periphery $got"
 
       - name: Bootstrap local xcconfig
         run: make bootstrap
