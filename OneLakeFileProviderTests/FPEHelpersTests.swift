@@ -66,4 +66,59 @@ final class FPEHelpersTests: XCTestCase {
     func testParentPathMultipleSegments() {
         XCTAssertEqual(parentPath(of: "a/b/c/d"), "a/b/c")
     }
+
+    // MARK: - isMaterializablePathContainer — Delta-depth filter
+
+    // Admitted: depth 1 (top-level virtual dirs)
+    func testMaterializablePathTablesTopLevel() {
+        XCTAssertTrue(isMaterializablePathContainer("Tables"))
+    }
+
+    func testMaterializablePathFilesTopLevel() {
+        XCTAssertTrue(isMaterializablePathContainer("Files"))
+    }
+
+    // Admitted: depth 2 (schema or Files subdir)
+    func testMaterializablePathTablesSchema() {
+        XCTAssertTrue(isMaterializablePathContainer("Tables/dbo"))
+    }
+
+    func testMaterializablePathFilesSubdir() {
+        XCTAssertTrue(isMaterializablePathContainer("Files/reports"))
+    }
+
+    // Admitted: depth 3 (the table folder itself — must stay pollable)
+    func testMaterializablePathTableFolder() {
+        XCTAssertTrue(isMaterializablePathContainer("Tables/dbo/events"))
+    }
+
+    // Excluded: _delta_log at depth 4
+    func testMaterializablePathDeltaLogExcluded() {
+        XCTAssertFalse(isMaterializablePathContainer("Tables/dbo/events/_delta_log"))
+    }
+
+    // Excluded: partition GUID dir at depth 4
+    func testMaterializablePathPartitionDirExcluded() {
+        XCTAssertFalse(isMaterializablePathContainer("Tables/dbo/events/part=2024-01"))
+    }
+
+    // Excluded: .parquet file at depth 4 (files are not containers either)
+    func testMaterializablePathParquetFileExcluded() {
+        XCTAssertFalse(isMaterializablePathContainer("Tables/dbo/events/00001.parquet"))
+    }
+
+    // Excluded: anything beneath _delta_log (depth 5)
+    func testMaterializablePathDeltaLogContentsExcluded() {
+        XCTAssertFalse(isMaterializablePathContainer("Tables/dbo/events/_delta_log/00000000000000000001.json"))
+    }
+
+    // Excluded: _delta_log at depth 5 — belt-and-suspenders for unusual layouts
+    func testMaterializablePathDeltaLogDeepExcluded() {
+        XCTAssertFalse(isMaterializablePathContainer("Files/raw/subdir/_delta_log"))
+    }
+
+    // Admitted: Files subdir at depth 3 (deep Files browsing must stay pollable)
+    func testMaterializablePathFilesThreeLevels() {
+        XCTAssertTrue(isMaterializablePathContainer("Files/reports/2024"))
+    }
 }

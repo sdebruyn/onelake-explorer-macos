@@ -578,6 +578,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     /// excludes the root and working-set sentinels, and persists the resulting set via
     /// `CacheStore.setMaterialized`. Unexpected or unparseable identifiers are logged and
     /// skipped, not fatal.
+    ///
+    /// **Delta-internal depth cap**: `.path` containers whose path has more than 3
+    /// slash-delimited components, or that contain the segment `_delta_log`, are
+    /// excluded from the persisted set. This bounds the poll fan-out for partitioned
+    /// Delta tables (where macOS materializes `_delta_log`, partition GUID dirs, and
+    /// individual `.parquet` files) while keeping every user-navigable level
+    /// (`Tables`, `Tables/<schema>`, `Tables/<schema>/<table>`, `Files/<dirs>`).
     func materializedItemsDidChange(completionHandler: @escaping () -> Void) {
         let aliasCopy = alias
         let domainCopy = domain
@@ -619,10 +626,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                         case .root, .trash, .workingSet:
                             // Sentinels are not trackable containers — skip silently.
                             continue
-                        case .workspace, .item, .path:
+                        case .workspace, .item:
                             // Store the raw string directly: for these cases
                             // identifierString is a round-trip no-op, but `raw` avoids
                             // an unnecessary re-serialization through ItemIdentifier.
+                            containerIdentStrings.append(raw)
+                        case let .path(_, _, path):
+                            // Defense-in-depth: exclude Delta-table internals from the
+                            // poll set (see `isMaterializablePathContainer` in FPEHelpers).
+                            guard isMaterializablePathContainer(path) else { continue }
                             containerIdentStrings.append(raw)
                         }
                     }
