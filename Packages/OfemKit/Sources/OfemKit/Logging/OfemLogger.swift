@@ -51,7 +51,7 @@ public struct OfemLogger: Sendable {
     /// Creates an `OfemLogger` with the given configuration.
     public init(configuration: LogConfiguration = .init()) {
         self.configuration = configuration
-        osLogger = Logger(
+        self.osLogger = Logger(
             subsystem: configuration.subsystem,
             category: configuration.category
         )

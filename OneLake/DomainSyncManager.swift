@@ -177,7 +177,7 @@ final class DomainSyncManager {
         // 2) Remove orphan domains — ones we own (have our prefix)
         // but the config no longer has an account for.
         for (id, domain) in existingById {
-            if !id.hasPrefix(identifierPrefix) { continue }
+            if !id.hasPrefix(self.identifierPrefix) { continue }
             if desiredIds.contains(id) { continue }
             // Call the underlying API directly: removeDomain(alias:) would
             // re-fetch the domain list unnecessarily since we already have it.

@@ -73,19 +73,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
-        alias = FileProviderExtension.extractAlias(from: domain)
-        engineHost = FPEEngineHost(alias: alias, domain: domain)
+        self.alias = FileProviderExtension.extractAlias(from: domain)
+        self.engineHost = FPEEngineHost(alias: self.alias, domain: domain)
         super.init()
         let ts = BuildInfo.buildTimestamp ?? "unknown"
         FileProviderExtension.log.info(
-            "OneLake FPE starting — version \(BuildInfo.version, privacy: .public) built \(ts, privacy: .public) domain=\(domain.identifier.rawValue, privacy: .public) alias=\(alias, privacy: .public)"
+            "OneLake FPE starting — version \(BuildInfo.version, privacy: .public) built \(ts, privacy: .public) domain=\(domain.identifier.rawValue, privacy: .public) alias=\(self.alias, privacy: .public)"
         )
     }
 
     /// Internal init for testing: accepts any EngineProviding.
     init(domain: NSFileProviderDomain, engineHost: any EngineProviding) {
         self.domain = domain
-        alias = FileProviderExtension.extractAlias(from: domain)
+        self.alias = FileProviderExtension.extractAlias(from: domain)
         self.engineHost = engineHost
         super.init()
     }
@@ -104,7 +104,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     /// task so any concurrent `engine()` call fails fast.
     func invalidate() {
         FileProviderExtension.log.info(
-            "Invalidating extension for domain \(domain.identifier.rawValue, privacy: .public)"
+            "Invalidating extension for domain \(self.domain.identifier.rawValue, privacy: .public)"
         )
         // Capture engineHost (Sendable) explicitly so the Task body does not
         // need to capture self, which is not Sendable.
@@ -662,7 +662,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         // from retrying indefinitely.
         if ofemID == .workingSet || ofemID == .trash {
             FileProviderExtension.log.debug(
-                "enumerator(for: .workingSet/.trash) for \(alias, privacy: .public)"
+                "enumerator(for: .workingSet/.trash) for \(self.alias, privacy: .public)"
             )
             return OfemWorkingSetEnumerator(alias: alias, engineHost: engineHost)
         }

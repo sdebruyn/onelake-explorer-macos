@@ -133,7 +133,7 @@ public actor TelemetryClient {
 
         self.sink = effectiveSink
         self.configuration = configuration
-        batch = TelemetryBatch(maxSize: configuration.maxBatchSize)
+        self.batch = TelemetryBatch(maxSize: configuration.maxBatchSize)
 
         let platform = configuration.platform.isEmpty ? "darwin" : configuration.platform
         let arch = configuration.arch.isEmpty ? "arm64" : configuration.arch
@@ -141,7 +141,7 @@ public actor TelemetryClient {
             ? Self.resolveOSVersion()
             : configuration.osVersion
 
-        commonProps = [
+        self.commonProps = [
             "installId": installID,
             "appVersion": appVersion,
             "platform": platform,

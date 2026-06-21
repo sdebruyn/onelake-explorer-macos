@@ -236,14 +236,14 @@ private final class MockFPItem: NSObject, NSFileProviderItem {
         parentID: String,
         filename: String
     ) {
-        itemIdentifier = NSFileProviderItemIdentifier(id)
-        parentItemIdentifier = NSFileProviderItemIdentifier(parentID)
+        self.itemIdentifier = NSFileProviderItemIdentifier(id)
+        self.parentItemIdentifier = NSFileProviderItemIdentifier(parentID)
         self.filename = filename
-        contentType = .plainText
-        capabilities = [.allowsReading, .allowsWriting]
-        documentSize = nil
-        contentModificationDate = nil
-        itemVersion = NSFileProviderItemVersion(contentVersion: Data("v1".utf8), metadataVersion: Data("mv1".utf8))
+        self.contentType = .plainText
+        self.capabilities = [.allowsReading, .allowsWriting]
+        self.documentSize = nil
+        self.contentModificationDate = nil
+        self.itemVersion = NSFileProviderItemVersion(contentVersion: Data("v1".utf8), metadataVersion: Data("mv1".utf8))
         super.init()
     }
 }

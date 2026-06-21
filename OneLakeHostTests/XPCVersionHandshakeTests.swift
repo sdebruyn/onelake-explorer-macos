@@ -21,7 +21,7 @@ import XCTest
 @objc private final class FakeVersionedProxy: NSObject, OfemClientControlProtocol {
     let reportedVersion: Int
     init(version: Int) {
-        reportedVersion = version
+        self.reportedVersion = version
     }
 
     func getProtocolVersion(reply: @escaping (Int) -> Void) {

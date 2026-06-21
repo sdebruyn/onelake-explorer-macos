@@ -89,8 +89,8 @@ public final class FileTokenStore: Sendable {
     /// - Throws: ``FileTokenStoreError/createDirectoryFailed(_:)`` if the
     ///   directory cannot be created.
     public init(tokensDir: URL) throws {
-        root = tokensDir
-        serialQueue = Self.sharedQueue(for: tokensDir)
+        self.root = tokensDir
+        self.serialQueue = Self.sharedQueue(for: tokensDir)
         do {
             try FileManager.default.createDirectory(
                 at: tokensDir,

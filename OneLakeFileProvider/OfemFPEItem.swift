@@ -28,27 +28,27 @@ final class OfemFPEItem: NSObject, NSFileProviderItem, @unchecked Sendable {
     let itemVersion: NSFileProviderItemVersion
 
     init(from domainItem: DomainItem) {
-        itemIdentifier = NSFileProviderItemIdentifier(
+        self.itemIdentifier = NSFileProviderItemIdentifier(
             domainItem.identifier.identifierString
         )
-        parentItemIdentifier = NSFileProviderItemIdentifier(
+        self.parentItemIdentifier = NSFileProviderItemIdentifier(
             domainItem.parentIdentifier.identifierString
         )
-        filename = domainItem.filename
+        self.filename = domainItem.filename
 
         // UTType resolution
         if domainItem.isDirectory {
-            contentType = .folder
+            self.contentType = .folder
         } else if !domainItem.contentType.isEmpty,
                   let utt = UTType(mimeType: domainItem.contentType)
         {
-            contentType = utt
+            self.contentType = utt
         } else {
             let ext = (domainItem.filename as NSString).pathExtension
             if !ext.isEmpty, let utt = UTType(filenameExtension: ext) {
-                contentType = utt
+                self.contentType = utt
             } else {
-                contentType = .data
+                self.contentType = .data
             }
         }
 
@@ -63,12 +63,12 @@ final class OfemFPEItem: NSObject, NSFileProviderItem, @unchecked Sendable {
             case .addSubitems: bitmask.insert(.allowsAddingSubItems)
             }
         }
-        capabilities = bitmask.isEmpty ? [.allowsReading, .allowsContentEnumerating] : bitmask
+        self.capabilities = bitmask.isEmpty ? [.allowsReading, .allowsContentEnumerating] : bitmask
 
-        documentSize = domainItem.isDirectory ? nil : NSNumber(value: domainItem.size)
-        contentModificationDate = domainItem.modificationDate
+        self.documentSize = domainItem.isDirectory ? nil : NSNumber(value: domainItem.size)
+        self.contentModificationDate = domainItem.modificationDate
 
-        itemVersion = NSFileProviderItemVersion(
+        self.itemVersion = NSFileProviderItemVersion(
             contentVersion: domainItem.contentVersion,
             metadataVersion: domainItem.metadataVersion
         )

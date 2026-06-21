@@ -444,6 +444,6 @@ func fallbackVersion(seed: String, size: Int64, mtime: Date?) -> Data {
 
 extension UInt64 {
     var bytes: [UInt8] {
-        withUnsafeBytes(of: bigEndian, Array.init)
+        withUnsafeBytes(of: self.bigEndian, Array.init)
     }
 }

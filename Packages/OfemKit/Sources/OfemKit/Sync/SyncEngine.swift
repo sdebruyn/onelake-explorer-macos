@@ -122,8 +122,8 @@ public actor SyncEngine {
         self.fabric = fabric
         self.logger = logger
         self.telemetry = telemetry
-        maxDownloads = max(1, maxConcurrentDownloads)
-        maxUploads = max(1, maxConcurrentUploads)
+        self.maxDownloads = max(1, maxConcurrentDownloads)
+        self.maxUploads = max(1, maxConcurrentUploads)
 
         // Scratch dir: per-process sub-directory.
         let base: URL = if let sb = scratchBase {
@@ -134,7 +134,7 @@ public actor SyncEngine {
         }
         let pid = ProcessInfo.processInfo.processIdentifier
         let scratchDir = base.appendingPathComponent("\(pid)")
-        partials = PartialManager(scratchDir: scratchDir)
+        self.partials = PartialManager(scratchDir: scratchDir)
 
         // Defer the stale-partial reap to a background task so SyncEngine.init
         // (called from OfemEngine's @MainActor init) never performs synchronous
@@ -143,8 +143,8 @@ public actor SyncEngine {
             PartialManager.reapStalePartialDirs(under: base)
         }
 
-        pauseManager = PauseManager(cache: cache, onelake: onelake, probeInterval: pauseProbeInterval)
-        offlineTracker = OfflineTracker()
+        self.pauseManager = PauseManager(cache: cache, onelake: onelake, probeInterval: pauseProbeInterval)
+        self.offlineTracker = OfflineTracker()
     }
 
     // MARK: - Workspace / item discovery
@@ -685,7 +685,7 @@ public actor SyncEngine {
                 // in the same actor turn as task completion — no ordering gap.
                 self.cleanupInflight(keyString: keyString, generation: gen)
             }
-            return try await performDownload(key: key, start: start, cached: cached)
+            return try await self.performDownload(key: key, start: start, cached: cached)
         }
         inFlightDownloads[keyString] = task
 

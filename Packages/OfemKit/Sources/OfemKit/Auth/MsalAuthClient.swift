@@ -92,7 +92,7 @@ public final class MsalAuthClient: MsalAuthClientProtocol {
             fileTokenStore: fileTokenStore,
             alias: alias
         )
-        inner = try MSALPublicClientApplication(configuration: config)
+        self.inner = try MSALPublicClientApplication(configuration: config)
         Self.log.debug("MsalAuthClient created: clientID=\(clientID, privacy: .public) tenantID=\(tenantID, privacy: .public)")
     }
 

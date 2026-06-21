@@ -90,8 +90,8 @@ final class SharedOfemAuth {
         } else {
             fatalError("SharedOfemAuth: cannot initialise OfemConfigStore even after removing corrupt file — App Group container may be inaccessible")
         }
-        configStore = finalStore
-        auth = OfemAuth(configStore: finalStore)
+        self.configStore = finalStore
+        self.auth = OfemAuth(configStore: finalStore)
 
         // Surface the problem non-modally after init so the app can finish launching.
         if let err = configError {

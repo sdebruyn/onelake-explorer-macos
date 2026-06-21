@@ -79,8 +79,8 @@ public final class OfemConfigStore: Sendable {
     /// - Throws: ``OfemConfigError`` on TOML parse failures or I/O errors.
     public init(paths: OfemPaths) throws {
         self.paths = paths
-        serialQueue = Self.sharedQueue(for: paths.configFile)
-        config = try Self.load(from: paths)
+        self.serialQueue = Self.sharedQueue(for: paths.configFile)
+        self.config = try Self.load(from: paths)
     }
 
     // MARK: - Public API
@@ -111,7 +111,7 @@ public final class OfemConfigStore: Sendable {
     ///
     /// - Throws: ``OfemConfigError`` on I/O or parse failure.
     public func freshSnapshot() throws -> OfemConfig {
-        let paths = paths
+        let paths = self.paths
         return try serialQueue.sync {
             let fresh = try Self.load(from: paths)
             self.config = fresh
@@ -144,8 +144,8 @@ public final class OfemConfigStore: Sendable {
     /// The mutator must not call back into the store.
     @discardableResult
     public func updateAndSave(_ mutator: @escaping @Sendable (inout OfemConfig) throws -> Void) async throws -> OfemConfig {
-        let paths = paths
-        let queue = serialQueue
+        let paths = self.paths
+        let queue = self.serialQueue
 
         // Step 1: acquire the cross-process file lock.
         // ConfigFileLock.acquire() suspends this Task (via a continuation +

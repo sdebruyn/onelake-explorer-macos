@@ -82,7 +82,7 @@ final class AboutWindowController: NSObject {
         win.center()
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        window = win
+        self.window = win
     }
 }
 

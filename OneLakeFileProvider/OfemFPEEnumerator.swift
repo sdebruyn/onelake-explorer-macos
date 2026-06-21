@@ -183,7 +183,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
             inFlightAnchorTask?.cancel()
             inFlightAnchorTask = nil
         }
-        Self.log.debug("OfemFPEEnumerator[\(alias, privacy: .public)]: invalidated")
+        Self.log.debug("OfemFPEEnumerator[\(self.alias, privacy: .public)]: invalidated")
     }
 
     // MARK: - Enumeration
@@ -603,7 +603,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
             inFlightAnchorTask = nil
         }
         OfemWorkingSetEnumerator.log.debug(
-            "WorkingSet[\(alias, privacy: .public)]: invalidated"
+            "WorkingSet[\(self.alias, privacy: .public)]: invalidated"
         )
     }
 
@@ -616,13 +616,13 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
         // directly under the lock before touching the observer.
         guard taskLock.withLock({ !isInvalidated }) else { return }
         OfemWorkingSetEnumerator.log.debug(
-            "WorkingSet[\(alias, privacy: .public)]: enumerateItems entry — working set always returns empty"
+            "WorkingSet[\(self.alias, privacy: .public)]: enumerateItems entry — working set always returns empty"
         )
         let items: [NSFileProviderItem] = []
         observer.didEnumerate(items)
         observer.finishEnumerating(upTo: nil)
         OfemWorkingSetEnumerator.log.debug(
-            "WorkingSet[\(alias, privacy: .public)]: enumerateItems delivered — count=\(items.count, privacy: .public) nextPage=nil"
+            "WorkingSet[\(self.alias, privacy: .public)]: enumerateItems delivered — count=\(items.count, privacy: .public) nextPage=nil"
         )
     }
 

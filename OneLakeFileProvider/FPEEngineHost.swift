@@ -368,7 +368,7 @@ final class FPEEngineHost: EngineProviding {
 
     init(alias: String, domain: NSFileProviderDomain) {
         self.alias = alias
-        domainIdentifier = domain.identifier
+        self.domainIdentifier = domain.identifier
         // Register this host instance in the process-wide reference count so
         // the last shutdown() can call shutdownSharedSubsystems() automatically.
         Self.activeHostLock.withLock { Self._activeHostCount += 1 }
@@ -417,7 +417,7 @@ final class FPEEngineHost: EngineProviding {
     func markNeedsSignIn() {
         lock.withLock { _needsSignIn = true }
         Self.log.notice(
-            "FPEEngineHost[\(alias, privacy: .public)]: marked needsSignIn — interactive re-authentication required"
+            "FPEEngineHost[\(self.alias, privacy: .public)]: marked needsSignIn — interactive re-authentication required"
         )
     }
 
@@ -474,7 +474,7 @@ final class FPEEngineHost: EngineProviding {
             if let existing = _buildTask { return existing }
             let newTask = Task<OfemEngine, Error> { [weak self] in
                 guard let self else { throw NSFileProviderError(.cannotSynchronize) }
-                return try buildEngine()
+                return try self.buildEngine()
             }
             _buildTask = newTask
             return newTask
@@ -529,7 +529,7 @@ final class FPEEngineHost: EngineProviding {
             startTask?.cancel()
             await startTask?.value
             await e.shutdown()
-            Self.log.info("FPEEngineHost[\(alias, privacy: .public)]: engine reloaded after config change")
+            Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine reloaded after config change")
         }
     }
 
@@ -561,7 +561,7 @@ final class FPEEngineHost: EngineProviding {
             startTask?.cancel()
             await startTask?.value
             await e.shutdown()
-            Self.log.info("FPEEngineHost[\(alias, privacy: .public)]: engine shut down")
+            Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine shut down")
         }
 
         // Release the Alamofire sessions for this alias so a stale or
@@ -608,7 +608,7 @@ final class FPEEngineHost: EngineProviding {
             lock.withLock { _buildError = nil; _lastBuildErrorUptimeNs = 0 }
         }
 
-        Self.log.info("FPEEngineHost[\(alias, privacy: .public)]: building OfemEngine")
+        Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: building OfemEngine")
 
         do {
             // Use the shared configStore so the XPC handler and the engine
@@ -634,7 +634,7 @@ final class FPEEngineHost: EngineProviding {
                 sharedTelemetry: telemetry,
                 sharedSessionPool: sessionPool
             )
-            Self.log.info("FPEEngineHost[\(alias, privacy: .public)]: engine built")
+            Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine built")
             // Start background tasks (telemetry flush timer). Create the Task
             // before taking the lock, then store _engine and _startTask together
             // in a single critical section so shutdown() can never observe
@@ -647,7 +647,7 @@ final class FPEEngineHost: EngineProviding {
                 await engine.start()
                 if let self {
                     Self.log.debug(
-                        "FPEEngineHost[\(alias, privacy: .public)]: engine started"
+                        "FPEEngineHost[\(self.alias, privacy: .public)]: engine started"
                     )
                 }
             }
@@ -662,7 +662,7 @@ final class FPEEngineHost: EngineProviding {
                 _lastBuildErrorUptimeNs = DispatchTime.now().uptimeNanoseconds
             }
             Self.log.error(
-                "FPEEngineHost[\(alias, privacy: .public)]: engine build failed: \(error.localizedDescription, privacy: .public)"
+                "FPEEngineHost[\(self.alias, privacy: .public)]: engine build failed: \(error.localizedDescription, privacy: .public)"
             )
             throw error
         }

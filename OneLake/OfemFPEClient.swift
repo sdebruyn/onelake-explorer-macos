@@ -368,7 +368,7 @@ final class OfemFPEClient {
             guard let self else {
                 throw OfemFPEClientError.connectionFailed("OfemFPEClient deallocated during connection build")
             }
-            return try await buildConnection(domainIdentifier: domainIdentifier)
+            return try await self.buildConnection(domainIdentifier: domainIdentifier)
         }
         inFlightConnections[domainIdentifier] = buildTask
 

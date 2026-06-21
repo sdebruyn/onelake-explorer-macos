@@ -51,10 +51,10 @@ public struct AppInsightsSink: TelemetrySink {
         // bad endpoint string fails fast here, not at send time with a crash.
         let (trackURL, key) = try Self.parseConnectionString(connectionString)
         self.trackURL = trackURL
-        iKey = key
-        role = "ofem"
+        self.iKey = key
+        self.role = "ofem"
         self.installID = installID
-        sdkTag = appVersion.isEmpty ? "ofem" : "ofem:\(appVersion)"
+        self.sdkTag = appVersion.isEmpty ? "ofem" : "ofem:\(appVersion)"
         self.session = session ?? Self.defaultSession
     }
 

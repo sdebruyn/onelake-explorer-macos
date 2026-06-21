@@ -155,14 +155,14 @@ public actor OfemEngine {
             httpBaseURLs: httpBaseURLs
         )
 
-        logger = perAlias.logger
-        cache = sharedCache
-        telemetry = sharedTelemetry
-        sessionPool = sharedSessionPool
-        auth = perAlias.auth
-        sync = perAlias.sync
+        self.logger = perAlias.logger
+        self.cache = sharedCache
+        self.telemetry = sharedTelemetry
+        self.sessionPool = sharedSessionPool
+        self.auth = perAlias.auth
+        self.sync = perAlias.sync
         // Injected init does NOT own the shared subsystems (engine-03).
-        subsystemOwnership = .shared
+        self.subsystemOwnership = .shared
     }
 
     /// Builds all subsystems autonomously — constructs its own cache, telemetry,
@@ -231,17 +231,17 @@ public actor OfemEngine {
             httpBaseURLs: httpBaseURLs
         )
 
-        logger = perAlias.logger
-        cache = ownedCache
-        telemetry = ownedTelemetry
-        sessionPool = ownedPool
-        auth = perAlias.auth
-        sync = perAlias.sync
+        self.logger = perAlias.logger
+        self.cache = ownedCache
+        self.telemetry = ownedTelemetry
+        self.sessionPool = ownedPool
+        self.auth = perAlias.auth
+        self.sync = perAlias.sync
         // Standalone init owns every subsystem it created (engine-03).
         // CacheStore is already held by self.cache (ARC); no need to store
         // it again in the ownership enum — it will be released (and closed
         // by GRDB) when the engine is deallocated after shutdown().
-        subsystemOwnership = .owned(telemetry: ownedTelemetry)
+        self.subsystemOwnership = .owned(telemetry: ownedTelemetry)
     }
 
     // MARK: - Lifecycle

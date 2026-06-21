@@ -524,15 +524,15 @@ final class ChangeWatcher {
                 // cause a busy-spin. This max() is the last line of defense.
                 let interval = max(
                     .seconds(SyncConfig.minMaterializedPollIntervalS),
-                    materializedPollInterval
+                    self.materializedPollInterval
                 )
                 try? await Task.sleep(for: interval)
                 guard !Task.isCancelled else { break }
-                await pollMaterializedAndSignal()
+                await self.pollMaterializedAndSignal()
             }
         }
         Self.log.info(
-            "ChangeWatcher: materialized-container poll loop started (interval=\(materializedPollInterval, privacy: .public))"
+            "ChangeWatcher: materialized-container poll loop started (interval=\(self.materializedPollInterval, privacy: .public))"
         )
     }
 

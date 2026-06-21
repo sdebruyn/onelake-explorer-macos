@@ -640,7 +640,7 @@ final class MenuStatusModel: ObservableObject {
             defer { Task { @MainActor [weak self] in self?.endWrite(.cacheMaxSize) } }
             try? await Task.sleep(for: MenuStatusModel.setCacheLimitDebounce)
             guard let self, !Task.isCancelled else { return }
-            await writeConfig(key: OfemConfigKey.cacheMaxSizeGB, value: String(clamped))
+            await self.writeConfig(key: OfemConfigKey.cacheMaxSizeGB, value: String(clamped))
             refresh()
         }
     }
@@ -652,7 +652,7 @@ final class MenuStatusModel: ObservableObject {
         Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.endWrite(.telemetry) } }
             guard let self else { return }
-            await writeConfig(
+            await self.writeConfig(
                 key: OfemConfigKey.telemetry,
                 value: enabled ? "on" : "off"
             )
@@ -670,7 +670,7 @@ final class MenuStatusModel: ObservableObject {
             defer { Task { @MainActor [weak self] in self?.endWrite(.netMaxUploads) } }
             try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
             guard let self, !Task.isCancelled else { return }
-            await writeConfig(
+            await self.writeConfig(
                 key: OfemConfigKey.netMaxUploads,
                 value: String(clamped)
             )
@@ -688,7 +688,7 @@ final class MenuStatusModel: ObservableObject {
             defer { Task { @MainActor [weak self] in self?.endWrite(.netMaxDownloads) } }
             try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
             guard let self, !Task.isCancelled else { return }
-            await writeConfig(
+            await self.writeConfig(
                 key: OfemConfigKey.netMaxDownloads,
                 value: String(clamped)
             )
@@ -714,7 +714,7 @@ final class MenuStatusModel: ObservableObject {
             defer { Task { @MainActor [weak self] in self?.endWrite(.materializedPollInterval) } }
             try? await Task.sleep(for: MenuStatusModel.setPollIntervalDebounce)
             guard let self, !Task.isCancelled else { return }
-            await writeConfig(
+            await self.writeConfig(
                 key: OfemConfigKey.syncMaterializedPollIntervalS,
                 value: String(clamped)
             )
@@ -729,7 +729,7 @@ final class MenuStatusModel: ObservableObject {
         Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.endWrite(.logLevel) } }
             guard let self else { return }
-            await writeConfig(key: OfemConfigKey.logLevel, value: level)
+            await self.writeConfig(key: OfemConfigKey.logLevel, value: level)
             refresh()
         }
     }
