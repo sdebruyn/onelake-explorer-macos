@@ -1247,8 +1247,15 @@ public actor SyncEngine {
     /// regardless of its `syncedAt` timestamp (sync-25 fix: removes the
     /// time-window guard that coupled folder-content TTL with discovery expiry).
     ///
-    /// The next working-set poll will re-pull the container so the cleared item
-    /// (e.g. a now-filtered SQLEndpoint surfacing as `<name> 2`) leaves Finder.
+    /// Evicted rows surface to Finder via two paths depending on whether the
+    /// container is materialized:
+    /// - **Materialized** (in the working-set): the poll loop re-pulls it on
+    ///   its next tick, finds a delta, and signals `.workingSet`.
+    /// - **Non-materialized**: it is re-listed fresh on the next enumeration
+    ///   open (cold-cache path in ``enumerate(key:)``).
+    ///
+    /// (The former per-container `signalEnumerator(for:)` call was removed in
+    /// #344 — it is a no-op on a replicated `NSFileProviderReplicatedExtension`.)
     private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String) async {
         guard let kids = try? await cache.children(of: parent) else {
             Self.log.warning("expireDiscoveryRows: cache.children failed, stale rows may persist")
@@ -1256,8 +1263,7 @@ public actor SyncEngine {
         }
         // `kids` are rows that currently EXIST in the cache (from
         // cache.children), so every key built here targets a present row that
-        // gets deleted. The next working-set poll will re-pull the affected
-        // container so the cleared rows leave Finder.
+        // gets deleted.
         let deleteBatch = kids
             .filter { !seen.contains($0.path) }
             .map { k in
