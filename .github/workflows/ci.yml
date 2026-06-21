@@ -19,22 +19,26 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     env:
-      DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - uses: actions/checkout@v7.0.0
 
-      - name: Assert Xcode 16.3 is present
-        # Fail fast if the runner image no longer ships Xcode 16.3 rather
+      - name: Assert Xcode 16.4 and Swift 6.1.2 are present
+        # Fail fast if the runner image no longer ships Xcode 16.4 rather
         # than silently falling back to a different Xcode version.
+        # periphery 3.7.4 requires Swift >= 6.1.2 (Xcode 16.4); the build,
+        # tests, and periphery scan all share this single Xcode so their
+        # index stores are compatible.
         run: |
           set -euo pipefail
-          if [ ! -d /Applications/Xcode_16.3.app ]; then
-            echo "ERROR: Xcode_16.3.app not found at /Applications/Xcode_16.3.app" >&2
+          if [ ! -d /Applications/Xcode_16.4.app ]; then
+            echo "ERROR: Xcode_16.4.app not found at /Applications/Xcode_16.4.app" >&2
             echo "Available Xcode installations:" >&2
             ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
             exit 1
           fi
           xcodebuild -version
+          swift --version
 
       - name: Check bundle-ID consistency
         # Asserts bundle IDs, team prefix, and app-group are consistent across
@@ -50,7 +54,7 @@ jobs:
           path: |
             ~/Library/Caches/Homebrew/downloads
             ~/Library/Caches/Homebrew/api
-          key: brew-${{ runner.os }}-xcodegen-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: brew-${{ runner.os }}-xcodegen-periphery-3.7.4-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
             brew-${{ runner.os }}-xcodegen-
 
@@ -69,8 +73,23 @@ jobs:
           restore-keys: |
             spm-${{ runner.os }}-
 
-      - name: Install xcodegen
-        run: brew install xcodegen
+      - name: Install xcodegen and periphery
+        run: brew install xcodegen periphery
+
+      - name: Assert periphery 3.7.4
+        # Fail fast if Homebrew installs a different version than expected.
+        # This catches unexpected Homebrew formula updates before they silently
+        # change rule behaviour. Update this assertion when intentionally
+        # upgrading periphery.
+        run: |
+          set -euo pipefail
+          got=$(periphery version)
+          want="3.7.4"
+          if [ "$got" != "$want" ]; then
+            echo "ERROR: periphery version is $got, expected $want" >&2
+            exit 1
+          fi
+          echo "periphery $got"
 
       - name: Bootstrap local xcconfig
         # CI has no signing identity; the sample file's placeholder
@@ -84,13 +103,56 @@ jobs:
       - name: Verify project.pbxproj exists
         run: test -f OneLake.xcodeproj/project.pbxproj
 
-      - name: Smoke tests (unsigned, host-less)
-        # Runs the host-app logic bundle (OneLakeHostTests) and the FPE logic
-        # bundle (OneLakeFileProviderTests). Runs before the slower full app
-        # build so a Swift compile regression surfaces in seconds.
-        # `make test` writes DerivedData/HostTests.xcresult and
-        # DerivedData/FPETests.xcresult with coverage for Codecov upload below.
-        run: make test
+      - name: Build for testing (single compile)
+        # One xcodebuild pass compiles the app, the File Provider .appex, and
+        # both test bundles (OneLakeHostTests + OneLakeFileProviderTests) — the
+        # OneLake scheme lists both test targets in its test: action. The
+        # DerivedData/Index.noindex/DataStore written here is also consumed by
+        # the periphery scan below, so the entire job shares a single compile.
+        # -enableCodeCoverage YES instruments the test bundles at build time so
+        # the resulting xcresult files contain coverage data that xcresultparser
+        # can export; without this flag, test-without-building produces an
+        # xcresult with no coverage archive and xcresultparser exits non-zero.
+        run: |
+          xcodebuild build-for-testing \
+            -project OneLake.xcodeproj \
+            -scheme OneLake \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath DerivedData \
+            -enableCodeCoverage YES \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+
+      - name: Run host-app tests (no rebuild)
+        # test-without-building reuses the OneLake_*.xctestrun produced by
+        # build-for-testing above — no second compile. -only-testing scopes
+        # execution to OneLakeHostTests while keeping the OneLake scheme (which
+        # owns the .xctestrun file). A separate result bundle per suite
+        # preserves the host/fpe Codecov flag split.
+        run: |
+          rm -rf DerivedData/HostTests.xcresult
+          xcodebuild test-without-building \
+            -project OneLake.xcodeproj \
+            -scheme OneLake \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath DerivedData \
+            -only-testing:OneLakeHostTests \
+            -enableCodeCoverage YES \
+            -resultBundlePath DerivedData/HostTests.xcresult
+
+      - name: Run FPE tests (no rebuild)
+        # Same pattern as the host-app step: OneLake scheme + -only-testing
+        # to select the FPE bundle, separate .xcresult for the fpe Codecov flag.
+        run: |
+          rm -rf DerivedData/FPETests.xcresult
+          xcodebuild test-without-building \
+            -project OneLake.xcodeproj \
+            -scheme OneLake \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath DerivedData \
+            -only-testing:OneLakeFileProviderTests \
+            -enableCodeCoverage YES \
+            -resultBundlePath DerivedData/FPETests.xcresult
 
       - name: Export host-app coverage
         run: |
@@ -133,30 +195,46 @@ jobs:
           disable_search: true
           fail_ci_if_error: false
 
-      - name: Build app + extension (unsigned)
-        # Compiles the OneLake app and the File Provider .appex with code
-        # signing disabled. Catches Swift compile regressions on every PR
-        # so they no longer surface for the first time on a release tag.
-        run: make build-ci
+      - name: Verify index store exists
+        # Fail fast with a clear message if Xcode changes its DerivedData layout
+        # in a future version, rather than surfacing a cryptic periphery error.
+        run: |
+          test -d DerivedData/Index.noindex/DataStore || {
+            echo "ERROR: index store not found at DerivedData/Index.noindex/DataStore" >&2
+            echo "       Did build-for-testing run with -derivedDataPath DerivedData?" >&2
+            exit 1
+          }
+
+      - name: Dead-code scan (periphery, no rebuild)
+        # --skip-build reuses the index store written by the build-for-testing
+        # step above (DerivedData/Index.noindex/DataStore). No second compile.
+        # strict: true in .periphery.yml — any new finding fails the build.
+        # To intentionally keep a symbol, annotate it with // periphery:ignore.
+        run: |
+          periphery scan \
+            --skip-build \
+            --index-store-path DerivedData/Index.noindex/DataStore \
+            --format xcode
 
   ofemkit-tests:
     name: OfemKit package tests
     runs-on: macos-15
     timeout-minutes: 20
     env:
-      DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - uses: actions/checkout@v7.0.0
 
-      - name: Assert Xcode 16.3 is present
+      - name: Assert Xcode 16.4 and Swift 6.1.2 are present
         run: |
           set -euo pipefail
-          if [ ! -d /Applications/Xcode_16.3.app ]; then
-            echo "ERROR: Xcode_16.3.app not found at /Applications/Xcode_16.3.app" >&2
+          if [ ! -d /Applications/Xcode_16.4.app ]; then
+            echo "ERROR: Xcode_16.4.app not found at /Applications/Xcode_16.4.app" >&2
             ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
             exit 1
           fi
           xcodebuild -version
+          swift --version
 
       - name: Cache SwiftPM build artifacts
         uses: actions/cache@v5.0.5
