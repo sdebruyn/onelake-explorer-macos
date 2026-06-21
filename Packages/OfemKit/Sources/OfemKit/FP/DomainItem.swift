@@ -257,10 +257,13 @@ public extension DomainItem {
 
         // Construct the identifier first; derive the parent from it so the
         // path-splitting logic is owned in exactly one place: ItemIdentifier
-        // (fp-03).
-        let identifier: ItemIdentifier = record.path.isEmpty
-            ? .item(workspaceID: record.workspaceID, itemID: record.itemID)
-            : .path(workspaceID: record.workspaceID, itemID: record.itemID, path: record.path)
+        // (fp-03). The record.path.isEmpty branch is unreachable here — the
+        // empty-path guard above throws first — so we always produce .path.
+        let identifier: ItemIdentifier = .path(
+            workspaceID: record.workspaceID,
+            itemID: record.itemID,
+            path: record.path
+        )
 
         let parentIdentifier = identifier.parentIdentifier
 

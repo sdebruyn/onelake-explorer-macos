@@ -482,37 +482,55 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
             // List the root of a Fabric item (e.g. lakehouse root).
             let key = cacheKey(alias: alias, workspaceID: workspaceID, itemID: itemID, path: "")
             let records = try await engine.sync.enumerate(key: key)
-            return try records.compactMap { record in
-                let di = try DomainItem.from(record: record)
-                let item = OfemFPEItem(from: di)
-                // Defensive guard: drop any item whose filename is blank before
-                // handing it to FileProvider — blank filename → SIGABRT.
-                guard !item.filename.isEmpty else {
+            // Skip-and-continue on any bad row, matching the enumerateChanges
+            // policy. A hard throw here would abort the entire folder listing.
+            var items: [OfemFPEItem] = []
+            for record in records {
+                do {
+                    let di = try DomainItem.from(record: record)
+                    let item = OfemFPEItem(from: di)
+                    // Defensive guard: blank filename → FileProvider SIGABRT.
+                    guard !item.filename.isEmpty else {
+                        Self.log.error(
+                            "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.item) — skipping empty-filename row (path=\(record.path, privacy: .public))"
+                        )
+                        continue
+                    }
+                    items.append(item)
+                } catch {
                     Self.log.error(
-                        "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.item) — skipping empty-filename row (path=\(record.path, privacy: .public))"
+                        "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.item) — skipping un-decodable record (path=\(record.path, privacy: .public)): \(error.localizedDescription, privacy: .public)"
                     )
-                    return nil
                 }
-                return item
             }
+            return items
 
         case let .path(workspaceID, itemID, path):
             // List a sub-path inside a Fabric item.
             let key = cacheKey(alias: alias, workspaceID: workspaceID, itemID: itemID, path: path)
             let records = try await engine.sync.enumerate(key: key)
-            return try records.compactMap { record in
-                let di = try DomainItem.from(record: record)
-                let item = OfemFPEItem(from: di)
-                // Defensive guard: drop any item whose filename is blank before
-                // handing it to FileProvider — blank filename → SIGABRT.
-                guard !item.filename.isEmpty else {
+            // Skip-and-continue on any bad row, matching the enumerateChanges
+            // policy. A hard throw here would abort the entire folder listing.
+            var items: [OfemFPEItem] = []
+            for record in records {
+                do {
+                    let di = try DomainItem.from(record: record)
+                    let item = OfemFPEItem(from: di)
+                    // Defensive guard: blank filename → FileProvider SIGABRT.
+                    guard !item.filename.isEmpty else {
+                        Self.log.error(
+                            "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.path) — skipping empty-filename row (path=\(record.path, privacy: .public))"
+                        )
+                        continue
+                    }
+                    items.append(item)
+                } catch {
                     Self.log.error(
-                        "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.path) — skipping empty-filename row (path=\(record.path, privacy: .public))"
+                        "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.path) — skipping un-decodable record (path=\(record.path, privacy: .public)): \(error.localizedDescription, privacy: .public)"
                     )
-                    return nil
                 }
-                return item
             }
+            return items
         }
     }
 }

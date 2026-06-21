@@ -469,15 +469,26 @@ public actor SyncEngine {
         // does not exist yet). An unconditional re-upsert on every poll bumps
         // syncedAtNs even when diff.total == 0, which makes itemsChangedAfter
         // return the parent row on every poll — producing phantom working-set
-        // deltas (fpe-18). Additionally, for the item-root container (path == ""),
-        // Enumerator.baseName("") == "" so the row would get an empty `name`,
-        // which the FPE would emit as an item with filename == "" → SIGABRT.
+        // deltas (fpe-18).
+        //
+        // Name for the item-root row (path == ""): baseName("") == "", which
+        // would produce an empty-filename cache row — a landmine even though
+        // DomainItem.from(record:) now rejects it. Use the itemID as a
+        // non-displayable but non-empty sentinel instead. This row is an internal
+        // freshness marker, never emitted as a delta item (fpe-18).
         let existingParent = try? await cache.fetch(key: key)
         let needsWrite = existingParent == nil
             || diff.total > 0
             || existingParent?.childrenSyncedAtNs == 0
             || existingParent?.itemType != folderItemType
         if needsWrite {
+            let parentName: String
+            if let existing = existingParent, !existing.name.isEmpty {
+                parentName = existing.name
+            } else {
+                let computed = Enumerator.baseName(key.path)
+                parentName = computed.isEmpty ? key.itemID : computed
+            }
             let existingParentLastAccessed = existingParent?.lastAccessedNs ?? nowNs
             let parent = MetadataRecord(
                 accountAlias: key.accountAlias,
@@ -485,9 +496,7 @@ public actor SyncEngine {
                 itemID: key.itemID,
                 path: key.path,
                 parentPath: Enumerator.parentPath(key.path),
-                name: existingParent?.name.isEmpty == false
-                    ? existingParent!.name
-                    : Enumerator.baseName(key.path),
+                name: parentName,
                 isDir: true,
                 lastAccessedNs: existingParentLastAccessed == 0 ? nowNs : existingParentLastAccessed,
                 syncedAtNs: nowNs,

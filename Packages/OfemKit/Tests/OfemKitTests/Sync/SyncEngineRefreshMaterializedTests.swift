@@ -674,4 +674,25 @@ struct SyncEngineRefreshMaterializedTests {
         let nsAfter = try await store.maxSyncedAtNs(accountAlias: key.accountAlias)
         #expect(nsAfter == nsBefore)
     }
+
+    @Test("Item-root first-sight refresh writes a non-empty name (never empty-filename landmine)")
+    func itemRootFirstSightWritesNonEmptyName() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // path == "" — no prior row, so needsWrite == true on first sight.
+        let key = Self.folderKey
+        ol.listPathResults.append(.success(ListResult(entries: [
+            PathEntry.file(name: "a.txt", size: 0, eTag: "v1"),
+        ])))
+
+        _ = try await engine.refreshMaterializedContainer(key: key)
+
+        // The parent row must exist AND have a non-empty name so it can never be
+        // emitted as a delta item with filename == "" (fpe-18).
+        let parent = try await store.fetch(key: key)
+        #expect(!parent.name.isEmpty)
+        #expect(parent.childrenSyncedAtNs > 0)
+    }
 }
