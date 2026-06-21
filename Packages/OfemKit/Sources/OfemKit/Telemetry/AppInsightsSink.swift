@@ -216,11 +216,9 @@ private struct TrackResponse: Decodable {
 }
 
 private struct ItemError: Decodable {
-    // periphery:ignore - decoded from JSON response body via Decodable synthesis
     let index: Int
-    // periphery:ignore - decoded from JSON response body
     let statusCode: Int
-    // periphery:ignore - decoded from JSON response body
+    // periphery:ignore - decoded from JSON response body; not read back in error handling
     let message: String?
 }
 
