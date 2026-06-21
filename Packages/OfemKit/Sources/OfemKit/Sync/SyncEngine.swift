@@ -29,16 +29,6 @@ public actor SyncEngine {
 
     // MARK: - Configuration
 
-    /// Default debounce window for revalidate-on-open.
-    ///
-    /// After a folder is served from the cache, a background revalidate is
-    /// scheduled unless one ran (or started) within this window. Listings are
-    /// stale-while-revalidate: the cache is served instantly on every open and
-    /// a fresh listing is fetched in the background, so this is a coalescing
-    /// window (suppress a burst of opens into one DFS `listPath`), not a
-    /// freshness TTL — the cache is never withheld because it is "too old".
-    public static let defaultRevalidateDebounce: TimeInterval = 10  // 10 s
-
     /// Default per-account cap on concurrent downloads.
     public static let defaultMaxConcurrentDownloads = 8
 
@@ -68,34 +58,9 @@ public actor SyncEngine {
 
     // MARK: - Internal state
 
-    private let revalidateDebounce: TimeInterval
     private let pauseManager: PauseManager
     private let offlineTracker: OfflineTracker
     private let partials: PartialManager
-
-    /// In-flight background revalidations keyed by ``CacheKey/stableKeyString``.
-    ///
-    /// A second open for the same container that arrives while a revalidate is
-    /// running joins the existing task instead of spawning a second one. The
-    /// task never throws (errors are handled inside it), so its value is the
-    /// applied ``Diff`` — `Diff()` (total 0) for a no-op, cancelled, offline, or
-    /// failed revalidate. The map entry is removed when the task value is
-    /// delivered, not when the spawning frame unwinds, so late joiners always
-    /// find a live entry (mirrors the in-flight download coalescing).
-    private var inFlightRevalidations: [String: Task<Diff, Never>] = [:]
-
-    /// Wall-clock instant of the last revalidate START per container key. Written
-    /// synchronously in ``scheduleRevalidate(key:parent:)`` (no `await` between
-    /// the debounce checks and the write) so a burst of opens within
-    /// ``revalidateDebounce`` cannot each spawn a task. Pruned opportunistically
-    /// of entries older than the debounce window so it does not grow unbounded
-    /// with the number of distinct folders ever opened.
-    private var lastRevalidateStarted: [String: Date] = [:]
-
-    /// Set once the engine is shutting down. A late ``enumerate(key:)`` arriving
-    /// while ``quiesceRevalidations()`` is draining the in-flight tasks must not
-    /// re-spawn a revalidate that would write to the about-to-close cache.
-    private var isShutdown = false
 
     /// Per-account semaphores for downloads, uploads, and materialized-set refreshes.
     ///
@@ -136,7 +101,6 @@ public actor SyncEngine {
     /// - fabric: Fabric REST client (required).
     /// - logger: Structured logger.
     /// - telemetry: Optional telemetry sink.
-    /// - revalidateDebounce: Coalescing window for revalidate-on-open.
     /// - maxConcurrentDownloads: Per-account download cap.
     /// - maxConcurrentUploads: Per-account upload cap.
     /// - scratchBase: Directory for download spill files. Defaults to
@@ -148,7 +112,6 @@ public actor SyncEngine {
         fabric: any FabricClientProtocol,
         logger: OfemLogger = OfemLogger(),
         telemetry: TelemetryClient? = nil,
-        revalidateDebounce: TimeInterval = SyncEngine.defaultRevalidateDebounce,
         maxConcurrentDownloads: Int = SyncEngine.defaultMaxConcurrentDownloads,
         maxConcurrentUploads: Int = SyncEngine.defaultMaxConcurrentUploads,
         scratchBase: URL? = nil,
@@ -159,7 +122,6 @@ public actor SyncEngine {
         self.fabric = fabric
         self.logger = logger
         self.telemetry = telemetry
-        self.revalidateDebounce = max(0, revalidateDebounce)
         self.maxDownloads = max(1, maxConcurrentDownloads)
         self.maxUploads   = max(1, maxConcurrentUploads)
 
@@ -331,9 +293,9 @@ public actor SyncEngine {
 
     /// Returns the children of the container identified by `key`.
     ///
-    /// Stale-while-revalidate: when the cache already holds children for `key`,
-    /// they are returned immediately AND a background ``refreshFolder(key:)`` is
-    /// scheduled (debounced + coalesced — see ``scheduleRevalidate(key:parent:)``).
+    /// Cache-hit path: when the cache already holds children for `key`, they are
+    /// returned immediately. The host poll loop drives freshness via
+    /// ``refreshMaterialized(alias:keys:concurrencyCap:)`` + `.workingSet` signal.
     /// Only on a cold cache (no cached children) does a blocking refresh run
     /// before returning, so first open still yields live entries.
     ///
@@ -347,7 +309,6 @@ public actor SyncEngine {
         // `cachedListingIfPresent` throws `FPError.wrongItemKind` for files —
         // propagate that error directly instead of swallowing it.
         if let present = try await cachedListingIfPresent(key: key) {
-            scheduleRevalidate(key: key, parent: present.parent)
             await track(eventName: "folder_list", alias: key.accountAlias, start: start, outcome: .success())
             return present.children
         }
@@ -968,16 +929,6 @@ public actor SyncEngine {
         get async { await offlineTracker.currentlyOffline() }
     }
 
-    // MARK: - Revalidate observability (internal — tests / diagnostics)
-
-    /// The in-flight background revalidation task for `key`, or `nil` when none
-    /// is running. Lets a caller deterministically join a fire-and-forget
-    /// revalidate (tests `await` its value to assert the applied ``Diff`` and the
-    /// resulting cache state without polling).
-    func revalidationTask(for key: CacheKey) -> Task<Diff, Never>? {
-        inFlightRevalidations[key.stableKeyString]
-    }
-
     // MARK: - Private: in-flight cleanup (sync-24)
 
     /// Removes the coalescing map entry for `keyString` if it still belongs to
@@ -1259,7 +1210,8 @@ public actor SyncEngine {
     /// enumerated and currently has none).
     ///
     /// Presence — not freshness — gates the cache: a populated listing is always
-    /// served, however old, and revalidated in the background. Throws
+    /// served, however old. Freshness is driven by the host poll loop via
+    /// ``refreshMaterialized(alias:keys:concurrencyCap:)``. Throws
     /// ``FPError/wrongItemKind(_:)`` when `key` refers to a file.
     private func cachedListingIfPresent(key: CacheKey) async throws -> CachedListing? {
         guard let parent = try? await cache.fetch(key: key) else { return nil }
@@ -1268,148 +1220,12 @@ public actor SyncEngine {
         }
         let children = try await cache.children(of: key)
         // A folder whose children have been enumerated at least once is "present"
-        // even when genuinely empty — serve it (empty listing) and revalidate in
-        // the background rather than blocking on a refresh every open.
+        // even when genuinely empty — serve it (empty listing) rather than
+        // blocking on a refresh every open.
         if children.isEmpty && !Enumerator.childrenEnumerated(record: parent) {
             return nil
         }
         return CachedListing(parent: parent, children: children)
-    }
-
-    // MARK: - Background revalidate (stale-while-revalidate)
-
-    /// Schedules a debounced, coalesced background ``refreshFolder(key:)`` for
-    /// `key` after the cache has already been served.
-    ///
-    /// Debounce + coalescing rules (all synchronous — no `await`, so there is no
-    /// suspension point at which a sibling open could double-spawn):
-    /// - If the engine is shutting down, skip (no new writes to a closing cache).
-    /// - If one is already in flight for this key, skip (the running task will
-    ///   apply the latest remote state and fire the change handler).
-    /// - If the cache row was reconciled within ``revalidateDebounce`` (its
-    ///   `childrenSyncedAt`, via ``Enumerator/isFresh(record:ttl:now:)``), skip —
-    ///   a fresh-enough listing does not warrant another round-trip.
-    /// - If a revalidate started within ``revalidateDebounce`` of now (process
-    ///   stamp), skip — coalesces a burst of opens before the first refresh has
-    ///   written `childrenSyncedAt` back to the cache.
-    /// - Otherwise record the start stamp and insert the in-flight task.
-    ///
-    /// The task is fire-and-forget: `enumerate` never awaits it. All errors
-    /// (offline, cancellation, list failure) are absorbed inside the task as
-    /// silent no-ops that leave the cache intact (``refreshFolder`` rethrows
-    /// before its destructive reconcile, so a failed fetch deletes nothing).
-    private func scheduleRevalidate(key: CacheKey, parent: MetadataRecord) {
-        // After shutdown started, never spawn a task that would write to the
-        // about-to-close cache (a late enumerate must not re-arm a revalidate).
-        if isShutdown { return }
-
-        let keyString = key.stableKeyString
-
-        // Already running for this key → the in-flight task covers this open.
-        if inFlightRevalidations[keyString] != nil { return }
-
-        let now = Date()
-
-        // Cache row reconciled within the debounce window → already fresh enough.
-        if Enumerator.isFresh(record: parent, ttl: revalidateDebounce, now: now) {
-            return
-        }
-
-        // A revalidate started within the debounce window → coalesce this open.
-        // (Covers the gap before the first refresh writes childrenSyncedAt back.)
-        if let last = lastRevalidateStarted[keyString],
-           now.timeIntervalSince(last) <= revalidateDebounce {
-            return
-        }
-
-        // Drop stamps older than the debounce window so the map stays bounded by
-        // the number of folders opened within one window, not all folders ever
-        // opened. The just-set stamp below survives (it is younger than now).
-        pruneStaleRevalidateStamps(now: now)
-
-        // Record the start stamp + in-flight entry synchronously so a burst of
-        // opens (which run serially on the actor with no await between the
-        // checks above and here) cannot each pass the debounce check.
-        lastRevalidateStarted[keyString] = now
-
-        let task = Task<Diff, Never> { [self] in
-            await self.runRevalidate(key: key, keyString: keyString)
-        }
-        inFlightRevalidations[keyString] = task
-    }
-
-    /// Evicts `lastRevalidateStarted` entries older than ``revalidateDebounce``.
-    ///
-    /// An evicted stamp can no longer suppress a revalidate (its window has
-    /// elapsed), so dropping it changes nothing about debounce semantics while
-    /// bounding the map to folders touched within the current window.
-    private func pruneStaleRevalidateStamps(now: Date) {
-        lastRevalidateStarted = lastRevalidateStarted.filter {
-            now.timeIntervalSince($0.value) <= revalidateDebounce
-        }
-    }
-
-    /// Body of a single background revalidate. Never throws: offline and
-    /// live-fetch failures are silent no-ops that return `Diff()`.
-    ///
-    /// Shutdown does not cancel this task (see ``quiesceRevalidations()``): once
-    /// started it runs to a consistent end, so a reconcile that has passed
-    /// `listPath` always completes its write rather than tearing it mid-flight.
-    private func runRevalidate(key: CacheKey, keyString: String) async -> Diff {
-        // Remove the in-flight entry once the value is produced so late joiners
-        // always found a live entry while the task was running, and a future
-        // open can spawn a fresh revalidate.
-        defer { inFlightRevalidations.removeValue(forKey: keyString) }
-
-        let diff: Diff
-        do {
-            diff = try await refreshFolder(key: key)
-        } catch is CancellationError {
-            // Defensive: a stray cancellation is a silent no-op (no failure
-            // telemetry). Shutdown does not cancel, so this is not the normal path.
-            return Diff()
-        } catch {
-            // Offline or any live-fetch failure: refreshFolder already observed
-            // offline state and rethrew BEFORE its destructive reconcile, so the
-            // cache is intact. Stay silent (this is a background refresh — the
-            // cache was already served to the caller); no failure telemetry.
-            return Diff()
-        }
-
-        return diff
-    }
-
-    /// Quiesces background revalidation for shutdown: blocks new revalidates and
-    /// waits for the in-flight ones to finish before returning.
-    ///
-    /// The contract is *complete, don't abort*. A revalidate that has passed
-    /// `listPath` is committed to writing; its reconcile (`batchUpsert` /
-    /// `batchDelete` → GRDB `dbPool.write`) honours `Task.isCancelled` and would
-    /// throw mid-write if cancelled, leaving a torn/no-op write. So this does NOT
-    /// cancel the tasks — it sets `isShutdown` (so no NEW revalidate spawns, even
-    /// from a late ``enumerate(key:)`` arriving during the drain) and then
-    /// `await`s each in-flight task to completion, draining a consistent write.
-    /// GRDB's pool is closed on dealloc only after this returns, so no write
-    /// outlives shutdown.
-    ///
-    /// A still-running `listPath` bounds the wait: the HTTP client uses a finite
-    /// per-request timeout, so a genuinely stuck call returns or throws (the task
-    /// then completes via the offline/failed no-op path) rather than hanging
-    /// shutdown indefinitely.
-    func quiesceRevalidations() async {
-        isShutdown = true
-        lastRevalidateStarted.removeAll()
-        // Snapshot the tasks: each task's own defer prunes inFlightRevalidations
-        // as it finishes, so iterate a copy rather than the live map.
-        let tasks = Array(inFlightRevalidations.values)
-        // Await all in-flight tasks concurrently: all group children suspend
-        // simultaneously, so the drain is bounded by a single worst-case timeout
-        // regardless of how many revalidations are in flight.
-        await withDiscardingTaskGroup { group in
-            for task in tasks {
-                group.addTask { _ = await task.value }
-            }
-        }
     }
 
     private func isBlobFresh(key: CacheKey, cached: MetadataRecord) async throws -> (Bool, PathProperties?) {
@@ -1424,29 +1240,30 @@ public actor SyncEngine {
         return (false, props)
     }
 
-    /// Deletes discovery rows for `parent` that are absent from `seen`, and
-    /// returns how many rows were expired.
+    /// Deletes discovery rows for `parent` that are absent from `seen`.
     ///
     /// Uses the authoritative `seen` set from the current listing: any row
     /// not in `seen` was not returned by the remote and should be expired,
     /// regardless of its `syncedAt` timestamp (sync-25 fix: removes the
     /// time-window guard that coupled folder-content TTL with discovery expiry).
     ///
-    /// The count lets callers decide whether something actually changed; the
-    /// next working-set poll will re-pull the container so the cleared item
-    /// (e.g. a now-filtered SQLEndpoint surfacing as `<name> 2`) leaves Finder.
-    @discardableResult
-    private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String) async -> Int {
+    /// Evicted rows surface to Finder via two paths depending on whether the
+    /// container is materialized:
+    /// - **Materialized** (in the working-set): the poll loop re-pulls it on
+    ///   its next tick, finds a delta, and signals `.workingSet`.
+    /// - **Non-materialized**: it is re-listed fresh on the next enumeration
+    ///   open (cold-cache path in ``enumerate(key:)``).
+    ///
+    /// (The former per-container `signalEnumerator(for:)` call was removed in
+    /// #344 — it is a no-op on a replicated `NSFileProviderReplicatedExtension`.)
+    private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String) async {
         guard let kids = try? await cache.children(of: parent) else {
             Self.log.warning("expireDiscoveryRows: cache.children failed, stale rows may persist")
-            return 0
+            return
         }
         // `kids` are rows that currently EXIST in the cache (from
         // cache.children), so every key built here targets a present row that
-        // gets deleted. The count therefore equals the real number of evictions
-        // — it is not inflated by already-absent rows. The next working-set
-        // poll will re-pull the affected container so the cleared rows leave
-        // Finder without any per-container signal.
+        // gets deleted.
         let deleteBatch = kids
             .filter { !seen.contains($0.path) }
             .map { k in
@@ -1458,7 +1275,6 @@ public actor SyncEngine {
                 )
             }
         await batchDelete(deleteBatch, context: "expireDiscoveryRows")
-        return deleteBatch.count
     }
 
     // MARK: - Shared remote-operation error handler

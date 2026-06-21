@@ -274,13 +274,6 @@ public actor OfemEngine {
     /// deallocated after `shutdown()` returns.  The `HTTPGateRegistry` holds
     /// no persistent resources, so no explicit close is needed.
     public func shutdown() async {
-        // Quiesce background revalidation first: block new revalidates and drain
-        // the in-flight ones to completion so no reconcile is still writing to
-        // the (about-to-be-torn-down) shared cache after this returns. Draining
-        // (rather than cancelling) lets a committed reconcile finish its write
-        // cleanly instead of tearing it mid-flight.
-        await sync.quiesceRevalidations()
-
         switch subsystemOwnership {
         case .shared:
             // Shared subsystems stay alive for other engines — do not touch them.
