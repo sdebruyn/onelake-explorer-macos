@@ -126,6 +126,7 @@ public final class RotatingFileWriter: @unchecked Sendable {
         }
     }
 
+    // periphery:ignore
     /// Closes the active file handle. Subsequent `write(_:)` calls will
     /// re-open the file.
     public func close() {

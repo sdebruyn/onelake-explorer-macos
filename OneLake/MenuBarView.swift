@@ -30,8 +30,6 @@ struct MenuBarView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
 
-    private static let log = Logger(subsystem: ofemSubsystem, category: "menubar-view")
-
     var body: some View {
         // The `.menu` style MenuBarExtra does not fire SwiftUI.onAppear on
         // menu open — onAppear fires once at scene construction only. Periodic

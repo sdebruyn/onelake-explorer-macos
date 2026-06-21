@@ -8,6 +8,7 @@ import OfemKit
 
 // MARK: - CacheKey from identifier
 
+// periphery:ignore
 /// Builds a ``CacheKey`` from an ``ItemIdentifier`` and the account alias.
 ///
 /// Only `.item` and `.path` identifiers map to cache keys; callers must

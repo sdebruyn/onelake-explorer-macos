@@ -181,6 +181,7 @@ final class AsyncSemaphore: @unchecked Sendable {
 
     // MARK: - Inspection (for deterministic tests)
 
+    // periphery:ignore
     /// Returns the number of tasks currently waiting on this semaphore.
     var waiterCount: Int {
         lock.withLock { waiters.count }

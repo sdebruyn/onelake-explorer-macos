@@ -26,6 +26,7 @@ public struct Diff: Sendable {
 
 // MARK: - EnumerateResult
 
+// periphery:ignore
 /// The result of a paged enumeration.
 public struct EnumerateResult: Sendable {
     /// The items on this page.
@@ -44,6 +45,7 @@ public enum VirtualIDs {
 
 // MARK: - Page size
 
+// periphery:ignore
 /// Maximum items returned per ``EnumerateResult`` page.
 let enumeratePageSize = 1000
 
@@ -51,10 +53,9 @@ let enumeratePageSize = 1000
 
 /// Stateless enumeration helpers used by ``SyncEngine``.
 enum Enumerator {
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "Enumerator")
-
     // MARK: - Paging
 
+    // periphery:ignore
     /// Slices `all` into one page starting at the offset encoded in `cursor`.
     static func page(items: [DomainItem], cursor: String?) throws -> EnumerateResult {
         let offset: Int
@@ -116,6 +117,7 @@ enum Enumerator {
 
     // MARK: - Path helpers
 
+    // periphery:ignore
     /// Removes the leading `"<itemGUID>/"` prefix and trims trailing slashes.
     ///
     /// Returns `nil` when `name` does not belong to `itemGUID`.

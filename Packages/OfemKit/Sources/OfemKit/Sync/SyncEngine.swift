@@ -920,6 +920,7 @@ public actor SyncEngine {
 
     // MARK: - Offline status
 
+    // periphery:ignore
     /// Returns `true` when the engine is currently considered offline (recently
     /// observed an offline-class error and the cooldown has not yet expired).
     ///
@@ -1201,6 +1202,7 @@ public actor SyncEngine {
 
     /// A present cached listing: the parent directory row plus its children.
     private struct CachedListing {
+        // periphery:ignore - accessed via .isDir and Enumerator.childrenEnumerated in cachedListingIfPresent
         let parent: MetadataRecord
         let children: [MetadataRecord]
     }

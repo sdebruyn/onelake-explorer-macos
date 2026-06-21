@@ -89,6 +89,7 @@ public struct OfemLogger: Sendable {
         log(level: .warn, message: message, metadata: metadata)
     }
 
+    // periphery:ignore
     /// Logs an error-level message.
     public func error(_ message: String, metadata: [String: String] = [:]) {
         log(level: .error, message: message, metadata: metadata)

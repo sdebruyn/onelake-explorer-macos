@@ -365,6 +365,7 @@ final class MenuStatusModel: ObservableObject {
         }
     }
 
+    // periphery:ignore
     /// Cancel the auto-refresh loop. Call this when no surface is visible
     /// (currently unused — the host keeps the loop alive for the process
     /// lifetime, but `stopAutoRefresh` is the correct hook if that changes).
@@ -506,6 +507,7 @@ final class MenuStatusModel: ObservableObject {
         lastActionError = "Extension version mismatch (host v\(hostVersion), extension v\(fpeVersion)). Restart the app after updating."
     }
 
+    // periphery:ignore
     /// Clears `lastActionError`. Used in tests to reset state between test cases.
     func clearLastActionError() {
         lastActionError = nil

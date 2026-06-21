@@ -9,12 +9,16 @@ public struct Workspace: Sendable, Equatable {
     /// User-visible workspace name.
     public let displayName: String
     /// Workspace type string (e.g. `"Workspace"`, `"PersonalWorkspace"`).
+    // periphery:ignore
     public let type: String
     /// Optional workspace description.
+    // periphery:ignore
     public let description: String
     /// Capacity ID the workspace is assigned to; empty when not assigned.
+    // periphery:ignore
     public let capacityID: String
     /// Domain ID the workspace belongs to; empty when not set.
+    // periphery:ignore
     public let domainID: String
 
     public init(
@@ -45,10 +49,13 @@ public struct Item: Sendable, Equatable {
     /// Item type string (e.g. `"Lakehouse"`, `"Notebook"`).
     public let type: String
     /// Optional item description.
+    // periphery:ignore
     public let description: String
     /// The workspace this item belongs to.
+    // periphery:ignore
     public let workspaceID: String
     /// Optional workspace-folder ID this item is placed in.
+    // periphery:ignore
     public let parentFolderID: String
 
     public init(
@@ -89,14 +96,6 @@ public struct Item: Sendable, Equatable {
         Self.allowedStorageTypes.contains(type.lowercased(with: Self.posixLocale))
     }
 
-    /// `true` when the item type is `"Lakehouse"` (case-insensitive).
-    ///
-    /// Use this predicate wherever `"lakehouse"` must be checked to avoid
-    /// duplicating the locale-independent string comparison.
-    public var isLakehouse: Bool {
-        type.lowercased(with: Self.posixLocale) == "lakehouse"
-    }
-
     /// Shared POSIX locale for case-insensitive item-type comparisons.
     private static let posixLocale = Locale(identifier: "en_US_POSIX")
 
@@ -115,12 +114,16 @@ public struct Item: Sendable, Equatable {
 /// that groups items. Distinct from item-internal folders served by the DFS API.
 public struct Folder: Sendable, Equatable {
     /// Folder unique identifier (UUID).
+    // periphery:ignore
     public let id: String
     /// User-visible folder name.
+    // periphery:ignore
     public let displayName: String
     /// The workspace this folder belongs to.
+    // periphery:ignore
     public let workspaceID: String
     /// Parent folder ID; empty for top-level folders.
+    // periphery:ignore
     public let parentFolderID: String
 
     public init(
@@ -149,6 +152,7 @@ public struct Folder: Sendable, Equatable {
 /// URI cannot be represented as an opaque token. Use
 /// ``FabricClient/listAllWorkspaces(alias:)`` to follow pagination exhaustively
 /// via either continuation form.
+// periphery:ignore
 public struct WorkspacePage: Sendable {
     /// The workspaces on this page.
     public let items: [Workspace]
@@ -170,6 +174,7 @@ public struct WorkspacePage: Sendable {
 ///
 /// **fabric-04:** see `hasContinuation` — a `nil` token does not always mean
 /// last page.
+// periphery:ignore
 public struct ItemPage: Sendable {
     /// The items on this page.
     public let items: [Item]
@@ -190,6 +195,7 @@ public struct ItemPage: Sendable {
 ///
 /// **fabric-04:** see `hasContinuation` — a `nil` token does not always mean
 /// last page.
+// periphery:ignore
 public struct FolderPage: Sendable {
     /// The folders on this page.
     public let items: [Folder]

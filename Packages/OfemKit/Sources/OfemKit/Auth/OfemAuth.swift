@@ -219,11 +219,6 @@ public actor OfemAuth: TokenProvider {
 
     // MARK: - Token acquisition
 
-    /// Acquires an access token for the OneLake ADLS Gen2 DFS audience.
-    public func token(alias: String) async throws -> String {
-        try await tokenForScope(alias: alias, scope: .oneLake)
-    }
-
     /// Acquires an access token for the given audience scope.
     ///
     /// Concurrent callers for the same `(alias, scope)` pair share a single

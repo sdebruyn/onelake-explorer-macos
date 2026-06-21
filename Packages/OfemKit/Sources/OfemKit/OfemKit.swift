@@ -1,3 +1,4 @@
+// periphery:ignore
 /// OfemKit — Swift package for OFEM's core engine (auth, sync, cache, OneLake/Fabric clients).
 ///
 /// The single canonical version string is ``BuildInfo/version``.  It is read

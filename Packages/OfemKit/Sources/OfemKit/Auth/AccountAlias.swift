@@ -25,6 +25,7 @@ public struct AccountAlias: Hashable, Sendable, CustomStringConvertible {
 
     // MARK: - Initialisation
 
+    // periphery:ignore
     /// Creates an `AccountAlias` after validating `rawValue`.
     ///
     /// - Parameter rawValue: The user-supplied alias string.

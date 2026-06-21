@@ -46,6 +46,7 @@ public struct ListResult: Sendable {
 
 /// Metadata returned by a HEAD or GET on a single path.
 public struct PathProperties: Sendable {
+    // periphery:ignore
     public let isDirectory: Bool
     public let contentLength: Int64
     public let eTag: String

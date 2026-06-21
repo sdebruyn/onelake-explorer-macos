@@ -222,6 +222,7 @@ public actor TelemetryClient {
     ///
     /// `failedOp` is passed through `TelemetryRedaction.scrubProperty` so
     /// only operation names drawn from the safe charset reach the sink.
+    // periphery:ignore
     public func trackError(_ error: Error, op: String) async {
         let ns = error as NSError
         let errorCode = TelemetryRedaction.safeErrorCode("\(ns.domain):\(ns.code)")

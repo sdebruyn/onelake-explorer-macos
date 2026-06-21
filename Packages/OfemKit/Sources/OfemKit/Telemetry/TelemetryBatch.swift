@@ -74,6 +74,7 @@ actor TelemetryBatch {
         }
     }
 
+    // periphery:ignore
     /// Current number of buffered events.
     var count: Int {
         buffer.count

@@ -30,6 +30,7 @@ public protocol OneLakeClientProtocol: Sendable {
     /// Used for small files and metadata payloads. Large files should use
     /// ``read(alias:workspaceGUID:itemGUID:path:range:ifMatch:destination:)``
     /// to avoid whole-file buffering.
+    // periphery:ignore
     func read(
         alias: String,
         workspaceGUID: String,
@@ -54,6 +55,7 @@ public protocol OneLakeClientProtocol: Sendable {
 
     /// Uploads content from an in-memory buffer using the DFS create + append
     /// + flush pattern.
+    // periphery:ignore
     func write(
         alias: String,
         workspaceGUID: String,

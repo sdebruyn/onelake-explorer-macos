@@ -1,0 +1,49 @@
+# Periphery configuration for OFEM (OneLake Explorer for macOS)
+# Tool: peripheryapp/periphery 3.7.4
+#
+# Periphery analyses the Xcode project via the OneLake scheme, which builds
+# all first-party targets (OneLake, OneLakeFileProvider, Shared, and OfemKit
+# via package dependency), giving periphery full visibility into cross-target
+# symbol usage.
+
+# ── Project ───────────────────────────────────────────────────────────────────
+
+project: OneLake.xcodeproj
+schemes:
+  - OneLake
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+
+# Pass code-signing overrides to xcodebuild so CI runners without a
+# Developer ID certificate can still build the index store.
+build_arguments:
+  - CODE_SIGNING_ALLOWED=NO
+  - CODE_SIGNING_REQUIRED=NO
+
+# ── Exclusions ────────────────────────────────────────────────────────────────
+
+# Exclude test targets: test-only symbols are not dead code by definition.
+exclude_tests: true
+exclude_targets:
+  - OneLakeHostTests
+  - OneLakeFileProviderTests
+
+# ── Behaviour ─────────────────────────────────────────────────────────────────
+
+# Retain @objc members and XPC protocol conformances — these are called via
+# the Objective-C runtime / NSXPCConnection and are not statically visible.
+retain_objc_accessible: true
+
+# Do not retain all public declarations unconditionally — OfemKit is a local
+# package and its public API must be verified as actually used.
+retain_public: false
+
+# OfemKit is a local package (not a published library) — "public" is used for
+# testability and architectural layering, not as a published API boundary. The
+# redundant-public analysis is noise here; suppress it.
+disable_redundant_public_analysis: true
+
+# Treat any finding as a build error (exit 1). All known findings are either
+# removed or annotated with // periphery:ignore; new dead code must be triaged
+# before merging.
+strict: true

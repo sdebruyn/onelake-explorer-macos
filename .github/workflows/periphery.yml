@@ -1,0 +1,97 @@
+name: Periphery
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: periphery-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  periphery:
+    name: Dead-code scan
+    # periphery requires a macOS runner: it invokes xcodebuild to build the
+    # index store, which in turn needs Xcode and the Xcode toolchain's
+    # libIndexStore.dylib. Running on macOS with Homebrew install is the
+    # supported path — the release binary does not bundle the Xcode-provided
+    # dylib and would require manual rpath/DYLD_LIBRARY_PATH configuration.
+    #
+    # periphery 3.7.4 requires Swift >= 6.1.2, which ships with Xcode 16.4.
+    # The macos-15 runner's default Xcode is 16.4 (Swift 6.1.2), so no
+    # DEVELOPER_DIR override is needed here. The CI build job pins Xcode 16.3;
+    # periphery only needs to build an index store for analysis, not produce
+    # a release-quality binary, so a different Xcode version is acceptable.
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Assert Xcode 16.4 and Swift 6.1.2 are present
+        # periphery 3.7.4 requires Swift >= 6.1.2 (Xcode 16.4). Fail fast
+        # if the runner image no longer ships the required Xcode version.
+        run: |
+          set -euo pipefail
+          if [ ! -d /Applications/Xcode_16.4.app ]; then
+            echo "ERROR: Xcode_16.4.app not found" >&2
+            ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
+            exit 1
+          fi
+          xcodebuild -version
+          swift --version
+
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            ~/Library/Caches/Homebrew/downloads
+            ~/Library/Caches/Homebrew/api
+          key: brew-${{ runner.os }}-xcodegen-periphery-3.7.4-${{ hashFiles('.github/workflows/periphery.yml') }}
+          restore-keys: |
+            brew-${{ runner.os }}-xcodegen-
+
+      - name: Cache SwiftPM build artifacts
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            Packages/OfemKit/.build
+            DerivedData/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: brew install xcodegen periphery
+
+      - name: Assert periphery 3.7.4
+        # Fail fast if Homebrew installs a different version than expected.
+        # This catches unexpected Homebrew formula updates before they silently
+        # change rule behaviour. Update this assertion when intentionally
+        # upgrading periphery.
+        run: |
+          set -euo pipefail
+          got=$(periphery version)
+          want="3.7.4"
+          if [ "$got" != "$want" ]; then
+            echo "ERROR: periphery version is $got, expected $want" >&2
+            exit 1
+          fi
+          echo "periphery $got"
+
+      - name: Bootstrap local xcconfig
+        run: make bootstrap
+
+      - name: Generate Xcode project
+        run: make gen
+
+      - name: Run periphery dead-code scan
+        # strict: true in .periphery.yml — any new finding fails the build.
+        # To intentionally keep a symbol, annotate it with // periphery:ignore.
+        # build_arguments in .periphery.yml passes CODE_SIGNING_ALLOWED=NO
+        # to xcodebuild so no signing identity is needed on CI runners.
+        run: periphery scan --format xcode

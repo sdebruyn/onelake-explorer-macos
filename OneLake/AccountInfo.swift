@@ -17,8 +17,11 @@ public struct AccountInfo: Identifiable {
     }
 
     public let alias: String
+    // periphery:ignore
     public let username: String
+    // periphery:ignore
     public let tenantId: String
+    // periphery:ignore
     public let tenantName: String
 
     public init(alias: String, username: String, tenantId: String, tenantName: String) {
@@ -37,10 +40,15 @@ public struct AccountInfo: Identifiable {
 /// this type is kept as a placeholder for the menu-bar paused-badge
 /// feature until the engine emits status updates.
 public struct PausedWorkspaceInfo {
+    // periphery:ignore
     public let accountAlias: String
+    // periphery:ignore
     public let workspaceId: String
+    // periphery:ignore
     public let reason: String
+    // periphery:ignore
     public let detectedAt: Date
+    // periphery:ignore
     public let probedAt: Date?
 
     public init(

@@ -218,6 +218,7 @@ private struct TrackResponse: Decodable {
 private struct ItemError: Decodable {
     let index: Int
     let statusCode: Int
+    // periphery:ignore - decoded from JSON response body; not read back in error handling
     let message: String?
 }
 

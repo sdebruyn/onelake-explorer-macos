@@ -14,10 +14,15 @@ import Foundation
 // MARK: - Envelope (top-level)
 
 struct AppInsightsEnvelope: Encodable {
+    // periphery:ignore - serialised by JSONEncoder via CodingKeys; not read back directly
     let name: String
+    // periphery:ignore - serialised by JSONEncoder
     let time: String
+    // periphery:ignore - serialised by JSONEncoder
     let iKey: String
+    // periphery:ignore - serialised by JSONEncoder
     let tags: [String: String]
+    // periphery:ignore - serialised by JSONEncoder
     let data: EnvelopeData
 
     enum CodingKeys: String, CodingKey {
@@ -28,16 +33,22 @@ struct AppInsightsEnvelope: Encodable {
 // MARK: - Data wrapper
 
 struct EnvelopeData: Encodable {
+    // periphery:ignore - serialised by JSONEncoder
     let baseType: String
+    // periphery:ignore - serialised by JSONEncoder
     let baseData: EventBaseData
 }
 
 // MARK: - Event payload
 
 struct EventBaseData: Encodable {
+    // periphery:ignore - serialised by JSONEncoder
     let ver: Int
+    // periphery:ignore - serialised by JSONEncoder
     let name: String
+    // periphery:ignore - serialised by JSONEncoder
     let properties: [String: String]?
+    // periphery:ignore - serialised by JSONEncoder
     let measurements: [String: Double]?
 }
 

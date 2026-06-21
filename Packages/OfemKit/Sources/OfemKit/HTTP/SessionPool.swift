@@ -19,6 +19,7 @@ public actor SessionPool {
 
     struct Key: Hashable {
         let alias: String
+        // periphery:ignore - Hashable field; used as part of Key's Hashable/Equatable identity
         let scope: TokenScope
     }
 
@@ -54,6 +55,7 @@ public actor SessionPool {
         return s
     }
 
+    // periphery:ignore
     /// Seeds a pre-built `Session` for a specific `(alias, scope)` pair.
     ///
     /// Intended for unit tests that need to inject a session backed by

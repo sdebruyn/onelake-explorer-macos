@@ -85,6 +85,7 @@ public final class FabricClient: Sendable {
     ///   `continuationToken` is `nil` but `hasContinuation` is `true`; use
     ///   ``listAllWorkspaces(alias:)`` to follow both continuation forms
     ///   exhaustively (net-12 / fabric-04).
+    // periphery:ignore
     /// - Throws: ``FabricError`` on failure.
     public func listWorkspaces(
         alias: String,
@@ -133,6 +134,7 @@ public final class FabricClient: Sendable {
     /// - Returns: An ``ItemPage``.
     /// - Throws: ``FabricError/missingArgument(_:)`` when `workspaceID` is
     /// empty; ``FabricError`` on network failure.
+    // periphery:ignore
     public func listItems(
         alias: String,
         workspaceID: String,
@@ -189,6 +191,7 @@ public final class FabricClient: Sendable {
     /// - continuation: Opaque continuation token; `nil` for the first page.
     /// - Returns: A ``FolderPage``.
     /// - Throws: ``FabricError/missingArgument(_:)`` when `workspaceID` is empty.
+    // periphery:ignore
     public func listFolders(
         alias: String,
         workspaceID: String,
@@ -225,6 +228,7 @@ public final class FabricClient: Sendable {
     /// - alias: Account alias.
     /// - workspaceID: The workspace to query. Must not be empty.
     /// - Throws: ``FabricError/missingArgument(_:)`` when `workspaceID` is empty.
+    // periphery:ignore
     public func listAllFolders(alias: String, workspaceID: String) async throws -> [Folder] {
         guard !workspaceID.isEmpty else {
             throw FabricError.missingArgument("workspaceID required")
@@ -247,6 +251,7 @@ public final class FabricClient: Sendable {
     /// - Returns: The fetched ``Item``.
     /// - Throws: ``FabricError/missingArgument(_:)`` when either ID is empty;
     /// ``FabricError/notFound`` when the item does not exist.
+    // periphery:ignore
     public func getItem(
         alias: String,
         workspaceID: String,

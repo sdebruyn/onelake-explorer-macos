@@ -119,10 +119,13 @@ enum HTTPRetryDateFormatters {
 
     // MARK: Test-use-only static instances (single-threaded test contexts only)
 
+    // periphery:ignore
     /// RFC 1123 formatter for test fixture construction. Not safe for concurrent use.
     static let rfc1123: DateFormatter = makeFresh(.rfc1123)
+    // periphery:ignore
     /// RFC 850 formatter for test fixture construction. Not safe for concurrent use.
     static let rfc850: DateFormatter = makeFresh(.rfc850)
+    // periphery:ignore
     /// asctime formatter for test fixture construction. Not safe for concurrent use.
     static let asctime: DateFormatter = makeFresh(.asctime)
 }

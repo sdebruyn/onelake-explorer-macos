@@ -109,6 +109,7 @@ public final class OfemConfigStore: Sendable {
     /// Use ``updateAndSave(_:)`` when you need a consistent read-modify-write
     /// cycle across processes.
     ///
+    // periphery:ignore
     /// - Throws: ``OfemConfigError`` on I/O or parse failure.
     public func freshSnapshot() throws -> OfemConfig {
         let paths = self.paths
