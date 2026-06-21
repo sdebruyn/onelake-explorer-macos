@@ -19,7 +19,9 @@ jobs:
   analyze:
     name: Analyze (Swift)
     runs-on: macos-15
-    timeout-minutes: 60
+    # security-and-quality runs a heavier query suite; 90 min ensures SARIF
+    # is still uploaded even on a slow runner.
+    timeout-minutes: 90
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:

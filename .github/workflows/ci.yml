@@ -119,29 +119,33 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
 
       - name: Run host-app tests (no rebuild)
-        # test-without-building reuses the compiled products from the build
-        # step above — no second compile. -enableCodeCoverage YES produces the
-        # .xcresult needed by the Codecov upload below.
+        # test-without-building reuses the OneLake_*.xctestrun produced by
+        # build-for-testing above — no second compile. -only-testing scopes
+        # execution to OneLakeHostTests while keeping the OneLake scheme (which
+        # owns the .xctestrun file). A separate result bundle per suite
+        # preserves the host/fpe Codecov flag split.
         run: |
           rm -rf DerivedData/HostTests.xcresult
           xcodebuild test-without-building \
             -project OneLake.xcodeproj \
-            -scheme OneLakeHostTests \
+            -scheme OneLake \
             -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath DerivedData \
+            -only-testing:OneLakeHostTests \
             -enableCodeCoverage YES \
             -resultBundlePath DerivedData/HostTests.xcresult
 
       - name: Run FPE tests (no rebuild)
-        # Separate test-without-building run for the FPE bundle to preserve
-        # per-bundle Codecov flags (host / fpe) and distinct xcresult paths.
+        # Same pattern as the host-app step: OneLake scheme + -only-testing
+        # to select the FPE bundle, separate .xcresult for the fpe Codecov flag.
         run: |
           rm -rf DerivedData/FPETests.xcresult
           xcodebuild test-without-building \
             -project OneLake.xcodeproj \
-            -scheme OneLakeFileProviderTests \
+            -scheme OneLake \
             -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath DerivedData \
+            -only-testing:OneLakeFileProviderTests \
             -enableCodeCoverage YES \
             -resultBundlePath DerivedData/FPETests.xcresult
 
