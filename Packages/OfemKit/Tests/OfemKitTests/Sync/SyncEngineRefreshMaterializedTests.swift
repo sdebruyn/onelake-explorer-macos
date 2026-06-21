@@ -102,7 +102,7 @@ struct SyncEngineRefreshMaterializedTests {
         #expect(diff.updated > 0)
 
         // synced_at_ns was bumped.
-        let rowAfter = try #require(try await store.fetch(key: childKey))
+        let rowAfter = try await store.fetch(key: childKey)
         #expect(rowAfter.syncedAtNs > syncedBefore)
 
         // The cached etag was updated to the new value, which means ContentVersion

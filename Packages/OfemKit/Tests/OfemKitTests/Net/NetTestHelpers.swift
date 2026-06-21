@@ -56,7 +56,7 @@ final class MockURLProtocol: URLProtocol {
 
     /// Removes a stub queue (call in `defer` to clean up after a test).
     static func clearQueue(id: String) {
-        lock.withLock { _queues.removeValue(forKey: id) }
+        lock.withLock { _ = _queues.removeValue(forKey: id) }
     }
 
     /// Legacy global queue — used by tests that do not need per-session isolation.

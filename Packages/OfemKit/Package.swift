@@ -34,6 +34,9 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Alamofire", package: "Alamofire"),
             ],
+            swiftSettings: [
+                .unsafeFlags(["-warnings-as-errors"]),
+            ],
             linkerSettings: [
                 .linkedFramework("FileProvider"),
             ]
@@ -41,6 +44,9 @@ let package = Package(
         .testTarget(
             name: "OfemKitTests",
             dependencies: ["OfemKit"],
+            swiftSettings: [
+                .unsafeFlags(["-warnings-as-errors"]),
+            ],
             linkerSettings: [
                 .linkedFramework("FileProvider"),
             ]
