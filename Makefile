@@ -180,7 +180,7 @@ lint: ## Run SwiftLint (mirrors CI gate; warnings only, errors fail)
 # Periphery (peripheryapp/periphery 3.7.4) — dead-code detection. The version
 # is pinned so local and CI agree. Install: brew install periphery.
 # The .periphery.yml config at the repo root controls targets and exclusions.
-# Non-blocking initially (strict: false); promoted to blocking after triage.
+# Runs in strict mode (any finding is an error). Baseline is clean.
 scan: ## Run periphery dead-code scan (mirrors CI gate)
 	@command -v periphery >/dev/null 2>&1 || { echo "periphery not installed; run: brew install periphery"; exit 1; }
 	periphery scan --format xcode

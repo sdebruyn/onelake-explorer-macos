@@ -432,11 +432,10 @@ enum ContentVersion {
     }
 }
 
-// periphery:ignore
-/// Free-function alias of ``ContentVersion/fallback(seed:size:mtime:)``
-/// retained for binary/source compatibility with existing callers (fp-04).
+// periphery:ignore - called by DomainItemTests; exclude_tests: true hides those callers from periphery
+/// Free-function alias of ``ContentVersion/fallback(seed:size:mtime:)``.
 ///
-/// Tests in `DomainItemTests` already call this; keep it `internal` so
+/// Tests in `DomainItemTests` call this directly. Keep it `internal` so
 /// `@testable` imports can reach it without adding a new public symbol.
 func fallbackVersion(seed: String, size: Int64, mtime: Date?) -> Data {
     ContentVersion.fallback(seed: seed, size: size, mtime: mtime)
