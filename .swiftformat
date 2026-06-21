@@ -14,7 +14,8 @@
 # the two cases where SwiftFormat's default would fight Swift 6 strict
 # concurrency or produce unexpected churn on this codebase.
 
-# redundantSelf: keep explicit `self.` inside closures — Swift 6 strict
-# concurrency makes captures explicit; removing `self.` here would lose
-# that clarity. Leave SwiftFormat's default (remove) but note if CI
-# flags issues, add: --disable redundantSelf
+# redundantSelf: disabled — Swift 6 strict concurrency requires explicit
+# `self.` capture inside closures (the compiler errors without it).
+# SwiftFormat's default strips `self.` unconditionally, which breaks
+# compilation under Swift 6. Keep all explicit self. references intact.
+--disable redundantSelf

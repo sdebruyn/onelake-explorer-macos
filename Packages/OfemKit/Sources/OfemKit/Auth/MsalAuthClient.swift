@@ -296,7 +296,7 @@ final class FileTokenStoreCacheDelegate: NSObject, MSALSerializedADALCacheProvid
             // No token yet for this alias — first login. MSAL starts with an
             // empty in-memory cache; the subsequent write populates the store.
         } catch {
-            Self.log.error("FileTokenStoreCacheDelegate: willAccessCache failed for alias=\(alias, privacy: .public): \(error)")
+            Self.log.error("FileTokenStoreCacheDelegate: willAccessCache failed for alias=\(self.alias, privacy: .public): \(error)")
         }
     }
 
