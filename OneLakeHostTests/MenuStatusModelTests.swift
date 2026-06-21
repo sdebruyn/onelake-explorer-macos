@@ -11,7 +11,6 @@
 import XCTest
 
 final class MenuStatusModelTests: XCTestCase {
-
     // MARK: - menuIconState / headerLabel (default state — no accounts)
 
     func testMenuIconState_noAccounts_notRunning() async {
@@ -54,11 +53,11 @@ final class MenuStatusModelTests: XCTestCase {
         await MainActor.run {
             let model = MenuStatusModel()
             model.beginWrite(.telemetry)
-            model.beginWrite(.telemetry)    // two concurrent writers
-            model.endWrite(.telemetry)      // first completes
+            model.beginWrite(.telemetry) // two concurrent writers
+            model.endWrite(.telemetry) // first completes
             XCTAssertTrue(model.isFenced(.telemetry),
                           "Fence must remain while the second write is still in flight")
-            model.endWrite(.telemetry)      // second completes
+            model.endWrite(.telemetry) // second completes
             XCTAssertFalse(model.isFenced(.telemetry),
                            "Fence must lift when the last write completes")
         }

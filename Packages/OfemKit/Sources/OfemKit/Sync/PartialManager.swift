@@ -1,5 +1,5 @@
-import Foundation
 import CryptoKit
+import Foundation
 import os.log
 
 // MARK: - PartialManager
@@ -17,7 +17,6 @@ import os.log
 /// after construction); concurrency isolation is delegated to the caller
 /// (``SyncEngine``, which is an `actor`).
 final class PartialManager: Sendable {
-
     // MARK: - Constants
 
     /// Base directory name used when `scratchDir` is not configured.
@@ -101,7 +100,7 @@ final class PartialManager: Sendable {
         }
 
         // If we know the cached etag, it must match the sidecar.
-        if !cachedRecord.etag.isEmpty && cachedRecord.etag != etag {
+        if !cachedRecord.etag.isEmpty, cachedRecord.etag != etag {
             discard(for: key)
             return .fullRestart
         }
@@ -147,6 +146,6 @@ final class PartialManager: Sendable {
     /// Returns `true` when the process identified by `pid` is currently alive.
     private static func processAlive(_ pid: Int32) -> Bool {
         // POSIX signal 0: checks existence/permission without delivering a signal.
-        return kill(pid, 0) == 0 || errno == EPERM
+        kill(pid, 0) == 0 || errno == EPERM
     }
 }

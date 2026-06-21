@@ -16,7 +16,6 @@ import OfemKit
 /// error, and read `engineCallCount` to assert how many times the engine was
 /// requested.
 final class MockEngineHost: EngineProviding, @unchecked Sendable {
-
     /// The alias returned to callers.
     let alias: String
 
@@ -24,7 +23,7 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
     var engineResult: Result<OfemEngine, Error> = .failure(NSFileProviderError(.cannotSynchronize))
 
     /// The error thrown by `configStore()`, or nil to use `configSnapshot`.
-    var configStoreError: Error? = nil
+    var configStoreError: Error?
 
     /// Whether the host has been shut down.
     private(set) var isShutDown = false
@@ -36,7 +35,9 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
     /// Guarded by a lock so concurrent callers (fpe-10 test) do not data-race.
     private let countLock = NSLock()
     private var _engineCallCount = 0
-    var engineCallCount: Int { countLock.withLock { _engineCallCount } }
+    var engineCallCount: Int {
+        countLock.withLock { _engineCallCount }
+    }
 
     init(alias: String = "test") {
         self.alias = alias
@@ -48,7 +49,7 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
     }
 
     func existingEngine() -> OfemEngine? {
-        if case .success(let e) = engineResult { return e }
+        if case let .success(e) = engineResult { return e }
         return nil
     }
 
@@ -75,12 +76,18 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
     private var _markNeedsSignInCallCount = 0
 
     /// Whether `markNeedsSignIn()` has been called at least once.
-    var markedNeedsSignIn: Bool { signInLock.withLock { _markedNeedsSignIn } }
+    var markedNeedsSignIn: Bool {
+        signInLock.withLock { _markedNeedsSignIn }
+    }
 
     /// The number of times `markNeedsSignIn()` was called.
-    var markNeedsSignInCallCount: Int { signInLock.withLock { _markNeedsSignInCallCount } }
+    var markNeedsSignInCallCount: Int {
+        signInLock.withLock { _markNeedsSignInCallCount }
+    }
 
-    var needsSignIn: Bool { markedNeedsSignIn }
+    var needsSignIn: Bool {
+        markedNeedsSignIn
+    }
 
     func markNeedsSignIn() {
         signInLock.withLock {
@@ -88,5 +95,4 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
             _markedNeedsSignIn = true
         }
     }
-
 }

@@ -15,8 +15,8 @@
 
 import AppKit
 import Foundation
-import ServiceManagement
 import os.log
+import ServiceManagement
 
 /// Manages the host app as a login item using SMAppService.mainApp.
 ///

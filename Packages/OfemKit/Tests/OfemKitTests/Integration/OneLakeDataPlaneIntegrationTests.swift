@@ -1,7 +1,6 @@
 import Foundation
-import Testing
-
 @testable import OfemKit
+import Testing
 
 /// Extended OneLake DFS data-plane integration tests covering multi-chunk I/O,
 /// sourceURL uploads, overwrites, recursive listing, directory properties,
@@ -11,7 +10,6 @@ import Testing
 /// it up — even on failure — so the live lakehouse stays tidy.
 @Suite("OneLake data plane integration", .integration, .serialized)
 struct OneLakeDataPlaneIntegrationTests {
-
     // MARK: - Helper
 
     /// Binds the live workspace + lakehouse so test bodies stay readable.
@@ -100,7 +98,7 @@ struct OneLakeDataPlaneIntegrationTests {
         // across the chunk seam and a stitching bug shows up immediately.
         let byteCount = 9 * 1024 * 1024 + 512 * 1024
         var bytes = [UInt8](repeating: 0, count: byteCount)
-        for i in 0..<byteCount {
+        for i in 0 ..< byteCount {
             bytes[i] = UInt8((i % 251) ^ ((i >> 8) % 199))
         }
         let payload = Data(bytes)
@@ -133,7 +131,7 @@ struct OneLakeDataPlaneIntegrationTests {
         let filePath = "\(dir)/streamed.bin"
 
         // 1 MiB of deterministic content written to a temp file first.
-        let localContent = Data((0..<(1024 * 1024)).map { UInt8($0 % 233) })
+        let localContent = Data((0 ..< (1024 * 1024)).map { UInt8($0 % 233) })
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".bin")
         try localContent.write(to: tempURL)
@@ -164,8 +162,8 @@ struct OneLakeDataPlaneIntegrationTests {
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
         let filePath = "\(dir)/overwrite.bin"
 
-        let contentA = Data(repeating: 0xAA, count: 512 * 1024)   // 512 KiB
-        let contentB = Data(repeating: 0xBB, count: 128 * 1024)   // 128 KiB — shorter
+        let contentA = Data(repeating: 0xAA, count: 512 * 1024) // 512 KiB
+        let contentB = Data(repeating: 0xBB, count: 128 * 1024) // 128 KiB — shorter
 
         do {
             try await lake.mkdir(dir)
@@ -268,7 +266,7 @@ struct OneLakeDataPlaneIntegrationTests {
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
         let filePath = "\(dir)/conditional.bin"
 
-        let payload = Data((0..<(64 * 1024)).map { UInt8($0 % 211) })
+        let payload = Data((0 ..< (64 * 1024)).map { UInt8($0 % 211) })
 
         do {
             try await lake.mkdir(dir)
@@ -403,7 +401,7 @@ struct OneLakeDataPlaneIntegrationTests {
         // so the seam at 4 MiB lies well inside the uploaded content.
         let byteCount = 9 * 1024 * 1024
         var bytes = [UInt8](repeating: 0, count: byteCount)
-        for i in 0..<byteCount {
+        for i in 0 ..< byteCount {
             bytes[i] = UInt8(i % 251)
         }
         let payload = Data(bytes)
@@ -411,11 +409,11 @@ struct OneLakeDataPlaneIntegrationTests {
         // The range straddles the 4 MiB boundary: 1000 bytes before and after.
         let seamOffset: Int64 = 4 * 1024 * 1024
         let rangeStart: Int64 = seamOffset - 1000
-        let rangeEnd: Int64   = seamOffset + 1000   // inclusive last byte
+        let rangeEnd: Int64 = seamOffset + 1000 // inclusive last byte
         // `read(range:)` takes a half-open `Range<Int64>`; the server receives
         // `Range: bytes=<rangeStart>-<rangeEnd>` (inclusive), so the returned
         // slice covers `rangeEnd - rangeStart + 1` bytes.
-        let expectedSlice = payload[Int(rangeStart)...Int(rangeEnd)]
+        let expectedSlice = payload[Int(rangeStart) ... Int(rangeEnd)]
         let expectedLength = rangeEnd - rangeStart + 1
 
         do {
@@ -423,7 +421,7 @@ struct OneLakeDataPlaneIntegrationTests {
             try await lake.write(filePath, payload)
 
             // Half-open range: [rangeStart, rangeEnd + 1).
-            let (sliceData, _) = try await lake.read(filePath, range: rangeStart..<(rangeEnd + 1))
+            let (sliceData, _) = try await lake.read(filePath, range: rangeStart ..< (rangeEnd + 1))
             #expect(
                 Int64(sliceData.count) == expectedLength,
                 "returned byte count must equal the requested range length (\(expectedLength))"
@@ -451,7 +449,7 @@ struct OneLakeDataPlaneIntegrationTests {
         // 2 MiB of deterministic content — large enough to verify streaming but
         // small enough to keep the live test reasonably fast.
         let byteCount = 2 * 1024 * 1024
-        let payload = Data((0..<byteCount).map { UInt8($0 % 199) })
+        let payload = Data((0 ..< byteCount).map { UInt8($0 % 199) })
 
         // Prepare a temp file that the streaming overload will write into.
         let tempURL = FileManager.default.temporaryDirectory

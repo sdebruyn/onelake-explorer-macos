@@ -1,7 +1,6 @@
 import Foundation
-import Testing
-
 @testable import OfemKit
+import Testing
 
 // MARK: - Gating
 
@@ -72,16 +71,15 @@ struct EnvVarTokenProvider: TokenProvider {
         case missing(String)
         var description: String {
             switch self {
-            case .missing(let name): return "integration env var \(name) is not set"
+            case let .missing(name): "integration env var \(name) is not set"
             }
         }
     }
 
-    func token(alias: String, scope: TokenScope) async throws -> String {
-        let name: String
-        switch scope {
-        case .oneLake: name = "OFEM_TOKEN_ONELAKE"
-        case .fabric: name = "OFEM_TOKEN_FABRIC"
+    func token(alias _: String, scope: TokenScope) async throws -> String {
+        let name = switch scope {
+        case .oneLake: "OFEM_TOKEN_ONELAKE"
+        case .fabric: "OFEM_TOKEN_FABRIC"
         }
         guard let value = ProcessInfo.processInfo.environment[name], !value.isEmpty else {
             throw Failure.missing(name)

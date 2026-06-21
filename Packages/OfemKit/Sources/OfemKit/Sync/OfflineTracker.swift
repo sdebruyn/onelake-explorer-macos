@@ -11,7 +11,6 @@ import Foundation
 ///
 /// `OfflineTracker` is a Swift `actor` for safe concurrent mutation.
 actor OfflineTracker {
-
     // MARK: - Constants
 
     /// Maximum time the engine keeps reporting offline without a successful
@@ -66,7 +65,7 @@ actor OfflineTracker {
         } else if OfflineTracker.isOfflineError(error!) {
             markOffline()
         }
-    // Other errors (404, 403, etc.) don't change offline state.
+        // Other errors (404, 403, etc.) don't change offline state.
     }
 
     // MARK: - Offline error classification
@@ -77,7 +76,7 @@ actor OfflineTracker {
     /// Deliberately restrictive: a 503 does NOT promote the engine to offline
     /// (paused capacity must not appear as an offline condition).
     static func isOfflineError(_ error: any Error) -> Bool {
-        guard let urlError = Self.underlyingURLError(error) else { return false }
+        guard let urlError = underlyingURLError(error) else { return false }
         switch urlError.code {
         case .notConnectedToInternet,
              .networkConnectionLost,
@@ -109,8 +108,8 @@ actor OfflineTracker {
                 current = inner
             } else if let http = err as? HTTPClientError {
                 switch http {
-                case .transport(let inner): current = inner
-                case .retriesExhausted(_, let last): current = last
+                case let .transport(inner): current = inner
+                case let .retriesExhausted(_, last): current = last
                 default: return nil
                 }
             } else {

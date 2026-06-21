@@ -1,6 +1,6 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - Helpers
 
@@ -20,7 +20,6 @@ private func makeClient() -> OneLakeClient {
 
 @Suite("OneLakeClient — streaming read(destination:)")
 struct OneLakeStreamingTests {
-
     @Test("read(destination:) with empty range returns empty PathProperties without network call")
     func emptyRangeDestinationNoNetwork() async throws {
         let client = makeClient()
@@ -36,7 +35,7 @@ struct OneLakeStreamingTests {
             workspaceGUID: wsGUID,
             itemGUID: itemGUID,
             path: "Files/a.txt",
-            range: 0..<0,
+            range: 0 ..< 0,
             destination: handle
         )
         #expect(props.contentLength == 0)
@@ -50,7 +49,7 @@ struct OneLakeStreamingTests {
             workspaceGUID: wsGUID,
             itemGUID: itemGUID,
             path: "Files/a.txt",
-            range: 5..<5 // empty range
+            range: 5 ..< 5 // empty range
         )
         #expect(data.isEmpty)
         #expect(props.contentLength == 0)
@@ -61,7 +60,6 @@ struct OneLakeStreamingTests {
 
 @Suite("OneLakeError — status coverage")
 struct OneLakeStatusMappingTests {
-
     @Test("serverError(Int) is mapped from HTTPClientError.serverError")
     func serverErrorMapped() {
         let err = HTTPClientError.serverError(503)
@@ -121,7 +119,6 @@ struct OneLakeStatusMappingTests {
 
 @Suite("OneLakeClient — size vs content.count validation")
 struct OneLakeSizeValidationTests {
-
     @Test("write: size != content.count throws missingArgument")
     func sizeMismatchThrows() async throws {
         let client = makeClient()

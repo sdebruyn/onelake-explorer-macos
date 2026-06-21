@@ -6,11 +6,10 @@
 // MetadataRecord values.  No NSFileProviderManager, CacheStore, or network
 // calls are made.
 
-import XCTest
 import OfemKit
+import XCTest
 
 final class WorkspaceSetDetectionTests: XCTestCase {
-
     // MARK: - Helpers
 
     private func record(path: String, name: String) -> MetadataRecord {
@@ -57,11 +56,11 @@ final class WorkspaceSetDetectionTests: XCTestCase {
 
     func testSignatureChange_newWorkspaceAdded_signaturesAreDifferent() {
         let before = [record(path: "ws-1", name: "Workspace 1")]
-        let after  = [record(path: "ws-1", name: "Workspace 1"),
-                      record(path: "ws-2", name: "Workspace 2")]
+        let after = [record(path: "ws-1", name: "Workspace 1"),
+                     record(path: "ws-2", name: "Workspace 2")]
 
         let sigBefore = workspaceSignature(before)
-        let sigAfter  = workspaceSignature(after)
+        let sigAfter = workspaceSignature(after)
         XCTAssertNotEqual(sigBefore, sigAfter,
                           "Signature must change when a workspace is added")
     }
@@ -71,10 +70,10 @@ final class WorkspaceSetDetectionTests: XCTestCase {
     func testSignatureChange_workspaceRemoved_signaturesAreDifferent() {
         let before = [record(path: "ws-1", name: "WS1"),
                       record(path: "ws-2", name: "WS2")]
-        let after  = [record(path: "ws-1", name: "WS1")]
+        let after = [record(path: "ws-1", name: "WS1")]
 
         let sigBefore = workspaceSignature(before)
-        let sigAfter  = workspaceSignature(after)
+        let sigAfter = workspaceSignature(after)
         XCTAssertNotEqual(sigBefore, sigAfter,
                           "Signature must change when a workspace is removed")
     }
@@ -83,10 +82,10 @@ final class WorkspaceSetDetectionTests: XCTestCase {
 
     func testSignatureChange_workspaceRenamed_signaturesAreDifferent() {
         let before = [record(path: "ws-1", name: "Old Name")]
-        let after  = [record(path: "ws-1", name: "New Name")]
+        let after = [record(path: "ws-1", name: "New Name")]
 
         let sigBefore = workspaceSignature(before)
-        let sigAfter  = workspaceSignature(after)
+        let sigAfter = workspaceSignature(after)
         XCTAssertNotEqual(sigBefore, sigAfter,
                           "Signature must change when a workspace is renamed")
     }
@@ -108,7 +107,7 @@ final class WorkspaceSetDetectionTests: XCTestCase {
     func testSignatureChange_guidSwap_signaturesAreDifferent() {
         // Same display names, different GUIDs (workspace was deleted & re-created).
         let before = [record(path: "guid-old", name: "Finance")]
-        let after  = [record(path: "guid-new", name: "Finance")]
+        let after = [record(path: "guid-new", name: "Finance")]
 
         XCTAssertNotEqual(workspaceSignature(before), workspaceSignature(after),
                           "GUID change must be detected even when the display name is the same")

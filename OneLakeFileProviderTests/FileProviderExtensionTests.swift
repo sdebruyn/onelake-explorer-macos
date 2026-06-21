@@ -9,7 +9,6 @@ import Foundation
 import XCTest
 
 final class FileProviderExtensionTests: XCTestCase {
-
     // MARK: - item(for:) — engine unavailable maps to cannotSynchronize
 
     func testItemForEngineUnavailableMapsToCannotSynchronize() async throws {
@@ -90,7 +89,7 @@ final class FileProviderExtensionTests: XCTestCase {
 
     // MARK: - modifyItem — rename leaves .filename pending (fpe-09)
 
-    func testModifyItemRenameLeavesPending() async throws {
+    func testModifyItemRenameLeavesPending() async {
         let host = MockEngineHost(alias: "test")
         let ext = makeExtension(host: host)
         let template = MockFPItem(parentID: NSFileProviderItemIdentifier.rootContainer.rawValue, filename: "renamed.txt")
@@ -115,7 +114,7 @@ final class FileProviderExtensionTests: XCTestCase {
 
     // MARK: - modifyItem — reparent leaves .parentItemIdentifier pending
 
-    func testModifyItemReparentLeavesPending() async throws {
+    func testModifyItemReparentLeavesPending() async {
         let host = MockEngineHost(alias: "test")
         let ext = makeExtension(host: host)
         let template = MockFPItem(parentID: NSFileProviderItemIdentifier.rootContainer.rawValue, filename: "file.txt")
@@ -237,14 +236,14 @@ private final class MockFPItem: NSObject, NSFileProviderItem {
         parentID: String,
         filename: String
     ) {
-        self.itemIdentifier = NSFileProviderItemIdentifier(id)
-        self.parentItemIdentifier = NSFileProviderItemIdentifier(parentID)
+        itemIdentifier = NSFileProviderItemIdentifier(id)
+        parentItemIdentifier = NSFileProviderItemIdentifier(parentID)
         self.filename = filename
-        self.contentType = .plainText
-        self.capabilities = [.allowsReading, .allowsWriting]
-        self.documentSize = nil
-        self.contentModificationDate = nil
-        self.itemVersion = NSFileProviderItemVersion(contentVersion: Data("v1".utf8), metadataVersion: Data("mv1".utf8))
+        contentType = .plainText
+        capabilities = [.allowsReading, .allowsWriting]
+        documentSize = nil
+        contentModificationDate = nil
+        itemVersion = NSFileProviderItemVersion(contentVersion: Data("v1".utf8), metadataVersion: Data("mv1".utf8))
         super.init()
     }
 }

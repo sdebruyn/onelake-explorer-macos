@@ -51,7 +51,7 @@ public struct OfemLogger: Sendable {
     /// Creates an `OfemLogger` with the given configuration.
     public init(configuration: LogConfiguration = .init()) {
         self.configuration = configuration
-        self.osLogger = Logger(
+        osLogger = Logger(
             subsystem: configuration.subsystem,
             category: configuration.category
         )
@@ -114,27 +114,27 @@ public struct OfemLogger: Sendable {
         // programmer faults and is always persisted to disk unconditionally.
         let levelLabel = Self.levelLabel(level)
         #if DEBUG
-        switch level {
-        case .debug:
-            osLogger.debug("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
-        case .info:
-            osLogger.info("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
-        case .warn:
-            osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
-        case .error:
-            osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
-        }
+            switch level {
+            case .debug:
+                osLogger.debug("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
+            case .info:
+                osLogger.info("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
+            case .warn:
+                osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
+            case .error:
+                osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
+            }
         #else
-        switch level {
-        case .debug:
-            osLogger.debug("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
-        case .info:
-            osLogger.info("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
-        case .warn:
-            osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
-        case .error:
-            osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
-        }
+            switch level {
+            case .debug:
+                osLogger.debug("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
+            case .info:
+                osLogger.info("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
+            case .warn:
+                osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
+            case .error:
+                osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
+            }
         #endif
 
         // Rotating file — JSON-structured, redacted at the Privacy boundary.
@@ -176,9 +176,9 @@ public struct OfemLogger: Sendable {
         // DEBUG builds write metadata verbatim for local development;
         // release builds scrub values through Privacy.scrubLogValue(_:).
         #if DEBUG
-        let redact = false
+            let redact = false
         #else
-        let redact = true
+            let redact = true
         #endif
         var dict: [String: Any] = [:]
         for (k, v) in metadata {
@@ -216,7 +216,7 @@ public struct OfemLogger: Sendable {
     /// Thread-safe shared formatter. `ISO8601DateFormatter` is documented as
     /// thread-safe after its format options are set; `nonisolated(unsafe)` tells
     /// the Swift concurrency checker we have verified this invariant.
-    nonisolated(unsafe) private static let iso8601Formatter: ISO8601DateFormatter = {
+    private nonisolated(unsafe) static let iso8601Formatter: ISO8601DateFormatter = {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return fmt
@@ -228,10 +228,10 @@ public struct OfemLogger: Sendable {
 
     private static func levelLabel(_ level: LogLevel) -> String {
         switch level {
-        case .debug: return "DEBUG"
-        case .info:  return "INFO"
-        case .warn:  return "WARN"
-        case .error: return "ERROR"
+        case .debug: "DEBUG"
+        case .info: "INFO"
+        case .warn: "WARN"
+        case .error: "ERROR"
         }
     }
 }

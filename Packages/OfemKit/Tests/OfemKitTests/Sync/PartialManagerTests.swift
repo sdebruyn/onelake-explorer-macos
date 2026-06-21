@@ -1,7 +1,7 @@
-import Testing
-import Foundation
 import CryptoKit
+import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - PartialManager Tests
 
@@ -9,7 +9,6 @@ import CryptoKit
 /// and ETag sidecar semantics. `finalise` was dead code removed in sync-08.
 @Suite("PartialManager")
 struct PartialManagerTests {
-
     // MARK: - Helpers
 
     private func makeManager() -> (PartialManager, URL) {
@@ -38,7 +37,7 @@ struct PartialManagerTests {
     // MARK: - Resume decision matrix (sync-17)
 
     @Test("rangeStart: no partial file → (0, nil, false)")
-    func testNoPartial() {
+    func noPartial() {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let plan = pm.rangeStart(for: Self.baseKey, cachedRecord: baseRecord())
@@ -48,7 +47,7 @@ struct PartialManagerTests {
     }
 
     @Test("rangeStart: partial with matching etag → (size, etag, true)")
-    func testPartialWithMatchingEtag() throws {
+    func partialWithMatchingEtag() throws {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key = Self.baseKey
@@ -66,7 +65,7 @@ struct PartialManagerTests {
     }
 
     @Test("rangeStart: partial with mismatched etag → (0, nil, false) + discard")
-    func testPartialMismatchedEtag() throws {
+    func partialMismatchedEtag() throws {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key = Self.baseKey
@@ -84,7 +83,7 @@ struct PartialManagerTests {
     }
 
     @Test("rangeStart: partial with no sidecar → (0, nil, false) + discard")
-    func testPartialNoSidecar() {
+    func partialNoSidecar() {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key = Self.baseKey
@@ -100,7 +99,7 @@ struct PartialManagerTests {
     }
 
     @Test("rangeStart: record contentLength == 0 → no resume")
-    func testNoResumeWhenContentLengthZero() {
+    func noResumeWhenContentLengthZero() {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let plan = pm.rangeStart(for: Self.baseKey, cachedRecord: baseRecord(contentLength: 0))
@@ -111,7 +110,7 @@ struct PartialManagerTests {
     // MARK: - ETag sidecar semantics
 
     @Test("storeEtag round-trips correctly")
-    func testEtagRoundTrip() throws {
+    func etagRoundTrip() throws {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key = Self.baseKey
@@ -121,7 +120,7 @@ struct PartialManagerTests {
     }
 
     @Test("storeEtag with empty string deletes sidecar")
-    func testStoreEtagEmptyDeletes() throws {
+    func storeEtagEmptyDeletes() throws {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key = Self.baseKey
@@ -133,7 +132,7 @@ struct PartialManagerTests {
     // MARK: - SyncError error types (retained from finalise tests — still valid)
 
     @Test("spillFileError has cannotSynchronize fpCode")
-    func testSpillFileErrorFpCode() {
+    func spillFileErrorFpCode() {
         let innerErr = CocoaError(.fileWriteOutOfSpace)
         let syncErr = SyncError.spillFileError(innerErr)
         #expect(syncErr.fpCode == .cannotSynchronize)
@@ -142,7 +141,7 @@ struct PartialManagerTests {
     // MARK: - partialURL / etagURL determinism
 
     @Test("partialURL is deterministic for the same key")
-    func testPartialURLDeterministic() {
+    func partialURLDeterministic() {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key = Self.baseKey
@@ -150,7 +149,7 @@ struct PartialManagerTests {
     }
 
     @Test("partialURL differs when key components differ")
-    func testPartialURLDiffersAcrossKeys() {
+    func partialURLDiffersAcrossKeys() {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key1 = CacheKey(accountAlias: "a", workspaceID: "ws1", itemID: "it", path: "f.bin")
@@ -159,7 +158,7 @@ struct PartialManagerTests {
     }
 
     @Test("etagURL is sidecar of partialURL")
-    func testEtagURLIsSidecar() {
+    func etagURLIsSidecar() {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key = Self.baseKey
@@ -171,7 +170,7 @@ struct PartialManagerTests {
     // MARK: - discard
 
     @Test("discard removes both partial and sidecar")
-    func testDiscardRemovesBothFiles() throws {
+    func discardRemovesBothFiles() throws {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key = Self.baseKey
@@ -186,7 +185,7 @@ struct PartialManagerTests {
     }
 
     @Test("discard is a no-op when files do not exist")
-    func testDiscardNoOpWhenMissing() {
+    func discardNoOpWhenMissing() {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         // Must not throw.
@@ -196,7 +195,7 @@ struct PartialManagerTests {
     // MARK: - rangeStart edge cases
 
     @Test("rangeStart: partial size equals contentLength → no resume (already complete)")
-    func testNoResumeWhenPartialEqualsContentLength() throws {
+    func noResumeWhenPartialEqualsContentLength() throws {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key = Self.baseKey
@@ -217,7 +216,7 @@ struct PartialManagerTests {
     }
 
     @Test("rangeStart: zero-size partial → no resume")
-    func testNoResumeWhenPartialIsEmpty() throws {
+    func noResumeWhenPartialIsEmpty() throws {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key = Self.baseKey
@@ -235,7 +234,7 @@ struct PartialManagerTests {
     }
 
     @Test("rangeStart: empty sidecar etag is treated as missing → discard")
-    func testNoResumeWhenSidecarEtagIsEmpty() throws {
+    func noResumeWhenSidecarEtagIsEmpty() throws {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key = Self.baseKey
@@ -257,7 +256,7 @@ struct PartialManagerTests {
     }
 
     @Test("rangeStart: record etag is empty string → sidecar etag accepted without comparison")
-    func testResumeWhenRecordEtagIsEmpty() throws {
+    func resumeWhenRecordEtagIsEmpty() throws {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
         let key = Self.baseKey
@@ -284,7 +283,7 @@ struct PartialManagerTests {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
 
-        let content = Data((0..<2048).map { UInt8($0 & 0xFF) })
+        let content = Data((0 ..< 2048).map { UInt8($0 & 0xFF) })
         let tmpURL = dir.appendingPathComponent("spill.partial")
         try content.write(to: tmpURL)
 
@@ -294,7 +293,7 @@ struct PartialManagerTests {
     }
 
     @Test("hashSpillFile on empty file returns SHA-256 of empty data")
-    func testHashSpillFileEmpty() throws {
+    func hashSpillFileEmpty() throws {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
 
@@ -307,7 +306,7 @@ struct PartialManagerTests {
     }
 
     @Test("hashSpillFile on multi-chunk file (>1 MiB) produces correct digest")
-    func testHashSpillFileLarge() throws {
+    func hashSpillFileLarge() throws {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
 
@@ -323,7 +322,7 @@ struct PartialManagerTests {
     }
 
     @Test("hashSpillFile throws when file does not exist")
-    func testHashSpillFileMissing() throws {
+    func hashSpillFileMissing() throws {
         let (pm, dir) = makeManager()
         defer { cleanup(dir) }
 
@@ -336,7 +335,7 @@ struct PartialManagerTests {
     // MARK: - reapStalePartialDirs
 
     @Test("reapStalePartialDirs removes directory for a dead PID")
-    func testReapRemovesDeadPID() throws {
+    func reapRemovesDeadPID() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("ofem-reap-test-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -344,7 +343,7 @@ struct PartialManagerTests {
 
         // PID 1 is always alive (launchd), so use a PID that cannot possibly be
         // running: Int32.max is beyond the Darwin pid_max of 99999.
-        let deadPID: Int32 = Int32.max
+        let deadPID = Int32.max
         let staleDir = base.appendingPathComponent("\(deadPID)", isDirectory: true)
         try FileManager.default.createDirectory(at: staleDir, withIntermediateDirectories: true)
 
@@ -354,7 +353,7 @@ struct PartialManagerTests {
     }
 
     @Test("reapStalePartialDirs keeps directory for the current process PID")
-    func testReapKeepsSelfPID() throws {
+    func reapKeepsSelfPID() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("ofem-reap-self-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -370,7 +369,7 @@ struct PartialManagerTests {
     }
 
     @Test("reapStalePartialDirs skips entries whose names are not numeric PIDs")
-    func testReapSkipsNonPIDEntries() throws {
+    func reapSkipsNonPIDEntries() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("ofem-reap-skip-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -386,7 +385,7 @@ struct PartialManagerTests {
     }
 
     @Test("reapStalePartialDirs is a no-op when base directory does not exist")
-    func testReapMissingBaseIsNoOp() {
+    func reapMissingBaseIsNoOp() {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("ofem-reap-missing-\(UUID().uuidString)")
         // Must not throw / crash.

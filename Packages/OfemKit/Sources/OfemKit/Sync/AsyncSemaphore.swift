@@ -40,14 +40,13 @@ import Foundation
 ///    `count`. `signal()` then arrives, finds an empty queue, and increments
 ///    `count` normally — permit is conserved.
 final class AsyncSemaphore: @unchecked Sendable {
-
     // MARK: - State
 
     // `nonisolated(unsafe)` suppresses the Swift 6 diagnostic for calling
     // NSLock from an async context. The lock is NEVER held across a suspension,
     // so the usage is safe.
-    nonisolated(unsafe) private var count: Int
-    nonisolated(unsafe) private var waiters: [WaiterEntry] = []
+    private nonisolated(unsafe) var count: Int
+    private nonisolated(unsafe) var waiters: [WaiterEntry] = []
     private let lock = NSLock()
 
     // MARK: - Waiter entry
@@ -67,7 +66,7 @@ final class AsyncSemaphore: @unchecked Sendable {
 
     // MARK: - Monotonic ID counter
 
-    nonisolated(unsafe) private var nextID: UInt64 = 0
+    private nonisolated(unsafe) var nextID: UInt64 = 0
 
     // MARK: - Init
 
@@ -121,7 +120,7 @@ final class AsyncSemaphore: @unchecked Sendable {
                         count -= 1
                         slotGranted = true
                         lock.unlock()
-                        continuation.resume()   // Resume immediately — no suspension.
+                        continuation.resume() // Resume immediately — no suspension.
                     } else {
                         // Must queue — will be resumed by a future signal().
                         // Store a `grantSlot` closure so signal() can set
@@ -132,7 +131,7 @@ final class AsyncSemaphore: @unchecked Sendable {
                             continuation: continuation,
                             grantSlot: { slotGranted = true }
                         ))
-                        lock.unlock()           // Suspend after releasing the lock.
+                        lock.unlock() // Suspend after releasing the lock.
                     }
                 }
             },

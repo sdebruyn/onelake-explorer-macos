@@ -13,10 +13,10 @@ import OfemKit
 /// use this function exclusively — never inline the switch.
 func nsFileProviderError(for code: FPError.Code) -> Error {
     switch code {
-    case .noSuchItem:        return NSFileProviderError(.noSuchItem)
-    case .notAuthenticated:  return NSFileProviderError(.notAuthenticated)
-    case .serverBusy:        return NSFileProviderError(.serverUnreachable)
-    case .serverUnreachable: return NSFileProviderError(.serverUnreachable)
-    case .cannotSynchronize: return NSFileProviderError(.cannotSynchronize)
+    case .noSuchItem: NSFileProviderError(.noSuchItem)
+    case .notAuthenticated: NSFileProviderError(.notAuthenticated)
+    case .serverBusy: NSFileProviderError(.serverUnreachable)
+    case .serverUnreachable: NSFileProviderError(.serverUnreachable)
+    case .cannotSynchronize: NSFileProviderError(.cannotSynchronize)
     }
 }

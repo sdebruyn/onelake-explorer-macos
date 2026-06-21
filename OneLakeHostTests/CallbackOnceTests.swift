@@ -24,7 +24,6 @@
 import XCTest
 
 final class CallbackOnceTests: XCTestCase {
-
     // MARK: - ResumeOnceBox
 
     func testResumeOnceBox_takeReturnsNilWhenEmpty() {
@@ -83,7 +82,7 @@ final class CallbackOnceTests: XCTestCase {
 
     // MARK: - 4. Concurrent race: completion and cancellation simultaneously
 
-    func testConcurrentCompletionAndCancellation_noDoubleResume() async throws {
+    func testConcurrentCompletionAndCancellation_noDoubleResume() async {
         let deliverBox = DeliverBox()
         let exited = ExitedFlag()
         nonisolated(unsafe) var threwCancellation = false
@@ -117,7 +116,7 @@ final class CallbackOnceTests: XCTestCase {
 
     // MARK: - 5. Task cancelled before completion fires
 
-    func testCancellationBeforeCompletion_callerGetsCancellationError() async throws {
+    func testCancellationBeforeCompletion_callerGetsCancellationError() async {
         let deliverBox = DeliverBox()
         let exited = ExitedFlag()
         nonisolated(unsafe) var gotCancellation = false
@@ -197,8 +196,8 @@ final class CallbackOnceTests: XCTestCase {
     func testDoubleDeliver_secondCallIsNoOp() async throws {
         let resumeCount = CounterBox()
         try await withCallbackOnce { deliver in
-            deliver(nil)   // first deliver: resumes the continuation
-            deliver(nil)   // second deliver: must be a silent no-op
+            deliver(nil) // first deliver: resumes the continuation
+            deliver(nil) // second deliver: must be a silent no-op
             resumeCount.increment()
         }
         XCTAssertEqual(resumeCount.value, 1, "work closure body must complete once")
@@ -212,8 +211,13 @@ private final class BoolBox: @unchecked Sendable {
     private let lock = NSLock()
     private var _value = false
 
-    func set() { lock.withLock { _value = true } }
-    var value: Bool { lock.withLock { _value } }
+    func set() {
+        lock.withLock { _value = true }
+    }
+
+    var value: Bool {
+        lock.withLock { _value }
+    }
 }
 
 /// Minimal @unchecked Sendable integer counter for use in @Sendable closures.
@@ -221,8 +225,13 @@ private final class CounterBox: @unchecked Sendable {
     private let lock = NSLock()
     private var _count = 0
 
-    func increment() { lock.withLock { _count += 1 } }
-    var value: Int { lock.withLock { _count } }
+    func increment() {
+        lock.withLock { _count += 1 }
+    }
+
+    var value: Int {
+        lock.withLock { _count }
+    }
 }
 
 /// Thread-safe store for the deliver closure passed by withCallbackOnce.

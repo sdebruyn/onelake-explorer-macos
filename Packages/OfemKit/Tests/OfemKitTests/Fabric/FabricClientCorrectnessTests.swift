@@ -1,6 +1,6 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - Helpers
 
@@ -15,7 +15,6 @@ private func makeClient() -> FabricClient {
 
 @Suite("FabricError — error mapping correctness")
 struct FabricErrorMappingTests {
-
     @Test("apiError wrapping 403 sentinel is unwrapped to .forbidden")
     func apiErrorForbiddenUnwrapped() {
         let ae = APIError(statusCode: 403, status: "403 Forbidden", body: Data())
@@ -78,10 +77,9 @@ struct FabricErrorMappingTests {
 
 @Suite("FabricRequest — continuationUri safety")
 struct FabricContinuationURISafetyTests {
-
     @Test("resolveContinuationURI rejects a URI with a different port")
     func rejectsDifferentPort() throws {
-        let base = URL(string: "https://api.fabric.microsoft.com")!
+        let base = try #require(URL(string: "https://api.fabric.microsoft.com"))
         let uri = "https://api.fabric.microsoft.com:8080/v1/workspaces?ct=x"
         do {
             _ = try resolveContinuationURI(uri, base: base)
@@ -93,7 +91,7 @@ struct FabricContinuationURISafetyTests {
 
     @Test("resolveContinuationURI rejects a URI with embedded userinfo")
     func rejectsUserinfo() throws {
-        let base = URL(string: "https://api.fabric.microsoft.com")!
+        let base = try #require(URL(string: "https://api.fabric.microsoft.com"))
         let uri = "https://user:pass@api.fabric.microsoft.com/v1/workspaces?ct=x"
         do {
             _ = try resolveContinuationURI(uri, base: base)
@@ -105,7 +103,7 @@ struct FabricContinuationURISafetyTests {
 
     @Test("resolveContinuationURI accepts same-host same-port URI")
     func acceptsSameHostSamePort() throws {
-        let base = URL(string: "https://api.fabric.microsoft.com")!
+        let base = try #require(URL(string: "https://api.fabric.microsoft.com"))
         let uri = "https://api.fabric.microsoft.com/v1/workspaces?ct=x"
         let resolved = try resolveContinuationURI(uri, base: base)
         #expect(resolved.absoluteString.hasPrefix("https://api.fabric.microsoft.com"))
@@ -113,7 +111,7 @@ struct FabricContinuationURISafetyTests {
 
     @Test("resolveContinuationURI accepts relative URI")
     func acceptsRelativeURI() throws {
-        let base = URL(string: "https://api.fabric.microsoft.com")!
+        let base = try #require(URL(string: "https://api.fabric.microsoft.com"))
         let uri = "/v1/workspaces?ct=x"
         let resolved = try resolveContinuationURI(uri, base: base)
         #expect(resolved.absoluteString.hasPrefix("https://api.fabric.microsoft.com"))
@@ -124,12 +122,11 @@ struct FabricContinuationURISafetyTests {
 
 @Suite("FabricClientProtocol — listAllFolders in protocol")
 struct FabricProtocolCompletenessTests {
-
     @Test("MockFabricClient conforms to updated protocol including listAllFolders")
     func mockConforms() async throws {
         let mock = MockFabricClient()
         mock.listFoldersResults = [.success([
-            Folder(id: "f1", displayName: "Folder 1", workspaceID: "ws1")
+            Folder(id: "f1", displayName: "Folder 1", workspaceID: "ws1"),
         ])]
         let folders = try await mock.listAllFolders(alias: "a", workspaceID: "ws1")
         #expect(folders.count == 1)

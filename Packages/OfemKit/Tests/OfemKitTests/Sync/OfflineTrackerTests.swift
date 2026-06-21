@@ -1,12 +1,11 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - OfflineTracker tests
 
 /// Tests for ``OfflineTracker`` — online/offline state transitions.
 struct OfflineTrackerTests {
-
     // MARK: - Initial state
 
     @Test func startsOnline() async {
@@ -85,6 +84,7 @@ struct OfflineTrackerTests {
     }
 
     // MARK: - isOfflineError: realistic wrapped shapes (fix/offline-shortcircuit)
+
     //
     // The short-circuit path in HTTPClient throws
     //   HTTPClientError.transport(URLError(.notConnectedToInternet))

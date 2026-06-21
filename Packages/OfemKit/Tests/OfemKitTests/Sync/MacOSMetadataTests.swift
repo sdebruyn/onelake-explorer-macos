@@ -1,12 +1,11 @@
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - MacOSMetadata tests
 
 /// Tests for ``isMacOSMetadata`` — macOS-specific extended-attribute spill
 /// files that must be silently skipped on upload.
 struct MacOSMetadataTests {
-
     // MARK: - Files that should be skipped
 
     @Test func dsStoreIsMetadata() {

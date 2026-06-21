@@ -114,4 +114,3 @@ public struct OfemPaths: Sendable {
             .appending(path: appGroupIdentifier, directoryHint: .isDirectory)
     }
 }
-

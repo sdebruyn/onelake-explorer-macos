@@ -44,7 +44,7 @@ public final class RotatingFileWriter: @unchecked Sendable {
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "RotatingFileWriter")
 
     /// Default rotate-at size (10 MB).
-    public static let defaultMaxFileSizeBytes: Int = 10 * 1_024 * 1_024
+    public static let defaultMaxFileSizeBytes: Int = 10 * 1024 * 1024
 
     /// Default number of rotated backups to retain.
     public static let defaultMaxBackups: Int = 5

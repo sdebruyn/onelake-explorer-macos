@@ -358,15 +358,15 @@ public enum InteractiveSignInError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .missingClientID:
-            return "InteractiveSignIn: clientID is required"
+            "InteractiveSignIn: clientID is required"
         case .missingFileTokenStore:
-            return "InteractiveSignIn: fileTokenStore is required when cacheStrategy is .fileBackedFallback"
+            "InteractiveSignIn: fileTokenStore is required when cacheStrategy is .fileBackedFallback"
         case .missingTenantID:
-            return "InteractiveSignIn: tenantID is required for Fabric consent flow"
+            "InteractiveSignIn: tenantID is required for Fabric consent flow"
         case .nilResult:
-            return "InteractiveSignIn: MSAL returned neither a result nor an error"
-        case .identityMismatch(let expected, let got):
-            return "InteractiveSignIn: identity mismatch — expected account '\(expected)' but got '\(got)'. Sign in was rejected to protect the existing account."
+            "InteractiveSignIn: MSAL returned neither a result nor an error"
+        case let .identityMismatch(expected, got):
+            "InteractiveSignIn: identity mismatch — expected account '\(expected)' but got '\(got)'. Sign in was rejected to protect the existing account."
         }
     }
 }

@@ -1,8 +1,9 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - ConfigRefactorTests
+
 //
 // Covers the findings addressed in the CONFIG work package:
 //   config-02  locking does not block the shared serial queue
@@ -14,7 +15,6 @@ import Testing
 
 @Suite("Config refactor — config-02/03/06/07/08/09")
 struct ConfigRefactorTests {
-
     // MARK: - Helpers
 
     private func makePaths() -> OfemPaths {
@@ -56,7 +56,7 @@ struct ConfigRefactorTests {
         // Run 30 concurrent mutations — last writer wins for installID,
         // but the file must remain parseable throughout.
         await withTaskGroup(of: Void.self) { group in
-            for i in 0..<30 {
+            for i in 0 ..< 30 {
                 group.addTask {
                     _ = try? await store.updateAndSave { cfg in
                         cfg.installID = "run-\(i)"
@@ -83,7 +83,7 @@ struct ConfigRefactorTests {
 
         // storeA writes telemetry, storeB writes log level — different fields.
         await withTaskGroup(of: Void.self) { group in
-            for _ in 0..<20 {
+            for _ in 0 ..< 20 {
                 group.addTask {
                     _ = try? await storeA.updateAndSave { cfg in cfg.telemetry = false }
                 }
@@ -282,7 +282,7 @@ struct ConfigRefactorTests {
         let store = try OfemConfigStore(paths: paths)
 
         struct E: Error {}
-        for _ in 0..<5 {
+        for _ in 0 ..< 5 {
             _ = try? await store.updateAndSave { _ in throw E() }
         }
 

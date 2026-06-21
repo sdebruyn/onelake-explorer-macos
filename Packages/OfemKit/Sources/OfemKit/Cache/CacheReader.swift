@@ -16,7 +16,6 @@ import GRDB
 /// `CacheStore` read methods delegate here — there is exactly one copy of each
 /// query.
 public final class CacheReader: Sendable {
-
     private let db: any DatabaseReader
     private let logger: OfemLogger
 
@@ -99,11 +98,11 @@ public final class CacheReader: Sendable {
         let sinceNs = dateToNs(since)
         return try await db.read { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT DISTINCT account_alias, workspace_id, item_id
-                FROM path_metadata
-                WHERE last_accessed_ns >= ? AND last_accessed_ns > 0
-                ORDER BY account_alias, workspace_id, item_id
-                """, arguments: [sinceNs])
+            SELECT DISTINCT account_alias, workspace_id, item_id
+            FROM path_metadata
+            WHERE last_accessed_ns >= ? AND last_accessed_ns > 0
+            ORDER BY account_alias, workspace_id, item_id
+            """, arguments: [sinceNs])
             return rows.map { row in
                 CacheKey(
                     accountAlias: row["account_alias"],
@@ -161,10 +160,10 @@ public final class CacheReader: Sendable {
     public func maxSyncedAtNs(accountAlias: String) async throws -> Int64 {
         try await db.read { db in
             let sql = """
-                SELECT COALESCE(MAX(synced_at_ns), 0)
-                FROM path_metadata
-                WHERE account_alias = ?
-                """
+            SELECT COALESCE(MAX(synced_at_ns), 0)
+            FROM path_metadata
+            WHERE account_alias = ?
+            """
             return try Int64.fetchOne(db, sql: sql, arguments: [accountAlias]) ?? 0
         }
     }
@@ -190,9 +189,9 @@ public final class CacheReader: Sendable {
                 .fetchAll(db)
 
             let deleted = try String.fetchAll(db, sql: """
-                SELECT identifier_string FROM deletion_tombstones
-                WHERE account_alias = ? AND deleted_at_ns > ?
-                """, arguments: [accountAlias, ns])
+            SELECT identifier_string FROM deletion_tombstones
+            WHERE account_alias = ? AND deleted_at_ns > ?
+            """, arguments: [accountAlias, ns])
 
             return (updated, deleted)
         }
@@ -287,11 +286,11 @@ public final class CacheReader: Sendable {
     /// SQL that sums blob_size once per distinct SHA-256, used by both
     /// `blobBytes()` and `wipe()` so the dedup semantics live in one place.
     static let deduplicatedBlobBytesSQL = """
-        SELECT COALESCE(SUM(blob_size), 0)
-        FROM (
-            SELECT blob_size FROM path_metadata
-            WHERE blob_sha256 != ''
-            GROUP BY blob_sha256
-        )
-        """
+    SELECT COALESCE(SUM(blob_size), 0)
+    FROM (
+        SELECT blob_size FROM path_metadata
+        WHERE blob_sha256 != ''
+        GROUP BY blob_sha256
+    )
+    """
 }

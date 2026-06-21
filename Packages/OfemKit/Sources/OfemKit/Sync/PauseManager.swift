@@ -19,7 +19,6 @@ import os.log
 /// `PauseManager` is a Swift `actor` so all mutable state (the in-flight probe
 /// set) is automatically serialised.
 actor PauseManager {
-
     // MARK: - Constants
 
     /// Default minimum gap between two recovery probes for the same workspace.
@@ -138,7 +137,8 @@ actor PauseManager {
 
         // Primary: stable errorCode check.
         if let code = extractErrorCode(from: body),
-           Self.pausedErrorCodes.contains(code.lowercased()) {
+           Self.pausedErrorCodes.contains(code.lowercased())
+        {
             return true
         }
         // Secondary: prose regex fallback for older API responses.
@@ -212,15 +212,15 @@ actor PauseManager {
 private func extractAPIErrorBody(_ error: any Error) -> String? {
     switch error {
     case let onelakeErr as OneLakeError:
-        if case .httpError(let inner) = onelakeErr {
+        if case let .httpError(inner) = onelakeErr {
             return extractAPIErrorBody(inner)
         }
     case let fabricErr as FabricError:
-        if case .httpError(let inner) = fabricErr {
+        if case let .httpError(inner) = fabricErr {
             return extractAPIErrorBody(inner)
         }
     case let httpErr as HTTPClientError:
-        if case .apiError(let api) = httpErr {
+        if case let .apiError(api) = httpErr {
             return String(data: api.body, encoding: .utf8)
         }
     default:

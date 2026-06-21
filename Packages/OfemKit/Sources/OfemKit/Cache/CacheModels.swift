@@ -34,7 +34,6 @@ public struct CacheKey: Hashable, Sendable {
 /// Time fields stored as Unix nanoseconds (`Int64`) in SQLite; zero means
 /// "unset". All `Date` values use UTC.
 public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
-
     // MARK: Table name
 
     public static let databaseTableName = "path_metadata"
@@ -121,16 +120,24 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
     // MARK: Computed helpers
 
     /// `lastModifiedNs` as a `Date`. `nil` when zero.
-    public var lastModified: Date? { nsToDate(lastModifiedNs) }
+    public var lastModified: Date? {
+        nsToDate(lastModifiedNs)
+    }
 
     /// `lastAccessedNs` as a `Date`. `nil` when zero.
-    public var lastAccessed: Date? { nsToDate(lastAccessedNs) }
+    public var lastAccessed: Date? {
+        nsToDate(lastAccessedNs)
+    }
 
     /// `syncedAtNs` as a `Date`. `nil` when zero.
-    public var syncedAt: Date? { nsToDate(syncedAtNs) }
+    public var syncedAt: Date? {
+        nsToDate(syncedAtNs)
+    }
 
     /// `childrenSyncedAtNs` as a `Date`. `nil` when zero.
-    public var childrenSyncedAt: Date? { nsToDate(childrenSyncedAtNs) }
+    public var childrenSyncedAt: Date? {
+        nsToDate(childrenSyncedAtNs)
+    }
 
     // MARK: Initialisers
 
@@ -222,7 +229,6 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
 
 /// Persisted view of one workspace's availability in the `workspace_status` table.
 public struct WorkspaceStatusRecord: FetchableRecord, PersistableRecord, Sendable {
-
     // MARK: Table name
 
     public static let databaseTableName = "workspace_status"
@@ -232,9 +238,9 @@ public struct WorkspaceStatusRecord: FetchableRecord, PersistableRecord, Sendabl
     /// Persisted workspace availability state.
     public enum State: String, Sendable {
         /// The workspace is reachable. Default state.
-        case active = "active"
+        case active
         /// The Fabric capacity is paused; the workspace cannot accept reads/writes.
-        case paused = "paused"
+        case paused
     }
 
     // MARK: Column names (match schema exactly)
@@ -263,8 +269,13 @@ public struct WorkspaceStatusRecord: FetchableRecord, PersistableRecord, Sendabl
 
     // MARK: Computed helpers
 
-    public var detectedAt: Date? { nsToDate(detectedAtNs) }
-    public var probedAt: Date? { nsToDate(probedAtNs) }
+    public var detectedAt: Date? {
+        nsToDate(detectedAtNs)
+    }
+
+    public var probedAt: Date? {
+        nsToDate(probedAtNs)
+    }
 
     // MARK: Initialisers
 
@@ -318,7 +329,6 @@ public struct WorkspaceStatusRecord: FetchableRecord, PersistableRecord, Sendabl
 /// deleted identifier strings so `enumerateChanges` can call
 /// `didDeleteItems(withIdentifiers:)` and Finder reflects the removal.
 public struct DeletionTombstoneRecord: FetchableRecord, PersistableRecord, Sendable {
-
     public static let databaseTableName = "deletion_tombstones"
 
     public enum Columns {
@@ -368,7 +378,6 @@ public struct DeletionTombstoneRecord: FetchableRecord, PersistableRecord, Senda
 /// ``ItemIdentifier/identifierString``). Re-parsing to a ``CacheKey`` is done
 /// in ``CacheReader/materializedContainers(alias:)``.
 public struct MaterializedContainerRecord: FetchableRecord, PersistableRecord, Sendable {
-
     public static let databaseTableName = "materialized_containers"
 
     public enum Columns {

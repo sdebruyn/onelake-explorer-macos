@@ -19,8 +19,8 @@
 
 import AppKit
 import OfemKit
-import SwiftUI
 import os.log
+import SwiftUI
 
 // MARK: - DockIconManager
 
@@ -96,7 +96,7 @@ final class DockIconManager {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let log = Logger(subsystem: ofemSubsystem, category: "app-delegate")
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    func applicationDidFinishLaunching(_: Notification) {
         let ts = BuildInfo.buildTimestamp ?? "unknown"
         AppDelegate.log.info("OneLake host app starting — version \(BuildInfo.version, privacy: .public) built \(ts, privacy: .public)")
 
@@ -136,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationDidBecomeActive(_ notification: Notification) {
+    func applicationDidBecomeActive(_: Notification) {
         // Re-reconcile whenever the app comes to the foreground so accounts
         // added or removed while the host was inactive are reflected in
         // the Finder sidebar promptly.
@@ -164,10 +164,10 @@ struct OneLakeApp: App {
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    // Single shared model owned here (app lifetime). MenuBarView receives it
-    // as @ObservedObject so it observes without taking ownership. Owning it
-    // at the App level also lets the MenuBarExtra label view below read the
-    // same published state, so the icon updates live after every action.
+    /// Single shared model owned here (app lifetime). MenuBarView receives it
+    /// as @ObservedObject so it observes without taking ownership. Owning it
+    /// at the App level also lets the MenuBarExtra label view below read the
+    /// same published state, so the icon updates live after every action.
     @StateObject private var statusModel = MenuStatusModel.shared
 
     init() {
@@ -249,16 +249,16 @@ private struct MenuBarIconView: View {
 
     private var badgeSystemName: String? {
         switch state {
-        case .normal, .notRunning: return nil
-        case .paused:              return "pause.fill"
+        case .normal, .notRunning: nil
+        case .paused: "pause.fill"
         }
     }
 
     private var accessibilityLabel: String {
         switch state {
-        case .normal:      return "OneLake"
-        case .notRunning:  return "OneLake — not running"
-        case .paused:      return "OneLake — paused"
+        case .normal: "OneLake"
+        case .notRunning: "OneLake — not running"
+        case .paused: "OneLake — paused"
         }
     }
 }

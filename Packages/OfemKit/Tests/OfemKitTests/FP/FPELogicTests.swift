@@ -1,15 +1,16 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - FPE logic unit tests (fpe-21, tests-04)
+
 //
 // Tests for pure-logic helpers in OfemKit/FP/ that the FPE relies on.
 // These run without a mounted File Provider domain or network access.
 
 struct FPELogicTests {
-
     // MARK: - Sync anchor encoding/decoding
+
     //
     // The anchor helpers live in the FPE target (OfemFPEEnumerator.swift) but
     // the encoding contract is trivial enough to specify here so any OfemKit
@@ -112,7 +113,7 @@ struct FPELogicTests {
         let r2 = MetadataRecord(
             accountAlias: "dev", workspaceID: "ws", itemID: "i", path: "f.txt",
             parentPath: "", name: "f.txt", isDir: false,
-            contentLength: 99, etag: "\"stable-etag\""   // same etag, different size
+            contentLength: 99, etag: "\"stable-etag\"" // same etag, different size
         )
         let di1 = try DomainItem.from(record: r1)
         let di2 = try DomainItem.from(record: r2)
@@ -145,9 +146,9 @@ struct FPELogicTests {
         try await store.upsert(r1)
         try await store.upsert(r2)
         let nsAlice = try await store.maxSyncedAtNs(accountAlias: "alice")
-        let nsBob   = try await store.maxSyncedAtNs(accountAlias: "bob")
+        let nsBob = try await store.maxSyncedAtNs(accountAlias: "bob")
         #expect(nsAlice >= 5_000_000_000)
-        #expect(nsBob   >= 1_000_000_000)
+        #expect(nsBob >= 1_000_000_000)
         #expect(nsAlice > nsBob)
     }
 

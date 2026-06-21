@@ -108,13 +108,13 @@ extension FabricError {
         // mirroring OneLakeError.from — without this, a retriesExhausted(last:
         // apiError(…)) never matches any typed sentinel case and degrades to
         // httpError.
-        let resolved: any Error
-        if let httpErr = error as? HTTPClientError,
-           case let HTTPClientError.apiError(ae) = httpErr,
-           let sentinel = ae.sentinel {
-            resolved = sentinel
+        let resolved: any Error = if let httpErr = error as? HTTPClientError,
+                                     case let HTTPClientError.apiError(ae) = httpErr,
+                                     let sentinel = ae.sentinel
+        {
+            sentinel
         } else {
-            resolved = error
+            error
         }
 
         switch resolved {
@@ -124,7 +124,7 @@ extension FabricError {
             return .forbidden
         case HTTPClientError.notFound:
             return .notFound
-        case HTTPClientError.gone:           // NIT-2: symmetry with OneLakeError
+        case HTTPClientError.gone: // NIT-2: symmetry with OneLakeError
             return .gone
         case HTTPClientError.payloadTooLarge:
             return .payloadTooLarge
@@ -134,7 +134,7 @@ extension FabricError {
             return .rateLimited
         case HTTPClientError.cancelled:
             return .cancelled
-        case is CancellationError:           // fabric-02: bare Swift cancellation
+        case is CancellationError: // fabric-02: bare Swift cancellation
             return .cancelled
         case HTTPClientError.tokenAcquisitionFailed:
             // fabric-03-fix-272: map ALL token-acquisition failures to
@@ -154,7 +154,8 @@ extension FabricError {
             // maps .retriesExhausted to .serverUnreachable, hiding the auth
             // failure behind an offline indicator.
             if let lastHTTP = last as? HTTPClientError,
-               case HTTPClientError.tokenAcquisitionFailed = lastHTTP {
+               case HTTPClientError.tokenAcquisitionFailed = lastHTTP
+            {
                 return .unauthorized
             }
             return .retriesExhausted(attempts: attempts)

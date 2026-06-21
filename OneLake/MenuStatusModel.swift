@@ -92,6 +92,7 @@ extension DomainSyncManager: DomainManager {}
 extension SharedOfemAuth: ReSignInProvider {}
 
 // MARK: - Sendable conformances for global-actor-isolated classes
+
 //
 // `EngineStatusProvider: Sendable` and `DomainManager: Sendable` require their
 // conforming types to be `Sendable`. Both `OfemFPEClient` and `DomainSyncManager`
@@ -193,10 +194,14 @@ final class MenuStatusModel: ObservableObject {
 
     // MARK: Computed conveniences
 
-    var pausedCount: Int { pausedWorkspaces.count }
+    var pausedCount: Int {
+        pausedWorkspaces.count
+    }
 
     /// True when at least one account is registered.
-    var hasAccounts: Bool { !accounts.isEmpty }
+    var hasAccounts: Bool {
+        !accounts.isEmpty
+    }
 
     /// Icon state for the menu-bar label. Priority: not-running > paused > normal.
     /// Auth errors (`accountsNeedingSignIn` non-empty) are surfaced in the
@@ -278,19 +283,20 @@ final class MenuStatusModel: ObservableObject {
     private var setMaterializedPollTask: Task<Void, Never>?
 
     // MARK: - Write fence (snapshot vs setter race)
-    //
-    // Every optimistic setter publishes the new value on `@MainActor`
-    // immediately, then sends the XPC write — either debounced (Steppers)
-    // or straight through. Until the FPE has *seen* that write and a
-    // subsequent refresh round-trip carries the new value back, any status
-    // the auto-refresh timer fetches still reports the *old* value. Landing
-    // such a snapshot would briefly snap the UI back.
-    //
-    // The fix is a per-field write fence. Each setter inserts its field
-    // key into `pendingWrites` before the optimistic publish and removes
-    // it once the XPC call has returned. `doRefresh` skips any field
-    // whose key is currently fenced.
-    // Internal (not private) so tests can verify fence behaviour via @testable import.
+
+    ///
+    /// Every optimistic setter publishes the new value on `@MainActor`
+    /// immediately, then sends the XPC write — either debounced (Steppers)
+    /// or straight through. Until the FPE has *seen* that write and a
+    /// subsequent refresh round-trip carries the new value back, any status
+    /// the auto-refresh timer fetches still reports the *old* value. Landing
+    /// such a snapshot would briefly snap the UI back.
+    ///
+    /// The fix is a per-field write fence. Each setter inserts its field
+    /// key into `pendingWrites` before the optimistic publish and removes
+    /// it once the XPC call has returned. `doRefresh` skips any field
+    /// whose key is currently fenced.
+    /// Internal (not private) so tests can verify fence behaviour via @testable import.
     enum WriteKey: Hashable {
         case cacheMaxSize
         case netMaxUploads
@@ -299,13 +305,14 @@ final class MenuStatusModel: ObservableObject {
         case telemetry
         case materializedPollInterval
     }
-    // Counted multiset: each concurrent writer for the same key increments the
-    // counter; endWrite decrements. The fence lifts only when the count reaches
-    // zero, so overlapping writes to the same key don't prematurely expose stale
-    // refresh snapshots.
+
+    /// Counted multiset: each concurrent writer for the same key increments the
+    /// counter; endWrite decrements. The fence lifts only when the count reaches
+    /// zero, so overlapping writes to the same key don't prematurely expose stale
+    /// refresh snapshots.
     private var pendingWrites: [WriteKey: Int] = [:]
 
-    // Internal (not private) so tests can verify fence behaviour via @testable import.
+    /// Internal (not private) so tests can verify fence behaviour via @testable import.
     func beginWrite(_ key: WriteKey) {
         pendingWrites[key, default: 0] += 1
     }
@@ -627,13 +634,13 @@ final class MenuStatusModel: ObservableObject {
         let clamped = max(1, min(100, gb))
         beginWrite(.cacheMaxSize)
         cacheMaxSizeGB = clamped
-        cacheMaxBytes = Int64(clamped) * 1_073_741_824  // 1 GiB in bytes
+        cacheMaxBytes = Int64(clamped) * 1_073_741_824 // 1 GiB in bytes
         setCacheLimitTask?.cancel()
         setCacheLimitTask = Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.endWrite(.cacheMaxSize) } }
             try? await Task.sleep(for: MenuStatusModel.setCacheLimitDebounce)
             guard let self, !Task.isCancelled else { return }
-            await self.writeConfig(key: OfemConfigKey.cacheMaxSizeGB, value: String(clamped))
+            await writeConfig(key: OfemConfigKey.cacheMaxSizeGB, value: String(clamped))
             refresh()
         }
     }
@@ -645,7 +652,7 @@ final class MenuStatusModel: ObservableObject {
         Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.endWrite(.telemetry) } }
             guard let self else { return }
-            await self.writeConfig(
+            await writeConfig(
                 key: OfemConfigKey.telemetry,
                 value: enabled ? "on" : "off"
             )
@@ -663,7 +670,7 @@ final class MenuStatusModel: ObservableObject {
             defer { Task { @MainActor [weak self] in self?.endWrite(.netMaxUploads) } }
             try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
             guard let self, !Task.isCancelled else { return }
-            await self.writeConfig(
+            await writeConfig(
                 key: OfemConfigKey.netMaxUploads,
                 value: String(clamped)
             )
@@ -681,7 +688,7 @@ final class MenuStatusModel: ObservableObject {
             defer { Task { @MainActor [weak self] in self?.endWrite(.netMaxDownloads) } }
             try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
             guard let self, !Task.isCancelled else { return }
-            await self.writeConfig(
+            await writeConfig(
                 key: OfemConfigKey.netMaxDownloads,
                 value: String(clamped)
             )
@@ -707,7 +714,7 @@ final class MenuStatusModel: ObservableObject {
             defer { Task { @MainActor [weak self] in self?.endWrite(.materializedPollInterval) } }
             try? await Task.sleep(for: MenuStatusModel.setPollIntervalDebounce)
             guard let self, !Task.isCancelled else { return }
-            await self.writeConfig(
+            await writeConfig(
                 key: OfemConfigKey.syncMaterializedPollIntervalS,
                 value: String(clamped)
             )
@@ -722,7 +729,7 @@ final class MenuStatusModel: ObservableObject {
         Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.endWrite(.logLevel) } }
             guard let self else { return }
-            await self.writeConfig(key: OfemConfigKey.logLevel, value: level)
+            await writeConfig(key: OfemConfigKey.logLevel, value: level)
             refresh()
         }
     }

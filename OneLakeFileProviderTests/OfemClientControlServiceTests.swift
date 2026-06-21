@@ -6,7 +6,6 @@ import Foundation
 import XCTest
 
 final class OfemClientControlServiceTests: XCTestCase {
-
     // MARK: - serviceName is the expected constant
 
     func testServiceNameMatchesConstant() {

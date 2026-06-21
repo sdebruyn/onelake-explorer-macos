@@ -1,6 +1,6 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - OfemConfigTests
 
@@ -196,7 +196,7 @@ struct OfemConfigTests {
             _ = try OfemConfigStore(paths: paths)
             Issue.record("Expected parseFailed error but no error was thrown")
         } catch OfemConfigError.parseFailed {
-        // Expected — pass.
+            // Expected — pass.
         } catch {
             Issue.record("Expected OfemConfigError.parseFailed, got \(error)")
         }
@@ -227,7 +227,7 @@ struct OfemConfigTests {
         // we don't care which one wins — we only care that the file can be
         // re-read cleanly afterwards.
         await withTaskGroup(of: Void.self) { group in
-            for i in 0..<20 {
+            for i in 0 ..< 20 {
                 group.addTask {
                     _ = try? await store.updateAndSave { cfg in
                         cfg.installID = "run-\(i)"
@@ -242,6 +242,7 @@ struct OfemConfigTests {
     }
 
     // MARK: - Intra-process write safety (arch-01 / auth-01)
+
     //
     // Two OfemConfigStore instances opened over the same path in the *same*
     // process share a process-wide serial DispatchQueue (keyed by the
@@ -277,7 +278,7 @@ struct OfemConfigTests {
         // storeA writes telemetry=false; storeB writes log.level="debug".
         // Both are different fields — neither write should revert the other.
         await withTaskGroup(of: Void.self) { group in
-            for _ in 0..<10 {
+            for _ in 0 ..< 10 {
                 group.addTask {
                     _ = try? await storeA.updateAndSave { cfg in cfg.telemetry = false }
                 }

@@ -1,15 +1,15 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - CacheStore.handoffBlob tests (fpe-06)
+
 //
 // Verifies the hardlink-first / copy-fallback blob handoff API and the
 // cache-eviction safety guarantee.
 
 @Suite("CacheStore.handoffBlob (fpe-06)")
 struct CacheHandoffTests {
-
     // MARK: - Helpers
 
     private func makeTempDir() throws -> URL {

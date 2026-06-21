@@ -1,6 +1,6 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - CacheErrorTests
 
@@ -9,7 +9,6 @@ import Foundation
 /// `.blobIOError`.
 @Suite("CacheError")
 struct CacheErrorTests {
-
     // MARK: - errorDescription: notFound
 
     @Test("notFound errorDescription contains the description string")
@@ -60,7 +59,9 @@ struct CacheErrorTests {
     @Test("blobIOError errorDescription embeds the inner error's localizedDescription")
     func blobIOErrorDescriptionEmbedsInner() {
         struct FixedError: Error, LocalizedError {
-            var errorDescription: String? { "disk read failed" }
+            var errorDescription: String? {
+                "disk read failed"
+            }
         }
         let err = CacheError.blobIOError(FixedError())
         #expect(err.errorDescription?.contains("disk read failed") == true)
@@ -147,12 +148,14 @@ struct CacheErrorTests {
 
     @Test("CacheError can be thrown and caught by case")
     func cacheErrorIsThrowable() {
-        func throwIt() throws { throw CacheError.notFound("missing-key") }
+        func throwIt() throws {
+            throw CacheError.notFound("missing-key")
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case CacheError.notFound(let desc) = error {
+            if case let CacheError.notFound(desc) = error {
                 #expect(desc == "missing-key")
             } else {
                 Issue.record("unexpected error: \(error)")
@@ -162,12 +165,14 @@ struct CacheErrorTests {
 
     @Test("invalidSHA preserves associated value through throw/catch")
     func invalidSHAThrowCatch() {
-        func throwIt() throws { throw CacheError.invalidSHA("bad-sha") }
+        func throwIt() throws {
+            throw CacheError.invalidSHA("bad-sha")
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case CacheError.invalidSHA(let sha) = error {
+            if case let CacheError.invalidSHA(sha) = error {
                 #expect(sha == "bad-sha")
             } else {
                 Issue.record("unexpected error: \(error)")

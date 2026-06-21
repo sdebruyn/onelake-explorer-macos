@@ -75,5 +75,7 @@ actor TelemetryBatch {
     }
 
     /// Current number of buffered events.
-    var count: Int { buffer.count }
+    var count: Int {
+        buffer.count
+    }
 }

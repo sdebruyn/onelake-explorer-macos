@@ -4,10 +4,10 @@
 // Uses mock implementations of SignInProvider and DomainRegistrar so
 // no MSAL / FPE / Keychain stack is required.
 
-import XCTest
 import AppKit
 import Combine
 import OfemKit
+import XCTest
 
 // MARK: - Mocks
 
@@ -23,15 +23,15 @@ private final class MockSignInProvider: SignInProvider, @unchecked Sendable {
 
     func signIn(
         alias: String,
-        tenant: String?,
-        clientID: String?,
-        window: NSWindow
+        tenant _: String?,
+        clientID _: String?,
+        window _: NSWindow
     ) async throws -> XPCAccountInfo {
         callCount += 1
         switch behaviour {
-        case .succeed(let username):
+        case let .succeed(username):
             return XPCAccountInfo(alias: alias, username: username, tenantId: "tid", tenantName: "")
-        case .fail(let error):
+        case let .fail(error):
             throw error
         case .cancel:
             throw CancellationError()
@@ -53,14 +53,13 @@ private final class MockDomainRegistrar: DomainRegistrar, @unchecked Sendable {
 
 @MainActor
 final class AddAccountCoordinatorTests: XCTestCase, @unchecked Sendable {
-
     private var signInProvider: MockSignInProvider!
     private var domainRegistrar: MockDomainRegistrar!
     private var coordinator: AddAccountCoordinator!
 
-    // setUp overrides a nonisolated XCTestCase method and cannot be marked
-    // @MainActor. XCTest always runs setUp on the main thread; this is asserted
-    // via MainActor.assumeIsolated to satisfy Swift 6 strict concurrency.
+    /// setUp overrides a nonisolated XCTestCase method and cannot be marked
+    /// @MainActor. XCTest always runs setUp on the main thread; this is asserted
+    /// via MainActor.assumeIsolated to satisfy Swift 6 strict concurrency.
     override func setUp() {
         super.setUp()
         MainActor.assumeIsolated {
@@ -98,7 +97,7 @@ final class AddAccountCoordinatorTests: XCTestCase, @unchecked Sendable {
         // Accept either phase here since the check runs just after the .success
         // expectation fires (before the 1.2s sleep in the coordinator elapses).
         switch coordinator.phase {
-        case .success(let username), .readyToDismiss(let username):
+        case let .success(username), let .readyToDismiss(username):
             XCTAssertEqual(username, "alice@contoso.com")
         default:
             XCTFail("Expected .success or .readyToDismiss, got \(coordinator.phase)")
@@ -135,7 +134,7 @@ final class AddAccountCoordinatorTests: XCTestCase, @unchecked Sendable {
         await fulfillment(of: [expectation], timeout: 2)
         observation.cancel()
 
-        if case .failure(let msg) = coordinator.phase {
+        if case let .failure(msg) = coordinator.phase {
             XCTAssertFalse(msg.isEmpty, "Error message should not be empty")
         } else {
             XCTFail("Expected .failure, got \(coordinator.phase)")
@@ -182,7 +181,9 @@ final class AddAccountCoordinatorTests: XCTestCase, @unchecked Sendable {
     func testFriendlyError_unknownError_usesLocalizedDescription() {
         enum E: Error, LocalizedError {
             case boom
-            var errorDescription: String? { "Something went wrong" }
+            var errorDescription: String? {
+                "Something went wrong"
+            }
         }
         let msg = AddAccountCoordinator.friendlyError(E.boom)
         XCTAssertEqual(msg, "Something went wrong")

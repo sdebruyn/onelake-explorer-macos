@@ -97,7 +97,9 @@ private struct CacheSettingsTab: View {
     /// True once the FPE has returned a non-zero cacheMaxSizeGB.
     /// The slider is hidden until then so the `max(1, …)` placeholder
     /// value cannot be written back before real values arrive.
-    private var cacheLoaded: Bool { model.cacheMaxSizeGB > 0 }
+    private var cacheLoaded: Bool {
+        model.cacheMaxSizeGB > 0
+    }
 
     /// SwiftUI Slider is Double-backed; we round on write so the visible
     /// number snaps to an integer GB without rendering tick marks under
@@ -119,7 +121,7 @@ private struct CacheSettingsTab: View {
                 LabeledContent {
                     if cacheLoaded {
                         HStack(spacing: 12) {
-                            Slider(value: sliderBinding, in: 1...100)
+                            Slider(value: sliderBinding, in: 1 ... 100)
                                 .controlSize(.small)
                                 .frame(minWidth: 240)
                             Text("\(model.cacheMaxSizeGB) GB")
@@ -137,7 +139,7 @@ private struct CacheSettingsTab: View {
 
                 LabeledContent {
                     VStack(alignment: .trailing, spacing: 6) {
-                        if model.cacheBytes >= 0 && model.cacheMaxSizeGB > 0 {
+                        if model.cacheBytes >= 0, model.cacheMaxSizeGB > 0 {
                             ProgressView(value: usageFraction)
                                 .progressViewStyle(.linear)
                                 .tint(usageTint)
@@ -204,9 +206,9 @@ private struct CacheSettingsTab: View {
 
     private var usageTint: Color {
         switch usageFraction {
-        case ..<0.75: return .accentColor
-        case ..<0.95: return .orange
-        default:      return .red
+        case ..<0.75: .accentColor
+        case ..<0.95: .orange
+        default: .red
         }
     }
 
@@ -252,13 +254,13 @@ private struct NetworkSettingsTab: View {
                         title: "Parallel uploads",
                         detail: "Maximum simultaneous outgoing transfers per account.",
                         value: uploadsBinding,
-                        range: 1...16
+                        range: 1 ... 16
                     )
                     concurrencyRow(
                         title: "Parallel downloads",
                         detail: "Maximum simultaneous incoming transfers per account.",
                         value: downloadsBinding,
-                        range: 1...32
+                        range: 1 ... 32
                     )
                 } else {
                     LabeledContent("Parallel uploads") {
@@ -278,7 +280,6 @@ private struct NetworkSettingsTab: View {
         .scrollDisabled(true)
     }
 
-    @ViewBuilder
     private func concurrencyRow(
         title: String,
         detail: String,
@@ -311,7 +312,9 @@ private struct AdvancedSettingsTab: View {
     @ObservedObject var model: MenuStatusModel
 
     /// True once the FPE status has been fetched and the log level is loaded.
-    private var logLevelLoaded: Bool { !model.logLevel.isEmpty }
+    private var logLevelLoaded: Bool {
+        !model.logLevel.isEmpty
+    }
 
     private var logLevelBinding: Binding<String> {
         Binding(
@@ -321,7 +324,9 @@ private struct AdvancedSettingsTab: View {
     }
 
     /// True once the FPE status has been fetched and the poll interval is loaded.
-    private var pollIntervalLoaded: Bool { model.materializedPollIntervalS > 0 }
+    private var pollIntervalLoaded: Bool {
+        model.materializedPollIntervalS > 0
+    }
 
     private var pollIntervalBinding: Binding<Int> {
         // `pollIntervalLoaded` guards the Stepper; this binding is only
@@ -359,8 +364,9 @@ private struct AdvancedSettingsTab: View {
 
                 if pollIntervalLoaded {
                     Stepper(value: pollIntervalBinding,
-                            in: SyncConfig.minMaterializedPollIntervalS...SyncConfig.maxMaterializedPollIntervalS,
-                            step: 15) {
+                            in: SyncConfig.minMaterializedPollIntervalS ... SyncConfig.maxMaterializedPollIntervalS,
+                            step: 15)
+                    {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Content refresh interval: \(model.materializedPollIntervalS) s")
                             Text("How often open folders are polled for new files (\(SyncConfig.minMaterializedPollIntervalS)–\(SyncConfig.maxMaterializedPollIntervalS) s).")

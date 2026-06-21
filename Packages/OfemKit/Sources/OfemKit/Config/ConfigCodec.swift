@@ -2,6 +2,7 @@ import Foundation
 import TOMLKit
 
 // MARK: - Codable conformances for config schema types
+
 //
 // All conformances live here so the schema structs in ConfigSchema.swift remain
 // free of encoding details, and so there is exactly ONE place to update when a
@@ -32,26 +33,26 @@ extension OfemConfig: Codable {
     public init(from decoder: Decoder) throws {
         let defaults = OfemConfig.makeDefault()
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        installID      = try c.decodeIfPresent(String.self,            forKey: .installID)      ?? defaults.installID
-        telemetry      = try c.decodeIfPresent(Bool.self,              forKey: .telemetry)      ?? defaults.telemetry
-        defaultAccount = try c.decodeIfPresent(String.self,            forKey: .defaultAccount) ?? defaults.defaultAccount
-        cache          = try c.decodeIfPresent(CacheConfig.self,       forKey: .cache)          ?? defaults.cache
-        net            = try c.decodeIfPresent(NetConfig.self,         forKey: .net)            ?? defaults.net
-        log            = try c.decodeIfPresent(LogConfig.self,         forKey: .log)            ?? defaults.log
-        sync           = try c.decodeIfPresent(SyncConfig.self,        forKey: .sync)           ?? defaults.sync
-        accounts       = try c.decodeIfPresent([String: Account].self, forKey: .accounts)       ?? defaults.accounts
+        installID = try c.decodeIfPresent(String.self, forKey: .installID) ?? defaults.installID
+        telemetry = try c.decodeIfPresent(Bool.self, forKey: .telemetry) ?? defaults.telemetry
+        defaultAccount = try c.decodeIfPresent(String.self, forKey: .defaultAccount) ?? defaults.defaultAccount
+        cache = try c.decodeIfPresent(CacheConfig.self, forKey: .cache) ?? defaults.cache
+        net = try c.decodeIfPresent(NetConfig.self, forKey: .net) ?? defaults.net
+        log = try c.decodeIfPresent(LogConfig.self, forKey: .log) ?? defaults.log
+        sync = try c.decodeIfPresent(SyncConfig.self, forKey: .sync) ?? defaults.sync
+        accounts = try c.decodeIfPresent([String: Account].self, forKey: .accounts) ?? defaults.accounts
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(installID,      forKey: .installID)
-        try c.encode(telemetry,      forKey: .telemetry)
+        try c.encode(installID, forKey: .installID)
+        try c.encode(telemetry, forKey: .telemetry)
         try c.encode(defaultAccount, forKey: .defaultAccount)
-        try c.encode(cache,          forKey: .cache)
-        try c.encode(net,            forKey: .net)
-        try c.encode(log,            forKey: .log)
-        try c.encode(sync,           forKey: .sync)
-        try c.encode(accounts,       forKey: .accounts)
+        try c.encode(cache, forKey: .cache)
+        try c.encode(net, forKey: .net)
+        try c.encode(log, forKey: .log)
+        try c.encode(sync, forKey: .sync)
+        try c.encode(accounts, forKey: .accounts)
     }
 }
 
@@ -89,25 +90,25 @@ extension CacheConfig: Codable {
 
 extension NetConfig: Codable {
     enum CodingKeys: String, CodingKey {
-        case maxConcurrentUploadsPerAccount   = "max_concurrent_uploads_per_account"
+        case maxConcurrentUploadsPerAccount = "max_concurrent_uploads_per_account"
         case maxConcurrentDownloadsPerAccount = "max_concurrent_downloads_per_account"
     }
 
     public init(from decoder: Decoder) throws {
         let defaults = OfemConfig.makeDefault().net
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        let rawUp   = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentUploadsPerAccount)   ?? defaults.maxConcurrentUploadsPerAccount
+        let rawUp = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentUploadsPerAccount) ?? defaults.maxConcurrentUploadsPerAccount
         let rawDown = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentDownloadsPerAccount) ?? defaults.maxConcurrentDownloadsPerAccount
         // Clamp to [1, 64] so a zero or negative value never creates a
         // zero-bound semaphore downstream. An absurdly large value (e.g. 999)
         // is also capped to avoid starving other consumers of the HTTP stack.
-        maxConcurrentUploadsPerAccount   = min(max(rawUp,   NetConfig.minConcurrent), NetConfig.maxConcurrent)
+        maxConcurrentUploadsPerAccount = min(max(rawUp, NetConfig.minConcurrent), NetConfig.maxConcurrent)
         maxConcurrentDownloadsPerAccount = min(max(rawDown, NetConfig.minConcurrent), NetConfig.maxConcurrent)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(maxConcurrentUploadsPerAccount,   forKey: .maxConcurrentUploadsPerAccount)
+        try c.encode(maxConcurrentUploadsPerAccount, forKey: .maxConcurrentUploadsPerAccount)
         try c.encode(maxConcurrentDownloadsPerAccount, forKey: .maxConcurrentDownloadsPerAccount)
     }
 }
@@ -163,12 +164,12 @@ extension SyncConfig: Codable {
 extension Account: Codable {
     enum CodingKeys: String, CodingKey {
         case alias
-        case tenantID      = "tenant_id"
-        case tenantName    = "tenant_name"
+        case tenantID = "tenant_id"
+        case tenantName = "tenant_name"
         case homeAccountID = "home_account_id"
         case username
-        case addedAt       = "added_at"
-        case clientID      = "client_id"
+        case addedAt = "added_at"
+        case clientID = "client_id"
     }
 
     // Explicit synthesis required because the struct is declared in a
@@ -180,23 +181,23 @@ extension Account: Codable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        alias         = try c.decode(String.self,  forKey: .alias)
-        tenantID      = try c.decode(String.self,  forKey: .tenantID)
-        tenantName    = try c.decodeIfPresent(String.self, forKey: .tenantName)
-        homeAccountID = try c.decode(String.self,  forKey: .homeAccountID)
-        username      = try c.decode(String.self,  forKey: .username)
-        addedAt       = try c.decode(String.self,  forKey: .addedAt)
-        clientID      = try c.decodeIfPresent(String.self, forKey: .clientID)
+        alias = try c.decode(String.self, forKey: .alias)
+        tenantID = try c.decode(String.self, forKey: .tenantID)
+        tenantName = try c.decodeIfPresent(String.self, forKey: .tenantName)
+        homeAccountID = try c.decode(String.self, forKey: .homeAccountID)
+        username = try c.decode(String.self, forKey: .username)
+        addedAt = try c.decode(String.self, forKey: .addedAt)
+        clientID = try c.decodeIfPresent(String.self, forKey: .clientID)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(alias,         forKey: .alias)
-        try c.encode(tenantID,      forKey: .tenantID)
+        try c.encode(alias, forKey: .alias)
+        try c.encode(tenantID, forKey: .tenantID)
         try c.encodeIfPresent(tenantName, forKey: .tenantName)
         try c.encode(homeAccountID, forKey: .homeAccountID)
-        try c.encode(username,      forKey: .username)
-        try c.encode(addedAt,       forKey: .addedAt)
+        try c.encode(username, forKey: .username)
+        try c.encode(addedAt, forKey: .addedAt)
         try c.encodeIfPresent(clientID, forKey: .clientID)
     }
 }

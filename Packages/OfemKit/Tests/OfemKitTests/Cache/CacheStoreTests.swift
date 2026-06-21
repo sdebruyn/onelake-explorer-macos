@@ -1,15 +1,13 @@
 import Foundation
 import GRDB
-import Testing
-
 @testable import OfemKit
+import Testing
 
 // MARK: - CacheStoreTests
 
 /// Tests for the `CacheStore` CRUD operations and WAL concurrency behaviour.
 @Suite("CacheStore")
 struct CacheStoreTests {
-
     // MARK: - Upsert + Fetch
 
     @Test("Upsert and fetch a metadata row")
@@ -239,9 +237,9 @@ struct CacheStoreTests {
         // We need two blobs whose SHA-256 values share the same 2-hex prefix so
         // they land in the same shard directory.  Build them by brute-force search
         // over small deterministic byte strings.
-        var shaA: String = ""
+        var shaA = ""
         var dataA = Data()
-        var shaB: String = ""
+        var shaB = ""
         var dataB = Data()
 
         var i = 0
@@ -251,7 +249,7 @@ struct CacheStoreTests {
             let db2 = Data("blob-\(j)".utf8)
             let sa = SHA256HexString(da)
             let sb = SHA256HexString(db2)
-            if String(sa.prefix(2)) == String(sb.prefix(2)) && sa != sb {
+            if String(sa.prefix(2)) == String(sb.prefix(2)), sa != sb {
                 shaA = sa; dataA = da
                 shaB = sb; dataB = db2
                 break
@@ -361,12 +359,12 @@ struct CacheStoreTests {
             accountAlias: "a", workspaceID: "w", itemID: "i",
             path: "f.txt", parentPath: "", name: "f.txt", isDir: false
         )
-        r.lastAccessedNs = 1_000
+        r.lastAccessedNs = 1000
         try await store.upsert(r)
 
         try await store.touch(key: key)
         let fetched = try await store.fetch(key: key)
-        #expect(fetched.lastAccessedNs > 1_000)
+        #expect(fetched.lastAccessedNs > 1000)
     }
 
     @Test("Touch throws notFound for missing row")
@@ -678,7 +676,7 @@ struct CacheStoreTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
 
-        let records = (0..<10).map { i in
+        let records = (0 ..< 10).map { i in
             MetadataRecord(
                 accountAlias: "a", workspaceID: "ws", itemID: "it",
                 path: "f\(i).txt", parentPath: "", name: "f\(i).txt",
@@ -708,7 +706,7 @@ struct CacheStoreTests {
             path: "", parentPath: "", name: "root", isDir: true
         )
         try await store.upsert(root)
-        for i in 0..<5 {
+        for i in 0 ..< 5 {
             let r = MetadataRecord(
                 accountAlias: "a", workspaceID: "ws", itemID: "it",
                 path: "f\(i).txt", parentPath: "", name: "f\(i).txt", isDir: false
@@ -716,7 +714,7 @@ struct CacheStoreTests {
             try await store.upsert(r)
         }
 
-        let keys = (0..<5).map { i in
+        let keys = (0 ..< 5).map { i in
             CacheKey(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "f\(i).txt")
         }
         try await store.batchDelete(keys)

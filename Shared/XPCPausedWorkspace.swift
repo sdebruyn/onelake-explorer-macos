@@ -21,7 +21,9 @@ import Foundation
 /// `@objc` prevent automatic Sendable synthesis, so `@unchecked Sendable` is the
 /// correct idiomatic annotation — there is no shared mutable state to guard.
 @objc(XPCPausedWorkspace) public final class XPCPausedWorkspace: NSObject, NSSecureCoding, @unchecked Sendable {
-    @objc public static var supportsSecureCoding: Bool { true }
+    @objc public static var supportsSecureCoding: Bool {
+        true
+    }
 
     @objc public let accountAlias: String
     @objc public let workspaceID: String
@@ -59,8 +61,8 @@ import Foundation
 
     @objc public required init?(coder: NSCoder) {
         accountAlias = (coder.decodeObject(of: NSString.self, forKey: Keys.accountAlias.rawValue) as? String) ?? ""
-        workspaceID  = (coder.decodeObject(of: NSString.self, forKey: Keys.workspaceID.rawValue)  as? String) ?? ""
-        reason       = (coder.decodeObject(of: NSString.self, forKey: Keys.reason.rawValue)       as? String) ?? ""
+        workspaceID = (coder.decodeObject(of: NSString.self, forKey: Keys.workspaceID.rawValue) as? String) ?? ""
+        reason = (coder.decodeObject(of: NSString.self, forKey: Keys.reason.rawValue) as? String) ?? ""
         detectedAtSec = coder.decodeDouble(forKey: Keys.detectedAtSec.rawValue)
         super.init()
     }

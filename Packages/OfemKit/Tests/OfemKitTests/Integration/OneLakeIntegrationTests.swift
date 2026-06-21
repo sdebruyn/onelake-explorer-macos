@@ -1,7 +1,6 @@
 import Foundation
-import Testing
-
 @testable import OfemKit
+import Testing
 
 /// Live OneLake DFS data-plane round-trips against a real Fabric lakehouse.
 ///
@@ -9,7 +8,6 @@ import Testing
 /// share one workspace and we keep concurrency off the live endpoint modest.
 @Suite("OneLake integration", .integration, .serialized)
 struct OneLakeIntegrationTests {
-
     /// Binds the live workspace + lakehouse so test bodies stay readable.
     private struct LiveLakehouse {
         let client: OneLakeClient
@@ -20,18 +18,22 @@ struct OneLakeIntegrationTests {
         func mkdir(_ path: String) async throws {
             try await client.createDirectory(alias: alias, workspaceGUID: workspace, itemGUID: item, path: path)
         }
+
         func write(_ path: String, _ data: Data) async throws {
             try await client.write(
                 alias: alias, workspaceGUID: workspace, itemGUID: item,
                 path: path, content: data, size: Int64(data.count)
             )
         }
+
         func list(_ dir: String) async throws -> ListResult {
             try await client.listPath(alias: alias, workspaceGUID: workspace, itemGUID: item, directory: dir, recursive: false)
         }
+
         func read(_ path: String) async throws -> (Data, PathProperties) {
             try await client.read(alias: alias, workspaceGUID: workspace, itemGUID: item, path: path)
         }
+
         func rm(_ path: String) async throws {
             try await client.delete(alias: alias, workspaceGUID: workspace, itemGUID: item, path: path, recursive: true)
         }
@@ -51,7 +53,7 @@ struct OneLakeIntegrationTests {
         let filePath = "\(dir)/payload.bin"
         // 256 KiB of non-trivial bytes — crosses no chunk boundary but is large
         // enough that a truncated read would be obvious.
-        let payload = Data((0..<(256 * 1024)).map { UInt8($0 % 251) })
+        let payload = Data((0 ..< (256 * 1024)).map { UInt8($0 % 251) })
 
         do {
             try await lake.mkdir(dir)
@@ -82,7 +84,7 @@ struct OneLakeIntegrationTests {
         let lake = try liveLakehouse()
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
         let filePath = "\(dir)/ranged.bin"
-        let payload = Data((0..<1024).map { UInt8($0 % 251) })
+        let payload = Data((0 ..< 1024).map { UInt8($0 % 251) })
 
         do {
             try await lake.mkdir(dir)
@@ -90,9 +92,9 @@ struct OneLakeIntegrationTests {
 
             let (slice, _) = try await lake.client.read(
                 alias: lake.alias, workspaceGUID: lake.workspace, itemGUID: lake.item,
-                path: filePath, range: 100..<200
+                path: filePath, range: 100 ..< 200
             )
-            #expect(slice == payload[100..<200])
+            #expect(slice == payload[100 ..< 200])
         } catch {
             try? await lake.rm(dir)
             throw error

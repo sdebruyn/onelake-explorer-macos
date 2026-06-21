@@ -50,7 +50,6 @@ import Foundation
 /// after the last per-alias engine has been torn down, via
 /// `FPEEngineHost.shutdownSharedSubsystems()`.
 public actor OfemEngine {
-
     // MARK: - Public subsystems
 
     /// Authentication facade (token acquisition, account management).
@@ -99,7 +98,7 @@ public actor OfemEngine {
     /// Default Fabric REST base URL. Named constant eliminates both the
     /// force-unwrap and the magic-string duplication (fp-01, engine-04).
     private static let defaultFabricBaseURL = URL(string: "https://api.fabric.microsoft.com")
-        .unsafelyUnwrapped  // static literal — always valid
+        .unsafelyUnwrapped // static literal — always valid
 
     // MARK: - Initialisers
 
@@ -156,14 +155,14 @@ public actor OfemEngine {
             httpBaseURLs: httpBaseURLs
         )
 
-        self.logger = perAlias.logger
-        self.cache = sharedCache
-        self.telemetry = sharedTelemetry
-        self.sessionPool = sharedSessionPool
-        self.auth = perAlias.auth
-        self.sync = perAlias.sync
+        logger = perAlias.logger
+        cache = sharedCache
+        telemetry = sharedTelemetry
+        sessionPool = sharedSessionPool
+        auth = perAlias.auth
+        sync = perAlias.sync
         // Injected init does NOT own the shared subsystems (engine-03).
-        self.subsystemOwnership = .shared
+        subsystemOwnership = .shared
     }
 
     /// Builds all subsystems autonomously — constructs its own cache, telemetry,
@@ -192,16 +191,16 @@ public actor OfemEngine {
         // `AppInsightsSink.init` throws only if the connection string is
         // malformed; the constant in `BuildInfo` is always well-formed, so
         // the `try?` here is purely a defensive fallback.
-        let telSink: any TelemetrySink
-        if cfg.telemetry,
-           let sink = try? AppInsightsSink(
-               connectionString: BuildInfo.appInsightsConnectionString,
-               installID: cfg.installID,
-               appVersion: BuildInfo.version
-           ) {
-            telSink = sink
+        let telSink: any TelemetrySink = if cfg.telemetry,
+                                            let sink = try? AppInsightsSink(
+                                                connectionString: BuildInfo.appInsightsConnectionString,
+                                                installID: cfg.installID,
+                                                appVersion: BuildInfo.version
+                                            )
+        {
+            sink
         } else {
-            telSink = NoopTelemetrySink()
+            NoopTelemetrySink()
         }
         let ownedTelemetry = TelemetryClient(
             sink: telSink,
@@ -232,17 +231,17 @@ public actor OfemEngine {
             httpBaseURLs: httpBaseURLs
         )
 
-        self.logger = perAlias.logger
-        self.cache = ownedCache
-        self.telemetry = ownedTelemetry
-        self.sessionPool = ownedPool
-        self.auth = perAlias.auth
-        self.sync = perAlias.sync
+        logger = perAlias.logger
+        cache = ownedCache
+        telemetry = ownedTelemetry
+        sessionPool = ownedPool
+        auth = perAlias.auth
+        sync = perAlias.sync
         // Standalone init owns every subsystem it created (engine-03).
         // CacheStore is already held by self.cache (ARC); no need to store
         // it again in the ownership enum — it will be released (and closed
         // by GRDB) when the engine is deallocated after shutdown().
-        self.subsystemOwnership = .owned(telemetry: ownedTelemetry)
+        subsystemOwnership = .owned(telemetry: ownedTelemetry)
     }
 
     // MARK: - Lifecycle
@@ -278,7 +277,7 @@ public actor OfemEngine {
         case .shared:
             // Shared subsystems stay alive for other engines — do not touch them.
             break
-        case .owned(let ownedTelemetry):
+        case let .owned(ownedTelemetry):
             // Telemetry: final flush + cancel flush timer.
             await ownedTelemetry.shutdown()
             // CacheStore: held by self.cache (ARC).  GRDB DatabasePool closes
@@ -319,12 +318,11 @@ public actor OfemEngine {
         sessionPool: SessionPool,
         httpBaseURLs: (oneLake: URL, fabric: URL)?
     ) throws -> PerAliasSubsystems {
-
         // 1. Logger (per-alias).
         // store-14: wire RotatingFileWriter so on-disk logs are produced.
         // Use LogLevel(string:) to honour all four levels; fall back to .info
         // for an unrecognised value (matches LogLevel.init(string:) semantics).
-        let logLevel: LogLevel = LogLevel(string: cfg.log.level) ?? .info
+        let logLevel = LogLevel(string: cfg.log.level) ?? .info
         let fileWriter = RotatingFileWriter(logDirectory: paths.logDir)
         let logConfig = LogConfiguration(
             subsystem: OfemPaths.bundleID,
@@ -341,10 +339,10 @@ public actor OfemEngine {
 
         // 3. HTTP clients — use the provided session pool.
         let oneLakeURL = httpBaseURLs?.oneLake ?? OneLakeClient.defaultBaseURL
-        let fabricURL  = httpBaseURLs?.fabric  ?? OfemEngine.defaultFabricBaseURL
+        let fabricURL = httpBaseURLs?.fabric ?? OfemEngine.defaultFabricBaseURL
 
         let onelake = OneLakeClient(sessionPool: sessionPool, baseURL: oneLakeURL, logger: logger)
-        let fabric  = FabricClient(sessionPool: sessionPool, baseURL: fabricURL, logger: logger)
+        let fabric = FabricClient(sessionPool: sessionPool, baseURL: fabricURL, logger: logger)
 
         // 4. Sync engine (per-alias).
         let scratchBase = paths.cacheDir.appendingPathComponent("partials")

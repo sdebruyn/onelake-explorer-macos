@@ -11,7 +11,6 @@ import OfemKit
 import XCTest
 
 final class FPErrorMappingTests: XCTestCase {
-
     // MARK: - nsFileProviderError(for:)
 
     func testNoSuchItemCode() {
@@ -90,7 +89,7 @@ final class FPErrorMappingTests: XCTestCase {
         )
 
         // Wait up to 1 second for the async Task to complete.
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if observer.receivedError != nil { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -116,4 +115,3 @@ private final class CancellationSpyObserver: NSObject, NSFileProviderEnumeration
         receivedError = error
     }
 }
-

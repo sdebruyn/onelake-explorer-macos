@@ -1,6 +1,6 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - PauseManager Tests
 
@@ -8,7 +8,6 @@ import Foundation
 /// the ``isPausedCapacityError`` mapping table.
 @Suite("PauseManager")
 struct PauseManagerTests {
-
     // MARK: - Helpers
 
     private func makeManager(
@@ -27,7 +26,7 @@ struct PauseManagerTests {
     // MARK: - Classification: regex patterns
 
     @Test("isPausedCapacityError recognises 'capacity not active'")
-    func testCapacityNotActive() throws {
+    func capacityNotActive() throws {
         let (mgr, store) = try makeManager()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let err = makeAPIError(body: #"{"message":"capacity not active"}"#)
@@ -35,7 +34,7 @@ struct PauseManagerTests {
     }
 
     @Test("isPausedCapacityError recognises 'Fabric capacity is paused'")
-    func testFabricCapacityIsPaused() throws {
+    func fabricCapacityIsPaused() throws {
         let (mgr, store) = try makeManager()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let err = makeAPIError(body: #"{"message":"Fabric capacity is paused"}"#)
@@ -43,7 +42,7 @@ struct PauseManagerTests {
     }
 
     @Test("isPausedCapacityError recognises 'capacity suspended'")
-    func testCapacitySuspended() throws {
+    func capacitySuspended() throws {
         let (mgr, store) = try makeManager()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let err = makeAPIError(body: #"{"message":"capacity suspended"}"#)
@@ -51,7 +50,7 @@ struct PauseManagerTests {
     }
 
     @Test("isPausedCapacityError recognises 'capacity has been paused'")
-    func testCapacityHasBeenPaused() throws {
+    func capacityHasBeenPaused() throws {
         let (mgr, store) = try makeManager()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let err = makeAPIError(body: #"{"message":"Capacity has been paused"}"#)
@@ -61,7 +60,7 @@ struct PauseManagerTests {
     // MARK: - Classification: errorCode field
 
     @Test("isPausedCapacityError recognises errorCode 'capacitypaused' (case-insensitive)")
-    func testErrorCodeCapacityPaused() throws {
+    func errorCodeCapacityPaused() throws {
         let (mgr, store) = try makeManager()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let err = makeAPIError(body: #"{"errorCode":"CapacityPaused","message":"other"}"#)
@@ -69,7 +68,7 @@ struct PauseManagerTests {
     }
 
     @Test("isPausedCapacityError recognises errorCode 'workspacecapacitypaused'")
-    func testErrorCodeWorkspaceCapacityPaused() throws {
+    func errorCodeWorkspaceCapacityPaused() throws {
         let (mgr, store) = try makeManager()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let err = makeAPIError(body: #"{"errorCode":"WorkspaceCapacityPaused"}"#)
@@ -77,7 +76,7 @@ struct PauseManagerTests {
     }
 
     @Test("isPausedCapacityError returns false for unrelated errors")
-    func testNonPausedError() throws {
+    func nonPausedError() throws {
         let (mgr, store) = try makeManager()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let err = URLError(.notConnectedToInternet)
@@ -85,7 +84,7 @@ struct PauseManagerTests {
     }
 
     @Test("isPausedCapacityError unwraps OneLakeError.httpError")
-    func testUnwrapsOneLakeError() throws {
+    func unwrapsOneLakeError() throws {
         let (mgr, store) = try makeManager()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let inner = makeAPIError(body: #"{"message":"capacity is currently paused"}"#)
@@ -94,7 +93,7 @@ struct PauseManagerTests {
     }
 
     @Test("isPausedCapacityError unwraps FabricError.httpError")
-    func testUnwrapsFabricError() throws {
+    func unwrapsFabricError() throws {
         let (mgr, store) = try makeManager()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let inner = makeAPIError(body: #"{"errorCode":"capacitysuspended"}"#)
@@ -105,7 +104,7 @@ struct PauseManagerTests {
     // MARK: - Probe state machine
 
     @Test("markPausedIfNeeded marks workspace paused in store")
-    func testMarkPausedPersists() async throws {
+    func markPausedPersists() async throws {
         let (mgr, store) = try makeManager()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let err = makeAPIError(body: #"{"message":"capacity not active"}"#)
@@ -116,7 +115,7 @@ struct PauseManagerTests {
     }
 
     @Test("guardPaused recovers when probe succeeds")
-    func testGuardPausedRecovery() async throws {
+    func guardPausedRecovery() async throws {
         let ol = MockOneLakeClient()
         let (mgr, store) = try makeManager(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -139,7 +138,7 @@ struct PauseManagerTests {
     }
 
     @Test("guardPaused throws workspacePaused when probe fails")
-    func testGuardPausedStillPaused() async throws {
+    func guardPausedStillPaused() async throws {
         let ol = MockOneLakeClient()
         let (mgr, store) = try makeManager(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }

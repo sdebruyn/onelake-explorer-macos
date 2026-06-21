@@ -93,7 +93,10 @@ protocol EngineProviding: AnyObject, Sendable {
 /// tracking. Production hosts (`FPEEngineHost`) override both with real
 /// behaviour; test doubles that omit them compile unchanged.
 extension EngineProviding {
-    var needsSignIn: Bool { false }
+    var needsSignIn: Bool {
+        false
+    }
+
     func markNeedsSignIn() {}
 }
 
@@ -125,7 +128,7 @@ final class FPEEngineHost: EngineProviding {
     // This eliminates the "split-brain" hazard where two hosts each hold their
     // own load-once snapshot and silently revert each other's writes.
     private static let sharedStoreLock = NSLock()
-    private static nonisolated(unsafe) var _sharedConfigStore: OfemConfigStore?
+    private nonisolated(unsafe) static var _sharedConfigStore: OfemConfigStore?
 
     /// Returns the process-wide OfemConfigStore, creating it on first call.
     ///
@@ -158,9 +161,9 @@ final class FPEEngineHost: EngineProviding {
     // One shared instance of each fixes all of the above.
 
     private static let sharedSubsystemsLock = NSLock()
-    private static nonisolated(unsafe) var _sharedCache: CacheStore?
-    private static nonisolated(unsafe) var _sharedTelemetry: TelemetryClient?
-    private static nonisolated(unsafe) var _sharedSessionPool: SessionPool?
+    private nonisolated(unsafe) static var _sharedCache: CacheStore?
+    private nonisolated(unsafe) static var _sharedTelemetry: TelemetryClient?
+    private nonisolated(unsafe) static var _sharedSessionPool: SessionPool?
 
     // MARK: - Active host reference count (fpe-14)
 
@@ -170,7 +173,7 @@ final class FPEEngineHost: EngineProviding {
     // so the final telemetry batch is always flushed, regardless of how many
     // domains were active.
     private static let activeHostLock = NSLock()
-    private static nonisolated(unsafe) var _activeHostCount: Int = 0
+    private nonisolated(unsafe) static var _activeHostCount: Int = 0
 
     /// Returns (or lazily creates) the process-wide CacheStore.
     ///
@@ -222,16 +225,16 @@ final class FPEEngineHost: EngineProviding {
 
         // Build outside the lock.
         let cfg = try sharedSubsystemsLock.withLock { try sharedConfigStore().snapshot() }
-        let telSink: any TelemetrySink
-        if cfg.telemetry,
-           let sink = try? AppInsightsSink(
-               connectionString: BuildInfo.appInsightsConnectionString,
-               installID: cfg.installID,
-               appVersion: BuildInfo.version
-           ) {
-            telSink = sink
+        let telSink: any TelemetrySink = if cfg.telemetry,
+                                            let sink = try? AppInsightsSink(
+                                                connectionString: BuildInfo.appInsightsConnectionString,
+                                                installID: cfg.installID,
+                                                appVersion: BuildInfo.version
+                                            )
+        {
+            sink
         } else {
-            telSink = NoopTelemetrySink()
+            NoopTelemetrySink()
         }
         let candidate = TelemetryClient(
             sink: telSink,
@@ -290,29 +293,29 @@ final class FPEEngineHost: EngineProviding {
         }
     }
 
-    /// Invalidates all process-wide shared subsystem singletons.
-    ///
-    /// **Test-only.** Nils out the shared singletons so the next call to
-    /// `sharedCache()`, `sharedTelemetry()`, or `sharedGateRegistry()` starts
-    /// fresh.  Only safe to call after all engines have been shut down and no
-    /// concurrent `buildEngine()` calls are in flight — calling it while a
-    /// background task holds a reference to a shared subsystem will silently
-    /// revert to the N-pools bug for any engine rebuilt after the reset.
+    // Invalidates all process-wide shared subsystem singletons.
+    //
+    // **Test-only.** Nils out the shared singletons so the next call to
+    // `sharedCache()`, `sharedTelemetry()`, or `sharedGateRegistry()` starts
+    // fresh.  Only safe to call after all engines have been shut down and no
+    // concurrent `buildEngine()` calls are in flight — calling it while a
+    // background task holds a reference to a shared subsystem will silently
+    // revert to the N-pools bug for any engine rebuilt after the reset.
     #if DEBUG
-    static func resetSharedSubsystems() {
-        // Acquire locks in a consistent order (subsystems first, then store,
-        // then activeHost) so the reset is atomic with respect to concurrent
-        // sharedCache() / sharedTelemetry() calls.
-        sharedSubsystemsLock.withLock {
-            sharedStoreLock.withLock {
-                _sharedConfigStore = nil
+        static func resetSharedSubsystems() {
+            // Acquire locks in a consistent order (subsystems first, then store,
+            // then activeHost) so the reset is atomic with respect to concurrent
+            // sharedCache() / sharedTelemetry() calls.
+            sharedSubsystemsLock.withLock {
+                sharedStoreLock.withLock {
+                    _sharedConfigStore = nil
+                }
+                _sharedCache = nil
+                _sharedTelemetry = nil
+                _sharedSessionPool = nil
             }
-            _sharedCache = nil
-            _sharedTelemetry = nil
-            _sharedSessionPool = nil
+            activeHostLock.withLock { _activeHostCount = 0 }
         }
-        activeHostLock.withLock { _activeHostCount = 0 }
-    }
     #endif
 
     // MARK: - Mutable state (guarded by lock)
@@ -365,7 +368,7 @@ final class FPEEngineHost: EngineProviding {
 
     init(alias: String, domain: NSFileProviderDomain) {
         self.alias = alias
-        self.domainIdentifier = domain.identifier
+        domainIdentifier = domain.identifier
         // Register this host instance in the process-wide reference count so
         // the last shutdown() can call shutdownSharedSubsystems() automatically.
         Self.activeHostLock.withLock { Self._activeHostCount += 1 }
@@ -414,7 +417,7 @@ final class FPEEngineHost: EngineProviding {
     func markNeedsSignIn() {
         lock.withLock { _needsSignIn = true }
         Self.log.notice(
-            "FPEEngineHost[\(self.alias, privacy: .public)]: marked needsSignIn — interactive re-authentication required"
+            "FPEEngineHost[\(alias, privacy: .public)]: marked needsSignIn — interactive re-authentication required"
         )
     }
 
@@ -471,7 +474,7 @@ final class FPEEngineHost: EngineProviding {
             if let existing = _buildTask { return existing }
             let newTask = Task<OfemEngine, Error> { [weak self] in
                 guard let self else { throw NSFileProviderError(.cannotSynchronize) }
-                return try self.buildEngine()
+                return try buildEngine()
             }
             _buildTask = newTask
             return newTask
@@ -526,7 +529,7 @@ final class FPEEngineHost: EngineProviding {
             startTask?.cancel()
             await startTask?.value
             await e.shutdown()
-            Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine reloaded after config change")
+            Self.log.info("FPEEngineHost[\(alias, privacy: .public)]: engine reloaded after config change")
         }
     }
 
@@ -558,7 +561,7 @@ final class FPEEngineHost: EngineProviding {
             startTask?.cancel()
             await startTask?.value
             await e.shutdown()
-            Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine shut down")
+            Self.log.info("FPEEngineHost[\(alias, privacy: .public)]: engine shut down")
         }
 
         // Release the Alamofire sessions for this alias so a stale or
@@ -605,7 +608,7 @@ final class FPEEngineHost: EngineProviding {
             lock.withLock { _buildError = nil; _lastBuildErrorUptimeNs = 0 }
         }
 
-        Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: building OfemEngine")
+        Self.log.info("FPEEngineHost[\(alias, privacy: .public)]: building OfemEngine")
 
         do {
             // Use the shared configStore so the XPC handler and the engine
@@ -631,7 +634,7 @@ final class FPEEngineHost: EngineProviding {
                 sharedTelemetry: telemetry,
                 sharedSessionPool: sessionPool
             )
-            Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine built")
+            Self.log.info("FPEEngineHost[\(alias, privacy: .public)]: engine built")
             // Start background tasks (telemetry flush timer). Create the Task
             // before taking the lock, then store _engine and _startTask together
             // in a single critical section so shutdown() can never observe
@@ -644,7 +647,7 @@ final class FPEEngineHost: EngineProviding {
                 await engine.start()
                 if let self {
                     Self.log.debug(
-                        "FPEEngineHost[\(self.alias, privacy: .public)]: engine started"
+                        "FPEEngineHost[\(alias, privacy: .public)]: engine started"
                     )
                 }
             }
@@ -659,7 +662,7 @@ final class FPEEngineHost: EngineProviding {
                 _lastBuildErrorUptimeNs = DispatchTime.now().uptimeNanoseconds
             }
             Self.log.error(
-                "FPEEngineHost[\(self.alias, privacy: .public)]: engine build failed: \(error.localizedDescription, privacy: .public)"
+                "FPEEngineHost[\(alias, privacy: .public)]: engine build failed: \(error.localizedDescription, privacy: .public)"
             )
             throw error
         }

@@ -230,7 +230,7 @@ struct WireWorkspace: Decodable {
 
     /// Returns a `Workspace` or `nil` when required fields are absent.
     func toWorkspace() -> Workspace? {
-        guard let id = id, !id.isEmpty else { return nil }
+        guard let id, !id.isEmpty else { return nil }
         return Workspace(
             id: id,
             displayName: displayName ?? "",
@@ -255,8 +255,8 @@ struct WireItem: Decodable {
 
     /// Returns an `Item` or `nil` when required fields are absent.
     func toItem() -> Item? {
-        guard let id = id, !id.isEmpty,
-              let workspaceId = workspaceId, !workspaceId.isEmpty else { return nil }
+        guard let id, !id.isEmpty,
+              let workspaceId, !workspaceId.isEmpty else { return nil }
         return Item(
             id: id,
             displayName: displayName ?? "",
@@ -280,8 +280,8 @@ struct WireFolder: Decodable {
 
     /// Returns a `Folder` or `nil` when required fields are absent.
     func toFolder() -> Folder? {
-        guard let id = id, !id.isEmpty,
-              let workspaceId = workspaceId, !workspaceId.isEmpty else { return nil }
+        guard let id, !id.isEmpty,
+              let workspaceId, !workspaceId.isEmpty else { return nil }
         return Folder(
             id: id,
             displayName: displayName ?? "",

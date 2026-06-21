@@ -8,7 +8,7 @@ extension Duration {
     /// The duration expressed as a `TimeInterval` (seconds, with sub-second
     /// precision carried by the attosecond component).
     var seconds: TimeInterval {
-        let (sec, attosec) = self.components
+        let (sec, attosec) = components
         return TimeInterval(sec) + TimeInterval(attosec) / 1e18
     }
 }

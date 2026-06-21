@@ -15,7 +15,6 @@ import os.log
 /// deadlock that occurs when a refresh call re-enters the same intercepted
 /// session (Alamofire issue #3509).
 public actor SessionPool {
-
     // MARK: - Types
 
     struct Key: Hashable {

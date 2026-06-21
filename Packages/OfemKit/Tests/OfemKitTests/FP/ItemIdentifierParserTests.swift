@@ -1,12 +1,11 @@
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - ItemIdentifierParser tests
 
 /// Tests for ``ItemIdentifierParser`` — parsing opaque identifier strings that
 /// the FPE stores / retrieves via `NSFileProviderItemIdentifier`.
 struct ItemIdentifierParserTests {
-
     // MARK: - Root
 
     @Test func parsesRootContainerSentinel() throws {
@@ -31,6 +30,7 @@ struct ItemIdentifierParserTests {
     }
 
     // MARK: - Valid paths
+
     //
     // Raw identifiers are slash-less: "ws", "ws/item", "ws/item/path...".
 

@@ -1,6 +1,6 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - Test helpers
 

@@ -11,7 +11,6 @@ import UniformTypeIdentifiers
 import XCTest
 
 final class OfemFPEItemTests: XCTestCase {
-
     // MARK: - Root item
 
     func testRootItem() {
@@ -68,7 +67,7 @@ final class OfemFPEItemTests: XCTestCase {
             path: "Files/data.parquet",
             isDir: false,
             size: 2048,
-            contentType: "",  // empty — force extension lookup
+            contentType: "", // empty — force extension lookup
             name: "data.parquet"
         )
         let item = OfemFPEItem(from: di)

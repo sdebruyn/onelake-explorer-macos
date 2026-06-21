@@ -1,8 +1,9 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - DebugLoggingTests
+
 //
 // Verifies that FabricClient and OneLakeClient emit the expected structured
 // debug log lines (per-request, per-page, end-of-sequence) through OfemLogger.
@@ -66,10 +67,10 @@ private enum CaptureError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .invalidUTF8(let line):
-            return "capturedLines: line is not valid UTF-8: \(line)"
-        case .malformedJSON(let line):
-            return "capturedLines: line failed JSON parsing — logger format regression? Line: \(line)"
+        case let .invalidUTF8(line):
+            "capturedLines: line is not valid UTF-8: \(line)"
+        case let .malformedJSON(line):
+            "capturedLines: line failed JSON parsing — logger format regression? Line: \(line)"
         }
     }
 }
@@ -122,7 +123,6 @@ private func makeMockPool(
 
 @Suite("FabricClient debug logging")
 struct FabricClientDebugLoggingTests {
-
     @Test("single-page listAllWorkspaces emits request, page, and complete log lines")
     func singlePageWorkspacesEmitsExpectedLines() async throws {
         let body = """
@@ -221,7 +221,6 @@ struct FabricClientDebugLoggingTests {
 
 @Suite("OneLakeClient debug logging")
 struct OneLakeClientDebugLoggingTests {
-
     @Test("single-page listPath emits request, response, page, and complete log lines")
     func singlePageListPathEmitsExpectedLines() async throws {
         let body = """

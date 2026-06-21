@@ -20,7 +20,6 @@ import Foundation
 /// empty segment (double slash, leading slash) is rejected so callers surface
 /// `noSuchItem` rather than a Fabric call with an empty ID.
 public enum ItemIdentifier: Hashable, Sendable {
-
     // MARK: - Cases
 
     /// The domain root: represents the list of all workspaces.
@@ -78,11 +77,11 @@ public enum ItemIdentifier: Hashable, Sendable {
             return Self.trashContainerString
         case .workingSet:
             return Self.workingSetString
-        case .workspace(let ws):
+        case let .workspace(ws):
             return ws
-        case .item(let ws, let item):
+        case let .item(ws, item):
             return "\(ws)/\(item)"
-        case .path(let ws, let item, let path):
+        case let .path(ws, item, path):
             if path.isEmpty {
                 return "\(ws)/\(item)"
             }
@@ -105,10 +104,10 @@ public enum ItemIdentifier: Hashable, Sendable {
     /// to log as-is.
     public var opaqueLogPrefix: String {
         switch self {
-        case .path(let ws, let item, _):
-            return "\(ws)/\(item)/..."
+        case let .path(ws, item, _):
+            "\(ws)/\(item)/..."
         default:
-            return identifierString
+            identifierString
         }
     }
 
@@ -128,7 +127,7 @@ public enum ItemIdentifier: Hashable, Sendable {
                 return .workspace(workspaceID: ws)
             }
             if let slashIdx = path.lastIndex(of: "/") {
-                let parentPath = String(path[path.startIndex..<slashIdx])
+                let parentPath = String(path[path.startIndex ..< slashIdx])
                 return .path(workspaceID: ws, itemID: item, path: parentPath)
             }
             return .item(workspaceID: ws, itemID: item)
@@ -139,5 +138,7 @@ public enum ItemIdentifier: Hashable, Sendable {
 // MARK: - CustomStringConvertible
 
 extension ItemIdentifier: CustomStringConvertible {
-    public var description: String { identifierString }
+    public var description: String {
+        identifierString
+    }
 }

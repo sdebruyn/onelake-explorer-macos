@@ -23,7 +23,6 @@ import os.log
 /// <62-hex> ← blob content
 /// ```
 public actor CacheStore {
-
     // MARK: - Constants
 
     /// Name of the SQLite file inside the root directory.
@@ -74,10 +73,10 @@ public actor CacheStore {
     /// The database is opened in **WAL mode** with `synchronous = NORMAL` and
     /// a 5-second busy timeout. An orphan-sweep runs at initialisation time to
     /// remove any blob files that have no matching metadata row.
-    // Note: the default clock closure duplicates the wallClockNs formula rather than
-    // referencing it directly because wallClockNs is internal and this init is public;
-    // Swift requires default argument expressions to be at least as visible as the
-    // declaration they appear in.
+    /// Note: the default clock closure duplicates the wallClockNs formula rather than
+    /// referencing it directly because wallClockNs is internal and this init is public;
+    /// Swift requires default argument expressions to be at least as visible as the
+    /// declaration they appear in.
     public init(
         root: URL,
         maxBlobBytes: Int64 = 0,
@@ -222,7 +221,7 @@ public actor CacheStore {
         let prepared: [MetadataRecord] = records.map { r in
             var copy = r
             if copy.lastAccessedNs == 0 { copy.lastAccessedNs = now }
-            if copy.syncedAtNs == 0     { copy.syncedAtNs = now }
+            if copy.syncedAtNs == 0 { copy.syncedAtNs = now }
             return copy
         }
         for chunk in prepared.chunked(by: Self.batchChunkSize) {
@@ -254,19 +253,19 @@ public actor CacheStore {
                     if key.path.isEmpty {
                         // Empty path: wipe entire item — mirrors delete(key:) semantics.
                         try db.execute(sql: """
-                            DELETE FROM path_metadata
-                            WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                            """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
+                        DELETE FROM path_metadata
+                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                        """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
                     } else {
                         let (exact, prefix) = Self.subtreeArguments(for: key)
                         try db.execute(sql: """
-                            DELETE FROM path_metadata
-                            WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                              AND (\(Self.subtreeWhereSuffix))
-                            """, arguments: [
-                                key.accountAlias, key.workspaceID, key.itemID,
-                                exact, prefix,
-                            ])
+                        DELETE FROM path_metadata
+                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                          AND (\(Self.subtreeWhereSuffix))
+                        """, arguments: [
+                            key.accountAlias, key.workspaceID, key.itemID,
+                            exact, prefix,
+                        ])
                     }
                 }
             }
@@ -299,12 +298,11 @@ public actor CacheStore {
         let nowNs = clock()
         let affected = try await dbPool.write { db -> Int in
             try db.execute(sql: """
-                UPDATE path_metadata
-                SET last_accessed_ns = ?
-                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                """,
-                arguments: [nowNs, key.accountAlias, key.workspaceID, key.itemID, key.path]
-            )
+                           UPDATE path_metadata
+                           SET last_accessed_ns = ?
+                           WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+                           """,
+                           arguments: [nowNs, key.accountAlias, key.workspaceID, key.itemID, key.path])
             return db.changesCount
         }
         if affected == 0 {
@@ -338,49 +336,49 @@ public actor CacheStore {
             let deletedPaths: [String]
             if key.path.isEmpty {
                 shaRows = try String.fetchAll(db, sql: """
-                    SELECT blob_sha256 FROM path_metadata
-                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                      AND blob_sha256 != ''
-                    """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
+                SELECT blob_sha256 FROM path_metadata
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                  AND blob_sha256 != ''
+                """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
 
                 deletedPaths = try String.fetchAll(db, sql: """
-                    SELECT path FROM path_metadata
-                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                    """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
+                SELECT path FROM path_metadata
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
 
                 try db.execute(sql: """
-                    DELETE FROM path_metadata
-                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                    """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
+                DELETE FROM path_metadata
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
             } else {
                 let (exact, prefix) = Self.subtreeArguments(for: key)
                 shaRows = try String.fetchAll(db, sql: """
-                    SELECT blob_sha256 FROM path_metadata
-                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                      AND (\(Self.subtreeWhereSuffix))
-                      AND blob_sha256 != ''
-                    """, arguments: [
-                        key.accountAlias, key.workspaceID, key.itemID,
-                        exact, prefix,
-                    ])
+                SELECT blob_sha256 FROM path_metadata
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                  AND (\(Self.subtreeWhereSuffix))
+                  AND blob_sha256 != ''
+                """, arguments: [
+                    key.accountAlias, key.workspaceID, key.itemID,
+                    exact, prefix,
+                ])
 
                 deletedPaths = try String.fetchAll(db, sql: """
-                    SELECT path FROM path_metadata
-                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                      AND (\(Self.subtreeWhereSuffix))
-                    """, arguments: [
-                        key.accountAlias, key.workspaceID, key.itemID,
-                        exact, prefix,
-                    ])
+                SELECT path FROM path_metadata
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                  AND (\(Self.subtreeWhereSuffix))
+                """, arguments: [
+                    key.accountAlias, key.workspaceID, key.itemID,
+                    exact, prefix,
+                ])
 
                 try db.execute(sql: """
-                    DELETE FROM path_metadata
-                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                      AND (\(Self.subtreeWhereSuffix))
-                    """, arguments: [
-                        key.accountAlias, key.workspaceID, key.itemID,
-                        exact, prefix,
-                    ])
+                DELETE FROM path_metadata
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                  AND (\(Self.subtreeWhereSuffix))
+                """, arguments: [
+                    key.accountAlias, key.workspaceID, key.itemID,
+                    exact, prefix,
+                ])
             }
 
             // Write tombstones for all deleted rows in one batch insert.
@@ -524,11 +522,11 @@ public actor CacheStore {
         // Update metadata row's blob columns.
         let affected = try await dbPool.write { db -> Int in
             try db.execute(sql: """
-                UPDATE path_metadata
-                SET blob_sha256 = ?, blob_size = ?, last_accessed_ns = ?
-                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                """, arguments: [sha, size, nowNs,
-                                 key.accountAlias, key.workspaceID, key.itemID, key.path])
+            UPDATE path_metadata
+            SET blob_sha256 = ?, blob_size = ?, last_accessed_ns = ?
+            WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+            """, arguments: [sha, size, nowNs,
+                             key.accountAlias, key.workspaceID, key.itemID, key.path])
             return db.changesCount
         }
         if affected == 0 {
@@ -691,11 +689,11 @@ public actor CacheStore {
 
         let affected = try await dbPool.write { db -> Int in
             try db.execute(sql: """
-                UPDATE path_metadata
-                SET blob_sha256 = ?, blob_size = ?, last_accessed_ns = ?
-                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                """, arguments: [sha, size, nowNs,
-                                 key.accountAlias, key.workspaceID, key.itemID, key.path])
+            UPDATE path_metadata
+            SET blob_sha256 = ?, blob_size = ?, last_accessed_ns = ?
+            WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+            """, arguments: [sha, size, nowNs,
+                             key.accountAlias, key.workspaceID, key.itemID, key.path])
             return db.changesCount
         }
         if affected == 0 {
@@ -746,19 +744,19 @@ public actor CacheStore {
         // what was removed — no filesystem walk, no APFS timing window.
         let (count, bytes) = try await dbPool.write { db -> (Int, Int64) in
             let countSQL = """
-                SELECT COUNT(DISTINCT blob_sha256)
-                FROM path_metadata
-                WHERE blob_sha256 != ''
-                """
+            SELECT COUNT(DISTINCT blob_sha256)
+            FROM path_metadata
+            WHERE blob_sha256 != ''
+            """
             // Reuse the canonical deduplicated-bytes query from CacheReader.
             let count = try Int.fetchOne(db, sql: countSQL) ?? 0
             let bytes = try Int64.fetchOne(db, sql: CacheReader.deduplicatedBlobBytesSQL) ?? 0
 
             try db.execute(sql: """
-                UPDATE path_metadata
-                SET blob_sha256 = '', blob_size = 0
-                WHERE blob_sha256 != ''
-                """)
+            UPDATE path_metadata
+            SET blob_sha256 = '', blob_size = 0
+            WHERE blob_sha256 != ''
+            """)
 
             return (count, bytes)
         }
@@ -810,8 +808,8 @@ public actor CacheStore {
         // Single transaction: compute total, select LRU candidates, clear their rows.
         let candidates: [EvictionCandidate] = try await dbPool.write { db in
             let total = try Int64.fetchOne(db, sql: """
-                SELECT COALESCE(SUM(blob_size), 0) FROM path_metadata WHERE blob_sha256 != ''
-                """) ?? 0
+            SELECT COALESCE(SUM(blob_size), 0) FROM path_metadata WHERE blob_sha256 != ''
+            """) ?? 0
             guard total > maxBlobBytes else { return [] }
 
             // How many bytes we need to shed.
@@ -819,11 +817,11 @@ public actor CacheStore {
 
             // Select victims in LRU order until overage is covered.
             let rows = try Row.fetchAll(db, sql: """
-                SELECT account_alias, workspace_id, item_id, path, blob_sha256, blob_size
-                FROM path_metadata
-                WHERE blob_sha256 != ''
-                ORDER BY last_accessed_ns ASC, rowid ASC
-                """)
+            SELECT account_alias, workspace_id, item_id, path, blob_sha256, blob_size
+            FROM path_metadata
+            WHERE blob_sha256 != ''
+            ORDER BY last_accessed_ns ASC, rowid ASC
+            """)
 
             var toEvict: [EvictionCandidate] = []
             for row in rows {
@@ -843,10 +841,10 @@ public actor CacheStore {
             // Clear blob columns for all victims in one pass.
             for v in toEvict {
                 try db.execute(sql: """
-                    UPDATE path_metadata
-                    SET blob_sha256 = '', blob_size = 0
-                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                    """, arguments: [v.accountAlias, v.workspaceID, v.itemID, v.path])
+                UPDATE path_metadata
+                SET blob_sha256 = '', blob_size = 0
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+                """, arguments: [v.accountAlias, v.workspaceID, v.itemID, v.path])
             }
 
             return toEvict
@@ -994,10 +992,10 @@ public actor CacheStore {
             let placeholders = shas.map { _ in "?" }.joined(separator: ", ")
             stillReferenced = try await dbPool.write { db -> Set<String> in
                 let rows = try String.fetchAll(db, sql: """
-                    SELECT DISTINCT blob_sha256
-                    FROM path_metadata
-                    WHERE blob_sha256 IN (\(placeholders))
-                    """, arguments: StatementArguments(shas))
+                SELECT DISTINCT blob_sha256
+                FROM path_metadata
+                WHERE blob_sha256 IN (\(placeholders))
+                """, arguments: StatementArguments(shas))
                 return Set(rows)
             }
         } catch {
@@ -1022,10 +1020,10 @@ public actor CacheStore {
     private func clearBlobLink(key: CacheKey) async throws {
         try await dbPool.write { db in
             try db.execute(sql: """
-                UPDATE path_metadata
-                SET blob_sha256 = '', blob_size = 0
-                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                """, arguments: [key.accountAlias, key.workspaceID, key.itemID, key.path])
+            UPDATE path_metadata
+            SET blob_sha256 = '', blob_size = 0
+            WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+            """, arguments: [key.accountAlias, key.workspaceID, key.itemID, key.path])
         }
     }
 
@@ -1082,8 +1080,8 @@ public actor CacheStore {
         // matching the same pattern used by deleteUnreferencedBlobs.
         let referenced: Set<String> = try dbPool.write { db in
             let rows = try String.fetchAll(db, sql: """
-                SELECT DISTINCT blob_sha256 FROM path_metadata WHERE blob_sha256 != ''
-                """)
+            SELECT DISTINCT blob_sha256 FROM path_metadata WHERE blob_sha256 != ''
+            """)
             return Set(rows)
         }
 
@@ -1115,8 +1113,8 @@ public actor CacheStore {
     /// Escapes SQL LIKE wildcards using `\` as the escape character.
     static func escapeLike(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
-         .replacingOccurrences(of: "%", with: "\\%")
-         .replacingOccurrences(of: "_", with: "\\_")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
     }
 }
 
@@ -1146,7 +1144,7 @@ private extension Array {
     func chunked(by size: Int) -> [[Element]] {
         guard size > 0 else { return [self] }
         return stride(from: 0, to: count, by: size).map {
-            Array(self[$0..<Swift.min($0 + size, count)])
+            Array(self[$0 ..< Swift.min($0 + size, count)])
         }
     }
 }

@@ -1,6 +1,6 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - AsyncSemaphore tests
 
@@ -10,7 +10,6 @@ import Foundation
 /// suspended on the semaphore before the releasing signal is sent, replacing
 /// the sleep-based approach that was inherently racy (tests-13).
 struct AsyncSemaphoreTests {
-
     // MARK: - Basic acquire / release
 
     // tests-20: strengthened to assert that wait() actually decrements the
@@ -29,16 +28,16 @@ struct AsyncSemaphoreTests {
         while sem.waiterCount < 1 {
             await Task.yield()
             itr1 += 1
-            if itr1 > 10_000 {
+            if itr1 > 10000 {
                 blocked.cancel()
                 Issue.record("Timed out waiting for task to enter waiter queue in singleWaitSignal")
                 return
             }
         }
         #expect(sem.waiterCount == 1, "slot must be consumed: second waiter blocks")
-        sem.signal()                 // Release to unblock
-        try await blocked.value      // Must complete now
-        sem.signal()                 // Return to initial capacity
+        sem.signal() // Release to unblock
+        try await blocked.value // Must complete now
+        sem.signal() // Return to initial capacity
         #expect(sem.waiterCount == 0, "semaphore must be fully released")
     }
 
@@ -55,7 +54,7 @@ struct AsyncSemaphoreTests {
         while sem.waiterCount < 1 {
             await Task.yield()
             itr2 += 1
-            if itr2 > 10_000 {
+            if itr2 > 10000 {
                 blocked.cancel()
                 Issue.record("Timed out waiting for task to enter waiter queue in capacityAllowsMultipleConcurrentWaiters")
                 return
@@ -68,7 +67,7 @@ struct AsyncSemaphoreTests {
         while sem.waiterCount > 0 {
             await Task.yield()
             itr3 += 1
-            if itr3 > 10_000 {
+            if itr3 > 10000 {
                 Issue.record("Timed out waiting for waiter queue to drain after cancellation in capacityAllowsMultipleConcurrentWaiters")
                 return
             }
@@ -83,11 +82,13 @@ struct AsyncSemaphoreTests {
 
     @Test func signalReleasesBlockedWaiter() async throws {
         let sem = AsyncSemaphore(value: 1)
-        try await sem.wait()  // Consume the only slot.
+        try await sem.wait() // Consume the only slot.
 
         actor Flag {
             var released = false
-            func set() { released = true }
+            func set() {
+                released = true
+            }
         }
         let flag = Flag()
 
@@ -99,21 +100,25 @@ struct AsyncSemaphoreTests {
         // Wait deterministically until the task has actually suspended on the
         // semaphore (waiterCount reaches 1) instead of relying on Task.sleep
         // ordering (tests-13).
-        while sem.waiterCount < 1 { await Task.yield() }
+        while sem.waiterCount < 1 {
+            await Task.yield()
+        }
         #expect(await !flag.released)
 
-        sem.signal()          // Unblock the waiting task.
+        sem.signal() // Unblock the waiting task.
         try await task.value
         #expect(await flag.released)
     }
 
     @Test func fairnessFirstInFirstOut() async throws {
         let sem = AsyncSemaphore(value: 1)
-        try await sem.wait()  // Consume the only slot.
+        try await sem.wait() // Consume the only slot.
 
         actor Collector {
             var order: [Int] = []
-            func append(_ i: Int) { order.append(i) }
+            func append(_ i: Int) {
+                order.append(i)
+            }
         }
         let col = Collector()
 
@@ -121,15 +126,21 @@ struct AsyncSemaphoreTests {
         // (waiterCount reaches expected depth) so the FIFO order is guaranteed
         // without relying on Task scheduler timing (tests-13).
         let task1 = Task { try await sem.wait(); await col.append(1); sem.signal() }
-        while sem.waiterCount < 1 { await Task.yield() }
+        while sem.waiterCount < 1 {
+            await Task.yield()
+        }
 
         let task2 = Task { try await sem.wait(); await col.append(2); sem.signal() }
-        while sem.waiterCount < 2 { await Task.yield() }
+        while sem.waiterCount < 2 {
+            await Task.yield()
+        }
 
         let task3 = Task { try await sem.wait(); await col.append(3); sem.signal() }
-        while sem.waiterCount < 3 { await Task.yield() }
+        while sem.waiterCount < 3 {
+            await Task.yield()
+        }
 
-        sem.signal()  // Release; tasks should wake in FIFO order.
+        sem.signal() // Release; tasks should wake in FIFO order.
         _ = try await (task1.value, task2.value, task3.value)
         #expect(await col.order == [1, 2, 3])
     }
@@ -138,14 +149,16 @@ struct AsyncSemaphoreTests {
 
     @Test func cancelledWaiterThrowsCancellationError() async throws {
         let sem = AsyncSemaphore(value: 1)
-        try await sem.wait()  // Consume the only slot.
+        try await sem.wait() // Consume the only slot.
 
         let task = Task {
             try await sem.wait()
         }
 
         // Ensure the task has entered wait() before cancelling.
-        while sem.waiterCount < 1 { await Task.yield() }
+        while sem.waiterCount < 1 {
+            await Task.yield()
+        }
 
         task.cancel()
 
@@ -171,15 +184,19 @@ struct AsyncSemaphoreTests {
         // not reduced (the cancelled task must not permanently hold a slot).
         let sem = AsyncSemaphore(value: 2)
         try await sem.wait()
-        try await sem.wait()  // All slots consumed.
+        try await sem.wait() // All slots consumed.
 
         let blocked1 = Task { try await sem.wait() }
         let blocked2 = Task { try await sem.wait() }
-        while sem.waiterCount < 2 { await Task.yield() }
+        while sem.waiterCount < 2 {
+            await Task.yield()
+        }
 
         blocked1.cancel()
         // Let the cancellation propagate.
-        while sem.waiterCount > 1 { await Task.yield() }
+        while sem.waiterCount > 1 {
+            await Task.yield()
+        }
 
         // Release one real slot — blocked2 should wake (not blocked1).
         sem.signal()
@@ -226,7 +243,9 @@ struct AsyncSemaphoreTests {
 
         // A third task must queue as a waiter.
         let blocked = Task<Void, any Error> { try await sem.wait() }
-        while sem.waiterCount < 1 { await Task.yield() }
+        while sem.waiterCount < 1 {
+            await Task.yield()
+        }
 
         // Cancel the blocked waiter.
         blocked.cancel()

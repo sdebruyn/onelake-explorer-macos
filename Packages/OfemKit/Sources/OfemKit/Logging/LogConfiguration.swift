@@ -24,10 +24,10 @@ public enum LogLevel: Sendable, Comparable {
 
     private var rank: Int {
         switch self {
-        case .debug: return 0
-        case .info: return 1
-        case .warn: return 2
-        case .error: return 3
+        case .debug: 0
+        case .info: 1
+        case .warn: 2
+        case .error: 3
         }
     }
 
@@ -37,11 +37,11 @@ public enum LogLevel: Sendable, Comparable {
     /// on empty input.
     public init?(string: String) {
         switch string.lowercased().trimmingCharacters(in: .whitespaces) {
-        case "", "info":   self = .info
-        case "debug":      self = .debug
+        case "", "info": self = .info
+        case "debug": self = .debug
         case "warn", "warning": self = .warn
-        case "error":      self = .error
-        default:           return nil
+        case "error": self = .error
+        default: return nil
         }
     }
 }

@@ -46,8 +46,8 @@ final class OfemAuthenticator: Authenticator {
     }
 
     func refresh(
-        _ credential: OfemCredential,
-        for session: Session,
+        _: OfemCredential,
+        for _: Session,
         completion: @escaping @Sendable (Result<OfemCredential, Error>) -> Void
     ) {
         let provider = tokenProvider
@@ -64,9 +64,9 @@ final class OfemAuthenticator: Authenticator {
     }
 
     func didRequest(
-        _ urlRequest: URLRequest,
+        _: URLRequest,
         with response: HTTPURLResponse,
-        failDueToAuthenticationError error: Error
+        failDueToAuthenticationError _: Error
     ) -> Bool {
         response.statusCode == 401
     }

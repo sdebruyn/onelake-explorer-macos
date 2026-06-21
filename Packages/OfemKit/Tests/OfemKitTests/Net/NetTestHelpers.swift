@@ -24,7 +24,6 @@ import Foundation
 ///
 /// Thread safety: all queue access is serialised by `lock`.
 final class MockURLProtocol: URLProtocol {
-
     /// A canned HTTP response stub.
     struct StubResponse {
         let status: Int
@@ -71,8 +70,13 @@ final class MockURLProtocol: URLProtocol {
 
     // MARK: - URLProtocol overrides
 
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override class func canInit(with _: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
 
     override func startLoading() {
         let queueID = request.value(forHTTPHeaderField: Self.queueIDHeader) ?? "global"
@@ -151,7 +155,7 @@ private struct QueueIDAdapter: RequestAdapter {
     let queueID: String
     func adapt(
         _ urlRequest: URLRequest,
-        for session: Session,
+        for _: Session,
         completion: @escaping (Result<URLRequest, any Error>) -> Void
     ) {
         var req = urlRequest
@@ -163,14 +167,16 @@ private struct QueueIDAdapter: RequestAdapter {
 // MARK: - NoopTokenProvider
 
 /// A `TokenProvider` stub that returns a fixed token without contacting MSAL.
-struct NoopTokenProvider: TokenProvider, Sendable {
+struct NoopTokenProvider: TokenProvider {
     let token: String
 
     init(token: String = "test-token") {
         self.token = token
     }
 
-    func token(alias: String, scope: TokenScope) async throws -> String { token }
+    func token(alias _: String, scope _: TokenScope) async throws -> String {
+        token
+    }
 }
 
 // MARK: - makeTempFileHandle

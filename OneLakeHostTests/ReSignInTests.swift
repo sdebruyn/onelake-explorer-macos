@@ -12,10 +12,10 @@
 // Uses mock implementations of ReSignInProvider and EngineStatusProvider
 // so no MSAL / FPE / Keychain stack is required.
 
-import XCTest
 import AppKit
 import Combine
 import OfemKit
+import XCTest
 
 // MARK: - Fakes
 
@@ -27,11 +27,11 @@ private final class FakeReSignInProvider: ReSignInProvider, @unchecked Sendable 
     /// Aliases passed to reSignIn, in call order.
     var calledAliases: [String] = []
 
-    func reSignIn(alias: String, window: NSWindow) async throws {
+    func reSignIn(alias: String, window _: NSWindow) async throws {
         calledAliases.append(alias)
         switch behaviour {
         case .succeed: return
-        case .fail(let error): throw error
+        case let .fail(error): throw error
         }
     }
 }
@@ -40,10 +40,16 @@ private final class FakeReSignInProvider: ReSignInProvider, @unchecked Sendable 
 @MainActor
 private final class FakeReSignInAccountProvider: AccountProvider, @unchecked Sendable {
     var accounts: [Account] = []
-    func listAccounts() async -> [Account] { accounts }
-    func defaultAccount() async -> String? { nil }
-    func setDefaultAccount(alias: String) async throws {}
-    func removeAccount(alias: String) async throws {}
+    func listAccounts() async -> [Account] {
+        accounts
+    }
+
+    func defaultAccount() async -> String? {
+        nil
+    }
+
+    func setDefaultAccount(alias _: String) async throws {}
+    func removeAccount(alias _: String) async throws {}
 }
 
 private let defaultStatus = XPCEngineStatus(
@@ -64,19 +70,23 @@ private final class FakeReSignInEngineProvider: EngineStatusProvider, @unchecked
     var statusToReturn: XPCEngineStatus = defaultStatus
     var configSets: [(alias: String, key: String, value: String)] = []
 
-    func getEngineStatus(alias: String) async throws -> XPCEngineStatus { statusToReturn }
+    func getEngineStatus(alias _: String) async throws -> XPCEngineStatus {
+        statusToReturn
+    }
 
     func setConfig(alias: String, key: String, value: String) async throws {
         configSets.append((alias: alias, key: key, value: value))
     }
 
-    func clearCache(alias: String) async throws -> Int64 { 0 }
+    func clearCache(alias _: String) async throws -> Int64 {
+        0
+    }
 }
 
 /// Fake DomainManager for ReSignIn tests (no-op).
 @MainActor
 private final class FakeReSignInDomainManager: DomainManager, @unchecked Sendable {
-    func removeDomain(alias: String) async {}
+    func removeDomain(alias _: String) async {}
 }
 
 private enum ReSignInFakeError: Error, LocalizedError {
@@ -84,8 +94,8 @@ private enum ReSignInFakeError: Error, LocalizedError {
     case identityMismatch
     var errorDescription: String? {
         switch self {
-        case .cancelled: return "User cancelled re-authentication"
-        case .identityMismatch: return "Identity mismatch: signed in as a different account"
+        case .cancelled: "User cancelled re-authentication"
+        case .identityMismatch: "Identity mismatch: signed in as a different account"
         }
     }
 }
@@ -106,7 +116,6 @@ private func makeTestAccount(alias: String) -> Account {
 
 @MainActor
 final class ReSignInTests: XCTestCase, @unchecked Sendable {
-
     private var accountProvider: FakeReSignInAccountProvider!
     private var engineProvider: FakeReSignInEngineProvider!
     private var domainManager: FakeReSignInDomainManager!
@@ -114,9 +123,9 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
     private var model: MenuStatusModel!
     private var cancellables = Set<AnyCancellable>()
 
-    // setUp and tearDown override nonisolated XCTestCase methods, so they
-    // cannot be marked @MainActor. XCTest always runs them on the main thread;
-    // MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
+    /// setUp and tearDown override nonisolated XCTestCase methods, so they
+    /// cannot be marked @MainActor. XCTest always runs them on the main thread;
+    /// MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
     override func setUp() {
         super.setUp()
         MainActor.assumeIsolated {
@@ -165,7 +174,7 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
         // Subscribe to both signals BEFORE triggering the action to avoid a race
         // where the async refresh Task completes before the test subscribes.
         let seedError = expectation(description: "seed failure error")
-        model.$lastActionError.dropFirst().compactMap { $0 }.first().sink { _ in
+        model.$lastActionError.dropFirst().compactMap(\.self).first().sink { _ in
             seedError.fulfill()
         }.store(in: &cancellables)
 
@@ -248,7 +257,7 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
         // does not linger and fire again during phase 2.
         reSignInProvider.behaviour = .fail(ReSignInFakeError.cancelled)
         let seeded = expectation(description: "error seeded")
-        model.$lastActionError.dropFirst().compactMap { $0 }.first().sink { _ in
+        model.$lastActionError.dropFirst().compactMap(\.self).first().sink { _ in
             seeded.fulfill()
         }.store(in: &cancellables)
         model.reSignIn(alias: "work", window: NSWindow())
@@ -274,7 +283,7 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
         reSignInProvider.behaviour = .fail(ReSignInFakeError.cancelled)
 
         let exp = expectation(description: "lastActionError is set")
-        model.$lastActionError.dropFirst().compactMap { $0 }.first().sink { msg in
+        model.$lastActionError.dropFirst().compactMap(\.self).first().sink { msg in
             if !msg.isEmpty { exp.fulfill() }
         }.store(in: &cancellables)
 
@@ -303,7 +312,7 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
         // Use first() on every Combine subscription to guarantee auto-cancel
         // and prevent double-fulfill crashes when the publisher fires more than once.
         let errSet = expectation(description: "error surfaced after failure")
-        model.$lastActionError.dropFirst().compactMap { $0 }.first().sink { _ in
+        model.$lastActionError.dropFirst().compactMap(\.self).first().sink { _ in
             errSet.fulfill()
         }.store(in: &cancellables)
 
@@ -336,7 +345,7 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
 
         // Subscribe before triggering the action so we cannot miss the publish.
         let errSet = expectation(description: "identity mismatch error surfaced")
-        model.$lastActionError.dropFirst().compactMap { $0 }.first().sink { msg in
+        model.$lastActionError.dropFirst().compactMap(\.self).first().sink { msg in
             if !msg.isEmpty { errSet.fulfill() }
         }.store(in: &cancellables)
 

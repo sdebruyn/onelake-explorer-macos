@@ -30,7 +30,9 @@ import Foundation
 /// `@objc` prevent automatic Sendable synthesis, so `@unchecked Sendable` is the
 /// correct idiomatic annotation — there is no shared mutable state to guard.
 @objc(XPCEngineStatus) public final class XPCEngineStatus: NSObject, NSSecureCoding, @unchecked Sendable {
-    @objc public static var supportsSecureCoding: Bool { true }
+    @objc public static var supportsSecureCoding: Bool {
+        true
+    }
 
     @objc public let cacheBytes: Int64
     @objc public let cacheMaxBytes: Int64

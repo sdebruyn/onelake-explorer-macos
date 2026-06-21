@@ -28,26 +28,27 @@ final class OfemFPEItem: NSObject, NSFileProviderItem, @unchecked Sendable {
     let itemVersion: NSFileProviderItemVersion
 
     init(from domainItem: DomainItem) {
-        self.itemIdentifier = NSFileProviderItemIdentifier(
+        itemIdentifier = NSFileProviderItemIdentifier(
             domainItem.identifier.identifierString
         )
-        self.parentItemIdentifier = NSFileProviderItemIdentifier(
+        parentItemIdentifier = NSFileProviderItemIdentifier(
             domainItem.parentIdentifier.identifierString
         )
-        self.filename = domainItem.filename
+        filename = domainItem.filename
 
         // UTType resolution
         if domainItem.isDirectory {
-            self.contentType = .folder
+            contentType = .folder
         } else if !domainItem.contentType.isEmpty,
-                  let utt = UTType(mimeType: domainItem.contentType) {
-            self.contentType = utt
+                  let utt = UTType(mimeType: domainItem.contentType)
+        {
+            contentType = utt
         } else {
             let ext = (domainItem.filename as NSString).pathExtension
             if !ext.isEmpty, let utt = UTType(filenameExtension: ext) {
-                self.contentType = utt
+                contentType = utt
             } else {
-                self.contentType = .data
+                contentType = .data
             }
         }
 
@@ -55,19 +56,19 @@ final class OfemFPEItem: NSObject, NSFileProviderItem, @unchecked Sendable {
         var bitmask: NSFileProviderItemCapabilities = []
         for cap in domainItem.capabilities {
             switch cap {
-            case .read:         bitmask.insert(.allowsReading)
-            case .write:        bitmask.insert(.allowsWriting)
-            case .delete:       bitmask.insert(.allowsDeleting)
-            case .enumerate:    bitmask.insert(.allowsContentEnumerating)
-            case .addSubitems:  bitmask.insert(.allowsAddingSubItems)
+            case .read: bitmask.insert(.allowsReading)
+            case .write: bitmask.insert(.allowsWriting)
+            case .delete: bitmask.insert(.allowsDeleting)
+            case .enumerate: bitmask.insert(.allowsContentEnumerating)
+            case .addSubitems: bitmask.insert(.allowsAddingSubItems)
             }
         }
-        self.capabilities = bitmask.isEmpty ? [.allowsReading, .allowsContentEnumerating] : bitmask
+        capabilities = bitmask.isEmpty ? [.allowsReading, .allowsContentEnumerating] : bitmask
 
-        self.documentSize = domainItem.isDirectory ? nil : NSNumber(value: domainItem.size)
-        self.contentModificationDate = domainItem.modificationDate
+        documentSize = domainItem.isDirectory ? nil : NSNumber(value: domainItem.size)
+        contentModificationDate = domainItem.modificationDate
 
-        self.itemVersion = NSFileProviderItemVersion(
+        itemVersion = NSFileProviderItemVersion(
             contentVersion: domainItem.contentVersion,
             metadataVersion: domainItem.metadataVersion
         )

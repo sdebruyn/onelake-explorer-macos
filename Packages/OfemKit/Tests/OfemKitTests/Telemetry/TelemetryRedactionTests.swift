@@ -1,5 +1,5 @@
-import Testing
 @testable import OfemKit
+import Testing
 
 /// Tests for the structural privacy boundary in `TelemetryRedaction`.
 @Suite("TelemetryRedaction")
@@ -18,7 +18,7 @@ struct TelemetryRedactionTests {
     func hashAliasLength() {
         let h = TelemetryRedaction.hashAlias("work")
         #expect(h.count == 8, "expected 8 chars, got \(h.count)")
-        #expect(h.allSatisfy { $0.isHexDigit }, "expected hex chars, got: \(h)")
+        #expect(h.allSatisfy(\.isHexDigit), "expected hex chars, got: \(h)")
     }
 
     @Test("hashAlias distinguishes different inputs")
@@ -180,10 +180,10 @@ struct TelemetryRedactionTests {
             name: "file_download",
             tenantID: "9064c167-4885-40ef-9f34-1853218aea86",
             accountAliasHash: "a1b2c3d4",
-            errorCode: "Sales/budget_2026.csv",   // path — must be redacted
+            errorCode: "Sales/budget_2026.csv", // path — must be redacted
             commonProps: [
-                "leakedPath":      "Files/raw/sales-2026.csv",
-                "leakedUPN":       "sam@debruyn.dev",
+                "leakedPath": "Files/raw/sales-2026.csv",
+                "leakedUPN": "sam@debruyn.dev",
                 "leakedWorkspace": "My Workspace",
             ]
         )
@@ -215,16 +215,16 @@ struct TelemetryRedactionTests {
         let event = TelemetryEvent(
             name: "error",
             commonProps: [
-                "failedOp":      "file_download",  // allowed
-                "unknownKey":    "some-value",     // NOT in allowlist — must be absent
-                "workspaceName": "SalesData",      // NOT in allowlist — must be absent
+                "failedOp": "file_download", // allowed
+                "unknownKey": "some-value", // NOT in allowlist — must be absent
+                "workspaceName": "SalesData", // NOT in allowlist — must be absent
             ]
         )
 
         let (props, _) = splitFields(event)
 
         #expect(props["failedOp"] == "file_download", "known key must survive")
-        #expect(props["unknownKey"] == nil,    "unknown key must be dropped")
+        #expect(props["unknownKey"] == nil, "unknown key must be dropped")
         #expect(props["workspaceName"] == nil, "unknown key must be dropped")
     }
 
@@ -306,7 +306,7 @@ struct TelemetryRedactionTests {
     func splitFieldsRejectsNonGUIDTenantID() {
         let event = TelemetryEvent(
             name: "workspace_list",
-            tenantID: "My-Tenant-Name"   // not a GUID
+            tenantID: "My-Tenant-Name" // not a GUID
         )
         let (props, _) = splitFields(event)
         #expect(props["tenantId"] == "redacted",

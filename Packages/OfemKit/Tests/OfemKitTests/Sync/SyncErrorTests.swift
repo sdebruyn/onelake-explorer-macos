@@ -1,6 +1,6 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - SyncErrorTests
 
@@ -8,7 +8,6 @@ import Foundation
 /// `description`, and the `fpCode` → `FPError.Code` mapping.
 @Suite("SyncError")
 struct SyncErrorTests {
-
     // MARK: - description: workspacePaused
 
     @Test("workspacePaused description")
@@ -79,8 +78,10 @@ struct SyncErrorTests {
     // MARK: - SyncError conforms to Error (throwable)
 
     @Test("SyncError can be thrown and caught by case")
-    func syncErrorIsThrowable() async throws {
-        func throwPaused() throws { throw SyncError.workspacePaused }
+    func syncErrorIsThrowable() throws {
+        func throwPaused() throws {
+            throw SyncError.workspacePaused
+        }
         do {
             try throwPaused()
             Issue.record("expected throw")
@@ -94,13 +95,15 @@ struct SyncErrorTests {
     }
 
     @Test("shortDownload preserves associated values through throw/catch")
-    func shortDownloadThrowCatch() async throws {
-        func throwIt() throws { throw SyncError.shortDownload(expected: 999, got: 1) }
+    func shortDownloadThrowCatch() throws {
+        func throwIt() throws {
+            throw SyncError.shortDownload(expected: 999, got: 1)
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case SyncError.shortDownload(let exp, let got) = error {
+            if case let SyncError.shortDownload(exp, got) = error {
                 #expect(exp == 999)
                 #expect(got == 1)
             } else {
@@ -110,13 +113,15 @@ struct SyncErrorTests {
     }
 
     @Test("blobSHAMismatch preserves associated values through throw/catch")
-    func blobSHAMismatchThrowCatch() async throws {
-        func throwIt() throws { throw SyncError.blobSHAMismatch(got: "deadbeef", expected: "cafebabe") }
+    func blobSHAMismatchThrowCatch() throws {
+        func throwIt() throws {
+            throw SyncError.blobSHAMismatch(got: "deadbeef", expected: "cafebabe")
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case SyncError.blobSHAMismatch(let g, let e) = error {
+            if case let SyncError.blobSHAMismatch(g, e) = error {
                 #expect(g == "deadbeef")
                 #expect(e == "cafebabe")
             } else {

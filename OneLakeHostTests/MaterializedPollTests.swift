@@ -13,9 +13,9 @@
 //   4. two accounts, one delta → only that domain signalled
 //   5. delta reported but domain not found → no signal (graceful skip)
 
-import XCTest
 @preconcurrency import FileProvider
 import OfemKit
+import XCTest
 
 // MARK: - Mock collaborators
 
@@ -81,10 +81,9 @@ private func domainID(for alias: String) -> String {
 // MARK: - Tests
 
 final class MaterializedPollTests: XCTestCase {
-
     // MARK: 1. Delta → signal fired once
 
-    func testPollOnce_delta_signalsWorkingSetOnce() async throws {
+    func testPollOnce_delta_signalsWorkingSetOnce() async {
         let alias = "work"
         let accounts = [makeAccount(alias: alias)]
         let domId = domainID(for: alias)
@@ -110,7 +109,7 @@ final class MaterializedPollTests: XCTestCase {
 
     // MARK: 2. No delta → no signal
 
-    func testPollOnce_noDelta_noSignal() async throws {
+    func testPollOnce_noDelta_noSignal() async {
         let alias = "personal"
         let accounts = [makeAccount(alias: alias)]
         let domains = [makeDomain(identifier: domainID(for: alias))]
@@ -135,7 +134,7 @@ final class MaterializedPollTests: XCTestCase {
 
     // MARK: 3. Two accounts, both delta → two signals
 
-    func testPollOnce_twoAccounts_bothDelta_twoSignals() async throws {
+    func testPollOnce_twoAccounts_bothDelta_twoSignals() async {
         let a1 = "work", a2 = "client"
         let accounts = [makeAccount(alias: a1), makeAccount(alias: a2)]
         let d1 = domainID(for: a1), d2 = domainID(for: a2)
@@ -162,7 +161,7 @@ final class MaterializedPollTests: XCTestCase {
 
     // MARK: 4. Two accounts, one delta → only that domain signalled
 
-    func testPollOnce_twoAccounts_oneDelta_oneSignal() async throws {
+    func testPollOnce_twoAccounts_oneDelta_oneSignal() async {
         let a1 = "work", a2 = "client"
         let accounts = [makeAccount(alias: a1), makeAccount(alias: a2)]
         let d1 = domainID(for: a1), d2 = domainID(for: a2)
@@ -189,7 +188,7 @@ final class MaterializedPollTests: XCTestCase {
 
     // MARK: 5. Delta but domain not found → no signal
 
-    func testPollOnce_deltaButDomainNotFound_noSignal() async throws {
+    func testPollOnce_deltaButDomainNotFound_noSignal() async {
         let alias = "orphan"
         let accounts = [makeAccount(alias: alias)]
         // Domains list is empty — the domain for this alias is not registered.

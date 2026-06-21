@@ -73,19 +73,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
-        self.alias = FileProviderExtension.extractAlias(from: domain)
-        self.engineHost = FPEEngineHost(alias: self.alias, domain: domain)
+        alias = FileProviderExtension.extractAlias(from: domain)
+        engineHost = FPEEngineHost(alias: alias, domain: domain)
         super.init()
         let ts = BuildInfo.buildTimestamp ?? "unknown"
         FileProviderExtension.log.info(
-            "OneLake FPE starting — version \(BuildInfo.version, privacy: .public) built \(ts, privacy: .public) domain=\(domain.identifier.rawValue, privacy: .public) alias=\(self.alias, privacy: .public)"
+            "OneLake FPE starting — version \(BuildInfo.version, privacy: .public) built \(ts, privacy: .public) domain=\(domain.identifier.rawValue, privacy: .public) alias=\(alias, privacy: .public)"
         )
     }
 
     /// Internal init for testing: accepts any EngineProviding.
     init(domain: NSFileProviderDomain, engineHost: any EngineProviding) {
         self.domain = domain
-        self.alias = FileProviderExtension.extractAlias(from: domain)
+        alias = FileProviderExtension.extractAlias(from: domain)
         self.engineHost = engineHost
         super.init()
     }
@@ -104,7 +104,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     /// task so any concurrent `engine()` call fails fast.
     func invalidate() {
         FileProviderExtension.log.info(
-            "Invalidating extension for domain \(self.domain.identifier.rawValue, privacy: .public)"
+            "Invalidating extension for domain \(domain.identifier.rawValue, privacy: .public)"
         )
         // Capture engineHost (Sendable) explicitly so the Task body does not
         // need to capture self, which is not Sendable.
@@ -241,12 +241,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 try await engine.cache.handoffBlob(key: key, to: dest)
 
                 // Update progress from the file size on disk.
-                let actualBytes: Int64
-                if let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path),
-                   let sz = attrs[.size] as? NSNumber {
-                    actualBytes = sz.int64Value
+                let actualBytes: Int64 = if let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path),
+                                            let sz = attrs[.size] as? NSNumber
+                {
+                    sz.int64Value
                 } else {
-                    actualBytes = knownSize
+                    knownSize
                 }
                 if progress.totalUnitCount < actualBytes {
                     progress.totalUnitCount = actualBytes
@@ -352,7 +352,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         // explicitly leave those fields as still-pending. The system will not
         // believe the operation succeeded and will retry or show the item at its
         // original name/location.
-        let wantsRename   = changedFields.contains(.filename)
+        let wantsRename = changedFields.contains(.filename)
         let wantsReparent = changedFields.contains(.parentItemIdentifier)
         if wantsRename || wantsReparent {
             FileProviderExtension.log.debug(
@@ -361,7 +361,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             // Return the item unchanged with the unsupported fields still pending
             // so the framework knows the operation was not applied.
             var pendingFields: NSFileProviderItemFields = []
-            if wantsRename   { pendingFields.insert(.filename) }
+            if wantsRename { pendingFields.insert(.filename) }
             if wantsReparent { pendingFields.insert(.parentItemIdentifier) }
             completionHandler(item, pendingFields, false, nil)
             return progress
@@ -448,12 +448,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let task = Task {
             do {
                 let engine = try await hostCopy.engine()
-                let fileSize: Int64
-                if let attrs = try? FileManager.default.attributesOfItem(atPath: contentsURL.path),
-                   let sz = attrs[.size] as? NSNumber {
-                    fileSize = sz.int64Value
+                let fileSize: Int64 = if let attrs = try? FileManager.default.attributesOfItem(atPath: contentsURL.path),
+                                         let sz = attrs[.size] as? NSNumber
+                {
+                    sz.int64Value
                 } else {
-                    fileSize = 0
+                    0
                 }
                 if fileSize > 0 {
                     progress.totalUnitCount = fileSize
@@ -662,7 +662,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         // from retrying indefinitely.
         if ofemID == .workingSet || ofemID == .trash {
             FileProviderExtension.log.debug(
-                "enumerator(for: .workingSet/.trash) for \(self.alias, privacy: .public)"
+                "enumerator(for: .workingSet/.trash) for \(alias, privacy: .public)"
             )
             return OfemWorkingSetEnumerator(alias: alias, engineHost: engineHost)
         }
@@ -707,7 +707,7 @@ private func enumerateMaterializedIdentifiers(
     final class Collector: NSObject, NSFileProviderEnumerationObserver, @unchecked Sendable {
         var collected: [String] = []
         var continuation: CheckedContinuation<[String], Error>?
-        // Retained so the paging loop can issue subsequent page requests.
+        /// Retained so the paging loop can issue subsequent page requests.
         var enumerator: NSFileProviderEnumerator?
 
         func didEnumerate(_ updatedItems: [any NSFileProviderItem]) {
@@ -787,20 +787,20 @@ private func engineFetchItem(
         // from real DB failures (cannotSynchronize, not noSuchItem).
         let firstFetchResult: Result<MetadataRecord, Error>
         do {
-            firstFetchResult = .success(try await engine.cache.fetch(key: key))
+            firstFetchResult = try await .success(engine.cache.fetch(key: key))
         } catch {
             firstFetchResult = .failure(error)
         }
 
         switch firstFetchResult {
-        case .success(let record):
+        case let .success(record):
             do {
-                return OfemFPEItem(from: try DomainItem.from(record: record))
+                return try OfemFPEItem(from: DomainItem.from(record: record))
             } catch {
                 throw FPError.invalidRecord("DomainItem.from failed for \(path): \(error)")
             }
 
-        case .failure(let cacheError as CacheError):
+        case let .failure(cacheError as CacheError):
             // Only .notFound means "not in cache, try enumerating parent".
             // Any other CacheError is an infrastructure failure — propagate.
             guard case .notFound = cacheError else {
@@ -808,7 +808,7 @@ private func engineFetchItem(
             }
             // Fall through to parent enumerate.
 
-        case .failure(let other):
+        case let .failure(other):
             throw FPError.invalidRecord("unexpected cache error for \(path): \(other)")
         }
 
@@ -821,7 +821,7 @@ private func engineFetchItem(
         // Retry cache lookup with full error discrimination.
         do {
             let record = try await engine.cache.fetch(key: key)
-            return OfemFPEItem(from: try DomainItem.from(record: record))
+            return try OfemFPEItem(from: DomainItem.from(record: record))
         } catch let cacheError as CacheError {
             switch cacheError {
             case .notFound:
@@ -881,21 +881,21 @@ private func engineCreateItem(
         // means "not yet cached"; other errors must propagate.
         let cacheResult: Result<MetadataRecord, Error>
         do {
-            cacheResult = .success(try await engine.cache.fetch(key: key))
+            cacheResult = try await .success(engine.cache.fetch(key: key))
         } catch {
             cacheResult = .failure(error)
         }
         switch cacheResult {
-        case .success(let record):
+        case let .success(record):
             if let di = try? DomainItem.from(record: record) {
                 return OfemFPEItem(from: di)
             }
-        case .failure(let cacheError as CacheError):
+        case let .failure(cacheError as CacheError):
             guard case .notFound = cacheError else {
-                throw cacheError  // Real DB error — propagate
+                throw cacheError // Real DB error — propagate
             }
-            // .notFound: fall through to parent enumerate
-        case .failure(let other):
+        // .notFound: fall through to parent enumerate
+        case let .failure(other):
             throw other
         }
 
@@ -905,21 +905,21 @@ private func engineCreateItem(
 
         let retryResult: Result<MetadataRecord, Error>
         do {
-            retryResult = .success(try await engine.cache.fetch(key: key))
+            retryResult = try await .success(engine.cache.fetch(key: key))
         } catch {
             retryResult = .failure(error)
         }
         switch retryResult {
-        case .success(let record):
+        case let .success(record):
             if let di = try? DomainItem.from(record: record) {
                 return OfemFPEItem(from: di)
             }
-        case .failure(let cacheError as CacheError):
+        case let .failure(cacheError as CacheError):
             guard case .notFound = cacheError else {
-                throw cacheError  // Real DB error — propagate
+                throw cacheError // Real DB error — propagate
             }
-            // .notFound: still not found — fall through to normal create
-        case .failure(let other):
+        // .notFound: still not found — fall through to normal create
+        case let .failure(other):
             throw other
         }
         // Still not found — fall through to normal create path (it's new).
@@ -945,16 +945,16 @@ private func engineCreateItem(
     // fall back to a synthetic item but log the situation.
     let postCreateFetch: Result<MetadataRecord, Error>
     do {
-        postCreateFetch = .success(try await engine.cache.fetch(key: key))
+        postCreateFetch = try await .success(engine.cache.fetch(key: key))
     } catch {
         postCreateFetch = .failure(error)
     }
     switch postCreateFetch {
-    case .success(let record):
+    case let .success(record):
         if let di = try? DomainItem.from(record: record) {
             return OfemFPEItem(from: di)
         }
-    case .failure(let cacheError as CacheError):
+    case let .failure(cacheError as CacheError):
         guard case .notFound = cacheError else {
             // A non-notFound cache error is unexpected but not fatal here;
             // log and fall through to the synthetic fallback.
@@ -967,10 +967,11 @@ private func engineCreateItem(
         let parentKey = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
         _ = try? await engine.sync.enumerate(key: parentKey)
         if let record = try? await engine.cache.fetch(key: key),
-           let di = try? DomainItem.from(record: record) {
+           let di = try? DomainItem.from(record: record)
+        {
             return OfemFPEItem(from: di)
         }
-    case .failure(let other):
+    case let .failure(other):
         fpeLog.warning(
             "createItem: unexpected fetch error for \(filename, privacy: .public): \(other.localizedDescription, privacy: .public)"
         )
@@ -986,7 +987,7 @@ private func engineCreateItem(
     // caps immediately — without it, a file created under Lakehouse Files/
     // would appear read-only until the next refreshFolder.
     let parentKey = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
-    let syntheticItemType = (try? await engine.cache.fetch(key: parentKey))?.itemType ?? ""
+    let syntheticItemType = await (try? engine.cache.fetch(key: parentKey))?.itemType ?? ""
     return OfemFPEItem(from: DomainItem.synthetic(
         identifier: newIdentifier,
         parentIdentifier: parentID,

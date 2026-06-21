@@ -1,6 +1,6 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - SyncEngine.refreshMaterialized tests
 
@@ -8,12 +8,11 @@ import Foundation
 /// ``SyncEngine/refreshMaterialized(alias:keys:concurrencyCap:)``.
 @Suite("SyncEngine refreshMaterialized")
 struct SyncEngineRefreshMaterializedTests {
-
     // MARK: - Constants
 
     private static let alias = "test"
-    private static let wsID  = "ws-1"
-    private static let itID  = "item-1"
+    private static let wsID = "ws-1"
+    private static let itID = "item-1"
     private static let itID2 = "item-2"
 
     private static var folderKey: CacheKey {
@@ -77,7 +76,7 @@ struct SyncEngineRefreshMaterializedTests {
     // MARK: - AC1: changed etag → diff.updated > 0, bumped syncedAtNs, new ContentVersion
 
     @Test("Changed etag yields diff.updated > 0, bumped synced_at_ns, new ContentVersion")
-    func testChangedEtagYieldsDiffAndBumpedSyncedAt() async throws {
+    func changedEtagYieldsDiffAndBumpedSyncedAt() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -87,7 +86,7 @@ struct SyncEngineRefreshMaterializedTests {
 
         // Remote returns the same file with a new etag.
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "data.csv", eTag: "etag-v2")
+            PathEntry.file(name: "data.csv", eTag: "etag-v2"),
         ])))
 
         let childKey = CacheKey(
@@ -120,7 +119,7 @@ struct SyncEngineRefreshMaterializedTests {
     // MARK: - AC1: removed entry → tombstone surfaced by itemsChangedAfter
 
     @Test("Removed remote entry writes a tombstone surfaced by itemsChangedAfter")
-    func testRemovedEntryWritesTombstone() async throws {
+    func removedEntryWritesTombstone() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -133,7 +132,7 @@ struct SyncEngineRefreshMaterializedTests {
 
         // Remote no longer has "gone.txt".
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "keep.txt", size: 0, eTag: "e1")
+            PathEntry.file(name: "keep.txt", size: 0, eTag: "e1"),
         ])))
 
         let diff = try await engine.refreshMaterializedContainer(key: key)
@@ -173,7 +172,7 @@ struct SyncEngineRefreshMaterializedTests {
     // MARK: - AC1: refreshMaterializedContainer bypasses the revalidate debounce
 
     @Test("refreshMaterializedContainer runs even when the folder is within the debounce window")
-    func testBypassesDebounce() async throws {
+    func bypassesDebounce() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -199,7 +198,7 @@ struct SyncEngineRefreshMaterializedTests {
     // MARK: - AC2: refreshMaterialized returns true iff any container changed
 
     @Test("refreshMaterialized returns true when at least one container changed")
-    func testReturnsTrueWhenAnyContainerChanged() async throws {
+    func returnsTrueWhenAnyContainerChanged() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -212,10 +211,10 @@ struct SyncEngineRefreshMaterializedTests {
 
         // key1: etag + size unchanged → no diff; key2: etag changed → diff.updated > 0.
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "a.txt", size: 0, eTag: "v1")   // unchanged
+            PathEntry.file(name: "a.txt", size: 0, eTag: "v1"), // unchanged
         ])))
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "b.txt", size: 0, eTag: "v2")   // changed etag
+            PathEntry.file(name: "b.txt", size: 0, eTag: "v2"), // changed etag
         ])))
 
         let changed = await engine.refreshMaterialized(
@@ -227,7 +226,7 @@ struct SyncEngineRefreshMaterializedTests {
     }
 
     @Test("refreshMaterialized returns false when no container changed")
-    func testReturnsFalseWhenNothingChanged() async throws {
+    func returnsFalseWhenNothingChanged() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -237,7 +236,7 @@ struct SyncEngineRefreshMaterializedTests {
 
         // Remote identical: use size: 0 to match the seeded contentLength: 0.
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "a.txt", size: 0, eTag: "v1")
+            PathEntry.file(name: "a.txt", size: 0, eTag: "v1"),
         ])))
 
         let changed = await engine.refreshMaterialized(
@@ -251,7 +250,7 @@ struct SyncEngineRefreshMaterializedTests {
     // MARK: - AC2: per-key offline/cancel does not abort the batch
 
     @Test("Per-key offline error does not abort the batch; other keys still run")
-    func testPerKeyOfflineDoesNotAbortBatch() async throws {
+    func perKeyOfflineDoesNotAbortBatch() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -268,7 +267,7 @@ struct SyncEngineRefreshMaterializedTests {
         )
         ol.listPathResults.append(.failure(offlineError))
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "b.txt", eTag: "v2")  // changed
+            PathEntry.file(name: "b.txt", eTag: "v2"), // changed
         ])))
 
         // The batch completes (not thrown). key2's change still registers.
@@ -281,7 +280,7 @@ struct SyncEngineRefreshMaterializedTests {
     }
 
     @Test("Per-key cancellation error does not abort the batch")
-    func testPerKeyCancellationDoesNotAbortBatch() async throws {
+    func perKeyCancellationDoesNotAbortBatch() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -295,7 +294,7 @@ struct SyncEngineRefreshMaterializedTests {
         // key1 throws CancellationError; key2 succeeds with a change.
         ol.listPathResults.append(.failure(CancellationError()))
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "b.txt", eTag: "v2")
+            PathEntry.file(name: "b.txt", eTag: "v2"),
         ])))
 
         let changed = await engine.refreshMaterialized(
@@ -309,7 +308,7 @@ struct SyncEngineRefreshMaterializedTests {
     // MARK: - AC2: offline batch keeps existing cache rows (no deletes/tombstones)
 
     @Test("Offline error on a key keeps existing cache rows intact")
-    func testOfflineKeepsCacheRows() async throws {
+    func offlineKeepsCacheRows() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -336,13 +335,13 @@ struct SyncEngineRefreshMaterializedTests {
     // MARK: - AC2: concurrency cap is honoured
 
     @Test("refreshMaterialized honours the concurrency cap")
-    func testConcurrencyCapHonoured() async throws {
+    func concurrencyCapHonoured() async throws {
         let ol = BlockingListMockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // Three containers; cap = 2 → at most 2 listPath calls in flight at once.
-        let keys = (1...3).map { i in
+        let keys = (1 ... 3).map { i in
             CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID,
                      itemID: "item-\(i)", path: "")
         }
@@ -379,7 +378,7 @@ struct SyncEngineRefreshMaterializedTests {
     // MARK: - AC2: empty keys list returns false
 
     @Test("refreshMaterialized with an empty key list returns false immediately")
-    func testEmptyKeysReturnsFalse() async throws {
+    func emptyKeysReturnsFalse() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }

@@ -48,7 +48,9 @@ final class DomainSyncManager {
     /// process — to avoid clobbering domains another tool registered.
     ///
     /// The canonical value lives in `OfemConstants.ofemDomainIdentifierPrefix`.
-    var identifierPrefix: String { ofemDomainIdentifierPrefix }
+    var identifierPrefix: String {
+        ofemDomainIdentifierPrefix
+    }
 
     init() {}
 
@@ -175,7 +177,7 @@ final class DomainSyncManager {
         // 2) Remove orphan domains — ones we own (have our prefix)
         // but the config no longer has an account for.
         for (id, domain) in existingById {
-            if !id.hasPrefix(self.identifierPrefix) { continue }
+            if !id.hasPrefix(identifierPrefix) { continue }
             if desiredIds.contains(id) { continue }
             // Call the underlying API directly: removeDomain(alias:) would
             // re-fetch the domain list unnecessarily since we already have it.

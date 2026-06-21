@@ -1,6 +1,6 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 @Suite("BuildInfo")
 struct BuildInfoTests {
@@ -121,7 +121,6 @@ struct BuildInfoTests {
 
 @Suite("ContentVersion.FNV64a — digest correctness (fp-09)")
 struct FNV64aTests {
-
     /// Known FNV-1a-64 digest for the empty string.
     /// Offset basis = 14695981039346656037 (0xcbf29ce484222325).
     @Test("empty string digest is the FNV offset basis")
@@ -137,7 +136,7 @@ struct FNV64aTests {
         var h = ContentVersion.FNV64a()
         h.combine("a")
         // Known FNV-1a-64 value for "a" is 0xaf63dc4c8601ec8c.
-        #expect(h.digest() == 0xaf63_dc4c_8601_ec8c)
+        #expect(h.digest() == 0xAF63_DC4C_8601_EC8C)
     }
 
     @Test("digest is deterministic for the same input")

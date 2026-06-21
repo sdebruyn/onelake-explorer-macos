@@ -37,16 +37,16 @@ final class SharedOfemAuth {
     let configStore: OfemConfigStore
     let auth: OfemAuth
 
-    // Designated initialiser. `@MainActor` is inherited from the class;
-    // `static let shared` therefore runs on the main actor (Swift guarantees
-    // this for @MainActor-isolated static stored properties).
-    //
-    // OfemConfigStore() throws only on TOML parse failure. On a fresh install
-    // the file doesn't exist and a default config is returned — never throws.
-    // If the TOML is corrupt, we degrade gracefully: back up the corrupt file,
-    // reinitialise with defaults, and surface a non-blocking alert. We do NOT
-    // crash (host-25): a fatalError here would trap the menu-bar agent in a
-    // crash loop on every login with no recovery path for the user.
+    /// Designated initialiser. `@MainActor` is inherited from the class;
+    /// `static let shared` therefore runs on the main actor (Swift guarantees
+    /// this for @MainActor-isolated static stored properties).
+    ///
+    /// OfemConfigStore() throws only on TOML parse failure. On a fresh install
+    /// the file doesn't exist and a default config is returned — never throws.
+    /// If the TOML is corrupt, we degrade gracefully: back up the corrupt file,
+    /// reinitialise with defaults, and surface a non-blocking alert. We do NOT
+    /// crash (host-25): a fatalError here would trap the menu-bar agent in a
+    /// crash loop on every login with no recovery path for the user.
     init() {
         let paths = OfemPaths()
         var loadedStore: OfemConfigStore?
@@ -90,8 +90,8 @@ final class SharedOfemAuth {
         } else {
             fatalError("SharedOfemAuth: cannot initialise OfemConfigStore even after removing corrupt file — App Group container may be inaccessible")
         }
-        self.configStore = finalStore
-        self.auth = OfemAuth(configStore: finalStore)
+        configStore = finalStore
+        auth = OfemAuth(configStore: finalStore)
 
         // Surface the problem non-modally after init so the app can finish launching.
         if let err = configError {
@@ -324,7 +324,8 @@ final class SharedOfemAuth {
         let returnedHomeAccountID = storageResult.account.homeAccountID
         if !returnedHomeAccountID.isEmpty,
            !expectedHomeAccountID.isEmpty,
-           returnedHomeAccountID != expectedHomeAccountID {
+           returnedHomeAccountID != expectedHomeAccountID
+        {
             Self.log.error(
                 "SharedOfemAuth.reSignIn: identity mismatch for alias=\(alias, privacy: .public) — expected homeAccountID=\(expectedHomeAccountID, privacy: .private) got=\(returnedHomeAccountID, privacy: .private)"
             )
@@ -404,11 +405,11 @@ enum SharedOfemAuthError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .noViewController:
-            return "SharedOfemAuth: no presenting view controller on window"
+            "SharedOfemAuth: no presenting view controller on window"
         case .fabricConsentFailed:
-            return "SharedOfemAuth: Fabric consent could not be obtained — sign in was cancelled or blocked. Please try again."
-        case .unknownAlias(let a):
-            return "SharedOfemAuth: account '\(a)' not found — cannot re-authenticate"
+            "SharedOfemAuth: Fabric consent could not be obtained — sign in was cancelled or blocked. Please try again."
+        case let .unknownAlias(a):
+            "SharedOfemAuth: account '\(a)' not found — cannot re-authenticate"
         }
     }
 }

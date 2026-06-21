@@ -19,7 +19,9 @@ public struct AccountAlias: Hashable, Sendable, CustomStringConvertible {
     /// The validated raw alias string.
     public let rawValue: String
 
-    public var description: String { rawValue }
+    public var description: String {
+        rawValue
+    }
 
     // MARK: - Initialisation
 
@@ -92,20 +94,20 @@ public enum AccountAliasError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .empty:
-            return "alias must not be empty"
+            "alias must not be empty"
         case let .tooLong(alias, max):
-            return "alias \"\(alias)\" is longer than \(max) characters"
+            "alias \"\(alias)\" is longer than \(max) characters"
         case let .startsWithDash(alias):
-            return "alias \"\(alias)\" must not start with '-' (would be parsed as a CLI flag)"
+            "alias \"\(alias)\" must not start with '-' (would be parsed as a CLI flag)"
         case let .startsWithDot(alias):
-            return "alias \"\(alias)\" must not start with '.' (would be hidden in Finder and most shells)"
+            "alias \"\(alias)\" must not start with '.' (would be hidden in Finder and most shells)"
         case let .disallowedCharacter(alias, scalar):
-            return """
+            """
             alias "\(alias)" contains disallowed character \
             '\(scalar)' (allowed: ASCII letters, digits, '-', '_', '.')
             """
         case let .allDots(alias):
-            return "alias \"\(alias)\" must not consist only of dots (path traversal risk)"
+            "alias \"\(alias)\" must not consist only of dots (path traversal risk)"
         }
     }
 }

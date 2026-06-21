@@ -89,7 +89,7 @@ protocol WorkingSetSignaller: Sendable {
 extension OfemFPEClient: MaterializedPoller {}
 
 /// Signals `.workingSet` via a live `NSFileProviderManager` for the given domain.
-struct LiveWorkingSetSignaller: WorkingSetSignaller, Sendable {
+struct LiveWorkingSetSignaller: WorkingSetSignaller {
     private static let log = Logger(subsystem: ofemSubsystem, category: "change-watcher")
 
     func signal(domain: NSFileProviderDomain) async {
@@ -276,7 +276,7 @@ final class ChangeWatcher {
     /// SQLite database on every 90-second interval.  `nil` means the CacheStore
     /// could not be opened (catastrophic SQLite failure); callers skip detection
     /// gracefully when this is `nil`.
-    private var cacheReader: CacheReader? = nil
+    private var cacheReader: CacheReader?
 
     private init() {}
 
@@ -524,15 +524,15 @@ final class ChangeWatcher {
                 // cause a busy-spin. This max() is the last line of defense.
                 let interval = max(
                     .seconds(SyncConfig.minMaterializedPollIntervalS),
-                    self.materializedPollInterval
+                    materializedPollInterval
                 )
                 try? await Task.sleep(for: interval)
                 guard !Task.isCancelled else { break }
-                await self.pollMaterializedAndSignal()
+                await pollMaterializedAndSignal()
             }
         }
         Self.log.info(
-            "ChangeWatcher: materialized-container poll loop started (interval=\(self.materializedPollInterval, privacy: .public))"
+            "ChangeWatcher: materialized-container poll loop started (interval=\(materializedPollInterval, privacy: .public))"
         )
     }
 

@@ -1,5 +1,5 @@
-import Testing
 @testable import OfemKit
+import Testing
 
 @Suite("TelemetryBatch")
 struct TelemetryBatchTests {
@@ -28,7 +28,7 @@ struct TelemetryBatchTests {
     @Test("enqueue drops oldest when maxSize reached")
     func overflowDropsOldest() async {
         let batch = TelemetryBatch(maxSize: 3)
-        for i in 0..<5 {
+        for i in 0 ..< 5 {
             await batch.enqueue(TelemetryEvent(name: "ev\(i)"))
         }
         let events = await batch.drain()

@@ -1,15 +1,15 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - FPError.classify tests (tests-07)
+
 //
 // `FPError.classify(_:)` is the FPE's single error boundary — every engine
 // error becomes an NSFileProviderError through this mapping. A misrouted case
 // silently changes Finder behaviour for every user, so we test the full matrix.
 
 struct FPErrorClassifyTests {
-
     // MARK: - FPError domain errors
 
     @Test func noSuchItemMapsToNoSuchItem() {
@@ -129,7 +129,7 @@ struct FPErrorClassifyTests {
 
     // MARK: - fp-07: previously default: → explicit cases
 
-    // HTTPClientError — newly explicit
+    /// HTTPClientError — newly explicit
     @Test func httpTokenAcquisitionFailedMapsToNotAuthenticated() {
         #expect(FPError.classify(HTTPClientError.tokenAcquisitionFailed(URLError(.badURL))) == .notAuthenticated)
     }
@@ -138,7 +138,7 @@ struct FPErrorClassifyTests {
         #expect(FPError.classify(HTTPClientError.cancelled) == .serverUnreachable)
     }
 
-    // OneLakeError — newly explicit
+    /// OneLakeError — newly explicit
     @Test func oneLakeGoneMapsToNoSuchItem() {
         #expect(FPError.classify(OneLakeError.gone) == .noSuchItem)
     }
@@ -151,7 +151,7 @@ struct FPErrorClassifyTests {
         #expect(FPError.classify(OneLakeError.cancelled) == .serverUnreachable)
     }
 
-    // FabricError — newly explicit
+    /// FabricError — newly explicit
     @Test func fabricGoneMapsToNoSuchItem() {
         #expect(FPError.classify(FabricError.gone) == .noSuchItem)
     }

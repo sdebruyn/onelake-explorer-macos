@@ -12,7 +12,7 @@ let oneLakeDFSAPIVersion = "2021-08-06"
 // MARK: - URL builder errors
 
 /// Thrown when URL construction fails (onelake-03: replaces force-unwraps).
-enum OneLakeURLError: Error, Sendable {
+enum OneLakeURLError: Error {
     /// The base URL is malformed or cannot be composed with the given segments.
     case invalidURL(String)
 }
@@ -49,7 +49,7 @@ func oneLakePathURL(
     let trimmed = relPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     if !trimmed.isEmpty {
         let parts = trimmed.components(separatedBy: "/")
-        segments += parts.map { $0.percentEncodedPathSegment }
+        segments += parts.map(\.percentEncodedPathSegment)
     }
     components.percentEncodedPath = "/" + segments.joined(separator: "/")
 
@@ -112,7 +112,7 @@ func percentEncodedQueryItem(_ item: URLQueryItem) -> URLQueryItem {
     // Value: also encode `=` so it cannot be misread as a key=value separator.
     var valueAllowed = nameAllowed
     valueAllowed.remove(charactersIn: "=")
-    let encodedName  = item.name.addingPercentEncoding(withAllowedCharacters: nameAllowed) ?? item.name
+    let encodedName = item.name.addingPercentEncoding(withAllowedCharacters: nameAllowed) ?? item.name
     let encodedValue = item.value.map {
         $0.addingPercentEncoding(withAllowedCharacters: valueAllowed) ?? $0
     }

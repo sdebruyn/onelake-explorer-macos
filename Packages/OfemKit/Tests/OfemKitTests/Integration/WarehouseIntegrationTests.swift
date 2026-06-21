@@ -7,13 +7,11 @@
 // These tests NEVER write to, nor delete from, the warehouse.
 
 import Foundation
-import Testing
-
 @testable import OfemKit
+import Testing
 
 @Suite("Warehouse integration", .warehouse, .serialized)
 struct WarehouseIntegrationTests {
-
     // MARK: - Helpers
 
     private struct LiveWarehouse {
@@ -26,9 +24,14 @@ struct WarehouseIntegrationTests {
         let table: String
 
         /// Item-relative directory for the table's Delta folder.
-        var tableDir: String { "Tables/\(schema)/\(table)" }
+        var tableDir: String {
+            "Tables/\(schema)/\(table)"
+        }
+
         /// Item-relative directory for the Delta transaction log.
-        var deltaLogDir: String { "Tables/\(schema)/\(table)/_delta_log" }
+        var deltaLogDir: String {
+            "Tables/\(schema)/\(table)/_delta_log"
+        }
     }
 
     /// Loads live coordinates from the environment.
@@ -74,7 +77,7 @@ struct WarehouseIntegrationTests {
     ) async throws -> ListResult {
         var lastResult: ListResult?
         var lastError: Error?
-        for attempt in 0..<attempts {
+        for attempt in 0 ..< attempts {
             do {
                 let result = try await wh.onelakeClient.listPath(
                     alias: wh.alias,
@@ -122,10 +125,10 @@ struct WarehouseIntegrationTests {
             guard let text = String(data: data, encoding: .utf8) else { continue }
             for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
                 guard let lineData = line.data(using: .utf8),
-                    let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                    let add = obj["add"] as? [String: Any],
-                    let path = add["path"] as? String,
-                    path.hasSuffix(".parquet")
+                      let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                      let add = obj["add"] as? [String: Any],
+                      let path = add["path"] as? String,
+                      path.hasSuffix(".parquet")
                 else { continue }
                 return "\(wh.tableDir)/\(path)"
             }

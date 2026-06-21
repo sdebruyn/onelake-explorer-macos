@@ -1,12 +1,10 @@
 import Foundation
-import Testing
-
 @testable import OfemKit
+import Testing
 
 /// Live Fabric REST discovery against the real test workspace.
 @Suite("Fabric integration", .integration)
 struct FabricIntegrationTests {
-
     private func fabricClient() -> FabricClient {
         let pool = SessionPool(tokenProvider: EnvVarTokenProvider())
         return FabricClient(sessionPool: pool)

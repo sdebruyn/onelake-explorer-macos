@@ -15,10 +15,11 @@
 // Tests in this file are host-less and do not require a live Fabric tenant.
 
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - SessionPool URL-cache policy (net-20 / issue-268)
+
 //
 // SessionPool.makeSession is private, so we verify the invariant by asking
 // the pool for a session and inspecting its URLSession configuration.
@@ -26,7 +27,6 @@ import Testing
 
 @Suite("SessionPool — URL cache disabled (net-20 / issue-268)")
 struct SessionPoolNoCacheTests {
-
     @Test("SessionPool session has urlCache == nil (net-20)")
     func sessionHasNilURLCache() async {
         let pool = SessionPool(tokenProvider: NoopTokenProvider())
@@ -63,6 +63,7 @@ struct SessionPoolNoCacheTests {
 }
 
 // MARK: - FabricError transport-error classification (issue-268)
+
 //
 // These tests verify that no transport or cancellation error is mis-classified
 // as FabricError.notFound. Only a genuine HTTP 404 (HTTPClientError.notFound)
@@ -70,7 +71,6 @@ struct SessionPoolNoCacheTests {
 
 @Suite("FabricError transport-error classification — no synthetic notFound (issue-268)")
 struct FabricErrorTransportClassificationTests {
-
     @Test("URLError(.cancelled) maps to FabricError.httpError, NOT .notFound (issue-268)")
     func urlErrorCancelledIsNotNotFound() {
         let transportError = HTTPClientError.transport(URLError(.cancelled))
@@ -125,7 +125,7 @@ struct FabricErrorTransportClassificationTests {
         if case FabricError.notFound = mapped {
             Issue.record("retriesExhausted wrapping a transport error must NOT map to FabricError.notFound (issue-268)")
         }
-        if case FabricError.retriesExhausted(let attempts) = mapped {
+        if case let FabricError.retriesExhausted(attempts) = mapped {
             #expect(attempts == 3)
         } else {
             Issue.record("retriesExhausted(transport) must map to FabricError.retriesExhausted, got \(mapped)")
@@ -152,16 +152,16 @@ struct FabricErrorTransportClassificationTests {
 }
 
 // MARK: - FabricClient token-failure path (issue-268)
+
 //
 // Verifies that when token acquisition fails, FabricClient throws
 // .unauthorized — not .notFound — confirming no synthetic 404 is produced.
 
 @Suite("FabricClient — token failure produces .unauthorized, not .notFound (issue-268)")
 struct FabricClientTokenFailureTests {
-
     @Test("interactionRequired token throws FabricError.unauthorized, not .notFound (issue-268)")
     func tokenFailureThrowsUnauthorized() async throws {
-        let fabricBase = URL(string: "https://api.fabric.microsoft.com")!
+        let fabricBase = try #require(URL(string: "https://api.fabric.microsoft.com"))
         let pool = SessionPool(tokenProvider: InteractionRequiredTokenProvider())
         let client = FabricClient(sessionPool: pool, baseURL: fabricBase)
 
@@ -182,7 +182,7 @@ struct FabricClientTokenFailureTests {
 
 /// A `TokenProvider` that always throws `OfemAuthError.interactionRequired`.
 private struct InteractionRequiredTokenProvider: TokenProvider {
-    func token(alias: String, scope: TokenScope) async throws -> String {
+    func token(alias _: String, scope _: TokenScope) async throws -> String {
         throw OfemAuthError.interactionRequired
     }
 }

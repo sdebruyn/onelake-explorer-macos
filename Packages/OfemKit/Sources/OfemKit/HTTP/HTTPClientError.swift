@@ -128,19 +128,19 @@ extension HTTPClientError {
     /// the status does not have a specific sentinel.
     static func sentinel(for status: Int) -> HTTPClientError? {
         switch status {
-        case 401: return .unauthorized
-        case 403: return .forbidden
-        case 404: return .notFound
-        case 409: return .conflict
-        case 410: return .gone
-        case 412: return .preconditionFailed
-        case 413: return .payloadTooLarge
-        case 415: return .unsupportedMediaType
-        case 416: return .rangeNotSatisfiable
-        case 422: return .unprocessableEntity
-        case 429: return .throttled
-        case 500...: return .serverError(status)
-        default: return nil
+        case 401: .unauthorized
+        case 403: .forbidden
+        case 404: .notFound
+        case 409: .conflict
+        case 410: .gone
+        case 412: .preconditionFailed
+        case 413: .payloadTooLarge
+        case 415: .unsupportedMediaType
+        case 416: .rangeNotSatisfiable
+        case 422: .unprocessableEntity
+        case 429: .throttled
+        case 500...: .serverError(status)
+        default: nil
         }
     }
 }

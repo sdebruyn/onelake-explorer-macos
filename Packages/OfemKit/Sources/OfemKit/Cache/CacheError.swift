@@ -20,10 +20,10 @@ public enum CacheError: Error, Sendable {
 extension CacheError: Equatable {
     public static func == (lhs: CacheError, rhs: CacheError) -> Bool {
         switch (lhs, rhs) {
-        case (.notFound(let a), .notFound(let b)): return a == b
-        case (.invalidSHA(let a), .invalidSHA(let b)): return a == b
-        case (.missingArgument(let a), .missingArgument(let b)): return a == b
-        case (.blobIOError(let a), .blobIOError(let b)):
+        case let (.notFound(a), .notFound(b)): return a == b
+        case let (.invalidSHA(a), .invalidSHA(b)): return a == b
+        case let (.missingArgument(a), .missingArgument(b)): return a == b
+        case let (.blobIOError(a), .blobIOError(b)):
             // Compare by NSError domain + code so distinct underlying failures are
             // distinguishable in tests (e.g. "disk full" vs "permission denied").
             let na = a as NSError, nb = b as NSError
@@ -36,14 +36,14 @@ extension CacheError: Equatable {
 extension CacheError: LocalizedError {
     public var errorDescription: String? {
         switch self {
-        case .notFound(let desc):
-            return "Cache entry not found: \(desc)"
-        case .invalidSHA(let sha):
-            return "Invalid SHA-256 digest: '\(sha)'"
-        case .missingArgument(let name):
-            return "Missing required argument: \(name)"
-        case .blobIOError(let err):
-            return "Blob I/O error: \(err.localizedDescription)"
+        case let .notFound(desc):
+            "Cache entry not found: \(desc)"
+        case let .invalidSHA(sha):
+            "Invalid SHA-256 digest: '\(sha)'"
+        case let .missingArgument(name):
+            "Missing required argument: \(name)"
+        case let .blobIOError(err):
+            "Blob I/O error: \(err.localizedDescription)"
         }
     }
 }

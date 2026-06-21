@@ -1,6 +1,6 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - FabricRequestTests
 
@@ -131,21 +131,21 @@ struct FabricRequestTests {
 
     @Test("fabricRequest: sets correct HTTP method")
     func requestMethod() throws {
-        let url = try fabricListURL(base: URL(string: "https://api.fabric.microsoft.com")!, path: "/v1/workspaces")
+        let url = try fabricListURL(base: #require(URL(string: "https://api.fabric.microsoft.com")), path: "/v1/workspaces")
         let req = fabricRequest(method: "GET", url: url)
         #expect(req.httpMethod == "GET")
     }
 
     @Test("fabricRequest: sets Accept: application/json")
     func requestAcceptHeader() throws {
-        let url = try fabricListURL(base: URL(string: "https://api.fabric.microsoft.com")!, path: "/v1/workspaces")
+        let url = try fabricListURL(base: #require(URL(string: "https://api.fabric.microsoft.com")), path: "/v1/workspaces")
         let req = fabricRequest(method: "GET", url: url)
         #expect(req.value(forHTTPHeaderField: "Accept") == "application/json")
     }
 
     @Test("fabricRequest: correct URL is set")
     func requestURL() throws {
-        let url = try fabricItemURL(base: URL(string: "https://api.fabric.microsoft.com")!, path: "/v1/workspaces/ws1/items/it1")
+        let url = try fabricItemURL(base: #require(URL(string: "https://api.fabric.microsoft.com")), path: "/v1/workspaces/ws1/items/it1")
         let req = fabricRequest(method: "GET", url: url)
         #expect(req.url?.path == "/v1/workspaces/ws1/items/it1")
     }

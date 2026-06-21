@@ -1,6 +1,6 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - ParseRetryAfterTests
 
@@ -45,7 +45,7 @@ struct ParseRetryAfterTests {
         // Should be approximately 60 seconds (allow ±1 s for formatting).
         if let r = result {
             let ms = r.components.seconds * 1000 + r.components.attoseconds / 1_000_000_000_000_000
-            #expect(ms >= 59_000 && ms <= 61_000)
+            #expect(ms >= 59000 && ms <= 61000)
         } else {
             Issue.record("parseRetryAfter returned nil for future RFC 1123 date '\(dateString)'")
         }
@@ -138,8 +138,8 @@ struct HTTPClientErrorSentinelTests {
     }
 
     @Test("500 maps to .serverError")
-    func maps500() {
-        if case .serverError(500) = HTTPClientError.sentinel(for: 500)! {
+    func maps500() throws {
+        if case .serverError(500) = try #require(HTTPClientError.sentinel(for: 500)) {
             // pass
         } else {
             Issue.record("expected .serverError(500)")

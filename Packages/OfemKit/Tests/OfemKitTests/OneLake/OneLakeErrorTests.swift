@@ -1,6 +1,6 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - OneLakeErrorTests
 
@@ -13,17 +13,18 @@ import Foundation
 /// mapping helper.
 @Suite("OneLakeError")
 struct OneLakeErrorTests {
-
     // MARK: - All cases: throwable and catchable
 
     @Test("missingArgument can be thrown and caught")
     func missingArgumentThrowCatch() {
-        func throwIt() throws { throw OneLakeError.missingArgument("workspaceID") }
+        func throwIt() throws {
+            throw OneLakeError.missingArgument("workspaceID")
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case OneLakeError.missingArgument(let name) = error {
+            if case let OneLakeError.missingArgument(name) = error {
                 #expect(name == "workspaceID")
             } else {
                 Issue.record("unexpected error: \(error)")
@@ -33,12 +34,14 @@ struct OneLakeErrorTests {
 
     @Test("paginationExceeded can be thrown and caught")
     func paginationExceededThrowCatch() {
-        func throwIt() throws { throw OneLakeError.paginationExceeded(500) }
+        func throwIt() throws {
+            throw OneLakeError.paginationExceeded(500)
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case OneLakeError.paginationExceeded(let limit) = error {
+            if case let OneLakeError.paginationExceeded(limit) = error {
                 #expect(limit == 500)
             } else {
                 Issue.record("unexpected error: \(error)")
@@ -48,7 +51,9 @@ struct OneLakeErrorTests {
 
     @Test("unauthorized can be thrown and caught")
     func unauthorizedThrowCatch() {
-        func throwIt() throws { throw OneLakeError.unauthorized }
+        func throwIt() throws {
+            throw OneLakeError.unauthorized
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -60,7 +65,9 @@ struct OneLakeErrorTests {
 
     @Test("forbidden can be thrown and caught")
     func forbiddenThrowCatch() {
-        func throwIt() throws { throw OneLakeError.forbidden }
+        func throwIt() throws {
+            throw OneLakeError.forbidden
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -72,7 +79,9 @@ struct OneLakeErrorTests {
 
     @Test("notFound can be thrown and caught")
     func notFoundThrowCatch() {
-        func throwIt() throws { throw OneLakeError.notFound }
+        func throwIt() throws {
+            throw OneLakeError.notFound
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -84,7 +93,9 @@ struct OneLakeErrorTests {
 
     @Test("rateLimited can be thrown and caught")
     func rateLimitedThrowCatch() {
-        func throwIt() throws { throw OneLakeError.rateLimited }
+        func throwIt() throws {
+            throw OneLakeError.rateLimited
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -96,12 +107,14 @@ struct OneLakeErrorTests {
 
     @Test("serverError preserves status code through throw/catch")
     func serverErrorThrowCatch() {
-        func throwIt() throws { throw OneLakeError.serverError(502) }
+        func throwIt() throws {
+            throw OneLakeError.serverError(502)
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case OneLakeError.serverError(let code) = error {
+            if case let OneLakeError.serverError(code) = error {
                 #expect(code == 502)
             } else {
                 Issue.record("unexpected error: \(error)")
@@ -111,12 +124,14 @@ struct OneLakeErrorTests {
 
     @Test("retriesExhausted preserves attempts count through throw/catch")
     func retriesExhaustedThrowCatch() {
-        func throwIt() throws { throw OneLakeError.retriesExhausted(attempts: 7) }
+        func throwIt() throws {
+            throw OneLakeError.retriesExhausted(attempts: 7)
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case OneLakeError.retriesExhausted(let attempts) = error {
+            if case let OneLakeError.retriesExhausted(attempts) = error {
                 #expect(attempts == 7)
             } else {
                 Issue.record("unexpected error: \(error)")
@@ -126,7 +141,9 @@ struct OneLakeErrorTests {
 
     @Test("cancelled can be thrown and caught")
     func cancelledThrowCatch() {
-        func throwIt() throws { throw OneLakeError.cancelled }
+        func throwIt() throws {
+            throw OneLakeError.cancelled
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -139,7 +156,9 @@ struct OneLakeErrorTests {
     @Test("httpError wraps an arbitrary error")
     func httpErrorThrowCatch() {
         struct Inner: Error {}
-        func throwIt() throws { throw OneLakeError.httpError(Inner()) }
+        func throwIt() throws {
+            throw OneLakeError.httpError(Inner())
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -152,7 +171,9 @@ struct OneLakeErrorTests {
     @Test("decodeFailed wraps an arbitrary error")
     func decodeFailedThrowCatch() {
         struct Inner: Error {}
-        func throwIt() throws { throw OneLakeError.decodeFailed(Inner()) }
+        func throwIt() throws {
+            throw OneLakeError.decodeFailed(Inner())
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -202,7 +223,7 @@ struct OneLakeErrorTests {
     @Test("from(.serverError(502)) → .serverError(502)")
     func fromServerError() {
         let result = OneLakeError.from(HTTPClientError.serverError(502))
-        if case .serverError(let code) = result {
+        if case let .serverError(code) = result {
             #expect(code == 502)
         } else {
             Issue.record("expected .serverError(502), got \(result)")
@@ -213,7 +234,7 @@ struct OneLakeErrorTests {
     func fromRetriesExhausted() {
         struct Sentinel: Error {}
         let result = OneLakeError.from(HTTPClientError.retriesExhausted(attempts: 3, last: Sentinel()))
-        if case .retriesExhausted(let attempts) = result {
+        if case let .retriesExhausted(attempts) = result {
             #expect(attempts == 3)
         } else {
             Issue.record("expected .retriesExhausted(attempts:3), got \(result)")

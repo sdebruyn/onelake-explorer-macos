@@ -8,7 +8,6 @@ import Foundation
 /// Each call dequeues from the corresponding `*Results` array. Throws
 /// `MockError.stubsExhausted` when the array is empty.
 final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
-
     // MARK: - Scripted responses
 
     var listPathResults: [Result<ListResult, any Error>] = []
@@ -114,7 +113,7 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
     }
 
     func write(
-        alias: String, workspaceGUID: String, itemGUID: String,
+        alias: String, workspaceGUID _: String, itemGUID _: String,
         path: String, content: Data, size: Int64
     ) async throws {
         lock.withLock { writeCalls.append(WriteCall(alias: alias, path: path, content: content, sourceURL: nil, size: size)) }
@@ -122,7 +121,7 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
     }
 
     func write(
-        alias: String, workspaceGUID: String, itemGUID: String,
+        alias: String, workspaceGUID _: String, itemGUID _: String,
         path: String, sourceURL: URL, size: Int64
     ) async throws {
         lock.withLock { writeCalls.append(WriteCall(alias: alias, path: path, content: nil, sourceURL: sourceURL, size: size)) }
@@ -138,7 +137,7 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
     }
 
     func delete(
-        alias: String, workspaceGUID: String, itemGUID: String,
+        alias: String, workspaceGUID _: String, itemGUID _: String,
         path: String, recursive: Bool
     ) async throws {
         lock.withLock { deleteCalls.append(DeleteCall(alias: alias, path: path, recursive: recursive)) }
@@ -147,7 +146,7 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
 
     // MARK: - Private helper
 
-    // Dequeue under lock to avoid races in concurrent tests (e.g. testConcurrentOpensCoalesce).
+    /// Dequeue under lock to avoid races in concurrent tests (e.g. testConcurrentOpensCoalesce).
     func dequeue<T>(_ arr: inout [Result<T, any Error>], name: String) throws -> T {
         let result: Result<T, any Error> = lock.withLock {
             guard !arr.isEmpty else {
@@ -176,7 +175,6 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
 /// the first download task completes so the test can reliably cancel it while
 /// a second `open()` is coalescing on it.
 final class BlockingMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
-
     // MARK: - State
 
     /// Continuation for the blocked `read()` call.
@@ -185,7 +183,9 @@ final class BlockingMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendabl
 
     /// Signals when the mock has entered `read()` and is suspending.
     private let readEnteredContinuation = AsyncStream<Void>.makeStream()
-    var readEntered: AsyncStream<Void> { readEnteredContinuation.stream }
+    var readEntered: AsyncStream<Void> {
+        readEnteredContinuation.stream
+    }
 
     // MARK: - Control
 
@@ -208,10 +208,10 @@ final class BlockingMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendabl
     // MARK: - OneLakeClientProtocol
 
     func read(
-        alias: String, workspaceGUID: String, itemGUID: String,
-        path: String, range: Range<Int64>?, ifMatch: String
+        alias _: String, workspaceGUID _: String, itemGUID _: String,
+        path _: String, range _: Range<Int64>?, ifMatch _: String
     ) async throws -> (Data, PathProperties) {
-        return try await withTaskCancellationHandler(
+        try await withTaskCancellationHandler(
             operation: {
                 try await withCheckedThrowingContinuation { cont in
                     lock.withLock { pendingContinuation = cont }
@@ -234,12 +234,19 @@ final class BlockingMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendabl
         try destination.write(contentsOf: data)
         return props
     }
-    func listPath(alias: String, workspaceGUID: String, itemGUID: String, directory: String, recursive: Bool) async throws -> ListResult { ListResult(entries: []) }
-    func getProperties(alias: String, workspaceGUID: String, itemGUID: String, path: String) async throws -> PathProperties { PathProperties.make() }
-    func write(alias: String, workspaceGUID: String, itemGUID: String, path: String, content: Data, size: Int64) async throws {}
-    func write(alias: String, workspaceGUID: String, itemGUID: String, path: String, sourceURL: URL, size: Int64) async throws {}
-    func createDirectory(alias: String, workspaceGUID: String, itemGUID: String, path: String) async throws {}
-    func delete(alias: String, workspaceGUID: String, itemGUID: String, path: String, recursive: Bool) async throws {}
+
+    func listPath(alias _: String, workspaceGUID _: String, itemGUID _: String, directory _: String, recursive _: Bool) async throws -> ListResult {
+        ListResult(entries: [])
+    }
+
+    func getProperties(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String) async throws -> PathProperties {
+        PathProperties.make()
+    }
+
+    func write(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, content _: Data, size _: Int64) async throws {}
+    func write(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, sourceURL _: URL, size _: Int64) async throws {}
+    func createDirectory(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String) async throws {}
+    func delete(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, recursive _: Bool) async throws {}
 }
 
 // MARK: - MockFabricClient
@@ -248,14 +255,13 @@ final class BlockingMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendabl
 // used by MockOneLakeClient, so that any future concurrent-Fabric test does
 // not race the array mutation.
 final class MockFabricClient: FabricClientProtocol, @unchecked Sendable {
-
     var listWorkspacesResults: [Result<[Workspace], any Error>] = []
     var listItemsResults: [Result<[Item], any Error>] = []
     var listFoldersResults: [Result<[Folder], any Error>] = []
 
     private let lock = NSLock()
 
-    func listAllWorkspaces(alias: String) async throws -> [Workspace] {
+    func listAllWorkspaces(alias _: String) async throws -> [Workspace] {
         let result: Result<[Workspace], any Error> = lock.withLock {
             guard !listWorkspacesResults.isEmpty else {
                 return .failure(MockError.stubsExhausted("listAllWorkspaces"))
@@ -265,7 +271,7 @@ final class MockFabricClient: FabricClientProtocol, @unchecked Sendable {
         return try result.get()
     }
 
-    func listAllItems(alias: String, workspaceID: String) async throws -> [Item] {
+    func listAllItems(alias _: String, workspaceID _: String) async throws -> [Item] {
         let result: Result<[Item], any Error> = lock.withLock {
             guard !listItemsResults.isEmpty else {
                 return .failure(MockError.stubsExhausted("listAllItems"))
@@ -275,7 +281,7 @@ final class MockFabricClient: FabricClientProtocol, @unchecked Sendable {
         return try result.get()
     }
 
-    func listAllFolders(alias: String, workspaceID: String) async throws -> [Folder] {
+    func listAllFolders(alias _: String, workspaceID _: String) async throws -> [Folder] {
         let result: Result<[Folder], any Error> = lock.withLock {
             guard !listFoldersResults.isEmpty else {
                 return .failure(MockError.stubsExhausted("listAllFolders"))
@@ -340,15 +346,18 @@ extension PathEntry {
 /// unblocked. Used to test concurrency-cap enforcement in
 /// ``SyncEngine/refreshMaterialized(alias:keys:concurrencyCap:)``.
 final class BlockingListMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
-
     private var pending: [CheckedContinuation<ListResult, any Error>] = []
     private let lock = NSLock()
     private var _listPathCallCount = 0
 
     private let listEnteredStream = AsyncStream<Void>.makeStream()
-    var listEntered: AsyncStream<Void> { listEnteredStream.stream }
+    var listEntered: AsyncStream<Void> {
+        listEnteredStream.stream
+    }
 
-    var listPathCallCount: Int { lock.withLock { _listPathCallCount } }
+    var listPathCallCount: Int {
+        lock.withLock { _listPathCallCount }
+    }
 
     /// Resolves the oldest blocked `listPath` with `result`.
     func unblock(with result: ListResult) {
@@ -363,8 +372,8 @@ final class BlockingListMockOneLakeClient: OneLakeClientProtocol, @unchecked Sen
     }
 
     func listPath(
-        alias: String, workspaceGUID: String, itemGUID: String,
-        directory: String, recursive: Bool
+        alias _: String, workspaceGUID _: String, itemGUID _: String,
+        directory _: String, recursive _: Bool
     ) async throws -> ListResult {
         lock.withLock { _listPathCallCount += 1 }
         return try await withTaskCancellationHandler(
@@ -381,12 +390,21 @@ final class BlockingListMockOneLakeClient: OneLakeClientProtocol, @unchecked Sen
         )
     }
 
-    // Remaining protocol surface is unused by these tests.
-    func getProperties(alias: String, workspaceGUID: String, itemGUID: String, path: String) async throws -> PathProperties { PathProperties.make() }
-    func read(alias: String, workspaceGUID: String, itemGUID: String, path: String, range: Range<Int64>?, ifMatch: String) async throws -> (Data, PathProperties) { (Data(), PathProperties.make()) }
-    func read(alias: String, workspaceGUID: String, itemGUID: String, path: String, range: Range<Int64>?, ifMatch: String, destination: FileHandle) async throws -> PathProperties { PathProperties.make() }
-    func write(alias: String, workspaceGUID: String, itemGUID: String, path: String, content: Data, size: Int64) async throws {}
-    func write(alias: String, workspaceGUID: String, itemGUID: String, path: String, sourceURL: URL, size: Int64) async throws {}
-    func createDirectory(alias: String, workspaceGUID: String, itemGUID: String, path: String) async throws {}
-    func delete(alias: String, workspaceGUID: String, itemGUID: String, path: String, recursive: Bool) async throws {}
+    /// Remaining protocol surface is unused by these tests.
+    func getProperties(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String) async throws -> PathProperties {
+        PathProperties.make()
+    }
+
+    func read(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, range _: Range<Int64>?, ifMatch _: String) async throws -> (Data, PathProperties) {
+        (Data(), PathProperties.make())
+    }
+
+    func read(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, range _: Range<Int64>?, ifMatch _: String, destination _: FileHandle) async throws -> PathProperties {
+        PathProperties.make()
+    }
+
+    func write(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, content _: Data, size _: Int64) async throws {}
+    func write(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, sourceURL _: URL, size _: Int64) async throws {}
+    func createDirectory(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String) async throws {}
+    func delete(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, recursive _: Bool) async throws {}
 }

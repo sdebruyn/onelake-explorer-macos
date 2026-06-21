@@ -114,9 +114,9 @@ public enum EntraAuthorityError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case let .invalidURL(s):
-            return "EntraAuthorityResolver: could not build a valid URL from \"\(s)\""
+            "EntraAuthorityResolver: could not build a valid URL from \"\(s)\""
         case let .invalidTenantHint(hint):
-            return "EntraAuthorityResolver: tenant hint \"\(hint)\" is not a valid GUID or domain — expected e.g. \"contoso.onmicrosoft.com\" or a GUID"
+            "EntraAuthorityResolver: tenant hint \"\(hint)\" is not a valid GUID or domain — expected e.g. \"contoso.onmicrosoft.com\" or a GUID"
         }
     }
 }

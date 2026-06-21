@@ -118,7 +118,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
     )
 
     let containerItemIdentifier: NSFileProviderItemIdentifier
-    let identifier: ItemIdentifier         // OfemKit-typed
+    let identifier: ItemIdentifier // OfemKit-typed
     let alias: String
     let engineHost: any EngineProviding
 
@@ -183,7 +183,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
             inFlightAnchorTask?.cancel()
             inFlightAnchorTask = nil
         }
-        Self.log.debug("OfemFPEEnumerator[\(self.alias, privacy: .public)]: invalidated")
+        Self.log.debug("OfemFPEEnumerator[\(alias, privacy: .public)]: invalidated")
     }
 
     // MARK: - Enumeration
@@ -321,12 +321,12 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
 
             do {
                 let engine = try await hostCopy.engine()
-                let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+                let currentNs = await (try? engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
 
                 // If the anchor is ahead of the cache the DB may have been
                 // reset (or a new process started). Expire so the framework
                 // performs a full re-enumeration.
-                if previousNs > currentNs && previousNs != 0 {
+                if previousNs > currentNs, previousNs != 0 {
                     Self.log.debug(
                         "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges — anchor ahead of cache, expiring"
                     )
@@ -415,7 +415,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
         let anchorTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
-                let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+                let ns = await (try? engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
                 ch.fn(encodeSyncAnchor(ns))
             } catch is CancellationError {
                 // Task was cancelled (enumerator invalidated); do not call the
@@ -603,7 +603,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
             inFlightAnchorTask = nil
         }
         OfemWorkingSetEnumerator.log.debug(
-            "WorkingSet[\(self.alias, privacy: .public)]: invalidated"
+            "WorkingSet[\(alias, privacy: .public)]: invalidated"
         )
     }
 
@@ -616,13 +616,13 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
         // directly under the lock before touching the observer.
         guard taskLock.withLock({ !isInvalidated }) else { return }
         OfemWorkingSetEnumerator.log.debug(
-            "WorkingSet[\(self.alias, privacy: .public)]: enumerateItems entry — working set always returns empty"
+            "WorkingSet[\(alias, privacy: .public)]: enumerateItems entry — working set always returns empty"
         )
         let items: [NSFileProviderItem] = []
         observer.didEnumerate(items)
         observer.finishEnumerating(upTo: nil)
         OfemWorkingSetEnumerator.log.debug(
-            "WorkingSet[\(self.alias, privacy: .public)]: enumerateItems delivered — count=\(items.count, privacy: .public) nextPage=nil"
+            "WorkingSet[\(alias, privacy: .public)]: enumerateItems delivered — count=\(items.count, privacy: .public) nextPage=nil"
         )
     }
 
@@ -705,13 +705,13 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                     }
                 }
 
-                let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+                let currentNs = await (try? engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
 
                 // If the anchor is ahead of the cache the DB may have been
                 // reset (or a new process started). Expire so the framework
                 // performs a full re-enumeration, mirroring the same guard in
                 // OfemFPEEnumerator.enumerateChanges.
-                if previousNs > currentNs && previousNs != 0 {
+                if previousNs > currentNs, previousNs != 0 {
                     Self.log.debug(
                         "WorkingSet: anchor ahead of cache for \(aliasCopy, privacy: .public) — expiring"
                     )
@@ -802,7 +802,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
         let anchorTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
-                let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+                let ns = await (try? engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
                 ch.fn(encodeSyncAnchor(ns))
             } catch is CancellationError {
                 // Task was cancelled (enumerator invalidated); do not call the

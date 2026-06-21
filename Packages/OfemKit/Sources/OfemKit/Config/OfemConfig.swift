@@ -35,7 +35,7 @@ public final class OfemConfigStore: Sendable {
     private let paths: OfemPaths
     /// Per-path process-wide serial queue (see ``sharedQueue(for:)``).
     private let serialQueue: DispatchQueue
-    // In-memory snapshot, mutated only while holding `serialQueue`.
+    /// In-memory snapshot, mutated only while holding `serialQueue`.
     private nonisolated(unsafe) var config: OfemConfig
 
     // MARK: - Process-wide intra-process serialisation registry
@@ -47,7 +47,7 @@ public final class OfemConfigStore: Sendable {
     /// so concurrent `updateAndSave` calls within the same process are
     /// serialised without relying on `fcntl` (which is per-process, not
     /// per-fd). Cross-process exclusion is handled by `fcntl` record locks.
-    private static nonisolated(unsafe) var _queueRegistry: [String: DispatchQueue] = [:]
+    private nonisolated(unsafe) static var _queueRegistry: [String: DispatchQueue] = [:]
 
     private static func sharedQueue(for configFile: URL) -> DispatchQueue {
         // Use the canonical path string as both the registry key and the
@@ -79,8 +79,8 @@ public final class OfemConfigStore: Sendable {
     /// - Throws: ``OfemConfigError`` on TOML parse failures or I/O errors.
     public init(paths: OfemPaths) throws {
         self.paths = paths
-        self.serialQueue = Self.sharedQueue(for: paths.configFile)
-        self.config = try Self.load(from: paths)
+        serialQueue = Self.sharedQueue(for: paths.configFile)
+        config = try Self.load(from: paths)
     }
 
     // MARK: - Public API
@@ -111,7 +111,7 @@ public final class OfemConfigStore: Sendable {
     ///
     /// - Throws: ``OfemConfigError`` on I/O or parse failure.
     public func freshSnapshot() throws -> OfemConfig {
-        let paths = self.paths
+        let paths = paths
         return try serialQueue.sync {
             let fresh = try Self.load(from: paths)
             self.config = fresh
@@ -144,8 +144,8 @@ public final class OfemConfigStore: Sendable {
     /// The mutator must not call back into the store.
     @discardableResult
     public func updateAndSave(_ mutator: @escaping @Sendable (inout OfemConfig) throws -> Void) async throws -> OfemConfig {
-        let paths = self.paths
-        let queue = self.serialQueue
+        let paths = paths
+        let queue = serialQueue
 
         // Step 1: acquire the cross-process file lock.
         // ConfigFileLock.acquire() suspends this Task (via a continuation +
@@ -174,9 +174,9 @@ public final class OfemConfigStore: Sendable {
 
     // MARK: - Private helpers
 
-    // `load` and `save` are `internal` (not `private`) so that `@testable
-    // import OfemKit` test targets can reach them directly. They are not part
-    // of the public API and must not be called outside this type.
+    /// `load` and `save` are `internal` (not `private`) so that `@testable
+    /// import OfemKit` test targets can reach them directly. They are not part
+    /// of the public API and must not be called outside this type.
     static func load(from paths: OfemPaths) throws -> OfemConfig {
         let data: Data
         do {

@@ -133,7 +133,7 @@ public actor TelemetryClient {
 
         self.sink = effectiveSink
         self.configuration = configuration
-        self.batch = TelemetryBatch(maxSize: configuration.maxBatchSize)
+        batch = TelemetryBatch(maxSize: configuration.maxBatchSize)
 
         let platform = configuration.platform.isEmpty ? "darwin" : configuration.platform
         let arch = configuration.arch.isEmpty ? "arm64" : configuration.arch
@@ -141,7 +141,7 @@ public actor TelemetryClient {
             ? Self.resolveOSVersion()
             : configuration.osVersion
 
-        self.commonProps = [
+        commonProps = [
             "installId": installID,
             "appVersion": appVersion,
             "platform": platform,
@@ -245,7 +245,7 @@ public actor TelemetryClient {
         guard !events.isEmpty else { return }
         do {
             try await sink.send(events)
-        } catch AppInsightsSinkError.partialReject(_, _, let retriable) {
+        } catch let AppInsightsSinkError.partialReject(_, _, retriable) {
             if !retriable.isEmpty {
                 await batch.requeue(retriable)
             }

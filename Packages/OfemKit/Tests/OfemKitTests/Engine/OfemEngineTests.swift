@@ -1,8 +1,9 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - OfemEngine + TokenProviderAdapter tests (tests-02)
+
 //
 // These tests cover the wiring/lifecycle paths that are reachable without
 // network or MSAL, validating the load-bearing behaviours documented in the
@@ -40,7 +41,6 @@ private func makeNoopTelemetry() -> TelemetryClient {
 
 @Suite("OfemEngine — standalone init")
 struct OfemEngineStandaloneTests {
-
     @Test("standalone init succeeds and exposes subsystems")
     func standaloneInitSucceeds() async throws {
         let (store, paths) = try makeTempConfigStore()
@@ -59,8 +59,8 @@ struct OfemEngineStandaloneTests {
     @Test("standalone init respects httpBaseURLs override")
     func standaloneInitRespectsURLOverride() async throws {
         let (store, paths) = try makeTempConfigStore()
-        let customOneLake = URL(string: "https://custom.onelake.example.com")!
-        let customFabric  = URL(string: "https://custom.fabric.example.com")!
+        let customOneLake = try #require(URL(string: "https://custom.onelake.example.com"))
+        let customFabric = try #require(URL(string: "https://custom.fabric.example.com"))
         let engine = try OfemEngine(
             configStore: store,
             paths: paths,
@@ -75,7 +75,6 @@ struct OfemEngineStandaloneTests {
 
 @Suite("OfemEngine — injected (shared-subsystem) init")
 struct OfemEngineInjectedTests {
-
     @Test("injected init reuses provided cache and telemetry instances")
     func injectedInitReusesSharedInstances() async throws {
         let (store, paths) = try makeTempConfigStore()
@@ -142,7 +141,6 @@ struct OfemEngineInjectedTests {
 
 @Suite("OfemEngine — start() idempotency")
 struct OfemEngineStartTests {
-
     @Test("start() is idempotent — calling twice does not double-start telemetry")
     func startIsIdempotent() async throws {
         let (store, paths) = try makeTempConfigStore()
@@ -158,7 +156,6 @@ struct OfemEngineStartTests {
 
 @Suite("OfemEngine — shutdown() tears down owned subsystems (engine-02)")
 struct OfemEngineShutdownTests {
-
     @Test("standalone shutdown flushes owned telemetry")
     func standaloneShutdownFlushesOwnedTelemetry() async throws {
         // Build a standalone engine with an injected noop telemetry sink
@@ -176,7 +173,6 @@ struct OfemEngineShutdownTests {
 
 @Suite("OfemEngine — SubsystemOwnership (engine-03)")
 struct OfemEngineOwnershipTests {
-
     @Test("standalone engine does not shut down a separately-held shared telemetry reference")
     func standaloneEngineDoesNotLeakShutdownToOtherClients() async throws {
         // Two standalone engines constructed from the same store/paths will each
@@ -201,7 +197,6 @@ struct OfemEngineOwnershipTests {
 
 @Suite("TokenProviderAdapter wiring (tests-02)")
 struct TokenProviderAdapterTests {
-
     @Test("engine wires a token provider into OneLakeClient and FabricClient (no crash)")
     func engineWiresTokenProvider() async throws {
         // This is a construction-only test — verifies that the private
@@ -223,8 +218,8 @@ struct TokenProviderAdapterTests {
             configStore: store,
             paths: paths,
             httpBaseURLs: (
-                oneLake: URL(string: "https://onelake.local")!,
-                fabric: URL(string: "https://fabric.local")!
+                oneLake: #require(URL(string: "https://onelake.local")),
+                fabric: #require(URL(string: "https://fabric.local"))
             )
         )
         await engine.shutdown()
@@ -235,7 +230,6 @@ struct TokenProviderAdapterTests {
 
 @Suite("OfemEngine — log-level wiring")
 struct OfemEngineLogLevelTests {
-
     @Test("engine honours log.level=debug from config")
     func engineHonoursDebugLogLevel() async throws {
         let (store, paths) = try makeTempConfigStore()
@@ -263,7 +257,6 @@ struct OfemEngineLogLevelTests {
 
 @Suite("OfemEngine — config snapshot read once (engine-01)")
 struct OfemEngineConfigSnapshotTests {
-
     @Test("standalone init uses a single consistent config snapshot")
     func standaloneInitUsesConsistentSnapshot() async throws {
         let (store, paths) = try makeTempConfigStore()
@@ -284,7 +277,6 @@ struct OfemEngineConfigSnapshotTests {
 
 @Suite("OfemEngine — Fabric URL constant (fp-01)")
 struct OfemEngineFabricURLTests {
-
     @Test("engine builds successfully without a fabric URL override (no force-unwrap crash)")
     func engineBuildsWithDefaultFabricURL() async throws {
         let (store, paths) = try makeTempConfigStore()
@@ -298,7 +290,6 @@ struct OfemEngineFabricURLTests {
 
 @Suite("OfemEngine — start/shutdown ordering (fpe-12)")
 struct OfemEngineStartShutdownOrderingTests {
-
     @Test("shutdown after immediate start does not deadlock or crash")
     func shutdownAfterImmediateStartCompletes() async throws {
         // Verifies that calling shutdown() very soon after start() does not
@@ -330,9 +321,8 @@ struct OfemEngineStartShutdownOrderingTests {
 
 @Suite("TelemetryClient — shutdownSharedSubsystems flushes final batch (fpe-14)")
 struct SharedSubsystemsTelemetryFlushTests {
-
     @Test("shutdown flushes events that were tracked before shutdown")
-    func shutdownFlushesFinalBatch() async throws {
+    func shutdownFlushesFinalBatch() async {
         let sink = MemoryTelemetrySink()
         let telemetry = TelemetryClient(
             sink: sink,
@@ -341,7 +331,7 @@ struct SharedSubsystemsTelemetryFlushTests {
             configuration: TelemetryConfiguration(
                 optOut: false,
                 maxBatchSize: 100,
-                flushInterval: .seconds(3600)   // no auto-flush during test
+                flushInterval: .seconds(3600) // no auto-flush during test
             )
         )
         await telemetry.start()

@@ -6,7 +6,6 @@ import OfemKit
 import XCTest
 
 final class FPEHelpersTests: XCTestCase {
-
     // MARK: - cacheKey (components variant)
 
     func testCacheKeyRoundTrip() {
@@ -67,5 +66,4 @@ final class FPEHelpersTests: XCTestCase {
     func testParentPathMultipleSegments() {
         XCTAssertEqual(parentPath(of: "a/b/c/d"), "a/b/c")
     }
-
 }

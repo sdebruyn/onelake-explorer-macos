@@ -11,7 +11,6 @@ import XCTest
 // MARK: - XPCAccountInfo round-trip
 
 final class XPCAccountInfoTests: XCTestCase {
-
     private func roundTrip(_ obj: XPCAccountInfo) throws -> XPCAccountInfo {
         let data = try NSKeyedArchiver.archivedData(
             withRootObject: obj,
@@ -72,7 +71,6 @@ final class XPCAccountInfoTests: XCTestCase {
 // MARK: - XPCEngineStatus round-trip
 
 final class XPCEngineStatusTests: XCTestCase {
-
     private func roundTrip(_ obj: XPCEngineStatus) throws -> XPCEngineStatus {
         let data = try NSKeyedArchiver.archivedData(
             withRootObject: obj,
@@ -147,12 +145,12 @@ final class XPCEngineStatusTests: XCTestCase {
         // The unarchiver is configured with requiresSecureCoding = true to match
         // the production XPC channel, which always operates in secure mode.
         let archiver = NSKeyedArchiver(requiringSecureCoding: true)
-        archiver.encode(Int64(0),   forKey: "cacheBytes")
-        archiver.encode(Int64(0),   forKey: "cacheMaxBytes")
-        archiver.encode(0,          forKey: "cacheMaxSizeGB")
-        archiver.encode(false,      forKey: "telemetryEnabled")
-        archiver.encode(0,          forKey: "netMaxUploads")
-        archiver.encode(0,          forKey: "netMaxDownloads")
+        archiver.encode(Int64(0), forKey: "cacheBytes")
+        archiver.encode(Int64(0), forKey: "cacheMaxBytes")
+        archiver.encode(0, forKey: "cacheMaxSizeGB")
+        archiver.encode(false, forKey: "telemetryEnabled")
+        archiver.encode(0, forKey: "netMaxUploads")
+        archiver.encode(0, forKey: "netMaxDownloads")
         archiver.encode("info" as NSString, forKey: "logLevel")
         archiver.encode([] as NSArray, forKey: "pausedWorkspaces")
         // "needsSignIn" intentionally omitted — simulates an older FPE archive.
@@ -160,7 +158,7 @@ final class XPCEngineStatusTests: XCTestCase {
         let data = archiver.encodedData
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
-        unarchiver.requiresSecureCoding = true  // matches production XPC security boundary
+        unarchiver.requiresSecureCoding = true // matches production XPC security boundary
         let decoded = XPCEngineStatus(coder: unarchiver)
         let status = try XCTUnwrap(decoded, "XPCEngineStatus(coder:) returned nil")
         XCTAssertFalse(status.needsSignIn,
@@ -234,19 +232,19 @@ final class XPCEngineStatusTests: XCTestCase {
         // NSKeyedArchiver lets us encode arbitrary key-value pairs, so we can
         // produce such an archive without a custom NSCoding subclass.
         let archiver = NSKeyedArchiver(requiringSecureCoding: true)
-        archiver.encode(Int64(0),   forKey: "cacheBytes")
-        archiver.encode(Int64(0),   forKey: "cacheMaxBytes")
-        archiver.encode(0,          forKey: "cacheMaxSizeGB")
-        archiver.encode(false,      forKey: "telemetryEnabled")
-        archiver.encode(0,          forKey: "netMaxUploads")
-        archiver.encode(0,          forKey: "netMaxDownloads")
+        archiver.encode(Int64(0), forKey: "cacheBytes")
+        archiver.encode(Int64(0), forKey: "cacheMaxBytes")
+        archiver.encode(0, forKey: "cacheMaxSizeGB")
+        archiver.encode(false, forKey: "telemetryEnabled")
+        archiver.encode(0, forKey: "netMaxUploads")
+        archiver.encode(0, forKey: "netMaxDownloads")
         // "logLevel" intentionally omitted to trigger the fallback.
         archiver.encode([] as NSArray, forKey: "pausedWorkspaces")
         archiver.finishEncoding()
         let data = archiver.encodedData
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
-        unarchiver.requiresSecureCoding = true  // matches production XPC security boundary
+        unarchiver.requiresSecureCoding = true // matches production XPC security boundary
         let decoded = XPCEngineStatus(coder: unarchiver)
         let status = try XCTUnwrap(decoded, "XPCEngineStatus(coder:) returned nil")
         XCTAssertEqual(status.logLevel, "info", "missing logLevel key must fall back to \"info\"")
@@ -273,21 +271,21 @@ final class XPCEngineStatusTests: XCTestCase {
         // produced by a FPE build that predates the materializedPollIntervalS field.
         // Uses NSKeyedArchiver directly — no subclassing of the final class needed.
         let archiver = NSKeyedArchiver(requiringSecureCoding: true)
-        archiver.encode(Int64(0),   forKey: "cacheBytes")
-        archiver.encode(Int64(0),   forKey: "cacheMaxBytes")
-        archiver.encode(0,          forKey: "cacheMaxSizeGB")
-        archiver.encode(false,      forKey: "telemetryEnabled")
-        archiver.encode(0,          forKey: "netMaxUploads")
-        archiver.encode(0,          forKey: "netMaxDownloads")
+        archiver.encode(Int64(0), forKey: "cacheBytes")
+        archiver.encode(Int64(0), forKey: "cacheMaxBytes")
+        archiver.encode(0, forKey: "cacheMaxSizeGB")
+        archiver.encode(false, forKey: "telemetryEnabled")
+        archiver.encode(0, forKey: "netMaxUploads")
+        archiver.encode(0, forKey: "netMaxDownloads")
         archiver.encode("info" as NSString, forKey: "logLevel")
         archiver.encode([] as NSArray, forKey: "pausedWorkspaces")
-        archiver.encode(false,      forKey: "needsSignIn")
+        archiver.encode(false, forKey: "needsSignIn")
         // "materializedPollIntervalS" intentionally omitted — simulates an older FPE archive.
         archiver.finishEncoding()
         let data = archiver.encodedData
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
-        unarchiver.requiresSecureCoding = true  // matches production XPC security boundary
+        unarchiver.requiresSecureCoding = true // matches production XPC security boundary
         let decoded = XPCEngineStatus(coder: unarchiver)
         let status = try XCTUnwrap(decoded, "XPCEngineStatus(coder:) returned nil")
         XCTAssertEqual(status.materializedPollIntervalS, 0,
@@ -302,7 +300,6 @@ final class XPCEngineStatusTests: XCTestCase {
 // MARK: - XPCPausedWorkspace round-trip
 
 final class XPCPausedWorkspaceTests: XCTestCase {
-
     private func roundTrip(_ obj: XPCPausedWorkspace) throws -> XPCPausedWorkspace {
         let data = try NSKeyedArchiver.archivedData(
             withRootObject: obj,

@@ -96,27 +96,27 @@ extension OneLakeError {
     ///   comment for the transient-outage tradeoff.
     static func from(_ error: any Error) -> OneLakeError {
         // Unwrap apiError wrapper to reach the sentinel first.
-        let resolved: any Error
-        if let httpErr = error as? HTTPClientError,
-           case let HTTPClientError.apiError(ae) = httpErr,
-           let sentinel = ae.sentinel {
-            resolved = sentinel
+        let resolved: any Error = if let httpErr = error as? HTTPClientError,
+                                     case let HTTPClientError.apiError(ae) = httpErr,
+                                     let sentinel = ae.sentinel
+        {
+            sentinel
         } else {
-            resolved = error
+            error
         }
 
         switch resolved {
-        case HTTPClientError.unauthorized:        return .unauthorized
-        case HTTPClientError.forbidden:           return .forbidden
-        case HTTPClientError.notFound:            return .notFound
-        case HTTPClientError.conflict:            return .conflict
-        case HTTPClientError.gone:                return .gone
-        case HTTPClientError.preconditionFailed:  return .preconditionFailed
-        case HTTPClientError.payloadTooLarge:     return .payloadTooLarge
+        case HTTPClientError.unauthorized: return .unauthorized
+        case HTTPClientError.forbidden: return .forbidden
+        case HTTPClientError.notFound: return .notFound
+        case HTTPClientError.conflict: return .conflict
+        case HTTPClientError.gone: return .gone
+        case HTTPClientError.preconditionFailed: return .preconditionFailed
+        case HTTPClientError.payloadTooLarge: return .payloadTooLarge
         case HTTPClientError.rangeNotSatisfiable: return .rangeNotSatisfiable
-        case HTTPClientError.throttled:           return .rateLimited
-        case HTTPClientError.cancelled:           return .cancelled
-        case is CancellationError:                return .cancelled
+        case HTTPClientError.throttled: return .rateLimited
+        case HTTPClientError.cancelled: return .cancelled
+        case is CancellationError: return .cancelled
         case HTTPClientError.tokenAcquisitionFailed:
             // onelake-01-fix-276: explicit arm for clarity. The old default path
             // already reached FPError.notAuthenticated via
