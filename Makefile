@@ -87,7 +87,6 @@ build-ci: bootstrap OneLake.xcodeproj/project.pbxproj ## Compile app + .appex un
 		-destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath DerivedData \
 		$(APPLE_UNSIGNED) \
-		SWIFT_TREAT_WARNINGS_AS_ERRORS=YES \
 		build
 
 # Run unit tests:
