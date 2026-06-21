@@ -353,7 +353,16 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
                 for record in updatedRecords {
                     do {
                         let di = try DomainItem.from(record: record)
-                        updatedItems.append(OfemFPEItem(from: di))
+                        let item = OfemFPEItem(from: di)
+                        // Defensive guard: a blank filename would cause
+                        // __FILEPROVIDER_BAD_ITEM_MISSING_FILENAME__ → SIGABRT.
+                        guard !item.filename.isEmpty else {
+                            Self.log.error(
+                                "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges — skipping empty-filename row (path=\(record.path, privacy: .public))"
+                            )
+                            continue
+                        }
+                        updatedItems.append(item)
                     } catch {
                         Self.log.error(
                             "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges — skipping un-decodable record: \(error.localizedDescription, privacy: .public)"
@@ -473,19 +482,55 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
             // List the root of a Fabric item (e.g. lakehouse root).
             let key = cacheKey(alias: alias, workspaceID: workspaceID, itemID: itemID, path: "")
             let records = try await engine.sync.enumerate(key: key)
-            return try records.map { record in
-                let di = try DomainItem.from(record: record)
-                return OfemFPEItem(from: di)
+            // Skip-and-continue on any bad row, matching the enumerateChanges
+            // policy. A hard throw here would abort the entire folder listing.
+            var items: [OfemFPEItem] = []
+            for record in records {
+                do {
+                    let di = try DomainItem.from(record: record)
+                    let item = OfemFPEItem(from: di)
+                    // Defensive guard: blank filename → FileProvider SIGABRT.
+                    guard !item.filename.isEmpty else {
+                        Self.log.error(
+                            "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.item) — skipping empty-filename row (path=\(record.path, privacy: .public))"
+                        )
+                        continue
+                    }
+                    items.append(item)
+                } catch {
+                    Self.log.error(
+                        "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.item) — skipping un-decodable record (path=\(record.path, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+                    )
+                }
             }
+            return items
 
         case let .path(workspaceID, itemID, path):
             // List a sub-path inside a Fabric item.
             let key = cacheKey(alias: alias, workspaceID: workspaceID, itemID: itemID, path: path)
             let records = try await engine.sync.enumerate(key: key)
-            return try records.map { record in
-                let di = try DomainItem.from(record: record)
-                return OfemFPEItem(from: di)
+            // Skip-and-continue on any bad row, matching the enumerateChanges
+            // policy. A hard throw here would abort the entire folder listing.
+            var items: [OfemFPEItem] = []
+            for record in records {
+                do {
+                    let di = try DomainItem.from(record: record)
+                    let item = OfemFPEItem(from: di)
+                    // Defensive guard: blank filename → FileProvider SIGABRT.
+                    guard !item.filename.isEmpty else {
+                        Self.log.error(
+                            "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.path) — skipping empty-filename row (path=\(record.path, privacy: .public))"
+                        )
+                        continue
+                    }
+                    items.append(item)
+                } catch {
+                    Self.log.error(
+                        "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.path) — skipping un-decodable record (path=\(record.path, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+                    )
+                }
             }
+            return items
         }
     }
 }
@@ -735,7 +780,16 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                 for record in updatedRecords {
                     do {
                         let di = try DomainItem.from(record: record)
-                        updatedItems.append(OfemFPEItem(from: di))
+                        let item = OfemFPEItem(from: di)
+                        // Defensive guard: a blank filename would cause
+                        // __FILEPROVIDER_BAD_ITEM_MISSING_FILENAME__ → SIGABRT.
+                        guard !item.filename.isEmpty else {
+                            Self.log.error(
+                                "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges — skipping empty-filename row (path=\(record.path, privacy: .public))"
+                            )
+                            continue
+                        }
+                        updatedItems.append(item)
                     } catch {
                         Self.log.error(
                             "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges — skipping un-decodable record: \(error.localizedDescription, privacy: .public)"

@@ -108,7 +108,11 @@ struct DomainItemTests {
         #expect(item.capabilities.contains(.addSubitems))
     }
 
-    @Test func recordRootPathIsItemIdentifier() throws {
+    @Test func recordRootPathThrows() {
+        // A real item-root row (path == "", real workspace/item GUIDs) must be
+        // rejected. The item-root container is produced by from(fabricItem:) /
+        // the .item enumerate branch — emitting it as a delta child produces
+        // filename == "" → FileProvider SIGABRT (fpe-18).
         let record = MetadataRecord(
             accountAlias: "work",
             workspaceID: "ws-1",
@@ -120,9 +124,9 @@ struct DomainItemTests {
             contentLength: 0,
             etag: ""
         )
-        let item = try DomainItem.from(record: record)
-        #expect(item.identifier == ItemIdentifier.item(workspaceID: "ws-1", itemID: "item-2"))
-        #expect(item.parentIdentifier == ItemIdentifier.workspace(workspaceID: "ws-1"))
+        #expect(throws: (any Error).self) {
+            try DomainItem.from(record: record)
+        }
     }
 
     @Test func recordWithEtagUsesNonEmptyContentVersion() throws {
@@ -806,16 +810,17 @@ struct DomainItemTests {
         #expect(item.parentIdentifier == expectedParent)
     }
 
-    @Test func fromRecordEmptyPathParentMatchesIdentifierDotParent() throws {
-        // path == "" → identifier is .item; parentIdentifier must be .workspace
+    @Test func fromRecordEmptyPathThrows() {
+        // path == "" with real GUIDs must be rejected (fpe-18). The item root is
+        // never an enumerable delta child — it is produced by from(fabricItem:).
         let record = MetadataRecord(
             accountAlias: "work", workspaceID: "ws-1", itemID: "item-2",
             path: "", parentPath: "", name: "Lakehouse",
             isDir: true, contentLength: 0, etag: ""
         )
-        let item = try DomainItem.from(record: record)
-        let expectedParent = item.identifier.parentIdentifier
-        #expect(item.parentIdentifier == expectedParent)
+        #expect(throws: (any Error).self) {
+            try DomainItem.from(record: record)
+        }
     }
 
     // MARK: - fp-05: capability presets
@@ -975,8 +980,10 @@ struct DomainItemTests {
         }
     }
 
-    /// Regression: normal item rows (path == "") must still map to .item / .workspace.
-    @Test func normalItemRowStillMapsToItemIdentifier() throws {
+    /// Regression: real item-root rows (path == "") are rejected (fpe-18).
+    @Test func normalItemRowWithEmptyPathThrows() {
+        // from(record:) is only the delta-child path; item-root containers are
+        // produced by from(fabricItem:) / the .item enumerate branch, never here.
         let record = MetadataRecord(
             accountAlias: "work",
             workspaceID: "ws-1",
@@ -986,9 +993,9 @@ struct DomainItemTests {
             name: "Lakehouse",
             isDir: true
         )
-        let item = try DomainItem.from(record: record)
-        #expect(item.identifier == ItemIdentifier.item(workspaceID: "ws-1", itemID: "item-2"))
-        #expect(item.parentIdentifier == ItemIdentifier.workspace(workspaceID: "ws-1"))
+        #expect(throws: (any Error).self) {
+            try DomainItem.from(record: record)
+        }
     }
 
     /// Regression: normal file/path rows must still map to .path.
@@ -1139,20 +1146,18 @@ struct DomainItemTests {
         #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
     }
 
-    @Test func itemRootPathIsReadOnly() throws {
-        // path == "" maps to .item identifier; no write access at item root level.
-        // (This path goes through the .item branch, not .path, so from(record:)
-        // returns an item — but it still uses computeCapabilities which returns readOnly
-        // for an empty/non-Lakehouse type at path "".)
+    @Test func itemRootPathThrows() {
+        // path == "" with real GUIDs must be rejected (fpe-18): from(record:) is
+        // only called for enumerable delta children; the item root container is
+        // produced by from(fabricItem:), never as a delta child.
         let record = MetadataRecord(
             accountAlias: "a", workspaceID: "ws", itemID: "it",
             path: "", parentPath: "", name: "MyLakehouse",
             isDir: true, itemType: "Lakehouse"
         )
-        let item = try DomainItem.from(record: record)
-        // The item root row uses computeCapabilities with path "".
-        // path "" is not "Files", "Tables", or under them → readOnly.
-        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+        #expect(throws: (any Error).self) {
+            try DomainItem.from(record: record)
+        }
     }
 
     @Test func lakehouseTypeCheckIsCaseInsensitive() throws {
@@ -1172,5 +1177,36 @@ struct DomainItemTests {
     @Test func capabilityPresetsManagedDirectory() {
         // managedDirectory must be exactly {.read, .enumerate, .addSubitems}.
         #expect(DomainItem.CapabilitySet.managedDirectory == [.read, .enumerate, .addSubitems])
+    }
+
+    // MARK: - fpe-18: item-root row rejection
+
+    @Test("Real item-root row (path empty, real GUIDs) throws FPError.invalidRecord")
+    func realItemRootRowThrowsInvalidRecord() {
+        // A real item-root row (path == "", non-virtual workspaceID / itemID) must
+        // be rejected. The item root is produced by from(fabricItem:), not emitted
+        // as a delta child. An empty-path row that reaches from(record:) would
+        // produce filename == "" → FileProvider SIGABRT (fpe-18).
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-real",
+            itemID: "item-real",
+            path: "",
+            parentPath: "",
+            name: "My Lakehouse",
+            isDir: true,
+            contentLength: 0,
+            etag: ""
+        )
+        do {
+            _ = try DomainItem.from(record: record)
+            Issue.record("Expected FPError.invalidRecord to be thrown")
+        } catch {
+            if case FPError.invalidRecord = error {
+                // correct — empty-path real rows are not enumerable items
+            } else {
+                Issue.record("Expected FPError.invalidRecord, got \(error)")
+            }
+        }
     }
 }

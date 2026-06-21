@@ -464,23 +464,48 @@ public actor SyncEngine {
         await batchDelete(deleteBatch, context: "refreshFolder delete")
 
         // Stamp parent row.
+        //
+        // Only write the parent row when something actually changed (or the row
+        // does not exist yet). An unconditional re-upsert on every poll bumps
+        // syncedAtNs even when diff.total == 0, which makes itemsChangedAfter
+        // return the parent row on every poll — producing phantom working-set
+        // deltas (fpe-18).
+        //
+        // Name for the item-root row (path == ""): baseName("") == "", which
+        // would produce an empty-filename cache row — a landmine even though
+        // DomainItem.from(record:) now rejects it. Use the itemID as a
+        // non-displayable but non-empty sentinel instead. This row is an internal
+        // freshness marker, never emitted as a delta item (fpe-18).
         let existingParent = try? await cache.fetch(key: key)
-        let existingParentLastAccessed = existingParent?.lastAccessedNs ?? nowNs
-        let parent = MetadataRecord(
-            accountAlias: key.accountAlias,
-            workspaceID: key.workspaceID,
-            itemID: key.itemID,
-            path: key.path,
-            parentPath: Enumerator.parentPath(key.path),
-            name: Enumerator.baseName(key.path),
-            isDir: true,
-            lastAccessedNs: existingParentLastAccessed == 0 ? nowNs : existingParentLastAccessed,
-            syncedAtNs: nowNs,
-            childrenSyncedAtNs: nowNs,
-            itemType: folderItemType
-        )
-        do { try await cache.upsert(parent) } catch {
-            Self.log.warning("refreshFolder: upsert parent failed err=\(error, privacy: .public)")
+        let needsWrite = existingParent == nil
+            || diff.total > 0
+            || existingParent?.childrenSyncedAtNs == 0
+            || existingParent?.itemType != folderItemType
+        if needsWrite {
+            let parentName: String
+            if let existing = existingParent, !existing.name.isEmpty {
+                parentName = existing.name
+            } else {
+                let computed = Enumerator.baseName(key.path)
+                parentName = computed.isEmpty ? key.itemID : computed
+            }
+            let existingParentLastAccessed = existingParent?.lastAccessedNs ?? nowNs
+            let parent = MetadataRecord(
+                accountAlias: key.accountAlias,
+                workspaceID: key.workspaceID,
+                itemID: key.itemID,
+                path: key.path,
+                parentPath: Enumerator.parentPath(key.path),
+                name: parentName,
+                isDir: true,
+                lastAccessedNs: existingParentLastAccessed == 0 ? nowNs : existingParentLastAccessed,
+                syncedAtNs: nowNs,
+                childrenSyncedAtNs: nowNs,
+                itemType: folderItemType
+            )
+            do { try await cache.upsert(parent) } catch {
+                Self.log.warning("refreshFolder: upsert parent failed err=\(error, privacy: .public)")
+            }
         }
 
         if diff.total > 0 {
