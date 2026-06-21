@@ -389,4 +389,207 @@ struct SyncEngineRefreshMaterializedTests {
         #expect(changed == false)
         #expect(ol.listPathCalls.isEmpty)
     }
+
+    // MARK: - Regression: phantom directory delta (#358)
+
+    /// Regression test for the ADLS Gen2 directory-lastModified phantom delta.
+    ///
+    /// ADLS Gen2 advances a directory's `lastModified` whenever any descendant
+    /// is written (e.g. a Delta table commit). Because directories carry an empty
+    /// etag and zero contentLength, `lastModifiedNs` was the only differing field
+    /// — causing `entryChanged` to return `true` on every poll even when the
+    /// directory's own child listing was unchanged. This produced a phantom
+    /// `diff.updated > 0`, which signalled `.workingSet` every cycle.
+    ///
+    /// After the fix: directory entries compare only `isDir`, `contentLength`,
+    /// `etag`, `name`, `parentPath`, and `itemType`; `lastModifiedNs` is skipped.
+    @Test("Directory with advanced lastModified but unchanged listing yields diff.updated == 0 and no syncedAt bump")
+    func directoryAdvancedLastModifiedYieldsNoDiff() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.folderKey
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+
+        // Seed a directory child with a known lastModified (T0).
+        let childPath = "delta_table"
+        let seededDir = MetadataRecord(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: childPath,
+            parentPath: key.path,
+            name: "delta_table",
+            isDir: true,
+            contentLength: 0,
+            etag: "",
+            lastModifiedNs: Int64(t0.timeIntervalSince1970 * 1_000_000_000)
+        )
+        // Seed the parent so refreshFolder can stamp it.
+        let syncedNs = Int64(Date().addingTimeInterval(-60).timeIntervalSince1970 * 1_000_000_000)
+        let parent = MetadataRecord(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: key.path,
+            parentPath: "",
+            name: "",
+            isDir: true,
+            childrenSyncedAtNs: syncedNs
+        )
+        try await store.upsert(parent)
+        try await store.upsert(seededDir)
+
+        let childKey = CacheKey(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: childPath
+        )
+        let rowBefore = try await store.fetch(key: childKey)
+        let syncedBefore = rowBefore.syncedAtNs
+
+        // Remote returns the SAME directory but with a LATER lastModified (T0 + 1 hour),
+        // simulating a descendant write (Delta table commit). Child listing is unchanged.
+        let t1 = t0.addingTimeInterval(3600)
+        ol.listPathResults.append(.success(ListResult(entries: [
+            PathEntry.directory(name: "delta_table", lastModified: t1),
+        ])))
+
+        let diff = try await engine.refreshMaterializedContainer(key: key)
+
+        // No phantom update: the advanced directory lastModified must not count as a change.
+        #expect(diff.updated == 0)
+        #expect(diff.added == 0)
+        #expect(diff.removed == 0)
+
+        // syncedAtNs must NOT be bumped for the unchanged directory child.
+        let rowAfter = try await store.fetch(key: childKey)
+        #expect(rowAfter.syncedAtNs == syncedBefore,
+                "syncedAtNs must not advance for an unchanged directory entry")
+    }
+
+    // MARK: - Regression: unchanged file does not bump syncedAtNs (#358)
+
+    /// Companion to the phantom-dir test: verifies that an unchanged FILE also
+    /// does not get its `syncedAtNs` bumped (conditional upsert is in effect).
+    @Test("Unchanged file does not bump syncedAtNs")
+    func unchangedFileDoesNotBumpSyncedAt() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.folderKey
+        // seedFolder seeds with contentLength: 0 and etag from the name tuple.
+        try await seedFolder(in: store, key: key, children: [("report.csv", "etag-stable")])
+
+        let childKey = CacheKey(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: "report.csv"
+        )
+        let rowBefore = try await store.fetch(key: childKey)
+        let syncedBefore = rowBefore.syncedAtNs
+
+        // Remote identical: size matches seeded contentLength (0), etag unchanged.
+        ol.listPathResults.append(.success(ListResult(entries: [
+            PathEntry.file(name: "report.csv", size: 0, eTag: "etag-stable"),
+        ])))
+
+        let diff = try await engine.refreshMaterializedContainer(key: key)
+        #expect(diff.updated == 0)
+        #expect(diff.added == 0)
+
+        let rowAfter = try await store.fetch(key: childKey)
+        #expect(rowAfter.syncedAtNs == syncedBefore,
+                "syncedAtNs must not advance for an unchanged file entry")
+    }
+
+    // MARK: - Regression: child add/remove still detected even with unchanged sibling dirs (#358)
+
+    /// Verifies that when a directory sibling is present unchanged (and therefore
+    /// not upserted), new file additions and removals in the same folder are still
+    /// correctly detected via the tombstone reconcile.
+    @Test("Child added or removed is detected when sibling directory is unchanged")
+    func childAddRemoveDetectedAlongsideUnchangedDir() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.folderKey
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        let syncedNs = Int64(Date().addingTimeInterval(-60).timeIntervalSince1970 * 1_000_000_000)
+
+        // Seed: parent + one unchanged directory + one file that will be removed.
+        let parentRow = MetadataRecord(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: key.path,
+            parentPath: "",
+            name: "",
+            isDir: true,
+            childrenSyncedAtNs: syncedNs
+        )
+        let dirRow = MetadataRecord(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: "subdir",
+            parentPath: key.path,
+            name: "subdir",
+            isDir: true,
+            contentLength: 0,
+            etag: "",
+            lastModifiedNs: Int64(t0.timeIntervalSince1970 * 1_000_000_000)
+        )
+        let goneRow = MetadataRecord(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: "gone.txt",
+            parentPath: key.path,
+            name: "gone.txt",
+            isDir: false,
+            contentLength: 0,
+            etag: "e-gone"
+        )
+        try await store.upsert(parentRow)
+        try await store.upsert(dirRow)
+        try await store.upsert(goneRow)
+
+        // Remote: subdir still present (same shape), gone.txt removed, new.txt added.
+        let t1 = t0.addingTimeInterval(3600)
+        ol.listPathResults.append(.success(ListResult(entries: [
+            PathEntry.directory(name: "subdir", lastModified: t1), // lastModified advanced, content unchanged
+            PathEntry.file(name: "new.txt", size: 0, eTag: "e-new"),
+        ])))
+
+        let diff = try await engine.refreshMaterializedContainer(key: key)
+
+        // new.txt was added, gone.txt was removed; subdir is unchanged.
+        #expect(diff.added == 1)
+        #expect(diff.removed == 1)
+        #expect(diff.updated == 0)
+
+        // gone.txt must be absent from the cache.
+        let goneKey = CacheKey(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: "gone.txt"
+        )
+        #expect((try? await store.fetch(key: goneKey)) == nil)
+
+        // subdir must still be in the cache (not tombstoned despite not being upserted).
+        let subdirKey = CacheKey(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: "subdir"
+        )
+        #expect((try? await store.fetch(key: subdirKey)) != nil)
+    }
 }

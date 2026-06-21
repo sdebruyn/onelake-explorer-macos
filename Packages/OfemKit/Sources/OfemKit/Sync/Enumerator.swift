@@ -105,11 +105,22 @@ enum Enumerator {
     /// (`DomainItem.computeCapabilities`), so an item whose type changes is a
     /// real capability-only drift that must surface as a diff and be flushed
     /// to Finder via the next working-set poll.
+    ///
+    /// `lastModifiedNs` is intentionally skipped for directory entries.
+    /// ADLS Gen2 advances a directory's `lastModified` timestamp whenever any
+    /// descendant is written (e.g. a Delta table commit), so this field changes
+    /// on every active-table poll even when the directory's own child listing is
+    /// completely unchanged. Directories carry an empty etag and zero
+    /// contentLength, making `lastModifiedNs` the only differing field in that
+    /// scenario — comparing it would produce a phantom `diff.updated > 0` every
+    /// cycle, causing the working-set to signal on every poll and pegging CPU.
+    /// Real directory-content changes are detected via child add / tombstone
+    /// reconciliation, not via the parent directory timestamp.
     static func entryChanged(current: MetadataRecord, next: MetadataRecord) -> Bool {
         current.isDir != next.isDir ||
             current.contentLength != next.contentLength ||
             current.etag != next.etag ||
-            current.lastModifiedNs != next.lastModifiedNs ||
+            (!current.isDir && current.lastModifiedNs != next.lastModifiedNs) ||
             current.name != next.name ||
             current.parentPath != next.parentPath ||
             current.itemType != next.itemType
