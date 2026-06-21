@@ -90,9 +90,8 @@ jobs:
         run: make gen
 
       - name: Run periphery dead-code scan
-        # strict: false in .periphery.yml — the gate is non-blocking for the
-        # initial baseline triage. Once findings are triaged and the baseline
-        # is clean, set strict: true to make it blocking.
+        # strict: true in .periphery.yml — any new finding fails the build.
+        # To intentionally keep a symbol, annotate it with // periphery:ignore.
         # build_arguments in .periphery.yml passes CODE_SIGNING_ALLOWED=NO
         # to xcodebuild so no signing identity is needed on CI runners.
         run: periphery scan --format xcode
