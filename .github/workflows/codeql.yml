@@ -3,9 +3,8 @@ name: CodeQL
 on:
   push:
     branches: [main]
-  schedule:
-    # Weekly on Monday at 08:00 UTC
-    - cron: "0 8 * * 1"
+  pull_request:
+    branches: [main]
 
 permissions:
   security-events: write
@@ -14,7 +13,7 @@ permissions:
 
 concurrency:
   group: codeql-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze:
@@ -84,8 +83,8 @@ jobs:
         # build-mode: manual ensures the tracer observes our explicit build
         # step rather than attempting autobuild, which is unreliable for
         # Xcode projects and produces "No source code was seen" errors.
-        # security-and-quality enables the full extended query suite so
-        # analysis on main and the weekly schedule catches deeper issues.
+        # security-and-quality enables the full extended query suite for
+        # deeper analysis on every PR and every push to main.
         uses: github/codeql-action/init@v3.36.2
         with:
           languages: swift
