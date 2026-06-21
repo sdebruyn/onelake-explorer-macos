@@ -87,10 +87,10 @@ jobs:
         # initial baseline triage. Once findings are triaged and the baseline
         # is clean, set strict: true (or flip --strict here) to make it blocking.
         #
-        # periphery builds the index store via xcodebuild internally, then
-        # analyses it. CODE_SIGNING_ALLOWED=NO avoids needing a signing identity.
+        # periphery builds the index store via xcodebuild internally. Arguments
+        # after '--' are forwarded to xcodebuild; CODE_SIGNING_ALLOWED=NO avoids
+        # needing a signing identity on CI runners.
         run: |
           periphery scan \
-            --skip-build false \
-            --xcodebuild-arguments CODE_SIGNING_ALLOWED=NO,CODE_SIGNING_REQUIRED=NO \
-            --format xcode
+            --format xcode \
+            -- CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO

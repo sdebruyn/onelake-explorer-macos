@@ -15,10 +15,6 @@ targets:
   - OneLake
   - OneLakeFileProvider
 
-# ── Index store ──────────────────────────────────────────────────────────────
-
-index_store_path: DerivedData/Build/Products/Debug/index/store
-
 # ── Exclusions ────────────────────────────────────────────────────────────────
 
 # Exclude generated sources, build artefacts, and vendored dependencies.
