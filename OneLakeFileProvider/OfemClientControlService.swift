@@ -185,6 +185,7 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate, @u
         // the cast is guaranteed to succeed because all elements are ObjC class metatypes
         // which bridge to AnyHashable via NSObjectProtocol.
         let classArray: [AnyObject] = [XPCEngineStatus.self, NSArray.self, XPCPausedWorkspace.self]
+        // swiftlint:disable:next force_cast
         let replyClasses = NSSet(array: classArray) as! Set<AnyHashable> // safe: AnyObject metatypes
         iface.setClasses(
             replyClasses,

@@ -62,6 +62,12 @@ settings:
     # Release builds override these via the xcodebuild command line.
     MARKETING_VERSION: "0.0.0-dev"
     CURRENT_PROJECT_VERSION: "0"
+    # Treat Swift compiler warnings as errors for all first-party targets
+    # (app, FPE, test bundles). Applied here — not via the xcodebuild
+    # command line — so the setting scopes only to the project's own targets
+    # and does not propagate to Swift Package dependencies (TOMLKit, GRDB,
+    # MSAL, Alamofire), which use -suppress-warnings and would conflict.
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
   configs:
     Debug:
       # ONLY_ACTIVE_ARCH is Debug-only: faster local incremental builds.

@@ -52,7 +52,8 @@ actor PauseManager {
     /// is paused. Used only when no `errorCode` field is present in the body
     /// (sync-17: prose matching is locale- and wording-fragile; the stable
     /// `errorCode` above is always checked first).
-    private static let pausedCapacityPattern = try! NSRegularExpression(
+    // swiftlint:disable:next force_try
+    private static let pausedCapacityPattern = try! NSRegularExpression( // safe: literal pattern, never fails
         pattern: #"(?i)(capacity\s+not\s+active|capacity\s+is\s+not\s+active|fabric\s+capacity\s+is\s+(currently\s+)?paused|capacity\s+is\s+(currently\s+)?paused|capacity\s+suspended|capacity\s+has\s+been\s+paused|capacity\s+\S+\s+is\s+currently\s+not\s+available|capacity\s+is\s+(currently\s+)?not\s+available)"#,
         options: []
     )

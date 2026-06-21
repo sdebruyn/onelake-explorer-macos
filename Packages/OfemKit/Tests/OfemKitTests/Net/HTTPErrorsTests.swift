@@ -98,22 +98,22 @@ struct APIErrorTests {
     // MARK: - description: body present, single attempt
 
     @Test("description with body and one attempt omits attempt suffix")
-    func descriptionBodyNoAttemptSuffix() throws {
+    func descriptionBodyNoAttemptSuffix() {
         let err = APIError(
             statusCode: 404,
             status: "404 Not Found",
-            body: try #require("resource missing".data(using: .utf8)),
+            body: Data("resource missing".utf8),
             attempts: 1
         )
         #expect(err.description == "HTTP 404 Not Found: resource missing")
     }
 
     @Test("description with body and multiple attempts includes attempt suffix")
-    func descriptionBodyWithAttemptSuffix() throws {
+    func descriptionBodyWithAttemptSuffix() {
         let err = APIError(
             statusCode: 503,
             status: "503 Service Unavailable",
-            body: try #require("overloaded".data(using: .utf8)),
+            body: Data("overloaded".utf8),
             attempts: 3
         )
         #expect(err.description == "HTTP 503 Service Unavailable after 3 attempts: overloaded")
@@ -164,22 +164,22 @@ struct APIErrorTests {
     // MARK: - description: whitespace trimming
 
     @Test("description trims leading/trailing whitespace from body")
-    func descriptionTrimsWhitespace() throws {
+    func descriptionTrimsWhitespace() {
         let err = APIError(
             statusCode: 422,
             status: "422 Unprocessable Entity",
-            body: try #require("  trimmed  ".data(using: .utf8)),
+            body: Data("  trimmed  ".utf8),
             attempts: 1
         )
         #expect(err.description == "HTTP 422 Unprocessable Entity: trimmed")
     }
 
     @Test("description treats whitespace-only body as empty (no body segment)")
-    func descriptionWhitespaceOnlyBody() throws {
+    func descriptionWhitespaceOnlyBody() {
         let err = APIError(
             statusCode: 503,
             status: "503 Service Unavailable",
-            body: try #require("   \n\t  ".data(using: .utf8)),
+            body: Data("   \n\t  ".utf8),
             attempts: 1
         )
         #expect(err.description == "HTTP 503 Service Unavailable")
@@ -245,7 +245,7 @@ struct APIErrorTests {
 
     @Test("APIError stores all provided fields")
     func storedFields() {
-        let body = "body text".data(using: .utf8)!
+        let body = Data("body text".utf8)
         let err = APIError(
             statusCode: 503,
             status: "503 Service Unavailable",

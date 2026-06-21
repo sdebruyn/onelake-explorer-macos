@@ -1,0 +1,34 @@
+name: SwiftLint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swiftlint-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  swiftlint:
+    name: SwiftLint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Lint Swift sources
+        # ghcr.io/realm/swiftlint is a versioned Ubuntu runtime image with
+        # ENTRYPOINT ["/usr/bin/swiftlint"]. Running via docker run (not
+        # job container:) avoids the need for a shell in the image and
+        # matches the approach used by the SwiftFormat job.
+        # --quiet: report violations but keep exit code 0 for warnings;
+        # only error-level violations (and rule violations configured as
+        # errors in .swiftlint.yml) cause a non-zero exit.
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/src" -w /src \
+            ghcr.io/realm/swiftlint:0.63.3 lint --quiet
