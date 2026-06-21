@@ -190,6 +190,16 @@ jobs:
           disable_search: true
           fail_ci_if_error: false
 
+      - name: Verify index store exists
+        # Fail fast with a clear message if Xcode changes its DerivedData layout
+        # in a future version, rather than surfacing a cryptic periphery error.
+        run: |
+          test -d DerivedData/Index.noindex/DataStore || {
+            echo "ERROR: index store not found at DerivedData/Index.noindex/DataStore" >&2
+            echo "       Did build-for-testing run with -derivedDataPath DerivedData?" >&2
+            exit 1
+          }
+
       - name: Dead-code scan (periphery, no rebuild)
         # --skip-build reuses the index store written by the build-for-testing
         # step above (DerivedData/Index.noindex/DataStore). No second compile.
