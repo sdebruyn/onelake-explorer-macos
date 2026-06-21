@@ -1,23 +1,28 @@
 # Periphery configuration for OFEM (OneLake Explorer for macOS)
 # Tool: peripheryapp/periphery 3.7.4
 #
-# Periphery analyses the Xcode project and the OfemKit SPM package together.
-# The OneLake scheme builds all first-party targets (OneLake, OneLakeFileProvider,
-# Shared, and OfemKit via package dependency), giving periphery full visibility
-# into cross-target symbol usage.
+# Periphery analyses the Xcode project via the OneLake scheme, which builds
+# all first-party targets (OneLake, OneLakeFileProvider, Shared, and OfemKit
+# via package dependency), giving periphery full visibility into cross-target
+# symbol usage.
 
 # ── Project ───────────────────────────────────────────────────────────────────
 
 project: OneLake.xcodeproj
 schemes:
   - OneLake
-targets:
-  - OneLake
-  - OneLakeFileProvider
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+
+# Pass code-signing overrides to xcodebuild so CI runners without a
+# Developer ID certificate can still build the index store.
+build_arguments:
+  - CODE_SIGNING_ALLOWED=NO
+  - CODE_SIGNING_REQUIRED=NO
 
 # ── Exclusions ────────────────────────────────────────────────────────────────
 
-# Exclude generated sources, build artefacts, and vendored dependencies.
+# Exclude test targets: test-only symbols are not dead code by definition.
 exclude_tests: true
 exclude_targets:
   - OneLakeHostTests
@@ -29,12 +34,10 @@ exclude_targets:
 # the Objective-C runtime / NSXPCConnection and are not statically visible.
 retain_objc_accessible: true
 
-# Retain public declarations — OfemKit is a local package but its public API
-# is consumed by both app and FPE targets; periphery would otherwise flag
-# unused-across-this-scheme public symbols as dead.
+# Do not retain all public declarations unconditionally — OfemKit is a local
+# package and its public API must be verified as actually used.
 retain_public: false
 
 # Report unused code as warnings (exit 0) rather than errors (exit 1).
 # Promoted to strict (exit 1) after the initial triage baseline is clean.
-# Set to true to make the gate blocking.
 strict: false

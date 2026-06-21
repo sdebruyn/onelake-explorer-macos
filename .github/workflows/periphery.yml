@@ -21,22 +21,29 @@ jobs:
     # libIndexStore.dylib. Running on macOS with Homebrew install is the
     # supported path — the release binary does not bundle the Xcode-provided
     # dylib and would require manual rpath/DYLD_LIBRARY_PATH configuration.
+    #
+    # periphery 3.7.4 requires Swift >= 6.1.2, which ships with Xcode 16.4.
+    # The macos-15 runner's default Xcode is 16.4 (Swift 6.1.2), so no
+    # DEVELOPER_DIR override is needed here. The CI build job pins Xcode 16.3;
+    # periphery only needs to build an index store for analysis, not produce
+    # a release-quality binary, so a different Xcode version is acceptable.
     runs-on: macos-15
     timeout-minutes: 30
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v7.0.0
 
-      - name: Assert Xcode 16.3 is present
+      - name: Assert Xcode 16.4 and Swift 6.1.2 are present
+        # periphery 3.7.4 requires Swift >= 6.1.2 (Xcode 16.4). Fail fast
+        # if the runner image no longer ships the required Xcode version.
         run: |
           set -euo pipefail
-          if [ ! -d /Applications/Xcode_16.3.app ]; then
-            echo "ERROR: Xcode_16.3.app not found at /Applications/Xcode_16.3.app" >&2
+          if [ ! -d /Applications/Xcode_16.4.app ]; then
+            echo "ERROR: Xcode_16.4.app not found" >&2
             ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
             exit 1
           fi
           xcodebuild -version
+          swift --version
 
       - name: Cache Homebrew downloads
         uses: actions/cache@v5.0.5
@@ -85,12 +92,7 @@ jobs:
       - name: Run periphery dead-code scan
         # strict: false in .periphery.yml — the gate is non-blocking for the
         # initial baseline triage. Once findings are triaged and the baseline
-        # is clean, set strict: true (or flip --strict here) to make it blocking.
-        #
-        # periphery builds the index store via xcodebuild internally. Arguments
-        # after '--' are forwarded to xcodebuild; CODE_SIGNING_ALLOWED=NO avoids
-        # needing a signing identity on CI runners.
-        run: |
-          periphery scan \
-            --format xcode \
-            -- CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+        # is clean, set strict: true to make it blocking.
+        # build_arguments in .periphery.yml passes CODE_SIGNING_ALLOWED=NO
+        # to xcodebuild so no signing identity is needed on CI runners.
+        run: periphery scan --format xcode
