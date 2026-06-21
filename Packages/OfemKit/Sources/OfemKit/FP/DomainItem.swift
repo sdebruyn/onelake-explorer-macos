@@ -24,7 +24,26 @@ import UniformTypeIdentifiers
 ///
 /// Capabilities are expressed as a `Set<Capability>` so the FPE can map them
 /// directly to `NSFileProviderItemCapabilities` without string matching.
+///
+/// ## Equatable
+///
+/// `==` compares the structural fields that define a unique item —
+/// `identifier`, `parentIdentifier`, `filename`, `isDirectory`, `size`,
+/// `contentType`, `contentVersion`, `metadataVersion`, and `capabilities`.
+/// Timestamps (`creationDate`, `modificationDate`) are excluded: they change
+/// on every sync poll and must not affect identity.
 public struct DomainItem: Sendable, Equatable {
+    public static func == (lhs: DomainItem, rhs: DomainItem) -> Bool {
+        lhs.identifier == rhs.identifier
+            && lhs.parentIdentifier == rhs.parentIdentifier
+            && lhs.filename == rhs.filename
+            && lhs.isDirectory == rhs.isDirectory
+            && lhs.size == rhs.size
+            && lhs.contentType == rhs.contentType
+            && lhs.contentVersion == rhs.contentVersion
+            && lhs.metadataVersion == rhs.metadataVersion
+            && lhs.capabilities == rhs.capabilities
+    }
     // MARK: - Capability
 
     /// The set of operations the FPE may perform on an item.
@@ -128,6 +147,9 @@ public struct DomainItem: Sendable, Equatable {
     /// MIME type (e.g. `"text/csv"`). Empty when unknown.
     public let contentType: String
 
+    /// Remote creation date. `nil` when unknown.
+    public let creationDate: Date?
+
     /// Remote last-modification date. `nil` when unknown.
     public let modificationDate: Date?
 
@@ -149,6 +171,7 @@ public struct DomainItem: Sendable, Equatable {
         isDirectory: Bool,
         size: Int64 = 0,
         contentType: String = "",
+        creationDate: Date? = nil,
         modificationDate: Date? = nil,
         contentVersion: Data,
         metadataVersion: Data,
@@ -160,6 +183,7 @@ public struct DomainItem: Sendable, Equatable {
         self.isDirectory = isDirectory
         self.size = size
         self.contentType = contentType
+        self.creationDate = creationDate
         self.modificationDate = modificationDate
         self.contentVersion = contentVersion
         self.metadataVersion = metadataVersion
@@ -188,12 +212,17 @@ public extension DomainItem {
     // MARK: From Workspace
 
     /// Builds a `DomainItem` from a ``Workspace`` returned by the Fabric API.
-    static func from(workspace: Workspace) -> DomainItem {
+    ///
+    /// `syncedAt` is used as the modification date because the Fabric workspace
+    /// list API does not return a last-modified timestamp. Passing a non-nil date
+    /// prevents Finder from displaying 1 Jan 1970.
+    static func from(workspace: Workspace, syncedAt: Date = Date()) -> DomainItem {
         DomainItem(
             identifier: .workspace(workspaceID: workspace.id),
             parentIdentifier: .root,
             filename: workspace.displayName,
             isDirectory: true,
+            modificationDate: syncedAt,
             contentVersion: ContentVersion.fallback(seed: workspace.id, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: workspace.displayName, size: 0, mtime: nil),
             capabilities: CapabilitySet.readOnly
@@ -203,12 +232,17 @@ public extension DomainItem {
     // MARK: From Fabric Item
 
     /// Builds a `DomainItem` from a ``Item`` (Fabric item) returned by the Fabric API.
-    static func from(fabricItem: Item, workspaceID: String) -> DomainItem {
+    ///
+    /// `syncedAt` is used as the modification date because the Fabric item list
+    /// API does not return a last-modified timestamp. Passing a non-nil date
+    /// prevents Finder from displaying 1 Jan 1970.
+    static func from(fabricItem: Item, workspaceID: String, syncedAt: Date = Date()) -> DomainItem {
         DomainItem(
             identifier: .item(workspaceID: workspaceID, itemID: fabricItem.id),
             parentIdentifier: .workspace(workspaceID: workspaceID),
             filename: fabricItem.displayName,
             isDirectory: true,
+            modificationDate: syncedAt,
             contentVersion: ContentVersion.fallback(seed: fabricItem.id, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: fabricItem.displayName, size: 0, mtime: nil),
             capabilities: CapabilitySet.readOnly
@@ -285,6 +319,7 @@ public extension DomainItem {
             isDirectory: record.isDir,
             size: record.contentLength,
             contentType: mimeType,
+            creationDate: record.created,
             modificationDate: record.lastModified,
             contentVersion: ContentVersion.content(for: record),
             metadataVersion: ContentVersion.metadata(for: record),
@@ -340,11 +375,14 @@ public extension DomainItem {
         } else {
             ""
         }
+        let now = Date()
         return DomainItem(
             identifier: identifier,
             parentIdentifier: parentIdentifier,
             filename: name,
             isDirectory: isDirectory,
+            creationDate: now,
+            modificationDate: now,
             contentVersion: ContentVersion.fallback(seed: name, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: name, size: 0, mtime: nil),
             capabilities: computeCapabilities(isDir: isDirectory, path: path, itemType: itemType)

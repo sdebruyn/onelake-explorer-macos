@@ -13,6 +13,7 @@ import GRDB
 ///   `path LIKE 'prefix/%'` subtree queries in `delete(key:)` / `batchDelete`.
 /// - `v3` — adds `item_type` column to `path_metadata`.
 /// - `v4` — adds `materialized_containers` table and `idx_mc_alias` index.
+/// - `v5` — adds `created_ns` column to `path_metadata` for creation timestamps.
 ///
 /// Key indexes:
 /// - `idx_pm_synced_at`: composite on `(account_alias, synced_at_ns)` used
@@ -156,6 +157,16 @@ public enum CacheSchema {
                 materialized_at_ns  INTEGER NOT NULL,
                 PRIMARY KEY (account_alias, identifier_string)
             );
+            """)
+        }
+
+        // v5: add created_ns to persist the DFS creationTime (FILETIME-derived Unix
+        // nanoseconds) for every path. Zero means "not known". Sourced from the
+        // ADLS Gen2 DFS list response's `creationTime` field (100ns ticks since 1601).
+        m.registerMigration("v5") { db in
+            try db.execute(sql: """
+            ALTER TABLE path_metadata
+                ADD COLUMN created_ns INTEGER NOT NULL DEFAULT 0;
             """)
         }
 

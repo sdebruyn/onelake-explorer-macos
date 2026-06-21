@@ -58,6 +58,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         public static let syncedAtNs = Column("synced_at_ns")
         public static let childrenSyncedAtNs = Column("children_synced_at_ns")
         public static let itemType = Column("item_type")
+        public static let createdNs = Column("created_ns")
     }
 
     // MARK: Fields
@@ -117,11 +118,19 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
     /// An empty value is treated as read-only by `DomainItem.computeCapabilities`.
     public var itemType: String
 
+    /// Remote creation timestamp as Unix nanoseconds. Zero = unknown.
+    public var createdNs: Int64
+
     // MARK: Computed helpers
 
     /// `lastModifiedNs` as a `Date`. `nil` when zero.
     public var lastModified: Date? {
         nsToDate(lastModifiedNs)
+    }
+
+    /// `createdNs` as a `Date`. `nil` when zero.
+    public var created: Date? {
+        nsToDate(createdNs)
     }
 
     // periphery:ignore
@@ -161,7 +170,8 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         lastAccessedNs: Int64 = 0,
         syncedAtNs: Int64 = 0,
         childrenSyncedAtNs: Int64 = 0,
-        itemType: String = ""
+        itemType: String = "",
+        createdNs: Int64 = 0
     ) {
         self.accountAlias = accountAlias
         self.workspaceID = workspaceID
@@ -180,6 +190,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         self.syncedAtNs = syncedAtNs
         self.childrenSyncedAtNs = childrenSyncedAtNs
         self.itemType = itemType
+        self.createdNs = createdNs
     }
 
     // MARK: FetchableRecord
@@ -202,6 +213,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         syncedAtNs = row[Columns.syncedAtNs]
         childrenSyncedAtNs = row[Columns.childrenSyncedAtNs]
         itemType = row[Columns.itemType] ?? ""
+        createdNs = row[Columns.createdNs] ?? 0
     }
 
     // MARK: PersistableRecord
@@ -224,6 +236,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         container[Columns.syncedAtNs] = syncedAtNs
         container[Columns.childrenSyncedAtNs] = childrenSyncedAtNs
         container[Columns.itemType] = itemType
+        container[Columns.createdNs] = createdNs
     }
 }
 
@@ -424,7 +437,12 @@ func nsToDate(_ ns: Int64) -> Date? {
 }
 
 /// Converts a `Date` to Unix nanoseconds. Returns `0` for `nil` (= "unset").
+///
+/// Out-of-range dates (e.g. `.distantPast`, `.distantFuture`) are clamped to `0`
+/// so that a container carrying `.distantPast` never causes an `Int64` overflow trap.
 func dateToNs(_ date: Date?) -> Int64 {
     guard let d = date else { return 0 }
-    return Int64(d.timeIntervalSince1970 * 1_000_000_000)
+    let ns = d.timeIntervalSince1970 * 1_000_000_000
+    guard ns >= Double(Int64.min), ns <= Double(Int64.max) else { return 0 }
+    return Int64(ns)
 }
