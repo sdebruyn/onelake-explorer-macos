@@ -483,28 +483,6 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         // With two accounts where only one needs sign-in, the status labels must
         // be independent: the auth-error alias shows "Sign-in required" while the
         // healthy alias shows "Running".
-        let statusNeedsSignIn = XPCEngineStatus(
-            cacheBytes: 0,
-            cacheMaxBytes: 0,
-            cacheMaxSizeGB: 0,
-            telemetryEnabled: true,
-            netMaxUploads: 1,
-            netMaxDownloads: 1,
-            logLevel: "info",
-            pausedWorkspaces: [],
-            needsSignIn: true
-        )
-        let statusHealthy = XPCEngineStatus(
-            cacheBytes: 0,
-            cacheMaxBytes: 0,
-            cacheMaxSizeGB: 0,
-            telemetryEnabled: true,
-            netMaxUploads: 1,
-            netMaxDownloads: 1,
-            logLevel: "info",
-            pausedWorkspaces: [],
-            needsSignIn: false
-        )
 
         // Use a custom EngineStatusProvider that returns per-alias status.
         @MainActor
