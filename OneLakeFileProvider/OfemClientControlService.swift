@@ -101,6 +101,7 @@ final class OfemClientControlService: NSObject, NSFileProviderServiceSource, @un
     // Protected by listenerLock so makeListenerEndpoint is safe to call from any thread.
     private let listenerLock = NSLock()
     private var listener: NSXPCListener?
+    // periphery:ignore - NSXPCListener.delegate is weak; this var is the strong retain anchor
     private var listenerDelegate: OfemXPCListenerDelegate?
 
     init(engineHost: any EngineProviding) {

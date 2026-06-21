@@ -53,6 +53,7 @@ public actor OfemEngine {
     // MARK: - Public subsystems
 
     /// Authentication facade (token acquisition, account management).
+    // periphery:ignore
     public nonisolated let auth: OfemAuth
 
     /// Metadata + blob cache (process-wide shared instance, arch-04).
@@ -71,6 +72,7 @@ public actor OfemEngine {
     ///
     /// Exposed so callers can invalidate sessions for a specific alias after an
     /// account is removed, ensuring no stale session reuses a purged token.
+    // periphery:ignore
     public nonisolated let sessionPool: SessionPool
 
     // MARK: - Private state

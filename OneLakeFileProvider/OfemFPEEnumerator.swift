@@ -117,6 +117,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
         category: "fpe-enumerator"
     )
 
+    // periphery:ignore - stored to satisfy NSFileProviderEnumerator context; not read back
     let containerItemIdentifier: NSFileProviderItemIdentifier
     let identifier: ItemIdentifier // OfemKit-typed
     let alias: String

@@ -1202,6 +1202,7 @@ public actor SyncEngine {
 
     /// A present cached listing: the parent directory row plus its children.
     private struct CachedListing {
+        // periphery:ignore - accessed via .isDir and Enumerator.childrenEnumerated in cachedListingIfPresent
         let parent: MetadataRecord
         let children: [MetadataRecord]
     }

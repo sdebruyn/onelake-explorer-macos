@@ -13,6 +13,8 @@ import Foundation
 
 // MARK: - Envelope (top-level)
 
+// periphery:ignore - all properties below are serialised by JSONEncoder; the Encodable synthesis
+// accesses them via CodingKeys, which is invisible to static analysis.
 struct AppInsightsEnvelope: Encodable {
     let name: String
     let time: String
@@ -27,6 +29,7 @@ struct AppInsightsEnvelope: Encodable {
 
 // MARK: - Data wrapper
 
+// periphery:ignore - Encodable; properties serialised by JSONEncoder
 struct EnvelopeData: Encodable {
     let baseType: String
     let baseData: EventBaseData
@@ -34,6 +37,7 @@ struct EnvelopeData: Encodable {
 
 // MARK: - Event payload
 
+// periphery:ignore - Encodable; properties serialised by JSONEncoder
 struct EventBaseData: Encodable {
     let ver: Int
     let name: String

@@ -9,12 +9,16 @@ public struct Workspace: Sendable, Equatable {
     /// User-visible workspace name.
     public let displayName: String
     /// Workspace type string (e.g. `"Workspace"`, `"PersonalWorkspace"`).
+    // periphery:ignore
     public let type: String
     /// Optional workspace description.
+    // periphery:ignore
     public let description: String
     /// Capacity ID the workspace is assigned to; empty when not assigned.
+    // periphery:ignore
     public let capacityID: String
     /// Domain ID the workspace belongs to; empty when not set.
+    // periphery:ignore
     public let domainID: String
 
     public init(
@@ -45,10 +49,13 @@ public struct Item: Sendable, Equatable {
     /// Item type string (e.g. `"Lakehouse"`, `"Notebook"`).
     public let type: String
     /// Optional item description.
+    // periphery:ignore
     public let description: String
     /// The workspace this item belongs to.
+    // periphery:ignore
     public let workspaceID: String
     /// Optional workspace-folder ID this item is placed in.
+    // periphery:ignore
     public let parentFolderID: String
 
     public init(
@@ -103,7 +110,6 @@ public struct Item: Sendable, Equatable {
 
 // MARK: - Folder
 
-// periphery:ignore
 /// A Fabric workspace-folder — the workspace-level organisational container
 /// that groups items. Distinct from item-internal folders served by the DFS API.
 public struct Folder: Sendable, Equatable {

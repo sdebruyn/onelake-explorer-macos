@@ -228,6 +228,7 @@ public final class FabricClient: Sendable {
     /// - alias: Account alias.
     /// - workspaceID: The workspace to query. Must not be empty.
     /// - Throws: ``FabricError/missingArgument(_:)`` when `workspaceID` is empty.
+    // periphery:ignore
     public func listAllFolders(alias: String, workspaceID: String) async throws -> [Folder] {
         guard !workspaceID.isEmpty else {
             throw FabricError.missingArgument("workspaceID required")

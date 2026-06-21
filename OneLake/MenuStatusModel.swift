@@ -507,6 +507,7 @@ final class MenuStatusModel: ObservableObject {
         lastActionError = "Extension version mismatch (host v\(hostVersion), extension v\(fpeVersion)). Restart the app after updating."
     }
 
+    // periphery:ignore
     /// Clears `lastActionError`. Used in tests to reset state between test cases.
     func clearLastActionError() {
         lastActionError = nil

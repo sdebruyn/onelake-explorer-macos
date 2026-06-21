@@ -18,6 +18,7 @@ public protocol FabricClientProtocol: Sendable {
     func listAllItems(alias: String, workspaceID: String) async throws -> [Item]
 
     /// Returns all workspace-level folders in a workspace.
+    // periphery:ignore
     func listAllFolders(alias: String, workspaceID: String) async throws -> [Folder]
 }
 

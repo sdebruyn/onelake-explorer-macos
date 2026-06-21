@@ -86,6 +86,7 @@ public struct APIError: Sendable, CustomStringConvertible {
     public let body: Data
 
     /// Parsed `Retry-After` delay; zero if the header was absent or unparseable.
+    // periphery:ignore
     public let retryAfter: Duration
 
     /// Number of attempts made before this error was surfaced.

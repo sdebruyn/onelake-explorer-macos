@@ -53,9 +53,11 @@ public actor CacheStore {
     // MARK: - Public state
 
     /// The root directory passed at construction time.
+    // periphery:ignore
     public nonisolated let root: URL
 
     /// The blob root directory (`<root>/blobs`).
+    // periphery:ignore
     public nonisolated let blobRoot: URL
 
     // MARK: - Initialiser
@@ -1140,6 +1142,7 @@ func validateKey(_ key: CacheKey) throws {
 ///
 /// Exposed at module scope so test helpers can reference it by name without
 /// duplicating the conversion formula.
+// periphery:ignore
 func wallClockNs() -> Int64 {
     Int64(Date().timeIntervalSince1970 * 1_000_000_000)
 }

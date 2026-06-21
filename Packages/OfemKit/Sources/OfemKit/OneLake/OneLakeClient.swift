@@ -290,6 +290,7 @@ public final class OneLakeClient: Sendable {
     /// metadata payloads). For large files use
     /// ``read(alias:workspaceGUID:itemGUID:path:range:ifMatch:destination:)``
     /// to avoid buffering the entire response in memory.
+    // periphery:ignore
     public func read(
         alias: String,
         workspaceGUID: String,
@@ -375,6 +376,7 @@ public final class OneLakeClient: Sendable {
     /// - Parameters:
     /// - content: The bytes to upload.
     /// - size: Must equal `content.count` (onelake-09: validated).
+    // periphery:ignore
     public func write(
         alias: String,
         workspaceGUID: String,

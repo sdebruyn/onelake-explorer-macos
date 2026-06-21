@@ -49,11 +49,13 @@ public protocol TokenProvider: Sendable {
     /// Forces a token refresh (discards any cached token) and returns a fresh one.
     ///
     /// The default implementation delegates to `token(alias:scope:)`.
+    // periphery:ignore
     func refreshedToken(alias: String, scope: TokenScope) async throws -> String
 }
 
 public extension TokenProvider {
     /// Default: delegates to `token(alias:scope:)`.
+    // periphery:ignore
     func refreshedToken(alias: String, scope: TokenScope) async throws -> String {
         try await token(alias: alias, scope: scope)
     }

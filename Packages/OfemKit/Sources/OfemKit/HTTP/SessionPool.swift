@@ -19,6 +19,7 @@ public actor SessionPool {
 
     struct Key: Hashable {
         let alias: String
+        // periphery:ignore - Hashable field; used as part of Key's Hashable/Equatable identity
         let scope: TokenScope
     }
 
