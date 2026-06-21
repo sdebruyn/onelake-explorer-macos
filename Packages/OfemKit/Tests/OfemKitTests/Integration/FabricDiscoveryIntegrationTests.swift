@@ -1,7 +1,6 @@
 import Foundation
-import Testing
-
 @testable import OfemKit
+import Testing
 
 /// Deeper Fabric REST discovery tests against the real test workspace.
 ///
@@ -11,7 +10,6 @@ import Testing
 /// pagination-vs-full-list coherence.
 @Suite("Fabric discovery integration", .integration)
 struct FabricDiscoveryIntegrationTests {
-
     private func fabricClient() -> FabricClient {
         let pool = SessionPool(tokenProvider: EnvVarTokenProvider())
         return FabricClient(sessionPool: pool)
@@ -64,7 +62,7 @@ struct FabricDiscoveryIntegrationTests {
     // MARK: - 3. The test workspace's metadata is coherent
 
     @Test("test workspace has non-empty displayName and capacityID")
-    func testWorkspaceMetadataIsCoherent() async throws {
+    func workspaceMetadataIsCoherent() async throws {
         let c = try IntegrationConfig.fromEnvironment()
         let workspaces = try await fabricClient().listAllWorkspaces(alias: "ci")
         let workspace = workspaces.first { $0.id == c.workspaceID }

@@ -26,7 +26,6 @@ import Foundation
 ///   rejected so callers surface `noSuchItem` instead of emitting a
 ///   malformed double-slash DFS URL.
 public enum ItemIdentifierParser {
-
     // MARK: - Parse
 
     /// Parses an opaque identifier string.

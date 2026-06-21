@@ -9,7 +9,6 @@ import XCTest
 
 @MainActor
 final class DomainSyncManagerTests: XCTestCase {
-
     // MARK: - Domain identifier composition
 
     func testDomainIdentifier_prefixPlusAlias() {

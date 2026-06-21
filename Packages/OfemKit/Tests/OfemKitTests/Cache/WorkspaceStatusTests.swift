@@ -1,14 +1,12 @@
 import Foundation
-import Testing
-
 @testable import OfemKit
+import Testing
 
 // MARK: - WorkspaceStatusTests
 
 /// Tests for workspace pause/resume state transitions.
 @Suite("WorkspaceStatus")
 struct WorkspaceStatusTests {
-
     // MARK: - Basic CRUD
 
     @Test("SetWorkspaceStatus inserts a new row")
@@ -207,10 +205,10 @@ struct WorkspaceStatusTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
         try await store.dbPool.write { db in
             try db.execute(sql: """
-                INSERT INTO workspace_status
-                    (account_alias, workspace_id, state, reason, detected_at_ns, probed_at_ns)
-                VALUES ('a', 'w', 'future_state', '', 0, 0)
-                """)
+            INSERT INTO workspace_status
+                (account_alias, workspace_id, state, reason, detected_at_ns, probed_at_ns)
+            VALUES ('a', 'w', 'future_state', '', 0, 0)
+            """)
         }
         let fetched = try await store.workspaceStatus(accountAlias: "a", workspaceID: "w")
         #expect(fetched.state == .active)

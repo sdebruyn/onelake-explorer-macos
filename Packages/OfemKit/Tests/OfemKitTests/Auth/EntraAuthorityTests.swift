@@ -1,5 +1,5 @@
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - EntraAuthorityTests
 
@@ -100,7 +100,6 @@ struct EntraAuthorityTests {
 /// Tests for ``EntraAuthorityResolver/validateTenantHint(_:)``.
 @Suite("EntraAuthorityResolver tenant hint validation")
 struct EntraAuthorityTenantHintValidationTests {
-
     // MARK: - Valid inputs (should not throw)
 
     @Test("Valid GUID passes validation")

@@ -12,7 +12,10 @@ import Foundation
 /// Constructed from an ``OfemKit/Account`` by ``MenuStatusModel``; not
 /// serialised over any transport.
 public struct AccountInfo: Identifiable {
-    public var id: String { alias }
+    public var id: String {
+        alias
+    }
+
     public let alias: String
     public let username: String
     public let tenantId: String

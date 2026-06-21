@@ -1,6 +1,6 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - HTTPErrorsTests
 
@@ -15,7 +15,6 @@ import Foundation
 ///   .unprocessableEntity, .serverError(_:), cases without sentinels
 @Suite("HTTPClientError")
 struct HTTPClientErrorTests {
-
     // MARK: - sentinel(for:) — cases not covered in HTTPRetryTests
 
     @Test("413 maps to .payloadTooLarge")
@@ -48,7 +47,7 @@ struct HTTPClientErrorTests {
 
     @Test("500 maps to .serverError(500)")
     func mapsServerError500() {
-        if case .serverError(let code) = HTTPClientError.sentinel(for: 500) {
+        if case let .serverError(code) = HTTPClientError.sentinel(for: 500) {
             #expect(code == 500)
         } else {
             Issue.record("expected .serverError(500)")
@@ -57,7 +56,7 @@ struct HTTPClientErrorTests {
 
     @Test("503 maps to .serverError(503)")
     func mapsServerError503() {
-        if case .serverError(let code) = HTTPClientError.sentinel(for: 503) {
+        if case let .serverError(code) = HTTPClientError.sentinel(for: 503) {
             #expect(code == 503)
         } else {
             Issue.record("expected .serverError(503)")
@@ -66,7 +65,7 @@ struct HTTPClientErrorTests {
 
     @Test("599 maps to .serverError(599)")
     func mapsServerError599() {
-        if case .serverError(let code) = HTTPClientError.sentinel(for: 599) {
+        if case let .serverError(code) = HTTPClientError.sentinel(for: 599) {
             #expect(code == 599)
         } else {
             Issue.record("expected .serverError(599)")
@@ -90,33 +89,31 @@ struct HTTPClientErrorTests {
         // If this changes in future, the test will fail and need updating.
         #expect(HTTPClientError.sentinel(for: 408) == nil)
     }
-
 }
 
 // MARK: - APIErrorTests
 
 @Suite("APIError")
 struct APIErrorTests {
-
     // MARK: - description: body present, single attempt
 
     @Test("description with body and one attempt omits attempt suffix")
-    func descriptionBodyNoAttemptSuffix() {
+    func descriptionBodyNoAttemptSuffix() throws {
         let err = APIError(
             statusCode: 404,
             status: "404 Not Found",
-            body: "resource missing".data(using: .utf8)!,
+            body: try #require("resource missing".data(using: .utf8)),
             attempts: 1
         )
         #expect(err.description == "HTTP 404 Not Found: resource missing")
     }
 
     @Test("description with body and multiple attempts includes attempt suffix")
-    func descriptionBodyWithAttemptSuffix() {
+    func descriptionBodyWithAttemptSuffix() throws {
         let err = APIError(
             statusCode: 503,
             status: "503 Service Unavailable",
-            body: "overloaded".data(using: .utf8)!,
+            body: try #require("overloaded".data(using: .utf8)),
             attempts: 3
         )
         #expect(err.description == "HTTP 503 Service Unavailable after 3 attempts: overloaded")
@@ -149,40 +146,40 @@ struct APIErrorTests {
     // MARK: - description: body truncation at 256 bytes
 
     @Test("description truncates body to 256 bytes")
-    func descriptionBodyTruncatedAt256() {
+    func descriptionBodyTruncatedAt256() throws {
         // Build a 300-character ASCII body.
         let longBody = String(repeating: "A", count: 300)
         let err = APIError(
             statusCode: 400,
             status: "400 Bad Request",
-            body: longBody.data(using: .utf8)!,
+            body: try #require(longBody.data(using: .utf8)),
             attempts: 1
         )
         // The resulting description should contain at most 256 'A's.
         let desc = err.description
-        let aCount = desc.filter { $0 == "A" }.count
+        let aCount = desc.count(where: { $0 == "A" })
         #expect(aCount == 256)
     }
 
     // MARK: - description: whitespace trimming
 
     @Test("description trims leading/trailing whitespace from body")
-    func descriptionTrimsWhitespace() {
+    func descriptionTrimsWhitespace() throws {
         let err = APIError(
             statusCode: 422,
             status: "422 Unprocessable Entity",
-            body: "  trimmed  ".data(using: .utf8)!,
+            body: try #require("  trimmed  ".data(using: .utf8)),
             attempts: 1
         )
         #expect(err.description == "HTTP 422 Unprocessable Entity: trimmed")
     }
 
     @Test("description treats whitespace-only body as empty (no body segment)")
-    func descriptionWhitespaceOnlyBody() {
+    func descriptionWhitespaceOnlyBody() throws {
         let err = APIError(
             statusCode: 503,
             status: "503 Service Unavailable",
-            body: "   \n\t  ".data(using: .utf8)!,
+            body: try #require("   \n\t  ".data(using: .utf8)),
             attempts: 1
         )
         #expect(err.description == "HTTP 503 Service Unavailable")
@@ -225,7 +222,7 @@ struct APIErrorTests {
     @Test("APIError.sentinel returns .serverError for statusCode 500")
     func sentinelServerError() {
         let err = APIError(statusCode: 500, status: "500 Internal Server Error", body: Data())
-        if case .serverError(let code) = err.sentinel {
+        if case let .serverError(code) = err.sentinel {
             #expect(code == 500)
         } else {
             Issue.record("expected .serverError(500)")

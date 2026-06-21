@@ -1,15 +1,13 @@
 import Foundation
 import GRDB
-import Testing
-
 @testable import OfemKit
+import Testing
 
 // MARK: - CacheSchemaTests
 
 /// Tests for fresh-database schema creation and the migration sequence.
 @Suite("CacheSchema")
 struct CacheSchemaTests {
-
     // MARK: - Fresh database migration
 
     @Test("Fresh database applies all migrations")

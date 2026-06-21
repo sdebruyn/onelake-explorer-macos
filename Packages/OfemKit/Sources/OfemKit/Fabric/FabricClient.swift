@@ -32,7 +32,7 @@ public final class FabricClient: Sendable {
     ///
     /// Cheap insurance against a misbehaving server that keeps returning a
     /// non-empty continuation forever.
-    static let maxPaginationPages = 1_000
+    static let maxPaginationPages = 1000
 
     // MARK: - Shared decoder (onelake-05 / fabric)
 
@@ -308,7 +308,7 @@ public final class FabricClient: Sendable {
         ).response
 
         switch dataResponse.result {
-        case .success(let data):
+        case let .success(data):
             guard let httpResponse = dataResponse.response else {
                 throw FabricError.from(HTTPClientError.transport(URLError(.badServerResponse)))
             }
@@ -318,14 +318,14 @@ public final class FabricClient: Sendable {
                 "status": "\(httpResponse.statusCode)",
             ])
             return (data, httpResponse)
-        case .failure(let afError):
+        case let .failure(afError):
             // fabric-05: log the raw error before classification so a fast failure
             // (e.g. a 404 without a network round-trip) is observable in unredacted
             // DEBUG streams.
             #if DEBUG
-            Self.log.debug(
-                "FabricClient[D]: raw error before FabricError.from alias=\(alias, privacy: .public) error=\(String(describing: afError), privacy: .public)"
-            )
+                Self.log.debug(
+                    "FabricClient[D]: raw error before FabricError.from alias=\(alias, privacy: .public) error=\(String(describing: afError), privacy: .public)"
+                )
             #endif
             let mapped = HTTPClientError(
                 afError: afError,
@@ -380,7 +380,7 @@ public final class FabricClient: Sendable {
         var seenTokens: Set<String> = []
         var seenURIs: Set<String> = []
 
-        for page in 0..<Self.maxPaginationPages {
+        for page in 0 ..< Self.maxPaginationPages {
             let (data, _) = try await doRequest(alias: alias, method: "GET", url: nextURL, endpoint: endpoint)
             let pr: FabricPageResponse<Wire>
             do {

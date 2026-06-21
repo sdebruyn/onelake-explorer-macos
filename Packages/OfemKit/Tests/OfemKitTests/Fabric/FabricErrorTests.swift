@@ -1,6 +1,6 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - FabricErrorTests
 
@@ -13,17 +13,18 @@ import Foundation
 /// mapping helper.
 @Suite("FabricError")
 struct FabricErrorTests {
-
     // MARK: - All cases: throwable and catchable
 
     @Test("missingArgument can be thrown and caught")
     func missingArgumentThrowCatch() {
-        func throwIt() throws { throw FabricError.missingArgument("workspaceID") }
+        func throwIt() throws {
+            throw FabricError.missingArgument("workspaceID")
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case FabricError.missingArgument(let name) = error {
+            if case let FabricError.missingArgument(name) = error {
                 #expect(name == "workspaceID")
             } else {
                 Issue.record("unexpected error: \(error)")
@@ -33,12 +34,14 @@ struct FabricErrorTests {
 
     @Test("paginationExceeded can be thrown and caught")
     func paginationExceededThrowCatch() {
-        func throwIt() throws { throw FabricError.paginationExceeded(500) }
+        func throwIt() throws {
+            throw FabricError.paginationExceeded(500)
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case FabricError.paginationExceeded(let limit) = error {
+            if case let FabricError.paginationExceeded(limit) = error {
                 #expect(limit == 500)
             } else {
                 Issue.record("unexpected error: \(error)")
@@ -48,7 +51,9 @@ struct FabricErrorTests {
 
     @Test("unauthorized can be thrown and caught")
     func unauthorizedThrowCatch() {
-        func throwIt() throws { throw FabricError.unauthorized }
+        func throwIt() throws {
+            throw FabricError.unauthorized
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -60,7 +65,9 @@ struct FabricErrorTests {
 
     @Test("forbidden can be thrown and caught")
     func forbiddenThrowCatch() {
-        func throwIt() throws { throw FabricError.forbidden }
+        func throwIt() throws {
+            throw FabricError.forbidden
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -72,7 +79,9 @@ struct FabricErrorTests {
 
     @Test("notFound can be thrown and caught")
     func notFoundThrowCatch() {
-        func throwIt() throws { throw FabricError.notFound }
+        func throwIt() throws {
+            throw FabricError.notFound
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -84,7 +93,9 @@ struct FabricErrorTests {
 
     @Test("rateLimited can be thrown and caught")
     func rateLimitedThrowCatch() {
-        func throwIt() throws { throw FabricError.rateLimited }
+        func throwIt() throws {
+            throw FabricError.rateLimited
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -96,12 +107,14 @@ struct FabricErrorTests {
 
     @Test("serverError preserves status code through throw/catch")
     func serverErrorThrowCatch() {
-        func throwIt() throws { throw FabricError.serverError(502) }
+        func throwIt() throws {
+            throw FabricError.serverError(502)
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case FabricError.serverError(let code) = error {
+            if case let FabricError.serverError(code) = error {
                 #expect(code == 502)
             } else {
                 Issue.record("unexpected error: \(error)")
@@ -111,12 +124,14 @@ struct FabricErrorTests {
 
     @Test("retriesExhausted preserves attempts count through throw/catch")
     func retriesExhaustedThrowCatch() {
-        func throwIt() throws { throw FabricError.retriesExhausted(attempts: 7) }
+        func throwIt() throws {
+            throw FabricError.retriesExhausted(attempts: 7)
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case FabricError.retriesExhausted(let attempts) = error {
+            if case let FabricError.retriesExhausted(attempts) = error {
                 #expect(attempts == 7)
             } else {
                 Issue.record("unexpected error: \(error)")
@@ -126,7 +141,9 @@ struct FabricErrorTests {
 
     @Test("cancelled can be thrown and caught")
     func cancelledThrowCatch() {
-        func throwIt() throws { throw FabricError.cancelled }
+        func throwIt() throws {
+            throw FabricError.cancelled
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -139,7 +156,9 @@ struct FabricErrorTests {
     @Test("httpError wraps an arbitrary error")
     func httpErrorThrowCatch() {
         struct Inner: Error {}
-        func throwIt() throws { throw FabricError.httpError(Inner()) }
+        func throwIt() throws {
+            throw FabricError.httpError(Inner())
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -152,7 +171,9 @@ struct FabricErrorTests {
     @Test("decodeFailed wraps an arbitrary error")
     func decodeFailedThrowCatch() {
         struct Inner: Error {}
-        func throwIt() throws { throw FabricError.decodeFailed(Inner()) }
+        func throwIt() throws {
+            throw FabricError.decodeFailed(Inner())
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
@@ -164,12 +185,14 @@ struct FabricErrorTests {
 
     @Test("loopingPagination preserves the token string")
     func loopingPaginationThrowCatch() {
-        func throwIt() throws { throw FabricError.loopingPagination("STUCK-TOKEN") }
+        func throwIt() throws {
+            throw FabricError.loopingPagination("STUCK-TOKEN")
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case FabricError.loopingPagination(let token) = error {
+            if case let FabricError.loopingPagination(token) = error {
                 #expect(token == "STUCK-TOKEN")
             } else {
                 Issue.record("unexpected error: \(error)")
@@ -179,12 +202,14 @@ struct FabricErrorTests {
 
     @Test("continuationURIHostMismatch preserves the host string")
     func continuationURIHostMismatchThrowCatch() {
-        func throwIt() throws { throw FabricError.continuationURIHostMismatch("evil.example.com") }
+        func throwIt() throws {
+            throw FabricError.continuationURIHostMismatch("evil.example.com")
+        }
         do {
             try throwIt()
             Issue.record("expected throw")
         } catch {
-            if case FabricError.continuationURIHostMismatch(let host) = error {
+            if case let FabricError.continuationURIHostMismatch(host) = error {
                 #expect(host == "evil.example.com")
             } else {
                 Issue.record("unexpected error: \(error)")
@@ -232,7 +257,7 @@ struct FabricErrorTests {
     @Test("from(.serverError(502)) → .serverError(502)")
     func fromServerError() {
         let result = FabricError.from(HTTPClientError.serverError(502))
-        if case .serverError(let code) = result {
+        if case let .serverError(code) = result {
             #expect(code == 502)
         } else {
             Issue.record("expected .serverError(502), got \(result)")
@@ -242,7 +267,7 @@ struct FabricErrorTests {
     @Test("from(.serverError(503)) → .serverError(503)")
     func fromServerError503() {
         let result = FabricError.from(HTTPClientError.serverError(503))
-        if case .serverError(let code) = result {
+        if case let .serverError(code) = result {
             #expect(code == 503)
         } else {
             Issue.record("expected .serverError(503), got \(result)")
@@ -253,7 +278,7 @@ struct FabricErrorTests {
     func fromRetriesExhausted() {
         struct Sentinel: Error {}
         let result = FabricError.from(HTTPClientError.retriesExhausted(attempts: 3, last: Sentinel()))
-        if case .retriesExhausted(let attempts) = result {
+        if case let .retriesExhausted(attempts) = result {
             #expect(attempts == 3)
         } else {
             Issue.record("expected .retriesExhausted(attempts:3), got \(result)")

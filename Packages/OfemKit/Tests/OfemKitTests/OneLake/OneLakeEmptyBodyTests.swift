@@ -1,6 +1,6 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - OneLakeEmptyBodyTests
 
@@ -13,7 +13,6 @@ import Testing
 /// an error.
 @Suite("OneLake/Fabric empty-body 2xx")
 struct OneLakeEmptyBodyTests {
-
     private static let wsGUID = "workspace-guid-test"
     private static let itemGUID = "item-guid-test"
     private static let baseURL = URL(string: "https://onelake.dfs.fabric.microsoft.com")!

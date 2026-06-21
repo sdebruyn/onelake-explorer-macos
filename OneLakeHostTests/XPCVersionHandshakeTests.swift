@@ -9,9 +9,9 @@
 //   1. Matching version  → returns the version, no error surfaced
 //   2. Mismatched version → returns FPE version, error surfaced in model
 
-import XCTest
-import Foundation
 import Combine
+import Foundation
+import XCTest
 
 // MARK: - Mock proxies
 
@@ -20,23 +20,28 @@ import Combine
 /// Fake proxy that implements getProtocolVersion and returns a configurable value.
 @objc private final class FakeVersionedProxy: NSObject, OfemClientControlProtocol {
     let reportedVersion: Int
-    init(version: Int) { self.reportedVersion = version }
+    init(version: Int) {
+        self.reportedVersion = version
+    }
 
     func getProtocolVersion(reply: @escaping (Int) -> Void) {
         reply(reportedVersion)
     }
 
-    // Required protocol stubs — not exercised by version tests.
+    /// Required protocol stubs — not exercised by version tests.
     func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
         reply(nil, NSError(domain: "test", code: 0))
     }
-    func setConfig(key: String, value: String, reply: @escaping (Error?) -> Void) {
+
+    func setConfig(key _: String, value _: String, reply: @escaping (Error?) -> Void) {
         reply(nil)
     }
+
     func clearCache(reply: @escaping (Int64, Error?) -> Void) {
         reply(0, nil)
     }
-    func pollMaterialized(alias: String, reply: @escaping (Bool, Error?) -> Void) {
+
+    func pollMaterialized(alias _: String, reply: @escaping (Bool, Error?) -> Void) {
         reply(false, nil)
     }
 }
@@ -45,14 +50,13 @@ import Combine
 
 @MainActor
 final class XPCVersionHandshakeTests: XCTestCase, @unchecked Sendable {
-
     private var client: OfemFPEClient!
     private var model: MenuStatusModel!
     private var cancellables = Set<AnyCancellable>()
 
-    // setUp and tearDown override nonisolated XCTestCase methods, so they
-    // cannot be marked @MainActor. XCTest always runs them on the main thread;
-    // MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
+    /// setUp and tearDown override nonisolated XCTestCase methods, so they
+    /// cannot be marked @MainActor. XCTest always runs them on the main thread;
+    /// MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
     override func setUp() {
         super.setUp()
         MainActor.assumeIsolated {
@@ -118,4 +122,3 @@ final class XPCVersionHandshakeTests: XCTestCase, @unchecked Sendable {
         }
     }
 }
-

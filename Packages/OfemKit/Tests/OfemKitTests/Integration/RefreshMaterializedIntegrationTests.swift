@@ -1,7 +1,6 @@
 import Foundation
-import Testing
-
 @testable import OfemKit
+import Testing
 
 // MARK: - RefreshMaterialized Integration Tests
 
@@ -63,7 +62,6 @@ import Testing
 /// seconds) as a comment on issue #346.
 @Suite("RefreshMaterialized integration", .integration, .serialized)
 struct RefreshMaterializedIntegrationTests {
-
     // MARK: - LiveLakehouse helper (matches SyncEngineIntegrationTests pattern)
 
     private struct LiveLakehouse {
@@ -148,7 +146,7 @@ struct RefreshMaterializedIntegrationTests {
     /// - ``CacheStore/itemsChangedAfter(accountAlias:ns:)`` (anchored before
     ///   the refresh) surfaces the file in the `updated` set.
     @Test("refreshMaterializedContainer detects a remotely-added file")
-    func testRemoteAddDetected() async throws {
+    func remoteAddDetected() async throws {
         let lake = try liveLakehouse()
         let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
@@ -220,7 +218,7 @@ struct RefreshMaterializedIntegrationTests {
     /// surfaced through `itemsChangedAfter` via the reduced `updated` set
     /// (the child simply disappears) rather than via `deletedIdentifierStrings`.
     @Test("refreshMaterializedContainer tombstones a remotely-deleted file")
-    func testRemoteDeleteDetected() async throws {
+    func remoteDeleteDetected() async throws {
         let lake = try liveLakehouse()
         let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
@@ -233,7 +231,7 @@ struct RefreshMaterializedIntegrationTests {
         do {
             // Seed two files so we can verify only the deleted one disappears.
             try await lake.mkdir(dir)
-            try await lake.write("\(dir)/keep.bin",   Data(repeating: 0x01, count: 10))
+            try await lake.write("\(dir)/keep.bin", Data(repeating: 0x01, count: 10))
             try await lake.write("\(dir)/delete.bin", Data(repeating: 0x02, count: 10))
 
             let key = cacheKey(lake: lake, path: dir)
@@ -266,7 +264,7 @@ struct RefreshMaterializedIntegrationTests {
             let kidsAfter = try await store.children(of: key)
             let namesAfter = kidsAfter.map(\.name)
             #expect(!namesAfter.contains("delete.bin"), "delete.bin must be absent from cache after removal")
-            #expect(namesAfter.contains("keep.bin"),   "keep.bin must remain in cache")
+            #expect(namesAfter.contains("keep.bin"), "keep.bin must remain in cache")
 
             // itemsChangedAfter reflects the post-deletion cache state: keep.bin
             // was upserted by the second refresh (synced_at_ns bumped) so it
@@ -305,7 +303,7 @@ struct RefreshMaterializedIntegrationTests {
     /// This test exercises the boundary between the engine and the poll loop
     /// coordinator without requiring a running FPE or Finder window.
     @Test("full poll-loop emulation: setMaterialized + refreshMaterialized + itemsChangedAfter")
-    func testPollLoopEmulation() async throws {
+    func pollLoopEmulation() async throws {
         let lake = try liveLakehouse()
         let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
@@ -326,10 +324,10 @@ struct RefreshMaterializedIntegrationTests {
             try await store.setMaterialized(alias: lake.alias, identifiers: [identifierString])
 
             // Step 2: seed baseline files and perform an initial batch refresh.
-            try await lake.write("\(dir)/stable.bin",  Data(repeating: 0xAA, count: 16))
-            try await lake.write("\(dir)/update.bin",  Data(repeating: 0xBB, count: 16))
+            try await lake.write("\(dir)/stable.bin", Data(repeating: 0xAA, count: 16))
+            try await lake.write("\(dir)/update.bin", Data(repeating: 0xBB, count: 16))
 
-            let dirKey   = cacheKey(lake: lake, path: dir)
+            let dirKey = cacheKey(lake: lake, path: dir)
             let keysFromCache1 = try await store.materializedContainers(alias: lake.alias)
             #expect(!keysFromCache1.isEmpty, "materializedContainers must return at least one key after setMaterialized")
             let firstPoll = await engine.refreshMaterialized(

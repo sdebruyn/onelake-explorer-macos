@@ -1,5 +1,5 @@
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - AccountAliasTests
 

@@ -1,7 +1,6 @@
 import Foundation
-import Testing
-
 @testable import OfemKit
+import Testing
 
 // MARK: - CacheLoggerTests
 
@@ -13,7 +12,6 @@ import Testing
 /// expected fields after the operations complete.
 @Suite("CacheLogger")
 struct CacheLoggerTests {
-
     // MARK: - Helpers
 
     /// Creates a temp directory, an `OfemLogger` that writes JSON to it at

@@ -8,8 +8,7 @@ import Foundation
 /// ad-hoc mutable locals in `performDownload` and makes the 412-reset atomic
 /// and independently testable (sync-09). The unit test for the 412 path now
 /// drives the real reset logic rather than re-implementing it (sync-23).
-struct ResumePlan: Sendable {
-
+struct ResumePlan {
     // MARK: - Cases
 
     /// Start from the beginning of the file with no `Range` or `If-Match`
@@ -32,7 +31,7 @@ struct ResumePlan: Sendable {
     /// The `Range` header value for the download request, or `nil` for a full
     /// download.
     var range: Range<Int64>? {
-        hasPartial ? rangeStart..<Int64.max : nil
+        hasPartial ? rangeStart ..< Int64.max : nil
     }
 
     /// The `If-Match` header value for the download request.

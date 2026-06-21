@@ -1,6 +1,6 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - TempTokenStore helper (tests-07)
 
@@ -33,9 +33,18 @@ final class TempTokenStore: Sendable {
         inner[keyPath: keyPath]
     }
 
-    func read(alias: String) throws -> Data { try inner.read(alias: alias) }
-    func write(alias: String, data: Data) async throws { try await inner.write(alias: alias, data: data) }
-    func delete(alias: String) async throws { try await inner.delete(alias: alias) }
+    func read(alias: String) throws -> Data {
+        try inner.read(alias: alias)
+    }
+
+    func write(alias: String, data: Data) async throws {
+        try await inner.write(alias: alias, data: data)
+    }
+
+    func delete(alias: String) async throws {
+        try await inner.delete(alias: alias)
+    }
+
     func atomicUpdate(alias: String, transform: (Data) throws -> Data?) async throws {
         try await inner.atomicUpdate(alias: alias, transform: transform)
     }
@@ -49,7 +58,9 @@ struct FileTokenStoreTests {
 
     /// Returns a `TempTokenStore` backed by a fresh unique temp directory.
     /// The directory is deleted when the returned value goes out of scope.
-    private func makeStore() throws -> TempTokenStore { try TempTokenStore() }
+    private func makeStore() throws -> TempTokenStore {
+        try TempTokenStore()
+    }
 
     // MARK: - Basic read / write / delete
 
@@ -72,7 +83,7 @@ struct FileTokenStoreTests {
         do {
             _ = try store.read(alias: "nope")
             Issue.record("Expected notFound error but no error was thrown")
-        } catch FileTokenStoreError.notFound(let alias) {
+        } catch let FileTokenStoreError.notFound(alias) {
             #expect(alias == "nope")
         } catch {
             Issue.record("Expected FileTokenStoreError.notFound, got \(error)")
@@ -144,7 +155,7 @@ struct FileTokenStoreTests {
         do {
             _ = try store.read(alias: "alice")
             Issue.record("Expected notFound for alice after delete")
-        } catch FileTokenStoreError.notFound { }
+        } catch FileTokenStoreError.notFound {}
 
         #expect(try store.read(alias: "bob") == b, "bob must be unaffected by alice delete")
     }
@@ -169,10 +180,10 @@ struct FileTokenStoreTests {
         #expect(try store.read(alias: alias) == data)
     }
 
-    // NOTE: The old test named "noAliasCollisions" used plain ASCII aliases
-    // ("alias-a" vs "alias-b") which duplicated multipleAliasesIndependent and
-    // proved nothing about collision resistance. It has been renamed to reflect
-    // what it actually tests (tests-21).
+    /// NOTE: The old test named "noAliasCollisions" used plain ASCII aliases
+    /// ("alias-a" vs "alias-b") which duplicated multipleAliasesIndependent and
+    /// proved nothing about collision resistance. It has been renamed to reflect
+    /// what it actually tests (tests-21).
     @Test("ASCII aliases that differ by one character produce distinct filenames")
     func asciiAliasesDifferByOneCharAreDistinct() async throws {
         let store = try makeStore()
@@ -184,9 +195,9 @@ struct FileTokenStoreTests {
         #expect(try store.read(alias: "alias-b") == b)
     }
 
-    // Real collision-resistance test: aliases that only differ after
-    // URL / percent encoding or case folding — a naïve encoder might
-    // produce the same filename for these pairs (tests-21).
+    /// Real collision-resistance test: aliases that only differ after
+    /// URL / percent encoding or case folding — a naïve encoder might
+    /// produce the same filename for these pairs (tests-21).
     @Test("aliases differing only after percent-encoding produce distinct filenames")
     func aliasesWithPercentEncodingAmbiguityAreDistinct() async throws {
         let store = try makeStore()
@@ -202,13 +213,13 @@ struct FileTokenStoreTests {
     func precomposedVsDecomposedAliasesAreDistinct() async throws {
         let store = try makeStore()
         let precomposed = "\u{00E9}"
-        let decomposed  = "\u{0065}\u{0301}"
+        let decomposed = "\u{0065}\u{0301}"
         let dataA = Data("precomposed".utf8)
         let dataB = Data("decomposed".utf8)
         try await store.write(alias: precomposed, data: dataA)
-        try await store.write(alias: decomposed,  data: dataB)
+        try await store.write(alias: decomposed, data: dataB)
         #expect(try store.read(alias: precomposed) == dataA)
-        #expect(try store.read(alias: decomposed)  == dataB)
+        #expect(try store.read(alias: decomposed) == dataB)
     }
 
     // MARK: - Overwrite
@@ -248,8 +259,8 @@ struct FileTokenStoreTests {
     func binaryPayloadRoundTrip() async throws {
         let store = try makeStore()
         var payload = Data()
-        for i in 0..<4 {
-            for b in 0...255 {
+        for i in 0 ..< 4 {
+            for b in 0 ... 255 {
                 payload.append(UInt8((b + i) % 256))
             }
         }
@@ -266,7 +277,7 @@ struct FileTokenStoreTests {
         try await store.write(alias: "shared", data: Data("initial".utf8))
 
         await withTaskGroup(of: Void.self) { group in
-            for i in 0..<20 {
+            for i in 0 ..< 20 {
                 group.addTask {
                     let payload = Data("value-\(i)".utf8)
                     try? await store.write(alias: "shared", data: payload)
@@ -284,14 +295,14 @@ struct FileTokenStoreTests {
         let count = 20
 
         await withTaskGroup(of: Void.self) { group in
-            for i in 0..<count {
+            for i in 0 ..< count {
                 group.addTask {
                     try? await store.write(alias: "alias-\(i)", data: Data("payload-\(i)".utf8))
                 }
             }
         }
 
-        for i in 0..<count {
+        for i in 0 ..< count {
             let result = try store.read(alias: "alias-\(i)")
             #expect(result == Data("payload-\(i)".utf8))
         }
@@ -337,7 +348,7 @@ struct FileTokenStoreTests {
         try await store.write(alias: "stable", data: original)
 
         try await store.atomicUpdate(alias: "stable") { _ in
-            nil  // Signal: do not update.
+            nil // Signal: do not update.
         }
 
         let result = try store.read(alias: "stable")
@@ -353,7 +364,7 @@ struct FileTokenStoreTests {
         do {
             _ = try store.read(alias: "void")
             Issue.record("Expected notFound after nil atomicUpdate on missing entry")
-        } catch FileTokenStoreError.notFound { }
+        } catch FileTokenStoreError.notFound {}
     }
 
     @Test("atomicUpdate returning empty Data skips write; original entry remains")
@@ -422,7 +433,9 @@ struct FileTokenStoreTests {
     func concurrentAtomicUpdates() async throws {
         let store = try makeStore()
 
-        func encode(_ n: UInt32) -> Data { Data(String(format: "%010u", n).utf8) }
+        func encode(_ n: UInt32) -> Data {
+            Data(String(format: "%010u", n).utf8)
+        }
         func decode(_ d: Data) -> UInt32 {
             UInt32(String(data: d, encoding: .utf8)?.trimmingCharacters(in: .whitespaces) ?? "0") ?? 0
         }
@@ -430,7 +443,7 @@ struct FileTokenStoreTests {
         try await store.write(alias: "counter", data: encode(0))
 
         await withTaskGroup(of: Void.self) { group in
-            for _ in 0..<20 {
+            for _ in 0 ..< 20 {
                 group.addTask {
                     try? await store.atomicUpdate(alias: "counter") { existing in
                         let n = existing.isEmpty ? 0 : decode(existing)
@@ -472,7 +485,7 @@ struct FileTokenStoreTests {
         try await store.delete(alias: "sidecar")
 
         let hex = FileTokenStore.hexStem(alias: "sidecar")
-        let binURL  = dir.appending(path: "\(hex).bin",  directoryHint: .notDirectory)
+        let binURL = dir.appending(path: "\(hex).bin", directoryHint: .notDirectory)
         let lockURL = dir.appending(path: "\(hex).lock", directoryHint: .notDirectory)
 
         #expect(!FileManager.default.fileExists(atPath: binURL.path(percentEncoded: false)),
@@ -508,11 +521,11 @@ struct FileTokenStoreTests {
         try FileManager.default.createDirectory(
             at: parent,
             withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o500]   // r-x: no write
+            attributes: [.posixPermissions: 0o500] // r-x: no write
         )
         defer {
             try? FileManager.default.setAttributes([.posixPermissions: 0o700],
-                                                    ofItemAtPath: parent.path(percentEncoded: false))
+                                                   ofItemAtPath: parent.path(percentEncoded: false))
             try? FileManager.default.removeItem(at: parent)
         }
 
@@ -545,7 +558,7 @@ struct FileTokenStoreTests {
         do {
             _ = try store.read(alias: "dir-alias")
             Issue.record("Expected readFailed when path is a directory")
-        } catch FileTokenStoreError.readFailed(let alias, _) {
+        } catch let FileTokenStoreError.readFailed(alias, _) {
             #expect(alias == "dir-alias")
         }
     }
@@ -559,7 +572,7 @@ struct FileTokenStoreTests {
         do {
             _ = try store.read(alias: alias)
             Issue.record("Expected notFound")
-        } catch FileTokenStoreError.notFound(let reported) {
+        } catch let FileTokenStoreError.notFound(reported) {
             #expect(reported == alias)
         }
     }
@@ -570,7 +583,9 @@ struct FileTokenStoreTests {
     func atomicUpdateLargePayload() async throws {
         let store = try makeStore()
         var payload = Data(repeating: 0, count: 512 * 1024)
-        for i in payload.indices { payload[i] = UInt8(i % 251) }
+        for i in payload.indices {
+            payload[i] = UInt8(i % 251)
+        }
 
         try await store.atomicUpdate(alias: "big") { _ in payload }
         let result = try store.read(alias: "big")

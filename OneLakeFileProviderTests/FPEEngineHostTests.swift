@@ -20,11 +20,10 @@ import Foundation
 import XCTest
 
 final class FPEEngineHostTests: XCTestCase {
-
     override func tearDown() async throws {
         // Clean up process-wide singletons between tests.
         #if DEBUG
-        FPEEngineHost.resetSharedSubsystems()
+            FPEEngineHost.resetSharedSubsystems()
         #endif
         try await super.tearDown()
     }
@@ -124,7 +123,7 @@ final class FPEEngineHostTests: XCTestCase {
 
     // MARK: - fpe-10: concurrent engine() calls via MockEngineHost see consistent results
 
-    func testConcurrentEngineCallsViaProxyReturnConsistentResults() async throws {
+    func testConcurrentEngineCallsViaProxyReturnConsistentResults() async {
         // This test exercises the single-flight invariant from the outside.
         // MockEngineHost's engine() is called concurrently from N Tasks; we
         // verify that:
@@ -142,7 +141,7 @@ final class FPEEngineHostTests: XCTestCase {
         let n = 8
         var errors: [Error?] = Array(repeating: nil, count: n)
         await withTaskGroup(of: (Int, Error?).self) { group in
-            for i in 0..<n {
+            for i in 0 ..< n {
                 group.addTask {
                     do {
                         _ = try await host.engine()

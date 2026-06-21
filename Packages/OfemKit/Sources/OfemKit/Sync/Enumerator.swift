@@ -12,7 +12,9 @@ public struct Diff: Sendable {
     /// Number of cache entries deleted because they no longer exist remotely.
     public var removed: Int = 0
     /// `added + updated + removed`.
-    public var total: Int { added + updated + removed }
+    public var total: Int {
+        added + updated + removed
+    }
 
     /// Creates a `Diff`.
     init(added: Int = 0, updated: Int = 0, removed: Int = 0) {
@@ -37,19 +39,18 @@ public struct EnumerateResult: Sendable {
 /// Placeholder IDs used when caching the top-level workspace / item listings.
 public enum VirtualIDs {
     public static let workspaceID = "__workspaces__"
-    public static let itemID      = "__items__"
+    public static let itemID = "__items__"
 }
 
 // MARK: - Page size
 
 /// Maximum items returned per ``EnumerateResult`` page.
-let enumeratePageSize = 1_000
+let enumeratePageSize = 1000
 
 // MARK: - Enumerator
 
 /// Stateless enumeration helpers used by ``SyncEngine``.
 enum Enumerator {
-
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "Enumerator")
 
     // MARK: - Paging
@@ -105,12 +106,12 @@ enum Enumerator {
     /// to Finder via the next working-set poll.
     static func entryChanged(current: MetadataRecord, next: MetadataRecord) -> Bool {
         current.isDir != next.isDir ||
-        current.contentLength != next.contentLength ||
-        current.etag != next.etag ||
-        current.lastModifiedNs != next.lastModifiedNs ||
-        current.name != next.name ||
-        current.parentPath != next.parentPath ||
-        current.itemType != next.itemType
+            current.contentLength != next.contentLength ||
+            current.etag != next.etag ||
+            current.lastModifiedNs != next.lastModifiedNs ||
+            current.name != next.name ||
+            current.parentPath != next.parentPath ||
+            current.itemType != next.itemType
     }
 
     // MARK: - Path helpers
@@ -145,7 +146,7 @@ enum Enumerator {
     static func parentPath(_ p: String) -> String {
         let trimmed = p.hasSuffix("/") ? String(p.dropLast()) : p
         guard let idx = trimmed.lastIndex(of: "/") else { return "" }
-        return String(trimmed[trimmed.startIndex..<idx])
+        return String(trimmed[trimmed.startIndex ..< idx])
     }
 
     /// Returns the last path segment of `p`, or `""` for an empty path.

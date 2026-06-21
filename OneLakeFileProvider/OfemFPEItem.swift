@@ -40,7 +40,8 @@ final class OfemFPEItem: NSObject, NSFileProviderItem, @unchecked Sendable {
         if domainItem.isDirectory {
             self.contentType = .folder
         } else if !domainItem.contentType.isEmpty,
-                  let utt = UTType(mimeType: domainItem.contentType) {
+                  let utt = UTType(mimeType: domainItem.contentType)
+        {
             self.contentType = utt
         } else {
             let ext = (domainItem.filename as NSString).pathExtension
@@ -55,11 +56,11 @@ final class OfemFPEItem: NSObject, NSFileProviderItem, @unchecked Sendable {
         var bitmask: NSFileProviderItemCapabilities = []
         for cap in domainItem.capabilities {
             switch cap {
-            case .read:         bitmask.insert(.allowsReading)
-            case .write:        bitmask.insert(.allowsWriting)
-            case .delete:       bitmask.insert(.allowsDeleting)
-            case .enumerate:    bitmask.insert(.allowsContentEnumerating)
-            case .addSubitems:  bitmask.insert(.allowsAddingSubItems)
+            case .read: bitmask.insert(.allowsReading)
+            case .write: bitmask.insert(.allowsWriting)
+            case .delete: bitmask.insert(.allowsDeleting)
+            case .enumerate: bitmask.insert(.allowsContentEnumerating)
+            case .addSubitems: bitmask.insert(.allowsAddingSubItems)
             }
         }
         self.capabilities = bitmask.isEmpty ? [.allowsReading, .allowsContentEnumerating] : bitmask

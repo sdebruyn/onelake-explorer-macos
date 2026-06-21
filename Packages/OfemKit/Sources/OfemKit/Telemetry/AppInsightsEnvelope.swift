@@ -1,15 +1,15 @@
 import Foundation
 
-/// Wire-format types for the Application Insights v2/track HTTP endpoint.
-///
-/// The JSON key names are camelCase as required by the App Insights ingestion
-/// API — they must not be changed without bumping the API version.
-///
-/// Every property value that enters these structs has already been routed
-/// through `TelemetryRedaction.scrubProperty` / `safeErrorCode` /
-/// `safeTenantID` in `splitFields(_:)`, making the privacy guarantee
-/// structural.  The `tags` and `iKey` fields are also constructed inside
-/// `from(event:…)` after that boundary, so the invariant is total.
+// Wire-format types for the Application Insights v2/track HTTP endpoint.
+//
+// The JSON key names are camelCase as required by the App Insights ingestion
+// API — they must not be changed without bumping the API version.
+//
+// Every property value that enters these structs has already been routed
+// through `TelemetryRedaction.scrubProperty` / `safeErrorCode` /
+// `safeTenantID` in `splitFields(_:)`, making the privacy guarantee
+// structural.  The `tags` and `iKey` fields are also constructed inside
+// `from(event:…)` after that boundary, so the invariant is total.
 
 // MARK: - Envelope (top-level)
 
@@ -102,9 +102,9 @@ extension AppInsightsEnvelope {
 /// Note: logging uses a separate formatter in `OfemLogger`; this enum is
 /// scoped to the telemetry package only.
 enum SharedFormatter {
-    // ISO8601DateFormatter is documented as thread-safe after configuration;
-    // nonisolated(unsafe) suppresses the Swift concurrency check.
-    nonisolated(unsafe) private static let formatter: ISO8601DateFormatter = {
+    /// ISO8601DateFormatter is documented as thread-safe after configuration;
+    /// nonisolated(unsafe) suppresses the Swift concurrency check.
+    private nonisolated(unsafe) static let formatter: ISO8601DateFormatter = {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return fmt

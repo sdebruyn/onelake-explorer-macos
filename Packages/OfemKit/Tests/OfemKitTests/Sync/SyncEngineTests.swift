@@ -1,13 +1,12 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - SyncEngine Tests
 
 /// Tests for ``SyncEngine`` covering all previously-unverified paths.
 @Suite("SyncEngine")
 struct SyncEngineTests {
-
     // MARK: - Helpers
 
     private func makeEngine(
@@ -31,9 +30,9 @@ struct SyncEngineTests {
     }
 
     private static let alias = "test"
-    private static let wsID  = "ws-1"
-    private static let itID  = "item-1"
-    private static let path  = "Files/data.csv"
+    private static let wsID = "ws-1"
+    private static let itID = "item-1"
+    private static let path = "Files/data.csv"
 
     private static var baseKey: CacheKey {
         CacheKey(accountAlias: alias, workspaceID: wsID, itemID: itID, path: path)
@@ -48,7 +47,7 @@ struct SyncEngineTests {
     // (mislabeled — this test never induces a cache failure; it only exercises the
     // happy-path download and verifies the returned file URL is readable).
     @Test("open() downloads and returns correct bytes on first open (no prior cache)")
-    func testFirstOpenDownloadsAndReturnsContent() async throws {
+    func firstOpenDownloadsAndReturnsContent() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
 
@@ -71,7 +70,7 @@ struct SyncEngineTests {
     // MARK: - sync-06: concurrent opens coalesce
 
     @Test("Concurrent open() for the same key issues only one download")
-    func testConcurrentOpensCoalesce() async throws {
+    func concurrentOpensCoalesce() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -100,7 +99,7 @@ struct SyncEngineTests {
     // MARK: - sync-19: cache hits don't consume download slots
 
     @Test("Cache hit does not acquire a download slot")
-    func testCacheHitSkipsSlotAcquisition() async throws {
+    func cacheHitSkipsSlotAcquisition() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
 
@@ -139,7 +138,7 @@ struct SyncEngineTests {
     // MARK: - sync-14: macOS metadata filtered at enumeration
 
     @Test("refreshFolder does not surface .DS_Store entries")
-    func testMacOSMetadataFilteredInEnumeration() async throws {
+    func macOSMetadataFilteredInEnumeration() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -167,7 +166,7 @@ struct SyncEngineTests {
     // MARK: - sync-22: enumerate throws wrongItemKind for files
 
     @Test("enumerate() throws wrongItemKind when key is a file")
-    func testEnumerateThrowsWrongItemKind() async throws {
+    func enumerateThrowsWrongItemKind() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -202,7 +201,7 @@ struct SyncEngineTests {
     // MARK: - sync-11: HEAD path routes through pauseManager
 
     @Test("isBlobFresh error path marks workspace paused via markPausedIfNeeded")
-    func testHeadPathMarksPaused() async throws {
+    func headPathMarksPaused() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -227,7 +226,7 @@ struct SyncEngineTests {
 
         // HEAD returns a paused-capacity error (wrapped as OneLakeError.httpError).
         let apiBody = #"{"errorCode":"CapacityPaused","message":"capacity is currently paused"}"#
-        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503 Service Unavailable", body: apiBody.data(using: .utf8)!))
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503 Service Unavailable", body: try #require(apiBody.data(using: .utf8))))
         ol.getPropertiesResults.append(.failure(OneLakeError.httpError(apiErr)))
 
         do {
@@ -250,7 +249,7 @@ struct SyncEngineTests {
     // MARK: - T1: cancellation-poisoning (C1 livelock fix)
 
     @Test("Stale cancelled in-flight task does not livelock the key — a fresh open() succeeds")
-    func testCancelledInFlightTaskDoesNotLivelockKey() async throws {
+    func cancelledInFlightTaskDoesNotLivelockKey() async throws {
         let ol = BlockingMockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -302,7 +301,7 @@ struct SyncEngineTests {
     // protocol-level injectable cache would be more robust; tracked for the
     // future but left as-is because the test is still valid for non-root CI.
     @Test("Blob store failure still returns downloaded bytes (real fallback path)")
-    func testBlobStoreFailureReturnsBytesFromMemory() async throws {
+    func blobStoreFailureReturnsBytesFromMemory() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer {
@@ -334,7 +333,7 @@ struct SyncEngineTests {
     // MARK: - blocker-1 regression: failed download discards spill so next open re-downloads
 
     @Test("Non-412 download failure discards the spill so the next open re-downloads from scratch")
-    func testFailedDownloadDiscardsSpill() async throws {
+    func failedDownloadDiscardsSpill() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -378,7 +377,7 @@ struct SyncEngineTests {
     // MARK: - Paused workspace guard: guardPaused throws before any network call
 
     @Test("open() throws workspacePaused immediately when workspace is paused in cache")
-    func testPausedWorkspaceGuardBlocksOpen() async throws {
+    func pausedWorkspaceGuardBlocksOpen() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -405,7 +404,7 @@ struct SyncEngineTests {
     }
 
     @Test("refreshFolder() throws workspacePaused immediately when workspace is paused")
-    func testPausedWorkspaceGuardBlocksRefreshFolder() async throws {
+    func pausedWorkspaceGuardBlocksRefreshFolder() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -430,7 +429,7 @@ struct SyncEngineTests {
     }
 
     @Test("put() throws workspacePaused immediately when workspace is paused")
-    func testPausedWorkspaceGuardBlocksPut() async throws {
+    func pausedWorkspaceGuardBlocksPut() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -461,7 +460,7 @@ struct SyncEngineTests {
     }
 
     @Test("delete() throws workspacePaused immediately when workspace is paused")
-    func testPausedWorkspaceGuardBlocksDelete() async throws {
+    func pausedWorkspaceGuardBlocksDelete() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -486,7 +485,7 @@ struct SyncEngineTests {
     }
 
     @Test("mkdir() throws workspacePaused immediately when workspace is paused")
-    func testPausedWorkspaceGuardBlocksMkdir() async throws {
+    func pausedWorkspaceGuardBlocksMkdir() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -512,13 +511,13 @@ struct SyncEngineTests {
     // MARK: - refreshFolder: paused-capacity error from listPath marks workspace paused
 
     @Test("refreshFolder() marks workspace paused when listPath returns a paused-capacity error")
-    func testRefreshFolderMarksPausedOnCapacityError() async throws {
+    func refreshFolderMarksPausedOnCapacityError() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         let apiBody = #"{"errorCode":"CapacityPaused","message":"capacity is currently paused"}"#
-        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503 Service Unavailable", body: apiBody.data(using: .utf8)!))
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503 Service Unavailable", body: try #require(apiBody.data(using: .utf8))))
         ol.listPathResults.append(.failure(OneLakeError.httpError(apiErr)))
 
         let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
@@ -536,7 +535,7 @@ struct SyncEngineTests {
     // MARK: - delete: error propagation and workspace-paused mapping
 
     @Test("delete() propagates network error when it is not a paused-capacity signal")
-    func testDeletePropagatesNetworkError() async throws {
+    func deletePropagatesNetworkError() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -561,13 +560,13 @@ struct SyncEngineTests {
     }
 
     @Test("delete() marks workspace paused and throws workspacePaused on capacity error")
-    func testDeleteMarksPausedOnCapacityError() async throws {
+    func deleteMarksPausedOnCapacityError() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         let apiBody = #"{"errorCode":"CapacityPaused","message":"paused"}"#
-        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: apiBody.data(using: .utf8)!))
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: try #require(apiBody.data(using: .utf8))))
         ol.deleteResults.append(.failure(OneLakeError.httpError(apiErr)))
 
         let key = Self.baseKey
@@ -584,7 +583,7 @@ struct SyncEngineTests {
     // MARK: - macOS metadata: put and delete with .DS_Store / ._* paths
 
     @Test("put() silently ignores .DS_Store uploads (no network call)")
-    func testPutIgnoresDSStore() async throws {
+    func putIgnoresDSStore() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -601,7 +600,7 @@ struct SyncEngineTests {
     }
 
     @Test("put() silently ignores AppleDouble (._*) uploads")
-    func testPutIgnoresAppleDouble() async throws {
+    func putIgnoresAppleDouble() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -617,7 +616,7 @@ struct SyncEngineTests {
     }
 
     @Test("delete() on .DS_Store only deletes from cache, no remote call")
-    func testDeleteDSStoreLocalOnly() async throws {
+    func deleteDSStoreLocalOnly() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -647,7 +646,7 @@ struct SyncEngineTests {
     // MARK: - mkdir: error propagation
 
     @Test("mkdir() propagates network error")
-    func testMkdirPropagatesNetworkError() async throws {
+    func mkdirPropagatesNetworkError() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -672,13 +671,13 @@ struct SyncEngineTests {
     }
 
     @Test("mkdir() marks workspace paused and throws workspacePaused on capacity error")
-    func testMkdirMarksPausedOnCapacityError() async throws {
+    func mkdirMarksPausedOnCapacityError() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         let apiBody = #"{"errorCode":"CapacityPaused","message":"paused"}"#
-        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: apiBody.data(using: .utf8)!))
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: try #require(apiBody.data(using: .utf8))))
         ol.createDirectoryResults.append(.failure(OneLakeError.httpError(apiErr)))
 
         let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "NewDir")
@@ -693,7 +692,7 @@ struct SyncEngineTests {
     }
 
     @Test("mkdir() succeeds and upserts a directory row in the cache")
-    func testMkdirUpsertsCacheRow() async throws {
+    func mkdirUpsertsCacheRow() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -712,7 +711,7 @@ struct SyncEngineTests {
     // MARK: - put: success path upserts cache and mirrors blob
 
     @Test("put() success upserts a file row in the cache with correct path")
-    func testPutSuccessUpsertsCacheRow() async throws {
+    func putSuccessUpsertsCacheRow() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -740,7 +739,7 @@ struct SyncEngineTests {
     }
 
     @Test("put() propagates write failure")
-    func testPutPropagatesWriteError() async throws {
+    func putPropagatesWriteError() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -772,7 +771,7 @@ struct SyncEngineTests {
     // MARK: - HEAD freshness: etag changed falls through to download
 
     @Test("open() re-downloads when HEAD returns a different etag")
-    func testHeadEtagChangedTriggersDownload() async throws {
+    func headEtagChangedTriggersDownload() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -802,7 +801,7 @@ struct SyncEngineTests {
     }
 
     @Test("open() serves cache hit when HEAD etag matches cached etag")
-    func testHeadEtagMatchedServesCacheHit() async throws {
+    func headEtagMatchedServesCacheHit() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -827,7 +826,7 @@ struct SyncEngineTests {
     }
 
     @Test("open() falls through to download when cached etag is empty")
-    func testHeadEmptyCachedEtagTriggersDownload() async throws {
+    func headEmptyCachedEtagTriggersDownload() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -878,7 +877,7 @@ struct SyncEngineTests {
     /// This test drives `refreshFolder` with a mock returning item-relative names
     /// (matching what the real client returns) and asserts all children are cached.
     @Test("refreshFolder() reconciles item-relative PathEntry.name values into the cache (issue-244)")
-    func testRefreshFolderItemRelativeNames() async throws {
+    func refreshFolderItemRelativeNames() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -896,8 +895,8 @@ struct SyncEngineTests {
         // OneLakeClient.listPath returns after onelake-12.
         ol.listPathResults.append(.success(ListResult(entries: [
             PathEntry(name: "\(dir)/alpha.bin", isDirectory: false, contentLength: 100, eTag: "e1", lastModified: .distantPast),
-            PathEntry(name: "\(dir)/beta.bin",  isDirectory: false, contentLength: 200, eTag: "e2", lastModified: .distantPast),
-            PathEntry(name: "\(dir)/sub",        isDirectory: true,  contentLength: 0,   eTag: "",   lastModified: .distantPast),
+            PathEntry(name: "\(dir)/beta.bin", isDirectory: false, contentLength: 200, eTag: "e2", lastModified: .distantPast),
+            PathEntry(name: "\(dir)/sub", isDirectory: true, contentLength: 0, eTag: "", lastModified: .distantPast),
         ])))
 
         let diff = try await engine.refreshFolder(key: key)
@@ -922,7 +921,7 @@ struct SyncEngineTests {
     // MARK: - refreshFolder: empty remote listing removes all cached children
 
     @Test("refreshFolder() with empty remote listing deletes all cached children")
-    func testRefreshFolderEmptyRemovesCachedChildren() async throws {
+    func refreshFolderEmptyRemovesCachedChildren() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -954,7 +953,7 @@ struct SyncEngineTests {
     // MARK: - refreshFolder: remote item vanished (stale cached child removed)
 
     @Test("refreshFolder() removes a cached entry when its remote counterpart disappears")
-    func testRefreshFolderRemovesVanishedRemoteItem() async throws {
+    func refreshFolderRemovesVanishedRemoteItem() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -973,7 +972,7 @@ struct SyncEngineTests {
 
         // Remote only returns keep.csv and also-keep.csv.
         let listing = ListResult(entries: [
-            PathEntry(name: "keep.csv",      isDirectory: false, contentLength: 10, eTag: "e1", lastModified: .distantPast),
+            PathEntry(name: "keep.csv", isDirectory: false, contentLength: 10, eTag: "e1", lastModified: .distantPast),
             PathEntry(name: "also-keep.csv", isDirectory: false, contentLength: 10, eTag: "e2", lastModified: .distantPast),
         ])
         ol.listPathResults.append(.success(listing))
@@ -991,7 +990,7 @@ struct SyncEngineTests {
     // MARK: - refreshFolder: etag carry-over when unchanged
 
     @Test("refreshFolder() carries blob linkage when remote etag is unchanged")
-    func testRefreshFolderCarriesBlobLinkageOnUnchangedEtag() async throws {
+    func refreshFolderCarriesBlobLinkageOnUnchangedEtag() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -1023,7 +1022,7 @@ struct SyncEngineTests {
     }
 
     @Test("refreshFolder() clears blob linkage when remote etag changes")
-    func testRefreshFolderClearsBlobLinkageOnEtagChange() async throws {
+    func refreshFolderClearsBlobLinkageOnEtagChange() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -1060,7 +1059,7 @@ struct SyncEngineTests {
     // MARK: - listWorkspaces: Fabric error rethrown when not capacity-paused
 
     @Test("listWorkspaces() rethrows non-paused Fabric errors")
-    func testListWorkspacesRethrowsNonPausedError() async throws {
+    func listWorkspacesRethrowsNonPausedError() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -1082,14 +1081,14 @@ struct SyncEngineTests {
     }
 
     @Test("listWorkspaces() marks paused and throws workspacePaused on capacity error")
-    func testListWorkspacesMarksPausedOnCapacityError() async throws {
+    func listWorkspacesMarksPausedOnCapacityError() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         let apiBody = #"{"errorCode":"CapacityPaused","message":"capacity is paused"}"#
-        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: apiBody.data(using: .utf8)!))
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: try #require(apiBody.data(using: .utf8))))
         fabric.listWorkspacesResults.append(.failure(FabricError.httpError(apiErr)))
 
         do {
@@ -1104,7 +1103,7 @@ struct SyncEngineTests {
     }
 
     @Test("listWorkspaces() returns workspaces and stamps cache rows on success")
-    func testListWorkspacesSuccessStampsCache() async throws {
+    func listWorkspacesSuccessStampsCache() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -1112,7 +1111,7 @@ struct SyncEngineTests {
 
         let workspaces = [
             Workspace(id: "ws-a", displayName: "Alpha", type: "Workspace"),
-            Workspace(id: "ws-b", displayName: "Beta",  type: "Workspace"),
+            Workspace(id: "ws-b", displayName: "Beta", type: "Workspace"),
         ]
         fabric.listWorkspacesResults.append(.success(workspaces))
 
@@ -1136,7 +1135,7 @@ struct SyncEngineTests {
     // MARK: - listItems: Fabric error handling
 
     @Test("listItems() rethrows non-paused Fabric errors")
-    func testListItemsRethrowsNonPausedError() async throws {
+    func listItemsRethrowsNonPausedError() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -1156,7 +1155,7 @@ struct SyncEngineTests {
     }
 
     @Test("listItems() returns only storage-backed items and stamps their cache rows")
-    func testListItemsSuccessStampsCache() async throws {
+    func listItemsSuccessStampsCache() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -1165,7 +1164,7 @@ struct SyncEngineTests {
         // Fabric returns a Lakehouse and a Notebook; only the Lakehouse is storage-backed.
         let items = [
             Item(id: "it-1", displayName: "Lakehouse 1", type: "Lakehouse", workspaceID: Self.wsID),
-            Item(id: "it-2", displayName: "Notebook 1",  type: "Notebook",  workspaceID: Self.wsID),
+            Item(id: "it-2", displayName: "Notebook 1", type: "Notebook", workspaceID: Self.wsID),
         ]
         fabric.listItemsResults.append(.success(items))
 
@@ -1200,7 +1199,7 @@ struct SyncEngineTests {
     /// (Lakehouse, Warehouse, MirroredDatabase, SQLDatabase) and exclude
     /// everything else (SQLEndpoint, SemanticModel, Notebook, Report, …).
     @Test("listItems() filters non-allowlisted item types, eliminating ' 2' duplicate entries (issue-296)")
-    func testListItemsFiltersNonStorageTypes() async throws {
+    func listItemsFiltersNonStorageTypes() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -1210,12 +1209,12 @@ struct SyncEngineTests {
         // and default SemanticModel share the same displayName, plus a Warehouse,
         // a SQLDatabase, and a Notebook.
         let fabricItems = [
-            Item(id: "lh-1",  displayName: "Sales",   type: "Lakehouse",    workspaceID: Self.wsID),
-            Item(id: "sql-1", displayName: "Sales",   type: "SQLEndpoint",  workspaceID: Self.wsID),
-            Item(id: "sm-1",  displayName: "Sales",   type: "SemanticModel",workspaceID: Self.wsID),
-            Item(id: "wh-1",  displayName: "DW",      type: "Warehouse",    workspaceID: Self.wsID),
-            Item(id: "sdb-1", displayName: "Mirror",  type: "SQLDatabase",  workspaceID: Self.wsID),
-            Item(id: "nb-1",  displayName: "EDA",     type: "Notebook",     workspaceID: Self.wsID),
+            Item(id: "lh-1", displayName: "Sales", type: "Lakehouse", workspaceID: Self.wsID),
+            Item(id: "sql-1", displayName: "Sales", type: "SQLEndpoint", workspaceID: Self.wsID),
+            Item(id: "sm-1", displayName: "Sales", type: "SemanticModel", workspaceID: Self.wsID),
+            Item(id: "wh-1", displayName: "DW", type: "Warehouse", workspaceID: Self.wsID),
+            Item(id: "sdb-1", displayName: "Mirror", type: "SQLDatabase", workspaceID: Self.wsID),
+            Item(id: "nb-1", displayName: "EDA", type: "Notebook", workspaceID: Self.wsID),
         ]
         fabric.listItemsResults.append(.success(fabricItems))
 
@@ -1224,12 +1223,12 @@ struct SyncEngineTests {
         // Only the three storage-backed items must come back.
         #expect(got.count == 3)
         let ids = got.map(\.id)
-        #expect(ids.contains("lh-1"),  "Lakehouse must be returned")
-        #expect(ids.contains("wh-1"),  "Warehouse must be returned")
+        #expect(ids.contains("lh-1"), "Lakehouse must be returned")
+        #expect(ids.contains("wh-1"), "Warehouse must be returned")
         #expect(ids.contains("sdb-1"), "SQLDatabase must be returned")
         #expect(!ids.contains("sql-1"), "SQLEndpoint must be filtered out")
-        #expect(!ids.contains("sm-1"),  "SemanticModel must be filtered out")
-        #expect(!ids.contains("nb-1"),  "Notebook must be filtered out")
+        #expect(!ids.contains("sm-1"), "SemanticModel must be filtered out")
+        #expect(!ids.contains("nb-1"), "Notebook must be filtered out")
 
         // Non-storage items must not appear in the discovery cache either.
         let parentKey = CacheKey(
@@ -1248,16 +1247,16 @@ struct SyncEngineTests {
     }
 
     @Test("listItems() hides unknown item types (allowlist policy: hide by default)")
-    func testListItemsHidesUnknownTypes() async throws {
+    func listItemsHidesUnknownTypes() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         let fabricItems = [
-            Item(id: "k-1", displayName: "Known",   type: "Lakehouse",       workspaceID: Self.wsID),
-            Item(id: "u-1", displayName: "Unknown", type: "FutureItemType",  workspaceID: Self.wsID),
-            Item(id: "e-1", displayName: "Empty",   type: "",                workspaceID: Self.wsID),
+            Item(id: "k-1", displayName: "Known", type: "Lakehouse", workspaceID: Self.wsID),
+            Item(id: "u-1", displayName: "Unknown", type: "FutureItemType", workspaceID: Self.wsID),
+            Item(id: "e-1", displayName: "Empty", type: "", workspaceID: Self.wsID),
         ]
         fabric.listItemsResults.append(.success(fabricItems))
 
@@ -1273,8 +1272,10 @@ struct SyncEngineTests {
     }
 
     @Test("Item.hasOneLakeStorage reflects strict allowlist: true only for Lakehouse/Warehouse/MirroredDatabase/SQLDatabase")
-    func testItemHasOneLakeStorageAllowlistContents() {
-        func item(type: String) -> Item { Item(id: "x", displayName: "x", type: type, workspaceID: "w") }
+    func itemHasOneLakeStorageAllowlistContents() {
+        func item(type: String) -> Item {
+            Item(id: "x", displayName: "x", type: type, workspaceID: "w")
+        }
         // The four allowed types must be visible.
         #expect(item(type: "Lakehouse").hasOneLakeStorage)
         #expect(item(type: "Warehouse").hasOneLakeStorage)
@@ -1297,8 +1298,10 @@ struct SyncEngineTests {
     }
 
     @Test("Item.hasOneLakeStorage is case-insensitive for the four allowed types")
-    func testItemHasOneLakeStorageCaseInsensitive() {
-        func item(type: String) -> Item { Item(id: "x", displayName: "x", type: type, workspaceID: "w") }
+    func itemHasOneLakeStorageCaseInsensitive() {
+        func item(type: String) -> Item {
+            Item(id: "x", displayName: "x", type: type, workspaceID: "w")
+        }
         // All-lower
         #expect(item(type: "lakehouse").hasOneLakeStorage)
         #expect(item(type: "warehouse").hasOneLakeStorage)
@@ -1320,7 +1323,7 @@ struct SyncEngineTests {
     }
 
     @Test("listItems() evicts previously-cached rows that are now excluded by the allowlist via expireDiscoveryRows")
-    func testListItemsEvictsPrecachedNonStorageRow() async throws {
+    func listItemsEvictsPrecachedNonStorageRow() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -1358,9 +1361,9 @@ struct SyncEngineTests {
 
         // Fabric returns both excluded items and one allowed Lakehouse.
         fabric.listItemsResults.append(.success([
-            Item(id: "sql-stale", displayName: "Sales",  type: "SQLEndpoint",  workspaceID: Self.wsID),
-            Item(id: "kql-stale", displayName: "Events", type: "KQLDatabase",  workspaceID: Self.wsID),
-            Item(id: "lh-1",      displayName: "Sales",  type: "Lakehouse",    workspaceID: Self.wsID),
+            Item(id: "sql-stale", displayName: "Sales", type: "SQLEndpoint", workspaceID: Self.wsID),
+            Item(id: "kql-stale", displayName: "Events", type: "KQLDatabase", workspaceID: Self.wsID),
+            Item(id: "lh-1", displayName: "Sales", type: "Lakehouse", workspaceID: Self.wsID),
         ]))
         _ = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
 
@@ -1379,7 +1382,7 @@ struct SyncEngineTests {
     // MARK: - listItems: evicts stale discovery rows
 
     @Test("listItems() evicts a stale discovery row that was filtered out by the allowlist")
-    func testListItemsEvictsFilteredDiscoveryRow() async throws {
+    func listItemsEvictsFilteredDiscoveryRow() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -1409,7 +1412,7 @@ struct SyncEngineTests {
     }
 
     @Test("listItems() does not evict rows when all remote items are present in cache")
-    func testListItemsNoEvictionWhenNothingRemoved() async throws {
+    func listItemsNoEvictionWhenNothingRemoved() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -1431,7 +1434,7 @@ struct SyncEngineTests {
     // MARK: - enumerate: stale cache triggers refresh
 
     @Test("enumerate() issues a remote refresh when the cached listing is stale")
-    func testEnumerateStaleRefreshesFromRemote() async throws {
+    func enumerateStaleRefreshesFromRemote() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         // Use a very short TTL (1 s) so the cached row is fresh, then check
@@ -1454,7 +1457,7 @@ struct SyncEngineTests {
     }
 
     @Test("enumerate() serves from cache when listing is fresh")
-    func testEnumerateServesFromFreshCache() async throws {
+    func enumerateServesFromFreshCache() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -1485,7 +1488,7 @@ struct SyncEngineTests {
     // MARK: - currentlyOffline property
 
     @Test("currentlyOffline returns false by default")
-    func testIsOfflineDefaultFalse() async throws {
+    func isOfflineDefaultFalse() async throws {
         let ol = MockOneLakeClient()
         let (engine, _) = try makeEngine(onelake: ol)
         #expect(await engine.currentlyOffline == false)
@@ -1494,7 +1497,7 @@ struct SyncEngineTests {
     // MARK: - delete: uses recursive=true for directories
 
     @Test("delete() passes recursive=true when the cache row is a directory")
-    func testDeleteDirectoryUsesRecursiveTrue() async throws {
+    func deleteDirectoryUsesRecursiveTrue() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -1515,7 +1518,7 @@ struct SyncEngineTests {
     }
 
     @Test("delete() passes recursive=false when the cache row is a file")
-    func testDeleteFileUsesRecursiveFalse() async throws {
+    func deleteFileUsesRecursiveFalse() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -1542,7 +1545,7 @@ struct SyncEngineTests {
     ///   OneLakeError.httpError(HTTPClientError.transport(URLError(.notConnectedToInternet)))
     /// the engine must serve the stale cached blob and NOT touch the network again.
     @Test("open() serves stale cached blob when freshness HEAD fails with wrapped offline error")
-    func testOpenServesStaleBlob_whenHeadFailsOffline() async throws {
+    func openServesStaleBlob_whenHeadFailsOffline() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -1574,7 +1577,7 @@ struct SyncEngineTests {
     /// After a `refreshFolder` failure with the wrapped offline shape, `currentlyOffline`
     /// must flip to true because `offlineTracker.observe(_:)` was fed the error.
     @Test("currentlyOffline becomes true after refreshFolder fails with wrapped offline error via listPath")
-    func testIsOffline_trueAfterRefreshFolderFailsOffline() async throws {
+    func isOffline_trueAfterRefreshFolderFailsOffline() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -1604,7 +1607,7 @@ struct SyncEngineTests {
     }
 
     @Test("delete() uses recursive=true when no cache row exists (unknown type)")
-    func testDeleteUnknownTypeUsesRecursiveTrue() async throws {
+    func deleteUnknownTypeUsesRecursiveTrue() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -1621,17 +1624,17 @@ struct SyncEngineTests {
     // MARK: - listItems: item_type persisted from Item.type
 
     @Test("listItems() persists item_type from Item.type onto cache rows")
-    func testListItemsPersistsItemType() async throws {
+    func listItemsPersistsItemType() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         let fabricItems = [
-            Item(id: "lh-1",  displayName: "Sales LH",  type: "Lakehouse",        workspaceID: Self.wsID),
-            Item(id: "wh-1",  displayName: "DW",         type: "Warehouse",         workspaceID: Self.wsID),
-            Item(id: "sdb-1", displayName: "Mirror",     type: "SQLDatabase",       workspaceID: Self.wsID),
-            Item(id: "mdb-1", displayName: "Replicated", type: "MirroredDatabase",  workspaceID: Self.wsID),
+            Item(id: "lh-1", displayName: "Sales LH", type: "Lakehouse", workspaceID: Self.wsID),
+            Item(id: "wh-1", displayName: "DW", type: "Warehouse", workspaceID: Self.wsID),
+            Item(id: "sdb-1", displayName: "Mirror", type: "SQLDatabase", workspaceID: Self.wsID),
+            Item(id: "mdb-1", displayName: "Replicated", type: "MirroredDatabase", workspaceID: Self.wsID),
         ]
         fabric.listItemsResults.append(.success(fabricItems))
         _ = try await engine.listItems(alias: Self.alias, workspaceID: Self.wsID)
@@ -1640,21 +1643,21 @@ struct SyncEngineTests {
         let itemRowKey = { (path: String) in
             CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: VirtualIDs.itemID, path: path)
         }
-        let lhRow  = try await store.fetch(key: itemRowKey("lh-1"))
-        let whRow  = try await store.fetch(key: itemRowKey("wh-1"))
+        let lhRow = try await store.fetch(key: itemRowKey("lh-1"))
+        let whRow = try await store.fetch(key: itemRowKey("wh-1"))
         let sdbRow = try await store.fetch(key: itemRowKey("sdb-1"))
         let mdbRow = try await store.fetch(key: itemRowKey("mdb-1"))
 
-        #expect(lhRow.itemType  == "Lakehouse",       "Lakehouse item_type must be persisted")
-        #expect(whRow.itemType  == "Warehouse",        "Warehouse item_type must be persisted")
-        #expect(sdbRow.itemType == "SQLDatabase",      "SQLDatabase item_type must be persisted")
+        #expect(lhRow.itemType == "Lakehouse", "Lakehouse item_type must be persisted")
+        #expect(whRow.itemType == "Warehouse", "Warehouse item_type must be persisted")
+        #expect(sdbRow.itemType == "SQLDatabase", "SQLDatabase item_type must be persisted")
         #expect(mdbRow.itemType == "MirroredDatabase", "MirroredDatabase item_type must be persisted")
     }
 
     // MARK: - refreshFolder: item_type propagated to child rows
 
     @Test("refreshFolder() stamps item_type from discovery row onto child path rows")
-    func testRefreshFolderStampsItemType() async throws {
+    func refreshFolderStampsItemType() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -1675,7 +1678,7 @@ struct SyncEngineTests {
 
         // Stub listPath to return one file under Files/.
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "Files/data.csv")
+            PathEntry.file(name: "Files/data.csv"),
         ])))
 
         let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files")
@@ -1687,7 +1690,7 @@ struct SyncEngineTests {
     }
 
     @Test("refreshFolder() before listItems: child rows get empty item_type and are read-only")
-    func testRefreshFolderBeforeListItemsYieldsReadOnlyRows() async throws {
+    func refreshFolderBeforeListItemsYieldsReadOnlyRows() async throws {
         let ol = MockOneLakeClient()
         let fabric = MockFabricClient()
         let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
@@ -1695,7 +1698,7 @@ struct SyncEngineTests {
 
         // No discovery row written — simulates refreshFolder racing ahead of listItems.
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry.file(name: "Files/data.csv")
+            PathEntry.file(name: "Files/data.csv"),
         ])))
 
         let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files")
@@ -1710,7 +1713,7 @@ struct SyncEngineTests {
     // MARK: - put / mkdir: item_type propagated from parent cache row
 
     @Test("put() carries item_type from parent directory row into the upserted file row")
-    func testPutCarriesItemTypeFromParent() async throws {
+    func putCarriesItemTypeFromParent() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -1739,7 +1742,7 @@ struct SyncEngineTests {
     }
 
     @Test("mkdir() carries item_type from parent directory row into the upserted directory row")
-    func testMkdirCarriesItemTypeFromParent() async throws {
+    func mkdirCarriesItemTypeFromParent() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }

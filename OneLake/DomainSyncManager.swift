@@ -48,7 +48,9 @@ final class DomainSyncManager {
     /// process — to avoid clobbering domains another tool registered.
     ///
     /// The canonical value lives in `OfemConstants.ofemDomainIdentifierPrefix`.
-    var identifierPrefix: String { ofemDomainIdentifierPrefix }
+    var identifierPrefix: String {
+        ofemDomainIdentifierPrefix
+    }
 
     init() {}
 

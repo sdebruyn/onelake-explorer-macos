@@ -1,13 +1,12 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - DomainItem factory tests
 
 /// Tests for ``DomainItem`` factory methods — workspace mapping, item mapping,
 /// and MetadataRecord → DomainItem conversion.
 struct DomainItemTests {
-
     // MARK: - root(alias:)
 
     @Test func rootItemHasRootIdentifier() {
@@ -555,7 +554,7 @@ struct DomainItemTests {
             isDir: false, contentLength: 1, etag: ""
         )
         let vWithEtag = try DomainItem.from(record: withEtag).contentVersion
-        let vNoEtag   = try DomainItem.from(record: noEtag).contentVersion
+        let vNoEtag = try DomainItem.from(record: noEtag).contentVersion
         #expect(vWithEtag != vNoEtag)
     }
 

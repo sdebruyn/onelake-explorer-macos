@@ -1,6 +1,6 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - OfemPathsTests
 
@@ -9,7 +9,7 @@ struct OfemPathsTests {
     // MARK: - Root init
 
     @Test("explicit root: all paths are descendants of root")
-    func explicitRootDescendants() throws {
+    func explicitRootDescendants() {
         let tmp = FileManager.default.temporaryDirectory
             .appending(path: "ofem-paths-test-\(UUID().uuidString)", directoryHint: .isDirectory)
             .resolvingSymlinksInPath()
@@ -212,11 +212,11 @@ struct OfemPathsTests {
         let p1 = OfemPaths(root: root1)
         let p2 = OfemPaths(root: root2)
 
-        #expect(p1.configDir    != p2.configDir)
-        #expect(p1.configFile   != p2.configFile)
-        #expect(p1.cacheDir     != p2.cacheDir)
-        #expect(p1.logDir       != p2.logDir)
-        #expect(p1.tokensDir    != p2.tokensDir)
+        #expect(p1.configDir != p2.configDir)
+        #expect(p1.configFile != p2.configFile)
+        #expect(p1.cacheDir != p2.cacheDir)
+        #expect(p1.logDir != p2.logDir)
+        #expect(p1.tokensDir != p2.tokensDir)
     }
 
     // MARK: - Exotic root paths

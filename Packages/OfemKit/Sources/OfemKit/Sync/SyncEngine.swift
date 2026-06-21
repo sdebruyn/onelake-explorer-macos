@@ -1,5 +1,5 @@
-import Foundation
 import CryptoKit
+import Foundation
 import os.log
 
 // MARK: - SyncEngine
@@ -26,7 +26,6 @@ import os.log
 /// - Last-write-wins semantics: `put` and `delete` never use `If-Match` for
 /// writes. This matches the agreed conflict policy in `docs/auth.md`.
 public actor SyncEngine {
-
     // MARK: - Configuration
 
     /// Default per-account cap on concurrent downloads.
@@ -42,6 +41,7 @@ public actor SyncEngine {
     public static let defaultPauseProbeInterval: Duration = .seconds(120)
 
     // MARK: - Dependencies (private — callers must go through SyncEngine API)
+
     //
     // sync-19: these were `nonisolated let` with default (internal) access,
     // letting any OfemKit code bypass the actor's pause/semaphore/telemetry
@@ -70,10 +70,10 @@ public actor SyncEngine {
     /// A future `forgetAccount(alias:)` hook can prune entries on sign-out
     /// (sync-16).
     private var downloadSlots: [String: AsyncSemaphore] = [:]
-    private var uploadSlots:   [String: AsyncSemaphore] = [:]
-    private var refreshSlots:  [String: AsyncSemaphore] = [:]
+    private var uploadSlots: [String: AsyncSemaphore] = [:]
+    private var refreshSlots: [String: AsyncSemaphore] = [:]
     private let maxDownloads: Int
-    private let maxUploads:   Int
+    private let maxUploads: Int
 
     /// In-flight download tasks keyed by ``CacheKey/stableKeyString``.
     ///
@@ -123,14 +123,13 @@ public actor SyncEngine {
         self.logger = logger
         self.telemetry = telemetry
         self.maxDownloads = max(1, maxConcurrentDownloads)
-        self.maxUploads   = max(1, maxConcurrentUploads)
+        self.maxUploads = max(1, maxConcurrentUploads)
 
         // Scratch dir: per-process sub-directory.
-        let base: URL
-        if let sb = scratchBase {
-            base = sb
+        let base: URL = if let sb = scratchBase {
+            sb
         } else {
-            base = URL(fileURLWithPath: NSTemporaryDirectory())
+            URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent(PartialManager.partialsDirName)
         }
         let pid = ProcessInfo.processInfo.processIdentifier
@@ -144,7 +143,7 @@ public actor SyncEngine {
             PartialManager.reapStalePartialDirs(under: base)
         }
 
-        self.pauseManager  = PauseManager(cache: cache, onelake: onelake, probeInterval: pauseProbeInterval)
+        self.pauseManager = PauseManager(cache: cache, onelake: onelake, probeInterval: pauseProbeInterval)
         self.offlineTracker = OfflineTracker()
     }
 
@@ -392,7 +391,9 @@ public actor SyncEngine {
         // reconcile, which is worse than throwing here).
         let cachedChildren = try await cache.children(of: key)
         var cachedByPath: [String: MetadataRecord] = [:]
-        for c in cachedChildren { cachedByPath[c.path] = c }
+        for c in cachedChildren {
+            cachedByPath[c.path] = c
+        }
 
         var diff = Diff()
 
@@ -420,7 +421,7 @@ public actor SyncEngine {
             // Carry blob linkage when etag still matches.
             if let c = cur, !c.etag.isEmpty, c.etag == entry.eTag {
                 next.blobSHA256 = c.blobSHA256
-                next.blobSize   = c.blobSize
+                next.blobSize = c.blobSize
                 next.contentType = c.contentType
             }
             if next.lastAccessedNs == 0 { next.lastAccessedNs = nowNs }
@@ -476,17 +477,16 @@ public actor SyncEngine {
             ))
         }
         logger.debug("folder refreshed",
-            metadata: [
-                "account": key.accountAlias,
-                "workspace": key.workspaceID,
-                "item": key.itemID,
-                "path": key.path,
-                "added": "\(diff.added)",
-                "updated": "\(diff.updated)",
-                "removed": "\(diff.removed)",
-                "elapsed_ms": "\(elapsedMs(since: now))",
-            ]
-        )
+                     metadata: [
+                         "account": key.accountAlias,
+                         "workspace": key.workspaceID,
+                         "item": key.itemID,
+                         "path": key.path,
+                         "added": "\(diff.added)",
+                         "updated": "\(diff.updated)",
+                         "removed": "\(diff.removed)",
+                         "elapsed_ms": "\(elapsedMs(since: now))",
+                     ])
         return diff
     }
 
@@ -1123,8 +1123,8 @@ public actor SyncEngine {
         }.value
         let spillHandle: FileHandle
         switch readHandleResult {
-        case .failure(let err): throw err
-        case .success(let h): spillHandle = h
+        case let .failure(err): throw err
+        case let .success(h): spillHandle = h
         }
 
         do {
@@ -1161,8 +1161,8 @@ public actor SyncEngine {
                 }.value
                 let freshHandle: FileHandle
                 switch freshHandleResult {
-                case .failure(let e): throw e
-                case .success(let h): freshHandle = h
+                case let .failure(e): throw e
+                case let .success(h): freshHandle = h
                 }
                 do {
                     let props = try await onelake.read(
@@ -1222,7 +1222,7 @@ public actor SyncEngine {
         // A folder whose children have been enumerated at least once is "present"
         // even when genuinely empty — serve it (empty listing) rather than
         // blocking on a refresh every open.
-        if children.isEmpty && !Enumerator.childrenEnumerated(record: parent) {
+        if children.isEmpty, !Enumerator.childrenEnumerated(record: parent) {
             return nil
         }
         return CachedListing(parent: parent, children: children)
@@ -1236,7 +1236,7 @@ public actor SyncEngine {
             path: key.path
         )
         if cached.etag.isEmpty { return (false, props) }
-        if !props.eTag.isEmpty && props.eTag == cached.etag { return (true, props) }
+        if !props.eTag.isEmpty, props.eTag == cached.etag { return (true, props) }
         return (false, props)
     }
 
@@ -1342,9 +1342,8 @@ public actor SyncEngine {
     ) async {
         let aliasHash = TelemetryRedaction.hashAlias(alias)
         let ms = elapsedMs(since: start)
-        let event: TelemetryEvent
-        switch outcome {
-        case .success(let bytes):
+        let event = switch outcome {
+        case let .success(bytes):
             // `bytesTransferred` defaults to 0 when `bytes` is nil, which means
             // "not applicable" (e.g. a cache-hit path that does no I/O). The field
             // is omitted from the AppInsights measurement map when it is 0, so a
@@ -1352,23 +1351,23 @@ public actor SyncEngine {
             // at the analytics level (both emit no measurement, which is the desired
             // behaviour — a 0-byte file is a legitimate edge case but not worth
             // special-casing in the wire format).
-            event = TelemetryEvent(
+            TelemetryEvent(
                 name: eventName,
                 accountAliasHash: aliasHash,
                 durationMs: ms,
                 success: true,
                 bytesTransferred: bytes ?? 0
             )
-        case .successWithCode(let code):
-            event = TelemetryEvent(
+        case let .successWithCode(code):
+            TelemetryEvent(
                 name: eventName,
                 accountAliasHash: aliasHash,
                 durationMs: ms,
                 success: true,
                 errorCode: code
             )
-        case .failed(let code):
-            event = TelemetryEvent(
+        case let .failed(code):
+            TelemetryEvent(
                 name: eventName,
                 accountAliasHash: aliasHash,
                 durationMs: ms,
@@ -1376,7 +1375,7 @@ public actor SyncEngine {
                 errorCode: code
             )
         case .paused:
-            event = TelemetryEvent(
+            TelemetryEvent(
                 name: eventName,
                 accountAliasHash: aliasHash,
                 durationMs: ms,

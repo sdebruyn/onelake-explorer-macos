@@ -70,7 +70,9 @@ final class OneShotContinuation<T: Sendable>: @unchecked Sendable {
 /// `OneShotContinuation` precedent in the same file.
 final class XPCConnectionBox: @unchecked Sendable {
     let connection: NSXPCConnection
-    init(_ connection: NSXPCConnection) { self.connection = connection }
+    init(_ connection: NSXPCConnection) {
+        self.connection = connection
+    }
 }
 
 // MARK: - Shared async domain listing bridge
@@ -279,7 +281,7 @@ final class OfemFPEClient {
 
     /// Surfaces a version mismatch to the user via `MenuStatusModel.lastActionError`.
     @MainActor
-    private func notifyVersionMismatch(fpeVersion: Int, domainIdentifier: String) {
+    private func notifyVersionMismatch(fpeVersion: Int, domainIdentifier _: String) {
         MenuStatusModel.shared.setVersionMismatchError(
             hostVersion: ofemControlProtocolVersion,
             fpeVersion: fpeVersion
@@ -515,8 +517,8 @@ enum OfemFPEClientError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .connectionFailed(let msg): return "FPE XPC connection failed: \(msg)"
-        case .domainNotFound(let id):    return "FPE domain not found: \(id)"
+        case let .connectionFailed(msg): "FPE XPC connection failed: \(msg)"
+        case let .domainNotFound(id): "FPE domain not found: \(id)"
         }
     }
 }

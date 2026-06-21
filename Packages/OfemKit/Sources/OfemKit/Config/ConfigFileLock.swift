@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 
 // MARK: - ConfigFileLock
+
 //
 // Cross-process advisory file lock backed by `fcntl(2)` record locking.
 //
@@ -49,10 +50,10 @@ final class ConfigFileLock: @unchecked Sendable {
     /// Releases the advisory lock and closes the file descriptor.
     func release() {
         var lk = Darwin.flock()
-        lk.l_type   = Int16(F_UNLCK)
+        lk.l_type = Int16(F_UNLCK)
         lk.l_whence = Int16(SEEK_SET)
-        lk.l_start  = 0
-        lk.l_len    = 0
+        lk.l_start = 0
+        lk.l_len = 0
         _ = Darwin.fcntl(fd, F_SETLK, &lk)
         Darwin.close(fd)
     }
@@ -144,10 +145,10 @@ final class ConfigFileLock: @unchecked Sendable {
             // Dedicated OS thread: blocks inside F_SETLKW until granted or fd closed.
             let t = Thread {
                 var lk = Darwin.flock()
-                lk.l_type   = Int16(F_WRLCK)
+                lk.l_type = Int16(F_WRLCK)
                 lk.l_whence = Int16(SEEK_SET)
-                lk.l_start  = 0
-                lk.l_len    = 0 // Lock the whole file.
+                lk.l_start = 0
+                lk.l_len = 0 // Lock the whole file.
 
                 // EINTR-aware acquire loop: F_SETLKW can return -1/EINTR when a
                 // signal is delivered to this thread. Retry transparently, but
@@ -205,7 +206,9 @@ private final class AtomicFDState: @unchecked Sendable {
     private var _lock = os_unfair_lock()
     private var _state: FDState
 
-    init(_ initial: FDState) { _state = initial }
+    init(_ initial: FDState) {
+        _state = initial
+    }
 
     func load() -> FDState {
         os_unfair_lock_lock(&_lock)

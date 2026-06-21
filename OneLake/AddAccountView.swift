@@ -18,8 +18,8 @@
 
 import AppKit
 import OfemKit
-import SwiftUI
 import os.log
+import SwiftUI
 
 struct AddAccountView: View {
     @Environment(\.dismiss) private var dismiss
@@ -35,7 +35,7 @@ struct AddAccountView: View {
     // section so curious users don't have to dig for it.
     // URL(string:) can return nil for malformed literals; guard with a fallback
     // so a typo doesn't crash at first access of the view type (host-18).
-    private static let customAppRegDocsURL: URL = URL(
+    private static let customAppRegDocsURL: URL = .init(
         string: "https://ofem.debruyn.dev/custom-app-registration/"
     ) ?? URL(string: "https://ofem.debruyn.dev/")!
 
@@ -123,7 +123,6 @@ struct AddAccountView: View {
 
     // MARK: - Advanced (Bring Your Own App Registration)
 
-    @ViewBuilder
     private var advancedSection: some View {
         DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
             VStack(alignment: .leading, spacing: 4) {
@@ -167,12 +166,12 @@ struct AddAccountView: View {
                     .font(.subheadline)
             }
 
-        case .success(let username), .readyToDismiss(let username):
+        case let .success(username), let .readyToDismiss(username):
             Label("Signed in as \(username)", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
                 .font(.subheadline)
 
-        case .failure(let message):
+        case let .failure(message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red)
                 .font(.subheadline)

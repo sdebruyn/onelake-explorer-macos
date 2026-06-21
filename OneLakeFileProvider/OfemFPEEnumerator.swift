@@ -118,7 +118,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
     )
 
     let containerItemIdentifier: NSFileProviderItemIdentifier
-    let identifier: ItemIdentifier         // OfemKit-typed
+    let identifier: ItemIdentifier // OfemKit-typed
     let alias: String
     let engineHost: any EngineProviding
 
@@ -326,7 +326,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
                 // If the anchor is ahead of the cache the DB may have been
                 // reset (or a new process started). Expire so the framework
                 // performs a full re-enumeration.
-                if previousNs > currentNs && previousNs != 0 {
+                if previousNs > currentNs, previousNs != 0 {
                     Self.log.debug(
                         "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges — anchor ahead of cache, expiring"
                     )
@@ -711,7 +711,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                 // reset (or a new process started). Expire so the framework
                 // performs a full re-enumeration, mirroring the same guard in
                 // OfemFPEEnumerator.enumerateChanges.
-                if previousNs > currentNs && previousNs != 0 {
+                if previousNs > currentNs, previousNs != 0 {
                     Self.log.debug(
                         "WorkingSet: anchor ahead of cache for \(aliasCopy, privacy: .public) — expiring"
                     )

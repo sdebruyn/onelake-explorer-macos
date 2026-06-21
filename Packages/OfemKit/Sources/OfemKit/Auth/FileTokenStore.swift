@@ -56,7 +56,7 @@ public final class FileTokenStore: Sendable {
     /// All `FileTokenStore` instances for the same directory share one queue,
     /// so concurrent writes within the same process are serialised without
     /// relying on `fcntl` (which is per-process, not per-fd).
-    private static nonisolated(unsafe) var _queueRegistry: [String: DispatchQueue] = [:]
+    private nonisolated(unsafe) static var _queueRegistry: [String: DispatchQueue] = [:]
 
     private static func sharedQueue(for root: URL) -> DispatchQueue {
         let key = root.resolvingSymlinksInPath().path(percentEncoded: false)
@@ -68,7 +68,7 @@ public final class FileTokenStore: Sendable {
         }
     }
 
-    // Store the per-path serial queue as a property for use in write/delete.
+    /// Store the per-path serial queue as a property for use in write/delete.
     private let serialQueue: DispatchQueue
 
     // MARK: - Initialisers
@@ -309,7 +309,7 @@ public final class FileTokenStore: Sendable {
 
     /// Returns the URL of the per-alias lock sidecar file.
     private func aliasLockURL(alias: String) -> URL {
-        return root.appending(path: "\(Self.hexStem(alias: alias)).lock", directoryHint: .notDirectory)
+        root.appending(path: "\(Self.hexStem(alias: alias)).lock", directoryHint: .notDirectory)
     }
 
     /// Acquires an exclusive POSIX advisory `fcntl` record lock on the
@@ -326,7 +326,7 @@ public final class FileTokenStore: Sendable {
         let fd = Darwin.open(lockURL.path(percentEncoded: false), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
         guard fd >= 0 else {
             throw FileTokenStoreError.lockFailed(alias,
-                NSError(domain: NSPOSIXErrorDomain, code: Int(Darwin.errno)))
+                                                 NSError(domain: NSPOSIXErrorDomain, code: Int(Darwin.errno)))
         }
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -347,10 +347,10 @@ public final class FileTokenStore: Sendable {
 
             let t = Thread {
                 var lk = Darwin.flock()
-                lk.l_type   = Int16(F_WRLCK)
+                lk.l_type = Int16(F_WRLCK)
                 lk.l_whence = Int16(SEEK_SET)
-                lk.l_start  = 0
-                lk.l_len    = 0
+                lk.l_start = 0
+                lk.l_len = 0
 
                 // EINTR-aware loop: retry on signal delivery, bail if timer fired.
                 var result: Int32
@@ -377,7 +377,7 @@ public final class FileTokenStore: Sendable {
                     } else {
                         Darwin.close(fd)
                         continuation.resume(throwing: FileTokenStoreError.lockFailed(alias,
-                            NSError(domain: NSPOSIXErrorDomain, code: Int(err))))
+                                                                                     NSError(domain: NSPOSIXErrorDomain, code: Int(err))))
                     }
                 }
             }
@@ -390,10 +390,10 @@ public final class FileTokenStore: Sendable {
     /// Releases the POSIX advisory lock and closes the file descriptor.
     func releaseAliasLock(_ fd: Int32) {
         var lk = Darwin.flock()
-        lk.l_type   = Int16(F_UNLCK)
+        lk.l_type = Int16(F_UNLCK)
         lk.l_whence = Int16(SEEK_SET)
-        lk.l_start  = 0
-        lk.l_len    = 0
+        lk.l_start = 0
+        lk.l_len = 0
         _ = Darwin.fcntl(fd, F_SETLK, &lk)
         Darwin.close(fd)
     }
@@ -413,7 +413,7 @@ public final class FileTokenStore: Sendable {
     /// The alias is hex-encoded so any byte value (including `/`) produces a
     /// valid, unique filename.
     private func tokenURL(for alias: String) -> URL {
-        return root.appending(path: "\(Self.hexStem(alias: alias)).bin", directoryHint: .notDirectory)
+        root.appending(path: "\(Self.hexStem(alias: alias)).bin", directoryHint: .notDirectory)
     }
 }
 
@@ -443,17 +443,19 @@ public enum FileTokenStoreError: Error {
 
 // MARK: - TokenLockFDState
 
-fileprivate enum TokenFDStateValue { case open, acquiredByThread, closedByTimer }
+private enum TokenFDStateValue { case open, acquiredByThread, closedByTimer }
 
 /// Minimal thread-safe state machine for the fd lifecycle during token lock acquisition.
 ///
 /// Mirrors `AtomicFDState` in `Config/ConfigFileLock.swift` but is scoped to the
 /// `Auth/` package to avoid coupling between the two subsystems.
-fileprivate final class TokenLockFDState: @unchecked Sendable {
+private final class TokenLockFDState: @unchecked Sendable {
     private var _lock = os_unfair_lock()
     private var _state: TokenFDStateValue
 
-    init(_ initial: TokenFDStateValue) { _state = initial }
+    init(_ initial: TokenFDStateValue) {
+        _state = initial
+    }
 
     func load() -> TokenFDStateValue {
         os_unfair_lock_lock(&_lock)

@@ -4,7 +4,6 @@ import Foundation
 
 /// Typed errors produced by the ``SyncEngine``.
 public enum SyncError: Error, Sendable, CustomStringConvertible {
-
     // MARK: - Cases
 
     /// The workspace's Fabric capacity is paused; all reads and writes fail.
@@ -26,9 +25,9 @@ public enum SyncError: Error, Sendable, CustomStringConvertible {
     var fpCode: FPError.Code {
         switch self {
         case .workspacePaused:
-            return .serverBusy
+            .serverBusy
         case .shortDownload, .blobSHAMismatch, .spillFileError:
-            return .cannotSynchronize
+            .cannotSynchronize
         }
     }
 
@@ -37,13 +36,13 @@ public enum SyncError: Error, Sendable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .workspacePaused:
-            return "sync: workspace capacity is paused"
-        case .shortDownload(let expected, let got):
-            return "sync: short download: expected \(expected) bytes, got \(got)"
-        case .blobSHAMismatch(let got, let expected):
-            return "sync: blob SHA mismatch: got \(got), expected \(expected)"
-        case .spillFileError(let err):
-            return "sync: spill file error: \(err)"
+            "sync: workspace capacity is paused"
+        case let .shortDownload(expected, got):
+            "sync: short download: expected \(expected) bytes, got \(got)"
+        case let .blobSHAMismatch(got, expected):
+            "sync: blob SHA mismatch: got \(got), expected \(expected)"
+        case let .spillFileError(err):
+            "sync: spill file error: \(err)"
         }
     }
 }

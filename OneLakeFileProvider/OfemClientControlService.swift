@@ -155,7 +155,7 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate, @u
     }
 
     func listener(
-        _ listener: NSXPCListener,
+        _: NSXPCListener,
         shouldAcceptNewConnection newConnection: NSXPCConnection
     ) -> Bool {
         // Validate that the connecting process is the OFEM host app by checking
@@ -185,7 +185,7 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate, @u
         // the cast is guaranteed to succeed because all elements are ObjC class metatypes
         // which bridge to AnyHashable via NSObjectProtocol.
         let classArray: [AnyObject] = [XPCEngineStatus.self, NSArray.self, XPCPausedWorkspace.self]
-        let replyClasses = NSSet(array: classArray) as! Set<AnyHashable>  // safe: AnyObject metatypes
+        let replyClasses = NSSet(array: classArray) as! Set<AnyHashable> // safe: AnyObject metatypes
         iface.setClasses(
             replyClasses,
             for: #selector(OfemClientControlProtocol.getEngineStatus(reply:)),
@@ -320,14 +320,14 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
         case "telemetry":
             guard value == "on" || value == "off" else {
                 result = .failure(.invalidValue(key: key, value: value,
-                    reason: "expected \"on\" or \"off\""))
+                                                reason: "expected \"on\" or \"off\""))
                 break
             }
             result = .success(.telemetry(value == "on"))
         case "cache.max_size_gb":
             guard let gb = Int(value) else {
                 result = .failure(.invalidValue(key: key, value: value,
-                    reason: "expected an integer"))
+                                                reason: "expected an integer"))
                 break
             }
             // 0 is the "no limit" sentinel; positive values are
@@ -337,7 +337,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
         case "net.max_concurrent_uploads_per_account":
             guard let n = Int(value) else {
                 result = .failure(.invalidValue(key: key, value: value,
-                    reason: "expected an integer"))
+                                                reason: "expected an integer"))
                 break
             }
             // xpc-07: use named constants from NetConfig.
@@ -349,7 +349,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
         case "net.max_concurrent_downloads_per_account":
             guard let n = Int(value) else {
                 result = .failure(.invalidValue(key: key, value: value,
-                    reason: "expected an integer"))
+                                                reason: "expected an integer"))
                 break
             }
             // xpc-08: use named constants from NetConfig.
@@ -358,14 +358,14 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             let allowed = ["debug", "info", "warn", "error"]
             guard allowed.contains(value) else {
                 result = .failure(.invalidValue(key: key, value: value,
-                    reason: "expected one of \(allowed.joined(separator: ", "))"))
+                                                reason: "expected one of \(allowed.joined(separator: ", "))"))
                 break
             }
             result = .success(.logLevel(value))
         case "sync.materialized_poll_interval_s":
             guard let n = Int(value) else {
                 result = .failure(.invalidValue(key: key, value: value,
-                    reason: "expected an integer"))
+                                                reason: "expected an integer"))
                 break
             }
             let clamped = max(SyncConfig.minMaterializedPollIntervalS,
@@ -377,7 +377,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
 
         let validated: ValidatedConfig
         switch result {
-        case .failure(let err):
+        case let .failure(err):
             Self.log.warning(
                 "setConfig: key='\(key, privacy: .public)' rejected: \(err.localizedDescription, privacy: .public)"
             )
@@ -386,7 +386,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             // boundary rather than an opaque SwiftErrorDomain blob.
             reply(err.asNSError())
             return
-        case .success(let value):
+        case let .success(value):
             validated = value
         }
 
@@ -407,12 +407,12 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                 // enum of plain value-typed cases — so it is `@Sendable`-safe.
                 try await configStore.updateAndSave { cfg in
                     switch validated {
-                    case .telemetry(let flag):      cfg.telemetry = flag
-                    case .cacheMaxSizeGB(let gb):   cfg.cache.maxSizeGB = gb
-                    case .netMaxUploads(let n):     cfg.net.maxConcurrentUploadsPerAccount = n
-                    case .netMaxDownloads(let n):   cfg.net.maxConcurrentDownloadsPerAccount = n
-                    case .logLevel(let lvl):        cfg.log.level = lvl
-                    case .syncMaterializedPollIntervalS(let n): cfg.sync.materializedPollIntervalS = n
+                    case let .telemetry(flag): cfg.telemetry = flag
+                    case let .cacheMaxSizeGB(gb): cfg.cache.maxSizeGB = gb
+                    case let .netMaxUploads(n): cfg.net.maxConcurrentUploadsPerAccount = n
+                    case let .netMaxDownloads(n): cfg.net.maxConcurrentDownloadsPerAccount = n
+                    case let .logLevel(lvl): cfg.log.level = lvl
+                    case let .syncMaterializedPollIntervalS(n): cfg.sync.materializedPollIntervalS = n
                     }
                 }
 
@@ -527,10 +527,10 @@ enum SetConfigError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unknownKey(let k):
-            return "setConfig: unknown key '\(k)'"
-        case .invalidValue(let k, let v, let r):
-            return "setConfig: invalid value '\(v)' for key '\(k)': \(r)"
+        case let .unknownKey(k):
+            "setConfig: unknown key '\(k)'"
+        case let .invalidValue(k, v, r):
+            "setConfig: invalid value '\(v)' for key '\(k)': \(r)"
         }
     }
 
@@ -542,10 +542,10 @@ enum SetConfigError: Error, LocalizedError {
         let code: Int
         var userInfo: [String: Any] = [:]
         switch self {
-        case .unknownKey(let k):
+        case let .unknownKey(k):
             code = 1
             userInfo["key"] = k
-        case .invalidValue(let k, let v, let r):
+        case let .invalidValue(k, v, r):
             code = 2
             userInfo["key"] = k
             userInfo["value"] = v

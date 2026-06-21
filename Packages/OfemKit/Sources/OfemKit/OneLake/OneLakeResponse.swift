@@ -92,23 +92,21 @@ func convertRawEntry(_ raw: RawPathEntry, itemGUID: String) -> PathEntry {
     let isDir = raw.isDirectory == "true"
     let size = raw.contentLength.flatMap { Int64($0) } ?? 0
     let etag = raw.etag ?? ""
-    let modified: Date
-    if let s = raw.lastModified, let t = parseHTTPDate(s) {
-        modified = t
+    let modified: Date = if let s = raw.lastModified, let t = parseHTTPDate(s) {
+        t
     } else {
-        modified = .distantPast
+        .distantPast
     }
     // onelake-12: strip the "<itemGUID>/" prefix that the DFS API prepends to
     // every name so consumers receive an item-relative path without needing to
     // know or re-strip the prefix themselves.
     let prefix = "\(itemGUID)/"
-    let itemRelativeName: String
-    if raw.name.hasPrefix(prefix) {
-        itemRelativeName = String(raw.name.dropFirst(prefix.count))
+    let itemRelativeName: String = if raw.name.hasPrefix(prefix) {
+        String(raw.name.dropFirst(prefix.count))
     } else {
         // Fallback: return the raw name unchanged (e.g. if the server changes
         // the format or itemGUID is not present as a leading segment).
-        itemRelativeName = raw.name
+        raw.name
     }
     return PathEntry(name: itemRelativeName, isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified)
 }
@@ -130,11 +128,10 @@ func propertiesFromHeaders(_ headers: [AnyHashable: Any]) -> PathProperties {
     let isDir = normalised["x-ms-resource-type"] == "directory"
     let size = normalised["content-length"].flatMap { Int64($0) } ?? 0
     let etag = normalised["etag"] ?? ""
-    let modified: Date
-    if let s = normalised["last-modified"], let t = parseHTTPDate(s) {
-        modified = t
+    let modified: Date = if let s = normalised["last-modified"], let t = parseHTTPDate(s) {
+        t
     } else {
-        modified = .distantPast
+        .distantPast
     }
     let contentType = normalised["content-type"] ?? ""
     return PathProperties(isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified, contentType: contentType)

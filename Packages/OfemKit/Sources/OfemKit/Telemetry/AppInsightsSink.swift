@@ -23,11 +23,11 @@ import Foundation
 public struct AppInsightsSink: TelemetrySink {
     // MARK: - State
 
-    let trackURL: URL         // Validated at init; never force-unwrapped (store-21)
-    let iKey: String          // InstrumentationKey
-    let role: String          // ai.cloud.role
-    let installID: String     // ai.cloud.roleInstance
-    let sdkTag: String        // ai.internal.sdkVersion ("ofem:2026.05.1")
+    let trackURL: URL // Validated at init; never force-unwrapped (store-21)
+    let iKey: String // InstrumentationKey
+    let role: String // ai.cloud.role
+    let installID: String // ai.cloud.roleInstance
+    let sdkTag: String // ai.internal.sdkVersion ("ofem:2026.05.1")
     let session: URLSession
 
     // MARK: - Init
@@ -236,19 +236,19 @@ public enum AppInsightsSinkError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .emptyConnectionString:
-            return "App Insights connection string is empty"
-        case .malformedConnectionString(let entry):
-            return "Malformed App Insights connection-string entry: \(entry)"
+            "App Insights connection string is empty"
+        case let .malformedConnectionString(entry):
+            "Malformed App Insights connection-string entry: \(entry)"
         case .missingInstrumentationKey:
-            return "App Insights connection string missing InstrumentationKey"
-        case .invalidEndpointURL(let ep):
-            return "App Insights IngestionEndpoint is not a valid URL: \(ep)"
-        case .transport(let err):
-            return "App Insights transport error: \(err.localizedDescription)"
-        case .ingestion(let code, let body):
-            return "App Insights ingestion HTTP \(code): \(body)"
-        case .partialReject(let accepted, let received, _):
-            return "App Insights ingestion accepted \(accepted)/\(received) events"
+            "App Insights connection string missing InstrumentationKey"
+        case let .invalidEndpointURL(ep):
+            "App Insights IngestionEndpoint is not a valid URL: \(ep)"
+        case let .transport(err):
+            "App Insights transport error: \(err.localizedDescription)"
+        case let .ingestion(code, body):
+            "App Insights ingestion HTTP \(code): \(body)"
+        case let .partialReject(accepted, received, _):
+            "App Insights ingestion accepted \(accepted)/\(received) events"
         }
     }
 }

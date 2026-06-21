@@ -1,15 +1,13 @@
 import CryptoKit
 import Foundation
-import Testing
-
 @testable import OfemKit
+import Testing
 
 // MARK: - BlobShardCacheTests
 
 /// Tests for `BlobShardCache` and the LRU eviction logic in `CacheStore`.
 @Suite("BlobShardCache")
 struct BlobShardCacheTests {
-
     // MARK: - Store + Load
 
     @Test("Store and load a blob")
@@ -119,7 +117,7 @@ struct BlobShardCacheTests {
             let db2 = Data("sibling-\(j)".utf8)
             let sa = sha256Hex(da)
             let sb = sha256Hex(db2)
-            if String(sa.prefix(2)) == String(sb.prefix(2)) && sa != sb {
+            if String(sa.prefix(2)) == String(sb.prefix(2)), sa != sb {
                 shaA = sa; dataA = da; shaB = sb; dataB = db2; break
             }
             j += 1
@@ -164,7 +162,7 @@ struct BlobShardCacheTests {
         while true {
             let da = Data("keepA-\(i)".utf8); let db2 = Data("keepB-\(j)".utf8)
             let sa = sha256Hex(da); let sb = sha256Hex(db2)
-            if String(sa.prefix(2)) == String(sb.prefix(2)) && sa != sb {
+            if String(sa.prefix(2)) == String(sb.prefix(2)), sa != sb {
                 shaA = sa; dataA = da; dataB = db2; break
             }
             j += 1; if j > 1000 { i += 1; j = i + 1 }
@@ -320,7 +318,7 @@ struct BlobShardCacheTests {
         let (sha, _) = try cache.store(data)
         let url = cache.fileURL(sha256: sha)
         #expect(url != nil)
-        #expect(FileManager.default.fileExists(atPath: url!.path))
+        #expect(FileManager.default.fileExists(atPath: try #require(url?.path)))
     }
 
     @Test("fileURL returns nil when blob is not present")
@@ -384,7 +382,7 @@ struct BlobShardCacheTests {
         let (cache, tmp) = try makeBlobCache()
         defer { try? FileManager.default.removeItem(at: tmp) }
 
-        let content = Data((0..<512).map { UInt8($0 & 0xFF) })
+        let content = Data((0 ..< 512).map { UInt8($0 & 0xFF) })
         let srcURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try content.write(to: srcURL)
 
@@ -499,7 +497,7 @@ struct BlobShardCacheTests {
         do {
             try cache.validateSHA(upper)
             Issue.record("Expected invalidSHA")
-        } catch CacheError.invalidSHA(let sha) {
+        } catch let CacheError.invalidSHA(sha) {
             #expect(sha == upper)
         }
     }
@@ -512,7 +510,7 @@ struct BlobShardCacheTests {
         do {
             try cache.validateSHA(short)
             Issue.record("Expected invalidSHA")
-        } catch CacheError.invalidSHA(let sha) {
+        } catch let CacheError.invalidSHA(sha) {
             #expect(sha == short)
         }
     }
@@ -527,7 +525,7 @@ struct BlobShardCacheTests {
         do {
             _ = try cache.load(sha256: sha)
             Issue.record("Expected notFound")
-        } catch CacheError.notFound(let desc) {
+        } catch let CacheError.notFound(desc) {
             #expect(desc.contains(sha))
         }
     }
@@ -544,7 +542,7 @@ struct BlobShardCacheTests {
 
         // Launch multiple concurrent stores of the same data.
         try await withThrowingTaskGroup(of: (String, Int64).self) { group in
-            for _ in 0..<8 {
+            for _ in 0 ..< 8 {
                 group.addTask {
                     try cache.store(content)
                 }

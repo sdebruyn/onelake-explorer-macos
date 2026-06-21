@@ -17,7 +17,7 @@ APPLE_CONFIG  := Local.xcconfig
 # OfemKit `swift test` and host `xcodebuild` invocations always serialize.
 .NOTPARALLEL:
 
-.PHONY: app bootstrap gen build build-ci test test-integration clean help
+.PHONY: app bootstrap gen build build-ci test test-integration format format-lint clean help
 
 # Build the signed macOS app. This is THE single build to run after pulling main.
 app: build ## Build signed macOS app (THE build to run after pulling)
@@ -157,6 +157,17 @@ clean: ## Remove build artefacts and unregister app from LaunchServices
 		done; \
 	fi
 	rm -rf OneLake.xcodeproj OneLake.xcworkspace build DerivedData
+
+# SwiftFormat (nicklockwood/SwiftFormat 0.61.1) — the version is pinned so
+# local and CI agree. Install: brew install swiftformat (or the exact version).
+# The .swiftformat config at the repo root controls rules and excludes.
+format: ## Reformat Swift sources in place (swiftformat .)
+	@command -v swiftformat >/dev/null 2>&1 || { echo "swiftformat not installed; run: brew install swiftformat"; exit 1; }
+	swiftformat .
+
+format-lint: ## Lint formatting without modifying files (mirrors CI gate)
+	@command -v swiftformat >/dev/null 2>&1 || { echo "swiftformat not installed; run: brew install swiftformat"; exit 1; }
+	swiftformat --lint .
 
 help: ## Show available targets
 	@echo "Targets:"

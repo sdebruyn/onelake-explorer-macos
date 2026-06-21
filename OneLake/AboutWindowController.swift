@@ -33,7 +33,8 @@ import SwiftUI
 func copyrightYear(from version: String) -> String {
     if let yearComponent = version.split(separator: ".").first,
        yearComponent.count == 4,
-       Int(yearComponent) != nil {
+       Int(yearComponent) != nil
+    {
         return String(yearComponent)
     }
     return String(Calendar.current.component(.year, from: Date()))
@@ -52,7 +53,9 @@ final class AboutWindowController: NSObject {
 
     private var window: NSWindow?
 
-    private override init() { super.init() }
+    override private init() {
+        super.init()
+    }
 
     func show() {
         if let existing = window, existing.isVisible {
@@ -101,9 +104,9 @@ private struct AboutView: View {
         copyright = copyrightString(version: v)
         // Build timestamp is only shown in DEBUG builds; always nil in release.
         #if DEBUG
-        buildTimestamp = BuildInfo.buildTimestamp
+            buildTimestamp = BuildInfo.buildTimestamp
         #else
-        buildTimestamp = nil
+            buildTimestamp = nil
         #endif
     }
 

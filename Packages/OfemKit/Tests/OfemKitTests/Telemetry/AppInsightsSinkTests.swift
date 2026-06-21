@@ -1,6 +1,6 @@
-import Testing
-@testable import OfemKit
 import Foundation
+@testable import OfemKit
+import Testing
 
 /// Reads a request's body. Inside a `URLProtocol` handler the body always
 /// arrives as `httpBodyStream` (URLSession converts `httpBody` to a stream
@@ -40,8 +40,13 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var currentHandler: ((URLRequest) -> (Data, HTTPURLResponse))?
     static let lock = NSLock()
 
-    override class func canInit(with _: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override class func canInit(with _: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
 
     override func startLoading() {
         let h = Self.lock.withLock { Self.currentHandler }
@@ -102,20 +107,19 @@ private func makeSink(
 }
 
 private func makeEvents(_ count: Int) -> [TelemetryEvent] {
-    (0..<count).map { TelemetryEvent(name: "ev\($0)") }
+    (0 ..< count).map { TelemetryEvent(name: "ev\($0)") }
 }
 
 // MARK: - Connection-string parsing tests
 
 @Suite("AppInsightsSink — connection-string parsing")
 struct AppInsightsSinkParsingTests {
-
     @Test("valid full connection string parses successfully")
     func validFullString() throws {
         let sink = try makeSink()
         #expect(sink.iKey == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         #expect(sink.trackURL.absoluteString ==
-                "https://eastus.in.applicationinsights.azure.com/v2/track")
+            "https://eastus.in.applicationinsights.azure.com/v2/track")
     }
 
     @Test("legacy InstrumentationKey-only string uses global endpoint")
@@ -131,7 +135,7 @@ struct AppInsightsSinkParsingTests {
     func caseInsensitiveKeys() throws {
         let sink = try makeSink(
             connectionString:
-                "instrumentationkey=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee;" +
+            "instrumentationkey=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee;" +
                 "INGESTIONENDPOINT=https://westus.in.applicationinsights.azure.com/"
         )
         #expect(sink.iKey == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
@@ -142,11 +146,11 @@ struct AppInsightsSinkParsingTests {
     func trailingSlashNormalised() throws {
         let sink = try makeSink(
             connectionString:
-                "InstrumentationKey=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee;" +
+            "InstrumentationKey=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee;" +
                 "IngestionEndpoint=https://eastus.in.applicationinsights.azure.com"
         )
         #expect(sink.trackURL.absoluteString ==
-                "https://eastus.in.applicationinsights.azure.com/v2/track")
+            "https://eastus.in.applicationinsights.azure.com/v2/track")
     }
 
     @Test("empty connection string throws emptyConnectionString")
@@ -194,7 +198,7 @@ struct AppInsightsSinkParsingTests {
         do {
             _ = try makeSink(
                 connectionString:
-                    "InstrumentationKey=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee;" +
+                "InstrumentationKey=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee;" +
                     "IngestionEndpoint=htt p://bad.endpoint.example.com/"
             )
             Issue.record("Expected invalidEndpointURL error, but no error was thrown")
@@ -209,7 +213,7 @@ struct AppInsightsSinkParsingTests {
     func unknownKeysIgnored() throws {
         let sink = try makeSink(
             connectionString:
-                "InstrumentationKey=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee;" +
+            "InstrumentationKey=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee;" +
                 "UnknownKey=something"
         )
         #expect(sink.iKey == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
@@ -220,7 +224,6 @@ struct AppInsightsSinkParsingTests {
 
 @Suite("AppInsightsEnvelope — wire format")
 struct AppInsightsEnvelopeTests {
-
     @Test("envelope JSON contains required top-level keys")
     func topLevelKeys() throws {
         let event = TelemetryEvent(
@@ -271,7 +274,7 @@ struct AppInsightsEnvelopeTests {
     }
 
     @Test("envelope tags contain role and sdkVersion (store-22: scrubbed)")
-    func tagsArePresent() throws {
+    func tagsArePresent() {
         let event = TelemetryEvent(name: "app_start")
         let envelope = AppInsightsEnvelope.from(
             event: event,
@@ -287,7 +290,7 @@ struct AppInsightsEnvelopeTests {
     }
 
     @Test("envelope tags installID is scrubbed (store-22)")
-    func tagsInstallIDIsScrubbed() throws {
+    func tagsInstallIDIsScrubbed() {
         // A PII-containing install ID (e.g. user edited the TOML) must be
         // collapsed to "redacted" before it reaches the wire.
         let event = TelemetryEvent(name: "app_start")
@@ -295,7 +298,7 @@ struct AppInsightsEnvelopeTests {
             event: event,
             iKey: "k",
             role: "ofem",
-            installID: "user@example.com",  // contains @, must be scrubbed
+            installID: "user@example.com", // contains @, must be scrubbed
             sdkTag: "ofem"
         )
         #expect(envelope.tags["ai.cloud.roleInstance"] == "redacted",
@@ -303,7 +306,7 @@ struct AppInsightsEnvelopeTests {
     }
 
     @Test("time field is ISO 8601 with milliseconds")
-    func timeFieldFormat() throws {
+    func timeFieldFormat() {
         let date = Date(timeIntervalSince1970: 1_750_000_000)
         let event = TelemetryEvent(name: "app_start", time: date)
         let envelope = AppInsightsEnvelope.from(
@@ -336,15 +339,17 @@ struct AppInsightsEnvelopeTests {
 }
 
 // MARK: - HTTP status handling tests
+
 // Serialized to ensure the shared StubURLProtocol handler is not overwritten
 // by a concurrently running test.
 
 @Suite("AppInsightsSink — HTTP status handling", .serialized)
 struct AppInsightsSinkHTTPTests {
-
     /// Reset any stale handler before each test so prior-test state cannot
     /// leak forward (tests-05: per-test handler reset).
-    init() { StubURLProtocol.reset() }
+    init() {
+        StubURLProtocol.reset()
+    }
 
     @Test("200 OK completes without throwing")
     func status200() async throws {
@@ -353,7 +358,7 @@ struct AppInsightsSinkHTTPTests {
             body: #"{"itemsReceived":1,"itemsAccepted":1,"errors":[]}"#
         )
         let sink = try makeSink(session: session)
-        try await sink.send(makeEvents(1))  // Must not throw.
+        try await sink.send(makeEvents(1)) // Must not throw.
     }
 
     @Test("400 client error throws ingestion error (non-retriable)")
@@ -363,7 +368,7 @@ struct AppInsightsSinkHTTPTests {
         do {
             try await sink.send(makeEvents(1))
             Issue.record("Expected ingestion error, but no error was thrown")
-        } catch AppInsightsSinkError.ingestion(let code, _) {
+        } catch let AppInsightsSinkError.ingestion(code, _) {
             #expect(code == 400)
         }
     }
@@ -375,7 +380,7 @@ struct AppInsightsSinkHTTPTests {
         do {
             try await sink.send(makeEvents(1))
             Issue.record("Expected ingestion error, but no error was thrown")
-        } catch AppInsightsSinkError.ingestion(let code, _) {
+        } catch let AppInsightsSinkError.ingestion(code, _) {
             #expect(code == 500)
         }
     }
@@ -389,7 +394,7 @@ struct AppInsightsSinkHTTPTests {
             body: #"{"itemsReceived":2,"itemsAccepted":2,"errors":[]}"#
         )
         let sink = try makeSink(session: session)
-        try await sink.send(makeEvents(2))  // Must not throw.
+        try await sink.send(makeEvents(2)) // Must not throw.
     }
 
     @Test("206 partial reject throws partialReject with only retriable events (store-20)")
@@ -408,7 +413,7 @@ struct AppInsightsSinkHTTPTests {
         do {
             try await sink.send(events)
             Issue.record("Expected partialReject, but no error was thrown")
-        } catch AppInsightsSinkError.partialReject(let accepted, let received, let retriable) {
+        } catch let AppInsightsSinkError.partialReject(accepted, received, retriable) {
             #expect(accepted == 1)
             #expect(received == 2)
             // Only the rejected item (index 1) should be in retriable.
@@ -450,7 +455,7 @@ struct AppInsightsSinkHTTPTests {
         do {
             try await sink.send(events)
             Issue.record("Expected partialReject")
-        } catch AppInsightsSinkError.partialReject(_, _, let retriable) {
+        } catch let AppInsightsSinkError.partialReject(_, _, retriable) {
             #expect(retriable.count == 1)
             #expect(retriable[0].name == events[1].name)
             // Events 0 and 2 must NOT appear in retriable.
@@ -501,7 +506,7 @@ struct AppInsightsSinkHTTPTests {
         do {
             try await sink.send(makeEvents(1))
             Issue.record("Expected ingestion error")
-        } catch AppInsightsSinkError.ingestion(let code, let body) {
+        } catch let AppInsightsSinkError.ingestion(code, body) {
             #expect(code == 404)
             #expect(body == "Not Found")
         }
@@ -514,7 +519,7 @@ struct AppInsightsSinkHTTPTests {
         do {
             try await sink.send(makeEvents(1))
             Issue.record("Expected ingestion error")
-        } catch AppInsightsSinkError.ingestion(let code, let body) {
+        } catch let AppInsightsSinkError.ingestion(code, body) {
             #expect(code == 503)
             #expect(body == "Service Unavailable")
         }
@@ -527,7 +532,7 @@ struct AppInsightsSinkHTTPTests {
         do {
             try await sink.send(makeEvents(1))
             Issue.record("Expected ingestion error")
-        } catch AppInsightsSinkError.ingestion(let code, _) {
+        } catch let AppInsightsSinkError.ingestion(code, _) {
             #expect(code == 302)
         }
     }
@@ -605,7 +610,7 @@ struct AppInsightsSinkHTTPTests {
         let session = URLSession(configuration: config)
         let sink = try AppInsightsSink(
             connectionString:
-                "InstrumentationKey=12345678-1234-1234-1234-123456789abc;" +
+            "InstrumentationKey=12345678-1234-1234-1234-123456789abc;" +
                 "IngestionEndpoint=https://westeurope.in.applicationinsights.azure.com/",
             installID: "inst",
             appVersion: "2026.06.1",
@@ -646,7 +651,7 @@ struct AppInsightsSinkHTTPTests {
         // not throw — it falls through the guard-let without a partialReject.
         let session = StubURLProtocol.makeSession(statusCode: 206, body: "not-json{{{")
         let sink = try makeSink(session: session)
-        try await sink.send(makeEvents(2))  // Must not throw.
+        try await sink.send(makeEvents(2)) // Must not throw.
     }
 
     @Test("206 with out-of-bounds error index is filtered out")
@@ -680,7 +685,7 @@ struct AppInsightsSinkHTTPTests {
         do {
             try await sink.send(events)
             Issue.record("Expected partialReject for 408")
-        } catch AppInsightsSinkError.partialReject(let accepted, let received, let retriable) {
+        } catch let AppInsightsSinkError.partialReject(accepted, received, retriable) {
             #expect(accepted == 0)
             #expect(received == 1)
             #expect(retriable.count == 1)
@@ -705,7 +710,7 @@ struct AppInsightsSinkHTTPTests {
         do {
             try await sink.send(events)
             Issue.record("Expected partialReject for 429")
-        } catch AppInsightsSinkError.partialReject(_, _, let retriable) {
+        } catch let AppInsightsSinkError.partialReject(_, _, retriable) {
             #expect(retriable.count == 2)
         }
     }

@@ -11,14 +11,13 @@ import Foundation
 /// no parseable `Retry-After` header is present the retrier returns `.doNotRetry`
 /// so `RetryPolicy` handles the response instead.
 struct RetryAfterRetrier: RequestRetrier {
-
     /// Maximum delay accepted from a `Retry-After` header (seconds).
     static let maxDelay: TimeInterval = 30
 
     func retry(
         _ request: Request,
-        for session: Session,
-        dueTo error: Error,
+        for _: Session,
+        dueTo _: Error,
         completion: @escaping @Sendable (RetryResult) -> Void
     ) {
         guard let response = request.response,
@@ -31,8 +30,8 @@ struct RetryAfterRetrier: RequestRetrier {
             return
         }
         let cappedDelay = min(TimeInterval(delay.components.seconds) +
-                              TimeInterval(delay.components.attoseconds) * 1e-18,
-                              Self.maxDelay)
+            TimeInterval(delay.components.attoseconds) * 1e-18,
+            Self.maxDelay)
         completion(.retryWithDelay(cappedDelay))
     }
 }
@@ -66,7 +65,7 @@ func parseRetryAfter(_ value: String, now: Date = Date()) -> Duration? {
         if let date = fmt.date(from: trimmed) {
             let delta = date.timeIntervalSince(now)
             guard delta > 0 else { return nil }
-            let ms = Int64(delta * 1_000)
+            let ms = Int64(delta * 1000)
             return .milliseconds(ms)
         }
     }
@@ -93,9 +92,9 @@ enum HTTPDateFormat {
 
     var formatString: String {
         switch self {
-        case .rfc1123: return "EEE, dd MMM yyyy HH:mm:ss zzz"
-        case .rfc850:  return "EEEE, dd-MMM-yy HH:mm:ss zzz"
-        case .asctime: return "EEE MMM d HH:mm:ss yyyy"
+        case .rfc1123: "EEE, dd MMM yyyy HH:mm:ss zzz"
+        case .rfc850: "EEEE, dd-MMM-yy HH:mm:ss zzz"
+        case .asctime: "EEE MMM d HH:mm:ss yyyy"
         }
     }
 }

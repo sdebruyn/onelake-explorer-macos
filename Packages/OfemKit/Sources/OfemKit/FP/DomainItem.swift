@@ -1,5 +1,5 @@
-import Foundation
 import CryptoKit
+import Foundation
 import UniformTypeIdentifiers
 
 // MARK: - DomainItem
@@ -25,7 +25,6 @@ import UniformTypeIdentifiers
 /// Capabilities are expressed as a `Set<Capability>` so the FPE can map them
 /// directly to `NSFileProviderItemCapabilities` without string matching.
 public struct DomainItem: Sendable, Equatable {
-
     // MARK: - Capability
 
     /// The set of operations the FPE may perform on an item.
@@ -41,16 +40,16 @@ public struct DomainItem: Sendable, Equatable {
 
     /// Named capability-set constants so the policy lives in one place and
     /// cannot drift between factory helpers.
-    internal enum CapabilitySet {
+    enum CapabilitySet {
         /// Read-only containers (root, workspaces, Fabric items, stub dirs).
-        static let readOnly: Set<Capability>         = [.read, .enumerate]
+        static let readOnly: Set<Capability> = [.read, .enumerate]
         /// Fabric-managed folder nodes (e.g. `Files`, `Tables` in a Lakehouse).
         /// Users can create items inside but cannot rename or delete the node.
         static let managedDirectory: Set<Capability> = [.read, .enumerate, .addSubitems]
         /// Writable directories (DFS dirs under a Lakehouse Files/Tables subtree).
         static let writableDirectory: Set<Capability> = [.read, .write, .delete, .enumerate, .addSubitems]
         /// Writable files (DFS files under a Lakehouse Files/Tables subtree).
-        static let writableFile: Set<Capability>      = [.read, .write, .delete]
+        static let writableFile: Set<Capability> = [.read, .write, .delete]
     }
 
     // MARK: - Capability policy (fp-05)
@@ -60,10 +59,10 @@ public struct DomainItem: Sendable, Equatable {
     ///
     /// Allocated once and reused across calls — the same optimisation applied
     /// to `ContentVersion`'s date formatter (see comment in `ContentVersion`).
-    // `Locale` is a value type backed by a tagged-pointer cache in the Swift
-    // runtime; `nonisolated(unsafe)` suppresses the Swift 6 Sendable diagnostic
-    // for this read-only-global pattern, matching the formatter precedent.
-    nonisolated(unsafe) private static let posixLocale = Locale(identifier: "en_US_POSIX")
+    /// `Locale` is a value type backed by a tagged-pointer cache in the Swift
+    /// runtime; `nonisolated(unsafe)` suppresses the Swift 6 Sendable diagnostic
+    /// for this read-only-global pattern, matching the formatter precedent.
+    private nonisolated(unsafe) static let posixLocale = Locale(identifier: "en_US_POSIX")
 
     /// Computes the capability set for a path-level record according to the
     /// write-access policy:
@@ -82,7 +81,7 @@ public struct DomainItem: Sendable, Equatable {
     ///
     /// Comparison is locale-independent (POSIX ASCII fold), consistent with
     /// `Item.isLakehouse` in `FabricModels.swift`.
-    internal static func computeCapabilities(
+    static func computeCapabilities(
         isDir: Bool,
         path: String,
         itemType: String
@@ -92,10 +91,10 @@ public struct DomainItem: Sendable, Equatable {
         }
         // Check whether `path` is exactly "Files"/"Tables" or under them.
         let lower = path.lowercased(with: posixLocale)
-        let isFilesNode   = lower == "files"
-        let isTablesNode  = lower == "tables"
-        let underFiles    = lower.hasPrefix("files/")
-        let underTables   = lower.hasPrefix("tables/")
+        let isFilesNode = lower == "files"
+        let isTablesNode = lower == "tables"
+        let underFiles = lower.hasPrefix("files/")
+        let underTables = lower.hasPrefix("tables/")
 
         if isFilesNode || isTablesNode {
             // Fabric-managed folder node: allow creating inside, not rename/delete.
@@ -170,12 +169,11 @@ public struct DomainItem: Sendable, Equatable {
 
 // MARK: - DomainItem factory helpers
 
-extension DomainItem {
-
+public extension DomainItem {
     // MARK: Root
 
     /// Builds the root-container sentinel item for `alias`.
-    public static func root(alias: String) -> DomainItem {
+    static func root(alias: String) -> DomainItem {
         DomainItem(
             identifier: .root,
             parentIdentifier: .root,
@@ -190,7 +188,7 @@ extension DomainItem {
     // MARK: From Workspace
 
     /// Builds a `DomainItem` from a ``Workspace`` returned by the Fabric API.
-    public static func from(workspace: Workspace) -> DomainItem {
+    static func from(workspace: Workspace) -> DomainItem {
         DomainItem(
             identifier: .workspace(workspaceID: workspace.id),
             parentIdentifier: .root,
@@ -205,7 +203,7 @@ extension DomainItem {
     // MARK: From Fabric Item
 
     /// Builds a `DomainItem` from a ``Item`` (Fabric item) returned by the Fabric API.
-    public static func from(fabricItem: Item, workspaceID: String) -> DomainItem {
+    static func from(fabricItem: Item, workspaceID: String) -> DomainItem {
         DomainItem(
             identifier: .item(workspaceID: workspaceID, itemID: fabricItem.id),
             parentIdentifier: .workspace(workspaceID: workspaceID),
@@ -220,7 +218,7 @@ extension DomainItem {
     // MARK: From MetadataRecord
 
     /// Builds a `DomainItem` from a ``MetadataRecord`` (cache row).
-    public static func from(record: MetadataRecord) throws -> DomainItem {
+    static func from(record: MetadataRecord) throws -> DomainItem {
         guard !record.workspaceID.isEmpty, !record.itemID.isEmpty else {
             throw FPError.invalidRecord("workspaceID or itemID is empty")
         }
@@ -258,7 +256,7 @@ extension DomainItem {
         // Use record.name (not record.path) as the source for extension lookup
         // so that the inferred type always matches the displayed filename (fp-06).
         var mimeType = record.contentType
-        if mimeType.isEmpty && !record.isDir {
+        if mimeType.isEmpty, !record.isDir {
             let ext = (record.name as NSString).pathExtension
             if !ext.isEmpty, let utType = UTType(filenameExtension: ext) {
                 mimeType = utType.preferredMIMEType ?? ""
@@ -287,7 +285,7 @@ extension DomainItem {
 
     /// Builds a placeholder directory item used before the first enumerate
     /// populates the cache.
-    public static func stubDirectory(
+    static func stubDirectory(
         identifier: ItemIdentifier,
         parentIdentifier: ItemIdentifier,
         name: String
@@ -313,7 +311,7 @@ extension DomainItem {
     /// `addSubitems`, so in practice `itemType` is always `"Lakehouse"` for
     /// user-initiated creates — but threading it explicitly ensures the policy
     /// is enforced at the code level regardless of caller assumptions.
-    public static func synthetic(
+    static func synthetic(
         identifier: ItemIdentifier,
         parentIdentifier: ItemIdentifier,
         name: String,
@@ -321,11 +319,10 @@ extension DomainItem {
         itemType: String = ""
     ) -> DomainItem {
         // Derive the path component from the identifier for capability lookup.
-        let path: String
-        if case .path(_, _, let p) = identifier {
-            path = p
+        let path: String = if case let .path(_, _, p) = identifier {
+            p
         } else {
-            path = ""
+            ""
         }
         return DomainItem(
             identifier: identifier,
@@ -347,7 +344,6 @@ extension DomainItem {
 /// clearly scoped, the module namespace is not polluted, and the FNV hasher
 /// is accessible to tests via a single well-known path (fp-04, fp-09).
 enum ContentVersion {
-
     // MARK: - Public API
 
     /// Computes the content version token for a cache record.
@@ -399,7 +395,7 @@ enum ContentVersion {
     /// `hash/fnv` package.
     struct FNV64a {
         private static let offset: UInt64 = 14_695_981_039_346_656_037
-        private static let prime:  UInt64 = 1_099_511_628_211
+        private static let prime: UInt64 = 1_099_511_628_211
 
         private var value: UInt64 = FNV64a.offset
 
@@ -410,7 +406,9 @@ enum ContentVersion {
             }
         }
 
-        func digest() -> UInt64 { value }
+        func digest() -> UInt64 {
+            value
+        }
     }
 
     // MARK: - Private utilities
@@ -418,11 +416,11 @@ enum ContentVersion {
     /// `ISO8601DateFormatter` is thread-safe; caching it as a `static let`
     /// avoids allocating one per call — enumerating a 1,000-item page
     /// previously allocated ~2,000 formatters (sync-20).
-    // `ISO8601DateFormatter` is not `Sendable` but is safe to use from any
-    // thread after construction — its `formatOptions` are set once and never
-    // mutated.  `nonisolated(unsafe)` suppresses the Swift 6 diagnostic for
-    // this read-only-global pattern (sync-20).
-    nonisolated(unsafe) private static let formatter: ISO8601DateFormatter = {
+    /// `ISO8601DateFormatter` is not `Sendable` but is safe to use from any
+    /// thread after construction — its `formatOptions` are set once and never
+    /// mutated.  `nonisolated(unsafe)` suppresses the Swift 6 diagnostic for
+    /// this read-only-global pattern (sync-20).
+    private nonisolated(unsafe) static let formatter: ISO8601DateFormatter = {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return fmt

@@ -95,12 +95,12 @@ public enum TelemetryRedaction {
     /// Reports whether `c` is in the telemetry value charset.
     private static func isSafeByte(_ c: UInt8) -> Bool {
         switch c {
-        case UInt8(ascii: "A")...UInt8(ascii: "Z"): return true
-        case UInt8(ascii: "a")...UInt8(ascii: "z"): return true
-        case UInt8(ascii: "0")...UInt8(ascii: "9"): return true
+        case UInt8(ascii: "A") ... UInt8(ascii: "Z"): true
+        case UInt8(ascii: "a") ... UInt8(ascii: "z"): true
+        case UInt8(ascii: "0") ... UInt8(ascii: "9"): true
         case UInt8(ascii: "_"), UInt8(ascii: "."),
-             UInt8(ascii: ":"), UInt8(ascii: "-"): return true
-        default: return false
+             UInt8(ascii: ":"), UInt8(ascii: "-"): true
+        default: false
         }
     }
 }

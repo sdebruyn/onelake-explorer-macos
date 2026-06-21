@@ -1,7 +1,6 @@
 import Foundation
-import Testing
-
 @testable import OfemKit
+import Testing
 
 // MARK: - SyncEngine Integration Tests
 
@@ -22,7 +21,6 @@ import Testing
 /// on the remote endpoint.
 @Suite("SyncEngine integration", .integration, .serialized)
 struct SyncEngineIntegrationTests {
-
     // MARK: - LiveLakehouse helper
 
     /// Binds live workspace + lakehouse coordinates and wraps the raw
@@ -104,7 +102,7 @@ struct SyncEngineIntegrationTests {
     // MARK: - Test 1: refreshFolder reads a prepared flat directory into the cache
 
     @Test("refreshFolder reads a prepared flat directory into the cache")
-    func testRefreshFolderFlatDirectory() async throws {
+    func refreshFolderFlatDirectory() async throws {
         let lake = try liveLakehouse()
         let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
@@ -116,9 +114,9 @@ struct SyncEngineIntegrationTests {
 
         // Prepare 3 files with known names and sizes.
         let files: [(name: String, data: Data)] = [
-            ("alpha.bin",   Data(repeating: 0x01, count: 100)),
-            ("beta.bin",    Data(repeating: 0x02, count: 200)),
-            ("gamma.bin",   Data(repeating: 0x03, count: 300)),
+            ("alpha.bin", Data(repeating: 0x01, count: 100)),
+            ("beta.bin", Data(repeating: 0x02, count: 200)),
+            ("gamma.bin", Data(repeating: 0x03, count: 300)),
         ]
 
         do {
@@ -155,7 +153,7 @@ struct SyncEngineIntegrationTests {
     // MARK: - Test 2: refreshFolder distinguishes files from subdirectories
 
     @Test("refreshFolder distinguishes files from subdirectories")
-    func testRefreshFolderFileVsSubdirectory() async throws {
+    func refreshFolderFileVsSubdirectory() async throws {
         let lake = try liveLakehouse()
         let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
@@ -178,10 +176,10 @@ struct SyncEngineIntegrationTests {
 
             let kids = try await store.children(of: key)
             let fileRecord = kids.first { $0.name == "file.bin" }
-            let dirRecord  = kids.first { $0.name == "sub" }
+            let dirRecord = kids.first { $0.name == "sub" }
 
             #expect(fileRecord != nil, "expected child named file.bin")
-            #expect(dirRecord  != nil, "expected child named sub")
+            #expect(dirRecord != nil, "expected child named sub")
             if let f = fileRecord {
                 #expect(!f.isDir, "file.bin should not be a directory")
             }
@@ -198,7 +196,7 @@ struct SyncEngineIntegrationTests {
     // MARK: - Test 3: enumerate returns the same children after a refresh (cache fast-path)
 
     @Test("enumerate returns the same children after a refresh (cache fast-path)")
-    func testEnumerateReturnsSameChildrenAsCacheAfterRefresh() async throws {
+    func enumerateReturnsSameChildrenAsCacheAfterRefresh() async throws {
         let lake = try liveLakehouse()
         let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
@@ -210,8 +208,8 @@ struct SyncEngineIntegrationTests {
 
         do {
             try await lake.mkdir(dir)
-            try await lake.write("\(dir)/one.txt",   Data(repeating: 0x11, count: 50))
-            try await lake.write("\(dir)/two.txt",   Data(repeating: 0x22, count: 50))
+            try await lake.write("\(dir)/one.txt", Data(repeating: 0x11, count: 50))
+            try await lake.write("\(dir)/two.txt", Data(repeating: 0x22, count: 50))
             try await lake.write("\(dir)/three.txt", Data(repeating: 0x33, count: 50))
 
             let key = cacheKey(lake: lake, path: dir)
@@ -236,7 +234,7 @@ struct SyncEngineIntegrationTests {
     // MARK: - Test 4: refreshFolder detects a remote deletion
 
     @Test("refreshFolder detects a remote deletion")
-    func testRefreshFolderDetectsRemoteDeletion() async throws {
+    func refreshFolderDetectsRemoteDeletion() async throws {
         let lake = try liveLakehouse()
         let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
@@ -248,7 +246,7 @@ struct SyncEngineIntegrationTests {
 
         do {
             try await lake.mkdir(dir)
-            try await lake.write("\(dir)/keep.bin",   Data(repeating: 0x01, count: 10))
+            try await lake.write("\(dir)/keep.bin", Data(repeating: 0x01, count: 10))
             try await lake.write("\(dir)/delete.bin", Data(repeating: 0x02, count: 10))
 
             let key = cacheKey(lake: lake, path: dir)
@@ -272,7 +270,7 @@ struct SyncEngineIntegrationTests {
 
             let kidsAfter = try await store.children(of: key)
             let names = kidsAfter.map(\.name)
-            #expect(names.contains("keep.bin"),   "keep.bin should still be present")
+            #expect(names.contains("keep.bin"), "keep.bin should still be present")
             #expect(!names.contains("delete.bin"), "delete.bin should have been removed")
         } catch {
             await lake.rmBestEffort(dir)
@@ -284,7 +282,7 @@ struct SyncEngineIntegrationTests {
     // MARK: - Test 5: engine filters macOS metadata against the live service
 
     @Test("Engine filters macOS metadata against the live service")
-    func testMacOSMetadataFilteredAgainstLiveService() async throws {
+    func macOSMetadataFilteredAgainstLiveService() async throws {
         let lake = try liveLakehouse()
         let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
@@ -297,10 +295,10 @@ struct SyncEngineIntegrationTests {
         do {
             try await lake.mkdir(dir)
             // The file that should survive the filter.
-            try await lake.write("\(dir)/keep.bin",     Data(repeating: 0xAA, count: 20))
+            try await lake.write("\(dir)/keep.bin", Data(repeating: 0xAA, count: 20))
             // macOS metadata artifacts that the engine must discard.
-            try await lake.write("\(dir)/.DS_Store",    Data(repeating: 0x00, count: 4))
-            try await lake.write("\(dir)/._keep.bin",   Data(repeating: 0x00, count: 4))
+            try await lake.write("\(dir)/.DS_Store", Data(repeating: 0x00, count: 4))
+            try await lake.write("\(dir)/._keep.bin", Data(repeating: 0x00, count: 4))
 
             let key = cacheKey(lake: lake, path: dir)
             _ = try await engine.refreshFolder(key: key)
@@ -308,8 +306,8 @@ struct SyncEngineIntegrationTests {
             let kids = try await store.children(of: key)
             let names = kids.map(\.name)
 
-            #expect(names.contains("keep.bin"),    "keep.bin should be present in cache")
-            #expect(!names.contains(".DS_Store"),  ".DS_Store must be filtered out")
+            #expect(names.contains("keep.bin"), "keep.bin should be present in cache")
+            #expect(!names.contains(".DS_Store"), ".DS_Store must be filtered out")
             #expect(!names.contains("._keep.bin"), "._keep.bin must be filtered out")
         } catch {
             await lake.rmBestEffort(dir)
@@ -321,7 +319,7 @@ struct SyncEngineIntegrationTests {
     // MARK: - Test 6: open downloads a prepared file byte-for-byte and caches the blob
 
     @Test("open downloads a prepared file byte-for-byte and caches the blob")
-    func testOpenDownloadsFileBytesForByte() async throws {
+    func openDownloadsFileBytesForByte() async throws {
         let lake = try liveLakehouse()
         let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
@@ -332,7 +330,7 @@ struct SyncEngineIntegrationTests {
         }
 
         // 128 KiB of non-trivial bytes.
-        let payload = Data((0..<(128 * 1024)).map { UInt8($0 % 251) })
+        let payload = Data((0 ..< (128 * 1024)).map { UInt8($0 % 251) })
 
         do {
             try await lake.mkdir(dir)
@@ -340,7 +338,7 @@ struct SyncEngineIntegrationTests {
 
             // Refresh the parent directory so the file's metadata is cached
             // before we call open().
-            let dirKey  = cacheKey(lake: lake, path: dir)
+            let dirKey = cacheKey(lake: lake, path: dir)
             _ = try await engine.refreshFolder(key: dirKey)
 
             // Now open the file via the engine.
@@ -366,7 +364,7 @@ struct SyncEngineIntegrationTests {
     // MARK: - Test 7: repeated open() returns a stable, identical cached blob
 
     @Test("open() returns a stable cached blob across repeated calls")
-    func testRepeatedOpenReturnsStableCachedBlob() async throws {
+    func repeatedOpenReturnsStableCachedBlob() async throws {
         let lake = try liveLakehouse()
         let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
@@ -378,7 +376,7 @@ struct SyncEngineIntegrationTests {
 
         // 64 KiB of non-trivial bytes — small enough for a fast round-trip, big
         // enough that an accidental re-download is observable as a new write.
-        let payload = Data((0..<(64 * 1024)).map { UInt8($0 % 251) })
+        let payload = Data((0 ..< (64 * 1024)).map { UInt8($0 % 251) })
 
         do {
             try await lake.mkdir(dir)
@@ -387,7 +385,7 @@ struct SyncEngineIntegrationTests {
             // Seed the directory listing so the engine knows the file's etag
             // before we call open().  open() uses the cached etag to issue a
             // cheap HEAD (isBlobFresh) rather than a full GET.
-            let dirKey  = cacheKey(lake: lake, path: dir)
+            let dirKey = cacheKey(lake: lake, path: dir)
             _ = try await engine.refreshFolder(key: dirKey)
 
             let fileKey = cacheKey(lake: lake, path: "\(dir)/cached.bin")
@@ -400,7 +398,7 @@ struct SyncEngineIntegrationTests {
             // check: if the second open() rewrites the blob the mtime changes.
             let attrs1 = try FileManager.default.attributesOfItem(atPath: url1.path)
             let mtime1 = try #require(attrs1[.modificationDate] as? Date,
-                "blob file must have a modification date after first open()")
+                                      "blob file must have a modification date after first open()")
 
             // --- Second open: returns the cached blob ---
             //
@@ -416,14 +414,14 @@ struct SyncEngineIntegrationTests {
 
             let attrs2 = try FileManager.default.attributesOfItem(atPath: url2.path)
             let mtime2 = try #require(attrs2[.modificationDate] as? Date,
-                "blob file must still have a modification date after second open()")
+                                      "blob file must still have a modification date after second open()")
 
             // (a) Both calls must point to the same local blob URL.
             #expect(url1 == url2, "second open() must return the same local blob URL as the first")
 
             // (b) The blob file must not be rewritten between calls (stable mtime).
             #expect(mtime1 == mtime2,
-                "the cached blob file was rewritten between open() calls; it should be reused as-is")
+                    "the cached blob file was rewritten between open() calls; it should be reused as-is")
 
             // (c) The bytes must still match the original uploaded content.
             let downloaded = try Data(contentsOf: url2)
@@ -460,7 +458,7 @@ struct SyncEngineIntegrationTests {
     /// single-GET property is already covered by the mock-based unit suite which
     /// uses a counting HTTP stub to verify the request count precisely.
     @Test("open() coalesces concurrent callers onto one in-flight download")
-    func testOpenCoalescesConcurrentCallers() async throws {
+    func openCoalescesConcurrentCallers() async throws {
         let lake = try liveLakehouse()
         let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
@@ -472,7 +470,7 @@ struct SyncEngineIntegrationTests {
 
         // 64 KiB of deterministic content — large enough that the download is
         // not instantaneous and the two tasks can realistically overlap.
-        let payload = Data((0..<(64 * 1024)).map { UInt8($0 % 251) })
+        let payload = Data((0 ..< (64 * 1024)).map { UInt8($0 % 251) })
 
         do {
             try await lake.mkdir(dir)
@@ -481,7 +479,7 @@ struct SyncEngineIntegrationTests {
             // Seed the directory listing so the engine has the file's etag cached
             // before we call open().  This mirrors the setup used in
             // testRepeatedOpenReturnsStableCachedBlob.
-            let dirKey  = cacheKey(lake: lake, path: dir)
+            let dirKey = cacheKey(lake: lake, path: dir)
             _ = try await engine.refreshFolder(key: dirKey)
 
             let fileKey = cacheKey(lake: lake, path: "\(dir)/coalesced.bin")
@@ -497,12 +495,12 @@ struct SyncEngineIntegrationTests {
             // (a) Both calls must succeed and return the same local blob URL —
             //     whichever task won the race, the other coalesced onto it.
             #expect(resolvedA == resolvedB,
-                "both concurrent open() calls must return the same local blob URL")
+                    "both concurrent open() calls must return the same local blob URL")
 
             // (b) The bytes at that URL must match the uploaded content exactly.
             let downloaded = try Data(contentsOf: resolvedA)
             #expect(downloaded == payload,
-                "blob bytes must equal the original uploaded content after concurrent open()")
+                    "blob bytes must equal the original uploaded content after concurrent open()")
         } catch {
             await lake.rmBestEffort(dir)
             throw error
@@ -513,7 +511,7 @@ struct SyncEngineIntegrationTests {
     // MARK: - Test 9: put uploads a local file and the engine then re-enumerates it (was Test 8)
 
     @Test("put uploads a local file and the engine then re-enumerates it")
-    func testPutUploadsThenEnumerates() async throws {
+    func putUploadsThenEnumerates() async throws {
         let lake = try liveLakehouse()
         let (engine, store, scratchBase) = try makeEngineAndStore(lake: lake)
         let dir = "Files/ofem-ci/\(UUID().uuidString)"
@@ -528,14 +526,14 @@ struct SyncEngineIntegrationTests {
             try? FileManager.default.removeItem(at: localTempDir)
         }
 
-        let uploadPayload = Data((0..<512).map { UInt8($0 % 127) })
+        let uploadPayload = Data((0 ..< 512).map { UInt8($0 % 127) })
 
         do {
             // Create the destination directory on OneLake first.
             try await lake.mkdir(dir)
 
             // Create the CacheKey for the upload destination.
-            let dirKey  = cacheKey(lake: lake, path: dir)
+            let dirKey = cacheKey(lake: lake, path: dir)
             let fileKey = cacheKey(lake: lake, path: "\(dir)/uploaded.bin")
 
             // Seed the engine's cache view of the directory with a refreshFolder

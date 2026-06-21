@@ -23,7 +23,6 @@ import Foundation
 ///
 /// Must match exactly on both sides.
 @objc public protocol OfemClientControlProtocol {
-
     // MARK: - Protocol version handshake
 
     /// Returns the protocol version implemented by the FPE.

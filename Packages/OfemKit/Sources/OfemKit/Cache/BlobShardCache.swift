@@ -26,7 +26,6 @@ import os.log
 /// path computations + synchronous filesystem calls). The caller is responsible
 /// for concurrency — typically it is driven by the `CacheStore` actor.
 public struct BlobShardCache: Sendable {
-
     // MARK: Constants
 
     /// SHA-256 digest length in lowercase hex characters.
@@ -42,7 +41,7 @@ public struct BlobShardCache: Sendable {
     public static let blobsSubdir = "blobs"
 
     /// Read-buffer size used when hashing a source file in `storeFromURL`.
-    private static let hashBufferSize = 1 * 1024 * 1024  // 1 MiB
+    private static let hashBufferSize = 1 * 1024 * 1024 // 1 MiB
 
     // MARK: Properties
 
@@ -124,7 +123,8 @@ public struct BlobShardCache: Sendable {
             return try Data(contentsOf: fileURL)
         } catch {
             if (error as NSError).domain == NSCocoaErrorDomain,
-               (error as NSError).code == NSFileReadNoSuchFileError {
+               (error as NSError).code == NSFileReadNoSuchFileError
+            {
                 throw CacheError.notFound("blob \(sha256)")
             }
             throw CacheError.blobIOError(error)
@@ -180,8 +180,9 @@ public struct BlobShardCache: Sendable {
             // Race: another writer arrived first — deduplicate.
         } catch let err as NSError
             where err.domain == NSCocoaErrorDomain
-                && (err.code == NSFileWriteVolumeReadOnlyError
-                    || (err.underlyingErrors.first as? NSError).map({ $0.code == EXDEV }) == true) {
+            && (err.code == NSFileWriteVolumeReadOnlyError
+                || (err.underlyingErrors.first as? NSError).map { $0.code == EXDEV } == true)
+        {
             // Cross-volume move (EXDEV) or read-only source: fall back to copy + rename.
             // NSFileWriteOutOfSpaceError is intentionally excluded — a disk-full
             // destination would cause the copy fallback to fail too, wasting I/O.
@@ -223,7 +224,7 @@ public struct BlobShardCache: Sendable {
         do {
             try FileManager.default.removeItem(at: fileURL)
         } catch let err as NSError where err.code == NSFileNoSuchFileError {
-            return  // already gone
+            return // already gone
         } catch {
             throw CacheError.blobIOError(error)
         }
@@ -316,8 +317,8 @@ public struct BlobShardCache: Sendable {
             throw CacheError.invalidSHA(sha)
         }
         let valid = sha.unicodeScalars.allSatisfy { c in
-            (c.value >= 0x30 && c.value <= 0x39)  // '0'–'9'
-            || (c.value >= 0x61 && c.value <= 0x66)  // 'a'–'f'
+            (c.value >= 0x30 && c.value <= 0x39) // '0'–'9'
+                || (c.value >= 0x61 && c.value <= 0x66) // 'a'–'f'
         }
         if !valid { throw CacheError.invalidSHA(sha) }
     }

@@ -1,7 +1,7 @@
-import Testing
 import Foundation
 @preconcurrency import MSAL // needed for MSALErrorDomain and MSALError constants
 @testable import OfemKit
+import Testing
 
 // MARK: - OfemAuthTests
 
@@ -13,6 +13,7 @@ import Foundation
 @Suite("OfemAuth account management")
 struct OfemAuthTests {
     // MARK: - Helpers
+
     // tests-15: makeStore(label:) and makeAccount(alias:tenantID:homeAccountID:)
     // live in AuthTestHelpers.swift and are shared across all Auth suites.
 
@@ -246,6 +247,7 @@ struct OfemAuthTests {
 @Suite("OfemAuth token acquisition")
 struct OfemAuthTokenTests {
     // MARK: - Helpers
+
     // tests-15: makeStore(label:) and makeAccount(alias:tenantID:homeAccountID:)
     // live in AuthTestHelpers.swift and are shared across all Auth suites.
 
@@ -544,11 +546,11 @@ final class MockMsalAuthClientFactory: MsalAuthClientFactory, @unchecked Sendabl
     private let _lock = NSLock()
 
     func makeClient(
-        clientID: String,
-        tenantID: String,
-        cacheStrategy: TokenCacheStrategy,
-        fileTokenStore: FileTokenStore?,
-        alias: String
+        clientID _: String,
+        tenantID _: String,
+        cacheStrategy _: TokenCacheStrategy,
+        fileTokenStore _: FileTokenStore?,
+        alias _: String
     ) throws -> any MsalAuthClientProtocol {
         _lock.withLock { makeClientCallCount += 1 }
         if let err = throwError { throw err }
@@ -583,7 +585,7 @@ final class MockMsalAuthClient: MsalAuthClientProtocol, @unchecked Sendable {
     let _lock = NSLock()
 
     func acquireTokenSilent(
-        scopes: [String],
+        scopes _: [String],
         homeAccountID: String
     ) async throws -> AccessToken {
         _lock.withLock { capturedHomeAccountIDs.append(homeAccountID) }
@@ -643,7 +645,7 @@ struct OfemAuthIsInteractionRequiredTests {
 /// (-42004) is handled by `isInvalidGrant` and routes to `interactionRequired`.
 @Suite("OfemAuth isConfigRejection")
 struct OfemAuthIsConfigRejectionTests {
-    // MSALInternalErrorInvalidClient = -42003 (e.g. missing FPE redirect URI in Entra registration)
+    /// MSALInternalErrorInvalidClient = -42003 (e.g. missing FPE redirect URI in Entra registration)
     @Test("MSALInternalErrorCodeKey = -42003 (invalid_client) → isConfigRejection true")
     func invalidClientCode() async throws {
         let (store, _t) = try makeStore(label: "IsCRTests")
@@ -657,7 +659,7 @@ struct OfemAuthIsConfigRejectionTests {
         #expect(await auth.isConfigRejection(err))
     }
 
-    // MSALInternalErrorInvalidGrant = -42004 is recoverable (revoked refresh token) — NOT a config rejection
+    /// MSALInternalErrorInvalidGrant = -42004 is recoverable (revoked refresh token) — NOT a config rejection
     @Test("MSALInternalErrorCodeKey = -42004 (invalid_grant) → isConfigRejection false")
     func invalidGrantCodeNotConfigRejection() async throws {
         let (store, _t) = try makeStore(label: "IsCRTests")
@@ -712,8 +714,8 @@ struct OfemAuthIsConfigRejectionTests {
         #expect(await auth.isConfigRejection(err) == false)
     }
 
-    // Verify that isConfigRejection and isInteractionRequired are mutually exclusive
-    // for the config-rejection code, so the silentToken routing is unambiguous.
+    /// Verify that isConfigRejection and isInteractionRequired are mutually exclusive
+    /// for the config-rejection code, so the silentToken routing is unambiguous.
     @Test("invalid_client (-42003) is NOT classified as interactionRequired")
     func invalidClientNotInteractionRequired() async throws {
         let (store, _t) = try makeStore(label: "IsCRTests")

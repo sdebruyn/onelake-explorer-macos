@@ -1,12 +1,11 @@
-import Testing
 import Foundation
 @testable import OfemKit
+import Testing
 
 // MARK: - Enumerator helper tests
 
 /// Tests for the stateless ``Enumerator`` helper functions.
 struct EnumeratorTests {
-
     // MARK: - stripItemPrefix
 
     @Test func stripItemPrefixBasicMatch() {
@@ -101,7 +100,7 @@ struct EnumeratorTests {
     // MARK: - page (cursor-based pagination)
 
     private func makeItems(count: Int) -> [DomainItem] {
-        (0..<count).map { i in
+        (0 ..< count).map { i in
             DomainItem.root(alias: "alias-\(i)")
         }
     }

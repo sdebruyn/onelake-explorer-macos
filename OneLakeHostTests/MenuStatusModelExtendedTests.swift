@@ -9,9 +9,9 @@
 //   - host-09: lastActionError surfaced on removeAccount / cacheClear / setDefaultAccount failures
 //   - host-10: copyrightYear / copyrightString free functions
 
-import XCTest
 import Combine
 import OfemKit
+import XCTest
 
 // MARK: - Fakes
 
@@ -19,14 +19,19 @@ import OfemKit
 @MainActor
 private final class FakeAccountProvider: AccountProvider, @unchecked Sendable {
     var accounts: [Account] = []
-    var defaultAccountAlias: String? = nil
-    var setDefaultAccountCalled: [(String)] = []
-    var removeAccountCalled: [(String)] = []
+    var defaultAccountAlias: String?
+    var setDefaultAccountCalled: [String] = []
+    var removeAccountCalled: [String] = []
     var shouldThrowOnSetDefault = false
     var shouldThrowOnRemove = false
 
-    func listAccounts() async -> [Account] { accounts }
-    func defaultAccount() async -> String? { defaultAccountAlias }
+    func listAccounts() async -> [Account] {
+        accounts
+    }
+
+    func defaultAccount() async -> String? {
+        defaultAccountAlias
+    }
 
     func setDefaultAccount(alias: String) async throws {
         if shouldThrowOnSetDefault { throw FakeError.actionFailed }
@@ -49,12 +54,12 @@ private final class FakeEngineStatusProvider: EngineStatusProvider, @unchecked S
     var cacheClearedAliases: [String] = []
     var shouldThrowOnClearCache = false
 
-    func getEngineStatus(alias: String) async throws -> XPCEngineStatus {
+    func getEngineStatus(alias _: String) async throws -> XPCEngineStatus {
         guard let s = statusToReturn else { throw FakeError.noStatus }
         return s
     }
 
-    func setConfig(alias: String, key: String, value: String) async throws {
+    func setConfig(alias _: String, key: String, value: String) async throws {
         configSets.append((key: key, value: value))
     }
 
@@ -92,16 +97,15 @@ private func makeAccount(alias: String) -> Account {
 
 @MainActor
 final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
-
     private var accountProvider: FakeAccountProvider!
     private var engineProvider: FakeEngineStatusProvider!
     private var domainManager: FakeDomainManager!
     private var model: MenuStatusModel!
     private var cancellables = Set<AnyCancellable>()
 
-    // setUp and tearDown override nonisolated XCTestCase methods, so they
-    // cannot be marked @MainActor. XCTest always runs them on the main thread;
-    // MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
+    /// setUp and tearDown override nonisolated XCTestCase methods, so they
+    /// cannot be marked @MainActor. XCTest always runs them on the main thread;
+    /// MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
     override func setUp() {
         super.setUp()
         MainActor.assumeIsolated {
@@ -513,8 +517,11 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
                     logLevel: "info", pausedWorkspaces: [], needsSignIn: needsSignIn
                 )
             }
-            func setConfig(alias: String, key: String, value: String) async throws {}
-            func clearCache(alias: String) async throws -> Int64 { 0 }
+
+            func setConfig(alias _: String, key _: String, value _: String) async throws {}
+            func clearCache(alias _: String) async throws -> Int64 {
+                0
+            }
         }
 
         let perAliasProvider = PerAliasEngineProvider()
@@ -531,7 +538,7 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         cancellable = localModel.$accountsNeedingSignIn.dropFirst().sink { set in
             // Wait until both accounts have been queried (corp must be in the set,
             // personal must not be).
-            if set.contains("corp") && !set.contains("personal") {
+            if set.contains("corp"), !set.contains("personal") {
                 exp.fulfill()
                 cancellable?.cancel()
             }
@@ -566,7 +573,6 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
 // MARK: - Copyright derivation tests (host-10)
 
 final class CopyrightDerivationTests: XCTestCase {
-
     func testCopyrightYear_calverVersion_extractsYear() {
         XCTAssertEqual(copyrightYear(from: "2026.05.1"), "2026")
         XCTAssertEqual(copyrightYear(from: "2025.12.0"), "2025")
@@ -599,7 +605,6 @@ final class CopyrightDerivationTests: XCTestCase {
 
 @MainActor
 final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable {
-
     private var signInProvider: MockSignInProvider!
     private var domainRegistrar: MockDomainRegistrar!
     private var coordinator: AddAccountCoordinator!
@@ -609,9 +614,9 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable 
     // Since the test bundle includes both files we can reference the private types by
     // redeclaring compatible local versions here.
 
-    // setUp and tearDown override nonisolated XCTestCase methods, so they
-    // cannot be marked @MainActor. XCTest always runs them on the main thread;
-    // MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
+    /// setUp and tearDown override nonisolated XCTestCase methods, so they
+    /// cannot be marked @MainActor. XCTest always runs them on the main thread;
+    /// MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
     override func setUp() {
         super.setUp()
         MainActor.assumeIsolated {
@@ -646,7 +651,7 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable 
         // readyToDismiss arrives after successDisplayDuration (~1.2s) + task time.
         await fulfillment(of: [exp], timeout: 4)
 
-        if case .readyToDismiss(let username) = coordinator.phase {
+        if case let .readyToDismiss(username) = coordinator.phase {
             XCTAssertEqual(username, "alice@contoso.com")
         } else {
             XCTFail("Expected .readyToDismiss, got \(coordinator.phase)")
@@ -657,7 +662,7 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable 
 
     func testCancellationError_fromProvider_resetsToIdle() async {
         let window = NSWindow()
-        signInProvider.behaviour = .cancel  // throws CancellationError
+        signInProvider.behaviour = .cancel // throws CancellationError
 
         // Collect all phases after .waiting to avoid the initial .idle triggering
         // the expectation before startLogin runs.
@@ -708,8 +713,8 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable 
 
 // MARK: - Extended MockSignInProvider with capture hook
 
-// We can't extend the private MockSignInProvider from AddAccountCoordinatorTests.
-// Redeclare a local version with the onSignIn capture hook.
+/// We can't extend the private MockSignInProvider from AddAccountCoordinatorTests.
+/// Redeclare a local version with the onSignIn capture hook.
 private final class MockSignInProvider: SignInProvider, @unchecked Sendable {
     enum Behaviour {
         case succeed(username: String)
@@ -728,9 +733,9 @@ private final class MockSignInProvider: SignInProvider, @unchecked Sendable {
     ) async throws -> XPCAccountInfo {
         onSignIn?(alias, tenant, clientID, window)
         switch behaviour {
-        case .succeed(let username):
+        case let .succeed(username):
             return XPCAccountInfo(alias: alias, username: username, tenantId: "tid", tenantName: "")
-        case .fail(let error):
+        case let .fail(error):
             throw error
         case .cancel:
             throw CancellationError()

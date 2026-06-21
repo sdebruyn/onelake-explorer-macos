@@ -26,7 +26,6 @@ import Foundation
 /// configurations; values that fail (paths, UPNs, workspace names) are
 /// collapsed to `"redacted"` in release builds.
 public enum Privacy {
-
     // MARK: - Constants
 
     /// Maximum byte length for a metadata value to be considered for
@@ -73,7 +72,7 @@ public enum Privacy {
                 idx = s.index(after: idx)
             } else {
                 let count = Int(p)
-                for _ in 0..<count {
+                for _ in 0 ..< count {
                     guard idx < s.endIndex, s[idx].isHexDigit else { return false }
                     idx = s.index(after: idx)
                 }
@@ -91,12 +90,12 @@ public enum Privacy {
 
     private static func isSafeByte(_ c: UInt8) -> Bool {
         switch c {
-        case UInt8(ascii: "A")...UInt8(ascii: "Z"): return true
-        case UInt8(ascii: "a")...UInt8(ascii: "z"): return true
-        case UInt8(ascii: "0")...UInt8(ascii: "9"): return true
+        case UInt8(ascii: "A") ... UInt8(ascii: "Z"): true
+        case UInt8(ascii: "a") ... UInt8(ascii: "z"): true
+        case UInt8(ascii: "0") ... UInt8(ascii: "9"): true
         case UInt8(ascii: "_"), UInt8(ascii: "."),
-             UInt8(ascii: ":"), UInt8(ascii: "-"): return true
-        default: return false
+             UInt8(ascii: ":"), UInt8(ascii: "-"): true
+        default: false
         }
     }
 }

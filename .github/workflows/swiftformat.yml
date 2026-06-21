@@ -1,0 +1,37 @@
+name: SwiftFormat
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swiftformat-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  swiftformat:
+    name: SwiftFormat lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Lint formatting
+        # ghcr.io/nicklockwood/swiftformat is built FROM scratch with
+        # ENTRYPOINT ["/usr/bin/swiftformat"] — no shell is present, so the
+        # image cannot be used as a job container (Actions needs a shell to
+        # hold the container open). Use docker run instead: mount the workspace
+        # read-only at /src and pass --lint directly to the entrypoint binary.
+        # --lint exits non-zero if any file would be changed by formatting.
+        # The .swiftformat config at the repo root is picked up automatically.
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            ghcr.io/nicklockwood/swiftformat:0.61.1 \
+            --lint .

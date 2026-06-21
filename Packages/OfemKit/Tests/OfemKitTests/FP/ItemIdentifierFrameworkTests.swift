@@ -1,8 +1,9 @@
 import FileProvider
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - ItemIdentifier framework-conformance tests
+
 //
 // These tests pin OfemKit's sentinel raw values to the Apple
 // NSFileProviderItemIdentifier constants. A mismatch here means the FPE
@@ -10,7 +11,6 @@ import Testing
 // as garbage workspace GUIDs, breaking all enumeration.
 
 struct ItemIdentifierFrameworkTests {
-
     // MARK: - Sentinel contract pins
 
     @Test func rootContainerStringMatchesAppleConstant() {

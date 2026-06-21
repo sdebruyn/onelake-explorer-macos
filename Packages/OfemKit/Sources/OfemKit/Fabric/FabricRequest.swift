@@ -8,7 +8,7 @@ public let fabricDefaultBaseURL = URL(string: "https://api.fabric.microsoft.com"
 // MARK: - Fabric URL builder errors
 
 /// Thrown when Fabric URL construction fails (onelake-03 pattern).
-enum FabricURLError: Error, Sendable {
+enum FabricURLError: Error {
     case invalidURL(String)
 }
 
@@ -120,7 +120,8 @@ func resolveContinuationURI(_ raw: String, base: URL) throws -> URL {
         // fabric-07: reject userinfo (user:password@) — embedded credentials in
         // a continuation URI are a security hazard.
         if let components = URLComponents(url: parsed, resolvingAgainstBaseURL: false),
-           let user = components.user, !user.isEmpty {
+           let user = components.user, !user.isEmpty
+        {
             throw FabricError.continuationURIHostMismatch(
                 "continuationUri must not contain userinfo credentials"
             )

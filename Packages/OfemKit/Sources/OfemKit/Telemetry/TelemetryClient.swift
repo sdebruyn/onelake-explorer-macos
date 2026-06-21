@@ -245,7 +245,7 @@ public actor TelemetryClient {
         guard !events.isEmpty else { return }
         do {
             try await sink.send(events)
-        } catch AppInsightsSinkError.partialReject(_, _, let retriable) {
+        } catch let AppInsightsSinkError.partialReject(_, _, retriable) {
             if !retriable.isEmpty {
                 await batch.requeue(retriable)
             }

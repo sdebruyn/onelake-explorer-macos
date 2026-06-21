@@ -28,9 +28,9 @@ public enum TokenScope: Sendable {
     public var scopes: [String] {
         switch self {
         case .oneLake:
-            return TokenScope.oneLakeScopes
+            TokenScope.oneLakeScopes
         case .fabric:
-            return TokenScope.fabricScopes
+            TokenScope.fabricScopes
         }
     }
 

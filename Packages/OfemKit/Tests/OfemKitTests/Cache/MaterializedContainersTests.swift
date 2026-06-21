@@ -1,14 +1,12 @@
 import Foundation
-import Testing
-
 @testable import OfemKit
+import Testing
 
 // MARK: - MaterializedContainersTests
 
 /// Tests for the materialized-container cache: migration, writer, and reader.
 @Suite("MaterializedContainers")
 struct MaterializedContainersTests {
-
     // MARK: - Schema
 
     @Test("v4 migration creates materialized_containers table")

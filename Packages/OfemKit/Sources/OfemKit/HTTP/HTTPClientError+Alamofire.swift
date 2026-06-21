@@ -24,15 +24,14 @@ extension HTTPClientError {
         }
 
         // Retry exhaustion (requestRetryFailed wraps the final underlying error).
-        if case .requestRetryFailed(let retryError, let originalError) = afError {
+        if case let .requestRetryFailed(retryError, originalError) = afError {
             // retryError describes *why* retrying stopped; originalError is the
             // last per-attempt failure.  Map the original error recursively so
             // the final `last:` carries a meaningful HTTPClientError.
-            let lastHTTP: any Error
-            if let af = originalError as? AFError {
-                lastHTTP = HTTPClientError(afError: af, response: response)
+            let lastHTTP: any Error = if let af = originalError as? AFError {
+                HTTPClientError(afError: af, response: response)
             } else {
-                lastHTTP = HTTPClientError.transport(originalError)
+                HTTPClientError.transport(originalError)
             }
             // retryError.underlyingError is the true stop reason (e.g. exceeded
             // retry limit); attempts = retryCount + 1 (the initial attempt plus
@@ -43,7 +42,7 @@ extension HTTPClientError {
         }
 
         // Authentication interceptor failure (refresh threw).
-        if case .requestAdaptationFailed(let underlying) = afError {
+        if case let .requestAdaptationFailed(underlying) = afError {
             self = .tokenAcquisitionFailed(underlying)
             return
         }
@@ -78,7 +77,7 @@ extension HTTPClientError {
         }
 
         // Session task failure (wraps a URLError or other transport error).
-        if case .sessionTaskFailed(let underlying) = afError {
+        if case let .sessionTaskFailed(underlying) = afError {
             if let urlError = underlying as? URLError {
                 if urlError.code == .cancelled {
                     self = .cancelled

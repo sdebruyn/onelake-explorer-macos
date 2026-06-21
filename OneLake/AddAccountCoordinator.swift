@@ -49,21 +49,20 @@ extension OfemFPEClient: DomainRegistrar {}
 /// and calls `startLogin` / `cancel`. All state mutations are `@MainActor`.
 @MainActor
 final class AddAccountCoordinator: ObservableObject {
-
     // MARK: - Phase
 
     enum Phase: Equatable {
         case idle
-        case waiting                 // sign-in in flight
-        case success(String)         // signed-in username; brief success display
-        case readyToDismiss(String)  // pause elapsed; view should dismiss
-        case failure(String)         // human-readable error
+        case waiting // sign-in in flight
+        case success(String) // signed-in username; brief success display
+        case readyToDismiss(String) // pause elapsed; view should dismiss
+        case failure(String) // human-readable error
 
         /// True while sign-in is in progress (fields should be disabled).
         var isInProgress: Bool {
             switch self {
-            case .waiting, .success, .readyToDismiss: return true
-            case .idle, .failure: return false
+            case .waiting, .success, .readyToDismiss: true
+            case .idle, .failure: false
             }
         }
     }
@@ -78,7 +77,7 @@ final class AddAccountCoordinator: ObservableObject {
     private static let log = Logger(subsystem: ofemSubsystem, category: "add-account-coordinator")
 
     /// Duration the success state is shown before transitioning to readyToDismiss.
-    static let successDisplayDuration: Duration = .milliseconds(1_200)
+    static let successDisplayDuration: Duration = .milliseconds(1200)
 
     /// Production initialiser — wires to shared singletons by default.
     /// The `@MainActor` default args are safe here because the class itself
@@ -213,19 +212,19 @@ final class AddAccountCoordinator: ObservableObject {
             switch authErr {
             case .noViewController: return "Internal error: no window for authentication."
             case .fabricConsentFailed: return "Fabric consent was not obtained. Please try signing in again and complete both browser prompts."
-            case .unknownAlias(let a): return "Account '\(a)' not found."
+            case let .unknownAlias(a): return "Account '\(a)' not found."
             }
         }
         if let authErr = error as? OfemAuthError {
             switch authErr {
             case .interactionRequired: return "Authentication required — please sign in again."
             case .emptyAlias: return "Alias must not be empty."
-            case .duplicateAlias(let a): return "Account '\(a)' already exists."
-            case .unknownAlias(let a): return "Account '\(a)' not found."
+            case let .duplicateAlias(a): return "Account '\(a)' already exists."
+            case let .unknownAlias(a): return "Account '\(a)' not found."
             case .emptyScopes: return "Internal error: no scopes configured."
-            case .silentTokenFailed(let alias): return "Token error for '\(alias)' — please sign in again."
-            case .configRejection(let alias): return "Authentication configuration error for '\(alias)' — contact the administrator."
-            case .msalRemoveFailed(let alias, _): return "Sign-out error for '\(alias)' — refresh token may not have been cleared."
+            case let .silentTokenFailed(alias): return "Token error for '\(alias)' — please sign in again."
+            case let .configRejection(alias): return "Authentication configuration error for '\(alias)' — contact the administrator."
+            case let .msalRemoveFailed(alias, _): return "Sign-out error for '\(alias)' — refresh token may not have been cleared."
             }
         }
         return error.localizedDescription

@@ -1,0 +1,32 @@
+# SwiftFormat configuration for OFEM (OneLake Explorer for macOS)
+# Tool: nicklockwood/SwiftFormat 0.61.1
+# Swift version: 6.0 (all targets build in Swift 6 language mode — see project.yml)
+
+--swiftversion 6.0
+
+# Exclude generated, vendored, and build-artefact paths.
+--exclude .build
+--exclude DerivedData
+--exclude Packages/OfemKit/.build
+--exclude OneLake.xcodeproj
+
+# Use sensible default rules. The only explicit rule changes below are
+# the two cases where SwiftFormat's default would fight Swift 6 strict
+# concurrency or produce unexpected churn on this codebase.
+
+# redundantSelf: disabled — Swift 6 strict concurrency requires explicit
+# `self.` capture inside closures (the compiler errors without it).
+# SwiftFormat's default strips `self.` unconditionally, which breaks
+# compilation under Swift 6. Keep all explicit self. references intact.
+--disable redundantSelf
+
+# preferKeyPath: disabled — rewrites `{ $0.foo }` closures to `\.foo`
+# key-paths inside swift-testing `#expect(...)` macros, which breaks macro
+# expansion ("call can throw, but it is not marked with 'try'").
+--disable preferKeyPath
+
+# hoistTry / hoistAwait: disabled — moves `try`/`await` outside the
+# call that contains them; inside `#expect(...)` this breaks the macro
+# (removes the implicit try wrapping the macro requires for throwing calls).
+--disable hoistTry
+--disable hoistAwait

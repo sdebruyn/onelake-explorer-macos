@@ -1,12 +1,11 @@
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - ItemIdentifier tests
 
 /// Tests for ``ItemIdentifier`` — round-trip through `identifierString` and
 /// `parentIdentifier` derivation.
 struct ItemIdentifierTests {
-
     // MARK: - Root
 
     @Test func rootHasKnownString() {

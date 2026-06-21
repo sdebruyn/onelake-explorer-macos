@@ -1,6 +1,5 @@
 import Foundation
 import GRDB
-
 @testable import OfemKit
 
 // MARK: - Test helpers

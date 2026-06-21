@@ -36,7 +36,7 @@ public final class OneLakeClient: Sendable {
     static let defaultChunkSize = 4 * 1024 * 1024
 
     /// Maximum pagination pages before giving up.
-    static let maxPaginationPages = 1_000
+    static let maxPaginationPages = 1000
 
     // MARK: - Shared decoder (onelake-05)
 
@@ -105,7 +105,7 @@ public final class OneLakeClient: Sendable {
         // not just immediately repeated ones (A→B→A→B loops).
         var seenContinuations: Set<String> = []
 
-        for page in 0..<Self.maxPaginationPages {
+        for page in 0 ..< Self.maxPaginationPages {
             // net-05: query values are percent-encoded via oneLakeListURL /
             // percentEncodedQueryItem so '+' in continuation tokens and
             // directory names is not decoded as a space by Azure.
@@ -421,12 +421,12 @@ public final class OneLakeClient: Sendable {
         while remaining > 0 {
             let want = min(Int64(chunkSize), remaining)
             let start = Int(pos)
-            let end   = Int(pos + want)
+            let end = Int(pos + want)
             guard end <= buf.count else {
                 throw OneLakeError.shortRead(offset: pos)
             }
             // Safe: buf.startIndex == 0 after normalisation above.
-            let chunk = buf[start..<end]
+            let chunk = buf[start ..< end]
             let appendURL = try buildURL {
                 try oneLakePathURL(
                     base: baseURL,
@@ -633,7 +633,7 @@ public final class OneLakeClient: Sendable {
         url: URL,
         body: Data?,
         extraHeaders: [String: String]?,
-        idempotent: Bool  // retained for call-site documentation; session handles retry
+        idempotent _: Bool // retained for call-site documentation; session handles retry
     ) async throws -> (Data, HTTPURLResponse) {
         var headers = HTTPHeaders()
         headers.add(name: "x-ms-version", value: oneLakeDFSAPIVersion)
@@ -662,12 +662,12 @@ public final class OneLakeClient: Sendable {
                 emptyRequestMethods: [.get, .put, .patch, .delete, .post, .head]
             ).response
             switch dataResponse.result {
-            case .success(let data):
+            case let .success(data):
                 guard let httpResponse = dataResponse.response else {
                     throw HTTPClientError.transport(URLError(.badServerResponse))
                 }
                 return (data, httpResponse)
-            case .failure(let afError):
+            case let .failure(afError):
                 let mapped = HTTPClientError(
                     afError: afError,
                     response: dataResponse.response,
@@ -723,20 +723,20 @@ public final class OneLakeClient: Sendable {
                 throw HTTPClientError.transport(URLError(.badServerResponse))
             }
             switch result {
-            case .success(let fileURL):
+            case let .success(fileURL):
                 // Copy in 64 KB chunks so the FPE process does not map the
                 // entire file into its address space at once.
                 defer { try? FileManager.default.removeItem(at: fileURL) }
                 let src = try FileHandle(forReadingFrom: fileURL)
                 defer { try? src.close() }
-                let chunkSize = 65_536
+                let chunkSize = 65536
                 while true {
                     let chunk = src.readData(ofLength: chunkSize)
                     if chunk.isEmpty { break }
                     try fileHandle.write(contentsOf: chunk)
                 }
                 return httpResponse
-            case .failure(let afError):
+            case let .failure(afError):
                 try? FileManager.default.removeItem(at: tmpURL)
                 let mapped = HTTPClientError(
                     afError: afError,
@@ -765,7 +765,7 @@ public final class OneLakeClient: Sendable {
         do {
             return try build()
         } catch let urlErr as OneLakeURLError {
-            if case .invalidURL(let msg) = urlErr {
+            if case let .invalidURL(msg) = urlErr {
                 throw OneLakeError.missingArgument(msg)
             }
             throw OneLakeError.missingArgument(urlErr.localizedDescription)

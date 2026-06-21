@@ -1,6 +1,6 @@
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - Test helpers
 
@@ -124,7 +124,7 @@ struct FabricClientTests {
     func fabricErrorFromRetriesExhausted() {
         let inner = HTTPClientError.throttled
         let mapped = FabricError.from(HTTPClientError.retriesExhausted(attempts: 3, last: inner))
-        if case .retriesExhausted(let attempts) = mapped {
+        if case let .retriesExhausted(attempts) = mapped {
             #expect(attempts == 3)
         } else {
             Issue.record("Expected .retriesExhausted, got \(mapped)")

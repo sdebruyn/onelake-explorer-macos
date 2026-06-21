@@ -1,9 +1,8 @@
 import CryptoKit
 import Foundation
 import GRDB
-import Testing
-
 @testable import OfemKit
+import Testing
 
 // MARK: - ClockBox
 
@@ -14,10 +13,13 @@ import Testing
 /// "captured var in concurrently-executing code" error.
 final class ClockBox: @unchecked Sendable {
     var value: Int64
-    init(value: Int64) { self.value = value }
+    init(value: Int64) {
+        self.value = value
+    }
 }
 
 // MARK: - CacheFixesTests
+
 //
 // Tests for the findings addressed in the cache work package:
 //   cache-02/03  set-based eviction + TOCTOU
@@ -33,7 +35,6 @@ final class ClockBox: @unchecked Sendable {
 
 @Suite("CacheFixes")
 struct CacheFixesTests {
-
     // MARK: - cache-10: Injectable clock
 
     @Test("Injected clock controls timestamp written to DB")
@@ -81,8 +82,8 @@ struct CacheFixesTests {
             )
         }
 
-        try await add(path: "old.txt")  // lastAccessedNs = 100 → LRU candidate
-        try await add(path: "new.txt")  // lastAccessedNs = 200 → stays
+        try await add(path: "old.txt") // lastAccessedNs = 100 → LRU candidate
+        try await add(path: "new.txt") // lastAccessedNs = 200 → stays
 
         // After eviction the total must be ≤ 6 bytes.
         let total = try await store.blobBytes()
@@ -108,7 +109,7 @@ struct CacheFixesTests {
         let store = try makeTempStore(maxBlobBytes: 5, clock: { 100 })
         defer { try? FileManager.default.removeItem(at: store.root) }
 
-        let data = Data("hello".utf8)  // 5 bytes
+        let data = Data("hello".utf8) // 5 bytes
         let keyA = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "a.txt")
         let keyB = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "b.txt")
 
@@ -217,7 +218,7 @@ struct CacheFixesTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
 
-        let anchorNs: Int64 = 1_000
+        let anchorNs: Int64 = 1000
         for path in ["dir", "dir/a.txt", "dir/b.txt", "dir/c.txt"] {
             try await store.upsert(MetadataRecord(
                 accountAlias: "a", workspaceID: "w", itemID: "i",
@@ -377,7 +378,7 @@ struct CacheFixesTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         // 1200 records: exceeds the chunk size of 500 so spans multiple transactions.
-        let records = (0..<1200).map { i in
+        let records = (0 ..< 1200).map { i in
             MetadataRecord(
                 accountAlias: "a", workspaceID: "w", itemID: "i",
                 path: "file-\(i).txt", parentPath: "", name: "file-\(i).txt", isDir: false,
@@ -402,7 +403,7 @@ struct CacheFixesTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
 
-        let keys = (0..<1200).map { i in
+        let keys = (0 ..< 1200).map { i in
             CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "file-\(i).txt")
         }
         let records = keys.map { k in

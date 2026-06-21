@@ -108,7 +108,7 @@ public final class MsalAuthClient: MsalAuthClientProtocol {
         // Both `inner.allAccounts()` and `inner.acquireTokenSilent(with:completionBlock:)`
         // are called synchronously within the same closure execution, before any
         // suspension, so no data-race suppression is needed.
-        let token = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<AccessToken, Error>) in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<AccessToken, Error>) in
             // Perform account lookup synchronously inside the closure.
             let msalAccount: MSALAccount
             do {
@@ -135,7 +135,6 @@ public final class MsalAuthClient: MsalAuthClientProtocol {
                 }
             }
         }
-        return token
     }
 
     public func removeAccount(homeAccountID: String) throws {
@@ -301,11 +300,11 @@ final class FileTokenStoreCacheDelegate: NSObject, MSALSerializedADALCacheProvid
         }
     }
 
-    func didAccessCache(_ cache: MSALSerializedADALCacheProvider) {
+    func didAccessCache(_: MSALSerializedADALCacheProvider) {
         // No-op: we only need to load from disk before access, not after.
     }
 
-    func willWriteCache(_ cache: MSALSerializedADALCacheProvider) {
+    func willWriteCache(_: MSALSerializedADALCacheProvider) {
         // No-op: the entire read-merge-write cycle is performed atomically
         // inside didWriteCache via FileTokenStore.atomicUpdate, which holds
         // the cross-process lock for the full read→deserialize→serialize→write
@@ -385,15 +384,15 @@ public enum MsalAuthClientError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .missingClientID:
-            return "MsalAuthClient: clientID is required"
+            "MsalAuthClient: clientID is required"
         case .missingFileTokenStore:
-            return "MsalAuthClient: fileTokenStore is required when cacheStrategy is .fileBackedFallback"
+            "MsalAuthClient: fileTokenStore is required when cacheStrategy is .fileBackedFallback"
         case .missingAlias:
-            return "MsalAuthClient: alias is required when cacheStrategy is .fileBackedFallback"
+            "MsalAuthClient: alias is required when cacheStrategy is .fileBackedFallback"
         case .nilResult:
-            return "MsalAuthClient: MSAL returned neither a result nor an error"
+            "MsalAuthClient: MSAL returned neither a result nor an error"
         case let .accountNotFound(id):
-            return "MsalAuthClient: no account found in MSAL cache for homeAccountID=\(id)"
+            "MsalAuthClient: no account found in MSAL cache for homeAccountID=\(id)"
         }
     }
 }

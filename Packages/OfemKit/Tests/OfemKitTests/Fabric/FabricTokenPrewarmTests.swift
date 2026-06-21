@@ -19,15 +19,15 @@
 // map to .unauthorized regardless of inner error.
 
 import Foundation
-import Testing
 @testable import OfemKit
+import Testing
 
 // MARK: - Token providers
 
 /// A ``TokenProvider`` that throws ``OfemAuthError.interactionRequired``
 /// on every call, simulating a Fabric token cache miss.
 private struct InteractionRequiredTokenProvider: TokenProvider {
-    func token(alias: String, scope: TokenScope) async throws -> String {
+    func token(alias _: String, scope _: TokenScope) async throws -> String {
         throw OfemAuthError.interactionRequired
     }
 }
@@ -39,7 +39,7 @@ private struct DelayedTokenProvider: TokenProvider {
     let token: String
     var expectedScope: TokenScope = .fabric
 
-    func token(alias: String, scope: TokenScope) async throws -> String {
+    func token(alias _: String, scope: TokenScope) async throws -> String {
         guard scope == expectedScope else {
             throw DelayedTokenProviderError.wrongScope(expected: expectedScope, got: scope)
         }
@@ -54,7 +54,7 @@ private enum DelayedTokenProviderError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case let .wrongScope(expected, got):
-            return "DelayedTokenProvider: expected scope \(expected), got \(got)"
+            "DelayedTokenProvider: expected scope \(expected), got \(got)"
         }
     }
 }
@@ -67,7 +67,6 @@ private let fabricBase = URL(string: "https://api.fabric.microsoft.com")!
 
 @Suite("FabricError token-acquisition error mapping (issue-260)")
 struct FabricTokenPrewarmTests {
-
     // MARK: - FabricError.from mapping for tokenAcquisitionFailed
 
     @Test("tokenAcquisitionFailed(interactionRequired) maps to FabricError.unauthorized")

@@ -18,8 +18,8 @@
 
 import AppKit
 @preconcurrency import FileProvider
-import SwiftUI
 import os.log
+import SwiftUI
 
 struct MenuBarView: View {
     // The model is owned at the App level (OneLakeApp @StateObject) so
@@ -61,7 +61,6 @@ struct MenuBarView: View {
 
     // MARK: - Header
 
-    @ViewBuilder
     private var statusHeader: some View {
         Text(model.headerLabel)
             .foregroundStyle(.secondary)
@@ -124,7 +123,6 @@ struct MenuBarView: View {
     /// comes to the foreground. `DockIconManager` picks up the resulting
     /// `NSWindow.didBecomeKeyNotification` and switches the activation policy to
     /// `.regular`, showing the Dock icon while the window is open.
-    @ViewBuilder
     private var preferencesItem: some View {
         Button("Preferences…") {
             openPreferences()
@@ -150,7 +148,6 @@ struct MenuBarView: View {
 
     // MARK: - About
 
-    @ViewBuilder
     private var aboutItem: some View {
         Button("About OFEM…") {
             AboutWindowController.shared.show()
@@ -159,7 +156,6 @@ struct MenuBarView: View {
 
     // MARK: - Quit
 
-    @ViewBuilder
     private var quitItem: some View {
         Button("Quit OneLake") {
             NSApplication.shared.terminate(nil)
@@ -243,7 +239,6 @@ private struct AccountSubmenu: View {
         }
     }
 
-
     /// Resolves the Finder-visible URL for `domain` via the File Provider
     /// framework and reveals it in Finder. Runs asynchronously; silently
     /// does nothing if the domain is not yet registered or the URL cannot
@@ -325,7 +320,7 @@ private struct AccountSubmenu: View {
         let alert = NSAlert()
         alert.messageText = "Sign out \"\(account.alias)\"?"
         alert.informativeText = "This removes the stored token and cached data for this account and unmounts it from Finder."
-        alert.addButton(withTitle: "Cancel")        // default → safe
+        alert.addButton(withTitle: "Cancel") // default → safe
         alert.addButton(withTitle: "Sign Out")
         alert.alertStyle = .warning
         if alert.runModal() == .alertSecondButtonReturn {

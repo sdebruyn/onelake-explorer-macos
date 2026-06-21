@@ -1,6 +1,6 @@
-import Testing
-@testable import OfemKit
 import Foundation
+@testable import OfemKit
+import Testing
 
 @Suite("RotatingFileWriter")
 struct RotatingFileWriterTests {
@@ -38,7 +38,7 @@ struct RotatingFileWriterTests {
             )
 
             // Write more than 50 bytes total.
-            for i in 0..<10 {
+            for i in 0 ..< 10 {
                 writer.write("log line number \(i) — padding padding")
             }
             writer.close()
@@ -59,7 +59,7 @@ struct RotatingFileWriterTests {
                 maxFileSizeBytes: 50,
                 maxBackups: 2
             )
-            for i in 0..<5 {
+            for i in 0 ..< 5 {
                 writer.write("log line \(i) — padding to exceed threshold easily")
             }
             writer.close()
@@ -86,7 +86,7 @@ struct RotatingFileWriterTests {
             )
 
             // Force many rotations.
-            for i in 0..<50 {
+            for i in 0 ..< 50 {
                 writer.write("rotation line \(i) — enough bytes to overflow the tiny cap here")
             }
             writer.close()
@@ -105,7 +105,7 @@ struct RotatingFileWriterTests {
     }
 
     @Test("concurrent writes do not corrupt the file")
-    func concurrentWrites() async throws {
+    func concurrentWrites() async {
         let dir = FileManager.default.temporaryDirectory
             .appending(path: "ofem-rfw-concurrent-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -118,7 +118,7 @@ struct RotatingFileWriterTests {
 
         // Spawn multiple concurrent writes.
         await withTaskGroup(of: Void.self) { group in
-            for i in 0..<100 {
+            for i in 0 ..< 100 {
                 group.addTask {
                     writer.write("concurrent line \(i)")
                 }

@@ -2,11 +2,11 @@ import Foundation
 @preconcurrency import MSAL
 import os.log
 
-// `MSALErrorInternal` (-50000) is the ObjC enum case for the top-level
-// "internal error" code that MSAL uses when the specific failure is stored
-// in MSALInternalErrorCodeKey. In Swift the bridged name would be
-// `MSALError.internal`, but `internal` is a reserved keyword so the case
-// is not directly accessible as a typed value. Use this constant instead.
+/// `MSALErrorInternal` (-50000) is the ObjC enum case for the top-level
+/// "internal error" code that MSAL uses when the specific failure is stored
+/// in MSALInternalErrorCodeKey. In Swift the bridged name would be
+/// `MSALError.internal`, but `internal` is a reserved keyword so the case
+/// is not directly accessible as a typed value. Use this constant instead.
 private let msalErrorInternalCode: Int = -50000
 
 // MARK: - OfemAuth
@@ -184,7 +184,7 @@ public actor OfemAuth: TokenProvider {
         if let store = fileTokenStore {
             do {
                 try await store.delete(alias: alias)
-            } catch FileTokenStoreError.deleteFailed(let a, let e) {
+            } catch let FileTokenStoreError.deleteFailed(a, e) {
                 Self.log.error("OfemAuth: failed to delete token blob for alias=\(a, privacy: .public): \(e)")
             } catch FileTokenStoreError.notFound {
                 // No file-backed cache was used for this alias — benign.
@@ -438,7 +438,7 @@ public actor OfemAuth: TokenProvider {
         // Secondary: AADSTS numeric STS codes in MSALSTSErrorCodesKey.
         // MSAL populates this as NSArray<NSNumber *> (see MSALErrorConverter.m).
         // Per docs/auth.md:79: 50076 (MFA required), 50079 (CA), 50078, 50158.
-        let aadstsIntCodes: Set<Int> = [50076, 50079, 50078, 50158]
+        let aadstsIntCodes: Set = [50076, 50079, 50078, 50158]
         if let stsCodes = nsError.userInfo["MSALSTSErrorCodesKey"] as? [NSNumber] {
             if stsCodes.contains(where: { aadstsIntCodes.contains($0.intValue) }) {
                 return true
@@ -453,7 +453,7 @@ public actor OfemAuth: TokenProvider {
         // Check for the OAuth/sub-error token strings that AADSTS MFA/CA errors produce.
         // These are checked via exact/substring match on the structured userInfo fields,
         // NOT on NSLocalizedDescriptionKey (which is locale-translated).
-        let aadstsCodeStrings: Set<String> = ["AADSTS50076", "AADSTS50079", "AADSTS50078", "AADSTS50158"]
+        let aadstsCodeStrings: Set = ["AADSTS50076", "AADSTS50079", "AADSTS50078", "AADSTS50158"]
         for code in aadstsCodeStrings {
             if oauthError.contains(code) || subError.contains(code) {
                 return true
@@ -475,7 +475,8 @@ public actor OfemAuth: TokenProvider {
     func isInvalidGrant(_ error: Error) -> Bool {
         let nsError = error as NSError
         guard nsError.domain == MSALErrorDomain,
-              nsError.code == msalErrorInternalCode else {
+              nsError.code == msalErrorInternalCode
+        else {
             return false
         }
         guard let internalCode = nsError.userInfo[MSALInternalErrorCodeKey] as? NSNumber else {
@@ -505,7 +506,8 @@ public actor OfemAuth: TokenProvider {
     func isConfigRejection(_ error: Error) -> Bool {
         let nsError = error as NSError
         guard nsError.domain == MSALErrorDomain,
-              nsError.code == msalErrorInternalCode else {
+              nsError.code == msalErrorInternalCode
+        else {
             return false
         }
         guard let internalCode = nsError.userInfo[MSALInternalErrorCodeKey] as? NSNumber else {
@@ -577,15 +579,15 @@ public struct DefaultMsalAuthClientFactory: MsalAuthClientFactory, Sendable {
 public enum OfemAuthError: Error, CustomStringConvertible, Equatable {
     public static func == (lhs: OfemAuthError, rhs: OfemAuthError) -> Bool {
         switch (lhs, rhs) {
-        case (.interactionRequired, .interactionRequired): return true
-        case (.emptyAlias, .emptyAlias): return true
-        case let (.duplicateAlias(a), .duplicateAlias(b)): return a == b
-        case let (.unknownAlias(a), .unknownAlias(b)): return a == b
-        case (.emptyScopes, .emptyScopes): return true
-        case let (.silentTokenFailed(a), .silentTokenFailed(b)): return a == b
-        case let (.configRejection(a), .configRejection(b)): return a == b
-        case let (.msalRemoveFailed(a, _), .msalRemoveFailed(b, _)): return a == b
-        default: return false
+        case (.interactionRequired, .interactionRequired): true
+        case (.emptyAlias, .emptyAlias): true
+        case let (.duplicateAlias(a), .duplicateAlias(b)): a == b
+        case let (.unknownAlias(a), .unknownAlias(b)): a == b
+        case (.emptyScopes, .emptyScopes): true
+        case let (.silentTokenFailed(a), .silentTokenFailed(b)): a == b
+        case let (.configRejection(a), .configRejection(b)): a == b
+        case let (.msalRemoveFailed(a, _), .msalRemoveFailed(b, _)): a == b
+        default: false
         }
     }
 
@@ -632,29 +634,29 @@ public enum OfemAuthError: Error, CustomStringConvertible, Equatable {
     public var description: String {
         switch self {
         case .interactionRequired:
-            return "auth: interaction required"
+            "auth: interaction required"
         case .emptyAlias:
-            return "auth: alias must not be empty"
+            "auth: alias must not be empty"
         case let .duplicateAlias(alias):
-            return "auth: account \"\(alias)\" already exists"
+            "auth: account \"\(alias)\" already exists"
         case let .unknownAlias(alias):
-            return "auth: account \"\(alias)\" not found"
+            "auth: account \"\(alias)\" not found"
         case .emptyScopes:
-            return "auth: no scopes configured"
+            "auth: no scopes configured"
         case let .silentTokenFailed(alias):
             // The underlying error is logged with .private before this is thrown;
             // the description intentionally omits it to prevent PII propagation
             // via .public log calls on this error's description.
-            return "auth: silent token for \"\(alias)\" failed (see log for details)"
+            "auth: silent token for \"\(alias)\" failed (see log for details)"
         case let .configRejection(alias):
             // The full MSAL error is logged at .critical before this is thrown.
             // The description omits it to prevent PII propagation; callers should
             // treat this as a permanent misconfiguration, not a transient failure.
-            return "auth: config/credential rejection for \"\(alias)\" — check Entra app registration (see log)"
+            "auth: config/credential rejection for \"\(alias)\" — check Entra app registration (see log)"
         case let .msalRemoveFailed(alias, _):
             // Underlying error is not interpolated to avoid leaking PII from
             // MSAL error descriptions.
-            return "auth: MSAL Keychain remove failed for \"\(alias)\" — refresh token may persist"
+            "auth: MSAL Keychain remove failed for \"\(alias)\" — refresh token may persist"
         }
     }
 }

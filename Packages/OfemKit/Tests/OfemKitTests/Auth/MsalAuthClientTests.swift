@@ -1,7 +1,7 @@
-import Testing
 import Foundation
 @preconcurrency import MSAL
 @testable import OfemKit
+import Testing
 
 // MARK: - MsalApplicationConfigTests
 
@@ -36,7 +36,7 @@ struct MsalApplicationConfigTests {
     }
 
     @Test("redirect URI fallback uses OfemPaths.bundleID when Bundle.main has no identifier")
-    func redirectURIFallbackIsOfemBundleID() throws {
+    func redirectURIFallbackIsOfemBundleID() {
         // Verify the fallback value is `OfemPaths.bundleID` and has the right format.
         // This is the host-app case and the test-runner-nil-bundleID case.
         let fallbackBundleID = OfemPaths.bundleID
@@ -308,7 +308,7 @@ struct OfemAuthRefreshCoalescingTests {
 
         // Launch 10 concurrent token requests.
         let results = try await withThrowingTaskGroup(of: String.self, returning: [String].self) { group in
-            for _ in 0..<10 {
+            for _ in 0 ..< 10 {
                 group.addTask {
                     try await auth.tokenForScope(alias: "work", scope: .oneLake)
                 }
@@ -356,7 +356,7 @@ struct OfemAuthRefreshCoalescingTests {
         var errorCount = 0
         var successCount = 0
         await withThrowingTaskGroup(of: String.self) { group in
-            for _ in 0..<5 {
+            for _ in 0 ..< 5 {
                 group.addTask {
                     try await auth.tokenForScope(alias: "work", scope: .oneLake)
                 }

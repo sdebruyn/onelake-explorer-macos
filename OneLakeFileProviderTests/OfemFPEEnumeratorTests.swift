@@ -7,7 +7,6 @@ import OfemKit
 import XCTest
 
 final class OfemFPEEnumeratorTests: XCTestCase {
-
     // MARK: - Test lifecycle
 
     /// Fixed aliases used with OfemWorkingSetEnumerator that write to the
@@ -42,7 +41,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let observer = SpyEnumerationObserver()
         enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage.initialPageSortedByName as NSFileProviderPage)
         // Give the synchronous call time to complete (enumerateItems is synchronous for working-set)
-        try await Task.sleep(nanoseconds: 10_000_000)  // 10 ms
+        try await Task.sleep(nanoseconds: 10_000_000) // 10 ms
         XCTAssertTrue(observer.didEnumerateCalled)
         XCTAssertTrue(observer.finishEnumeratingCalled)
         XCTAssertTrue(observer.enumeratedItems.isEmpty)
@@ -62,7 +61,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         )
         let observer = SpyEnumerationObserver()
         enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage.initialPageSortedByName as NSFileProviderPage)
-        enumerator.invalidate()  // Should not crash.
+        enumerator.invalidate() // Should not crash.
     }
 
     // MARK: - OfemFPEEnumerator: engine error propagates to observer
@@ -83,7 +82,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage.initialPageSortedByName as NSFileProviderPage)
 
         // Wait for the async Task to finish.
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if observer.finishEnumeratingWithErrorCalled || observer.finishEnumeratingCalled { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -127,7 +126,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
 
         // Wait up to 1 second for the async Task to complete.
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if changeObserver.finished || changeObserver.finishedWithError { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -176,7 +175,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let changeObserver = SpyChangeObserver()
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
 
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if changeObserver.finished || changeObserver.finishedWithError { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -208,7 +207,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let changeObserver = SpyChangeObserver()
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
 
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if changeObserver.finished || changeObserver.finishedWithError { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -236,7 +235,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let changeObserver = SpyChangeObserver()
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
 
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if changeObserver.finished || changeObserver.finishedWithError { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -258,7 +257,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let changeObserver = SpyChangeObserver()
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
 
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if changeObserver.finished || changeObserver.finishedWithError { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -288,7 +287,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let observer = SpyEnumerationObserver()
         enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage.initialPageSortedByName as NSFileProviderPage)
 
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if observer.finishEnumeratingWithErrorCalled || observer.finishEnumeratingCalled { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -316,7 +315,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
 
         let changeObserver = SpyChangeObserver()
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if changeObserver.finished || changeObserver.finishedWithError { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -348,7 +347,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
 
         let obs = SpyChangeObserver()
         freshEnumerator.enumerateChanges(for: obs, from: encodeSyncAnchor(0))
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if obs.finished || obs.finishedWithError { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -389,7 +388,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let enumerator = OfemWorkingSetEnumerator(alias: alias, engineHost: host)
         let obs = SpyChangeObserver()
         enumerator.enumerateChanges(for: obs, from: encodeSyncAnchor(0))
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if obs.finished || obs.finishedWithError { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -418,7 +417,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         // refresh so the second call sees the throttle window.
         let obs1 = SpyChangeObserver()
         enumerator.enumerateChanges(for: obs1, from: encodeSyncAnchor(0))
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if obs1.finished || obs1.finishedWithError { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -429,7 +428,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         // Second call immediately — within the throttle window.
         let obs2 = SpyChangeObserver()
         enumerator.enumerateChanges(for: obs2, from: encodeSyncAnchor(0))
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if obs2.finished || obs2.finishedWithError { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
@@ -471,7 +470,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let changeObserver = SpyChangeObserver()
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
 
-        for _ in 0..<50 {
+        for _ in 0 ..< 50 {
             if changeObserver.finished || changeObserver.finishedWithError { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }

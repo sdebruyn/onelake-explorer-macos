@@ -1,6 +1,6 @@
-import Testing
-@testable import OfemKit
 import Foundation
+@testable import OfemKit
+import Testing
 
 // MARK: - MemoryTelemetrySink
 
@@ -22,7 +22,9 @@ final class MemoryTelemetrySink: TelemetrySink, @unchecked Sendable {
         }
     }
 
-    var count: Int { lock.withLock { _events.count } }
+    var count: Int {
+        lock.withLock { _events.count }
+    }
 }
 
 enum TestSinkError: Error { case failed }
@@ -43,7 +45,9 @@ final class PartialRejectSink: TelemetrySink, @unchecked Sendable {
         self.firstRetriable = firstRetriable
     }
 
-    var sendCount: Int { lock.withLock { _sendCount } }
+    var sendCount: Int {
+        lock.withLock { _sendCount }
+    }
 
     func send(_ events: [TelemetryEvent]) async throws {
         lock.withLock {
@@ -145,7 +149,7 @@ struct TelemetryClientTests {
         // so events accumulate across flushes instead of being dropped.
         let client = makeClient(sink: sink, maxBatchSize: 3)
 
-        for i in 0..<5 {
+        for i in 0 ..< 5 {
             await client.track(TelemetryEvent(name: "ev\(i)"))
         }
         // Final flush for any remaining events.
@@ -155,7 +159,7 @@ struct TelemetryClientTests {
         // All 5 events must arrive (buffer-full → immediate flush, no drop).
         #expect(events.count == 5)
         let names = events.map { $0.name }
-        for i in 0..<5 {
+        for i in 0 ..< 5 {
             #expect(names.contains("ev\(i)"), "ev\(i) should have been flushed")
         }
     }
@@ -227,9 +231,9 @@ struct TelemetryClientTests {
         await client.track(TelemetryEvent(
             name: "error",
             commonProps: [
-                "failedOp":      "file_download", // allowed
-                "unknownKey":    "some-value",    // NOT in allowlist
-                "workspaceName": "SalesData",     // NOT in allowlist
+                "failedOp": "file_download", // allowed
+                "unknownKey": "some-value", // NOT in allowlist
+                "workspaceName": "SalesData", // NOT in allowlist
             ]
         ))
         await client.flush()
@@ -239,7 +243,7 @@ struct TelemetryClientTests {
         let props = events[0].commonProps
 
         #expect(props["failedOp"] == "file_download", "allowed key must survive")
-        #expect(props["unknownKey"] == nil,    "unknown key must be dropped")
+        #expect(props["unknownKey"] == nil, "unknown key must be dropped")
         #expect(props["workspaceName"] == nil, "unknown key must be dropped")
         // Standard common props injected by client must be present.
         #expect(props["installId"] == "test-install-id")
@@ -271,7 +275,7 @@ struct TelemetryClientTests {
 
         // Flush (maxRetries + 1) times: the last flush should find an empty
         // buffer because the event was dropped after maxRetries re-queues.
-        for _ in 0..<(TelemetryEvent.maxRetries + 1) {
+        for _ in 0 ..< (TelemetryEvent.maxRetries + 1) {
             await client.flush()
         }
 
@@ -512,7 +516,9 @@ struct TelemetryClientTests {
         let client = makeClient(sink: sink)
 
         // Enqueue and flush — first flush triggers partialReject.
-        for ev in events { await client.track(ev) }
+        for ev in events {
+            await client.track(ev)
+        }
         await client.flush()
 
         // The retriable event (ev1) was re-queued; flush again to deliver it.
@@ -533,11 +539,11 @@ struct TelemetryClientTests {
 
         await client.track(TelemetryEvent(name: "a"))
         await client.track(TelemetryEvent(name: "b"))
-        await client.flush()           // fails → both re-queued
+        await client.flush() // fails → both re-queued
         #expect(sink.count == 0)
 
         sink.shouldFail = false
-        await client.flush()           // succeeds → both delivered
+        await client.flush() // succeeds → both delivered
         let delivered = sink.drain()
         #expect(delivered.count == 2)
         let names = delivered.map { $0.name }
@@ -553,14 +559,15 @@ struct TelemetryClientTests {
         let client = makeClient(sink: sink)
 
         await client.track(TelemetryEvent(name: "once"))
-        await client.flush()   // drains the buffer
-        await client.flush()   // buffer is empty — must be a no-op
+        await client.flush() // drains the buffer
+        await client.flush() // buffer is empty — must be a no-op
 
         let events = sink.drain()
         #expect(events.count == 1, "each event must be delivered exactly once")
     }
 
     // MARK: - OFEM_TELEMETRY env-var opt-out (telemetry-06)
+
     //
     // setenv/unsetenv are process-global, so all env-var mutation tests run
     // in a dedicated .serialized suite below (EnvOptOutTests) to prevent

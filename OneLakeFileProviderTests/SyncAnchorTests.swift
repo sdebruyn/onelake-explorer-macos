@@ -6,7 +6,6 @@ import Foundation
 import XCTest
 
 final class SyncAnchorTests: XCTestCase {
-
     // MARK: - Round-trip
 
     func testRoundTripZero() {
