@@ -27,7 +27,12 @@ disabled_rules:
   # Tuple size: some XPC/FP types intentionally return 3-member tuples.
   - large_tuple
 
-  # Stylistic: these are handled by SwiftFormat or are too subjective.
+  # Stylistic: fully managed by SwiftFormat — disabling here prevents the two
+  # tools from fighting each other (SwiftLint autocorrect would produce a tree
+  # that SwiftFormat immediately reformats back, and vice versa).
+  - trailing_comma        # SwiftFormat: trailingCommas
+  - opening_brace         # SwiftFormat: wrapMultilineStatementBraces
+  - statement_position    # SwiftFormat: elseOnSameLine
   - implicit_optional_initialization
   - static_over_final_class
 
@@ -70,5 +75,3 @@ line_length:
   ignores_comments: true
   ignores_urls: true
 
-trailing_comma:
-  mandatory_comma: false

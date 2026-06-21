@@ -500,6 +500,7 @@ final class OfemFPEClient {
         // NSSet(array:) bridge is the idiomatic Swift way to construct this set.
         // The force-cast is safe: ObjC class objects always bridge to AnyHashable.
         iface.setClasses(
+            // swiftlint:disable:next force_cast
             NSSet(array: [XPCEngineStatus.self, NSArray.self, XPCPausedWorkspace.self]) as! Set<AnyHashable>,
             for: #selector(OfemClientControlProtocol.getEngineStatus(reply:)),
             argumentIndex: 0,
