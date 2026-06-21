@@ -37,10 +37,10 @@ disabled_rules:
   - static_over_final_class
 
 # Opt-in rules that add real value for this codebase.
+# force_cast and force_try are default-enabled in SwiftLint; they are
+# omitted here because listing them under opt_in_rules is redundant.
 opt_in_rules:
   - non_optional_string_data_conversion
-  - force_cast
-  - force_try
 
 # ── Rule configuration ────────────────────────────────────────────────────────
 
