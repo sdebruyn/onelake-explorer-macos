@@ -17,7 +17,7 @@ APPLE_CONFIG  := Local.xcconfig
 # OfemKit `swift test` and host `xcodebuild` invocations always serialize.
 .NOTPARALLEL:
 
-.PHONY: app bootstrap gen build build-ci test test-integration format format-lint lint clean help
+.PHONY: app bootstrap gen build build-ci test test-integration format format-lint lint scan clean help
 
 # Build the signed macOS app. This is THE single build to run after pulling main.
 app: build ## Build signed macOS app (THE build to run after pulling)
@@ -176,6 +176,14 @@ format-lint: ## Lint formatting without modifying files (mirrors CI gate)
 lint: ## Run SwiftLint (mirrors CI gate; warnings only, errors fail)
 	@command -v swiftlint >/dev/null 2>&1 || { echo "swiftlint not installed; run: brew install swiftlint"; exit 1; }
 	swiftlint lint --quiet
+
+# Periphery (peripheryapp/periphery 3.7.4) — dead-code detection. The version
+# is pinned so local and CI agree. Install: brew install periphery.
+# The .periphery.yml config at the repo root controls targets and exclusions.
+# Non-blocking initially (strict: false); promoted to blocking after triage.
+scan: ## Run periphery dead-code scan (mirrors CI gate)
+	@command -v periphery >/dev/null 2>&1 || { echo "periphery not installed; run: brew install periphery"; exit 1; }
+	periphery scan --format xcode
 
 help: ## Show available targets
 	@echo "Targets:"

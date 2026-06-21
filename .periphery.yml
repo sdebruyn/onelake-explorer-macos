@@ -1,0 +1,44 @@
+# Periphery configuration for OFEM (OneLake Explorer for macOS)
+# Tool: peripheryapp/periphery 3.7.4
+#
+# Periphery analyses the Xcode project and the OfemKit SPM package together.
+# The OneLake scheme builds all first-party targets (OneLake, OneLakeFileProvider,
+# Shared, and OfemKit via package dependency), giving periphery full visibility
+# into cross-target symbol usage.
+
+# ── Project ───────────────────────────────────────────────────────────────────
+
+project: OneLake.xcodeproj
+schemes:
+  - OneLake
+targets:
+  - OneLake
+  - OneLakeFileProvider
+
+# ── Index store ──────────────────────────────────────────────────────────────
+
+index_store_path: DerivedData/Build/Products/Debug/index/store
+
+# ── Exclusions ────────────────────────────────────────────────────────────────
+
+# Exclude generated sources, build artefacts, and vendored dependencies.
+exclude_tests: true
+exclude_targets:
+  - OneLakeHostTests
+  - OneLakeFileProviderTests
+
+# ── Behaviour ─────────────────────────────────────────────────────────────────
+
+# Retain @objc members and XPC protocol conformances — these are called via
+# the Objective-C runtime / NSXPCConnection and are not statically visible.
+retain_objc_accessible: true
+
+# Retain public declarations — OfemKit is a local package but its public API
+# is consumed by both app and FPE targets; periphery would otherwise flag
+# unused-across-this-scheme public symbols as dead.
+retain_public: false
+
+# Report unused code as warnings (exit 0) rather than errors (exit 1).
+# Promoted to strict (exit 1) after the initial triage baseline is clean.
+# Set to true to make the gate blocking.
+strict: false

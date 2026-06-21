@@ -23,7 +23,7 @@ gh repo clone sdebruyn/onelake-explorer-macos
 cd onelake-explorer-macos
 
 # install dev tools
-brew install commitlint xcodegen swiftformat swiftlint
+brew install commitlint xcodegen swiftformat swiftlint periphery
 
 # generate the Xcode project
 make gen
@@ -76,6 +76,7 @@ The release workflow uses these to auto-generate the release notes on each GitHu
 
 - SwiftFormat (nicklockwood/SwiftFormat 0.61.1) enforced in CI. Run `make format` to reformat in place; `make format-lint` to check without modifying (mirrors the CI gate). The `.swiftformat` config at the repo root controls rules and excludes.
 - SwiftLint (realm/SwiftLint 0.63.3) enforced in CI. Run `make lint` to check locally (mirrors the CI gate). The `.swiftlint.yml` config at the repo root controls rules and excludes. Error-level violations fail CI; warnings are informational.
+- Periphery (peripheryapp/periphery 3.7.4) detects dead code in CI. Run `periphery scan` locally to check. The `.periphery.yml` config at the repo root controls targets and exclusions. Intentionally retained symbols (e.g. XPC protocol conformances, public API) are annotated with `// periphery:ignore`. The gate is currently non-blocking (warnings only); it will be promoted to blocking once the baseline is clean.
 - Use `os.log` (unified logging) for everything that should land in Console.app.
 - Avoid blocking the File Provider Extension's main queue; everything should be async via `Task { … }`.
 - Tests live in `Tests/` in the OfemKit package and in `OneLakeHostTests/` for the host app.

@@ -1,0 +1,90 @@
+name: Periphery
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: periphery-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  periphery:
+    name: Dead-code scan
+    # periphery requires a macOS runner: it invokes xcodebuild to build the
+    # index store, which in turn needs Xcode and a valid signing environment.
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Assert Xcode 16.3 is present
+        run: |
+          set -euo pipefail
+          if [ ! -d /Applications/Xcode_16.3.app ]; then
+            echo "ERROR: Xcode_16.3.app not found at /Applications/Xcode_16.3.app" >&2
+            ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
+            exit 1
+          fi
+          xcodebuild -version
+
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            ~/Library/Caches/Homebrew/downloads
+            ~/Library/Caches/Homebrew/api
+          key: brew-${{ runner.os }}-xcodegen-periphery-${{ hashFiles('.github/workflows/periphery.yml') }}
+          restore-keys: |
+            brew-${{ runner.os }}-xcodegen-
+
+      - name: Cache SwiftPM build artifacts
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            Packages/OfemKit/.build
+            DerivedData/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Install periphery 3.7.4
+        # Download the versioned release binary directly to guarantee 3.7.4
+        # on every run regardless of what Homebrew currently ships.
+        run: |
+          set -euo pipefail
+          curl -sSL \
+            https://github.com/peripheryapp/periphery/releases/download/3.7.4/periphery-3.7.4.zip \
+            -o /tmp/periphery.zip
+          unzip -q /tmp/periphery.zip -d /tmp/periphery-bin
+          sudo mv /tmp/periphery-bin/periphery /usr/local/bin/periphery
+          periphery version
+
+      - name: Bootstrap local xcconfig
+        run: make bootstrap
+
+      - name: Generate Xcode project
+        run: make gen
+
+      - name: Run periphery dead-code scan
+        # strict: false in .periphery.yml — the gate is non-blocking for the
+        # initial baseline triage. Once findings are triaged and the baseline
+        # is clean, set strict: true (or flip --strict here) to make it blocking.
+        #
+        # periphery builds the index store via xcodebuild internally, then
+        # analyses it. CODE_SIGNING_ALLOWED=NO avoids needing a signing identity.
+        run: |
+          periphery scan \
+            --skip-build false \
+            --xcodebuild-arguments CODE_SIGNING_ALLOWED=NO,CODE_SIGNING_REQUIRED=NO \
+            --format xcode
