@@ -114,12 +114,16 @@ public struct Item: Sendable, Equatable {
 /// that groups items. Distinct from item-internal folders served by the DFS API.
 public struct Folder: Sendable, Equatable {
     /// Folder unique identifier (UUID).
+    // periphery:ignore
     public let id: String
     /// User-visible folder name.
+    // periphery:ignore
     public let displayName: String
     /// The workspace this folder belongs to.
+    // periphery:ignore
     public let workspaceID: String
     /// Parent folder ID; empty for top-level folders.
+    // periphery:ignore
     public let parentFolderID: String
 
     public init(
