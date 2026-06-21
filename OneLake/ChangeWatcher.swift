@@ -596,6 +596,12 @@ final class ChangeWatcher {
         signaller: any WorkingSetSignaller
     ) async {
         let log = Logger(subsystem: ofemSubsystem, category: "change-watcher")
+        // Precompute a domain-identifier → domain map so each per-account lookup
+        // is O(1) instead of O(domains) for the common case of many accounts.
+        let domainByIdentifier: [String: NSFileProviderDomain] = Dictionary(
+            domains.map { ($0.identifier.rawValue, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         for account in accounts {
             let alias = account.alias
             let changed = await poller.pollMaterialized(alias: alias)
@@ -604,7 +610,7 @@ final class ChangeWatcher {
                 continue
             }
             let domainId = domainIdentifierFor(alias)
-            guard let domain = domains.first(where: { $0.identifier.rawValue == domainId }) else {
+            guard let domain = domainByIdentifier[domainId] else {
                 log.warning(
                     "pollOnce: delta for \(alias, privacy: .public) but domain \(domainId, privacy: .public) not found — skipping signal"
                 )
