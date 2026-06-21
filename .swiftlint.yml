@@ -1,0 +1,74 @@
+# SwiftLint configuration for OFEM (OneLake Explorer for macOS)
+# Tool: realm/SwiftLint 0.63.3
+#
+# Philosophy: enforce correctness and clarity; skip purely stylistic rules
+# that SwiftFormat already handles (whitespace, brace position, trailing
+# commas are autocorrected below so the tree stays clean).
+
+# Excluded paths — build artefacts, generated project, vendored deps.
+excluded:
+  - .build
+  - DerivedData
+  - Packages/OfemKit/.build
+  - OneLake.xcodeproj
+
+# ── Rules ────────────────────────────────────────────────────────────────────
+
+# Disable rules that are too noisy or conflict with this codebase's patterns.
+disabled_rules:
+  # Size rules: async/sync engine code and test suites legitimately exceed
+  # default thresholds. Enforcing them here adds churn with no safety value.
+  - file_length
+  - function_body_length
+  - type_body_length
+  - cyclomatic_complexity
+  - function_parameter_count
+
+  # Tuple size: some XPC/FP types intentionally return 3-member tuples.
+  - large_tuple
+
+  # Stylistic: these are handled by SwiftFormat or are too subjective.
+  - implicit_optional_initialization
+  - static_over_final_class
+
+# Opt-in rules that add real value for this codebase.
+opt_in_rules:
+  - non_optional_string_data_conversion
+  - force_cast
+  - force_try
+
+# ── Rule configuration ────────────────────────────────────────────────────────
+
+identifier_name:
+  # Allow short names common in closures, result builders, and test helpers
+  # (e.g. `n`, `c`, `r`, `a`, `b`, `id`). Single-character names that are
+  # truly ambiguous will still be flagged when used outside those contexts.
+  min_length:
+    warning: 1
+    error: 1
+  max_length:
+    warning: 60
+    error: 80
+  # Allow common short Swift identifiers.
+  allowed_symbols: ["_"]
+  validates_start_with_lowercase: warning
+
+type_name:
+  min_length:
+    warning: 1
+    error: 1
+  max_length:
+    warning: 60
+    error: 80
+
+line_length:
+  # Warning threshold catches most overlong lines; the error threshold is
+  # set high because os.log interpolated strings cannot be broken across
+  # lines and legitimately exceed 200 characters in this codebase.
+  warning: 160
+  error: 400
+  ignores_comments: true
+  ignores_urls: true
+
+trailing_comma:
+  mandatory_comma: false

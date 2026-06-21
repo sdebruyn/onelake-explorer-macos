@@ -1,0 +1,41 @@
+name: SwiftLint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swiftlint-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  swiftlint:
+    name: SwiftLint
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            ~/Library/Caches/Homebrew/downloads
+            ~/Library/Caches/Homebrew/api
+          key: brew-${{ runner.os }}-swiftlint-0.63.3
+
+      - name: Install SwiftLint 0.63.3
+        run: |
+          brew install swiftlint
+          swiftlint version
+
+      - name: Lint Swift sources
+        # Exits non-zero on error-level violations; warnings are reported
+        # but do not fail the build. The .swiftlint.yml config at the repo
+        # root is picked up automatically.
+        run: swiftlint lint --quiet

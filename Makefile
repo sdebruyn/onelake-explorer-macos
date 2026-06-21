@@ -17,7 +17,7 @@ APPLE_CONFIG  := Local.xcconfig
 # OfemKit `swift test` and host `xcodebuild` invocations always serialize.
 .NOTPARALLEL:
 
-.PHONY: app bootstrap gen build build-ci test test-integration format format-lint clean help
+.PHONY: app bootstrap gen build build-ci test test-integration format format-lint lint clean help
 
 # Build the signed macOS app. This is THE single build to run after pulling main.
 app: build ## Build signed macOS app (THE build to run after pulling)
@@ -87,6 +87,7 @@ build-ci: bootstrap OneLake.xcodeproj/project.pbxproj ## Compile app + .appex un
 		-destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath DerivedData \
 		$(APPLE_UNSIGNED) \
+		SWIFT_TREAT_WARNINGS_AS_ERRORS=YES \
 		build
 
 # Run unit tests:
@@ -168,6 +169,14 @@ format: ## Reformat Swift sources in place (swiftformat .)
 format-lint: ## Lint formatting without modifying files (mirrors CI gate)
 	@command -v swiftformat >/dev/null 2>&1 || { echo "swiftformat not installed; run: brew install swiftformat"; exit 1; }
 	swiftformat --lint .
+
+# SwiftLint (realm/SwiftLint 0.63.3) — the version is pinned so local and
+# CI agree. Install: brew install swiftlint.
+# The .swiftlint.yml config at the repo root controls rules and excludes.
+# Exits non-zero on error-level violations; warnings do not fail the run.
+lint: ## Run SwiftLint (mirrors CI gate; warnings only, errors fail)
+	@command -v swiftlint >/dev/null 2>&1 || { echo "swiftlint not installed; run: brew install swiftlint"; exit 1; }
+	swiftlint lint --quiet
 
 help: ## Show available targets
 	@echo "Targets:"
