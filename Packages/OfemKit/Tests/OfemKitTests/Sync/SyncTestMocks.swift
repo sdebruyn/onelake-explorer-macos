@@ -335,8 +335,11 @@ extension PathEntry {
         PathEntry(name: name, isDirectory: false, contentLength: size, eTag: eTag, lastModified: lastModified)
     }
 
-    static func directory(name: String) -> PathEntry {
-        PathEntry(name: name, isDirectory: true, contentLength: 0, eTag: "", lastModified: Date(timeIntervalSince1970: 0))
+    static func directory(
+        name: String,
+        lastModified: Date = Date(timeIntervalSince1970: 0)
+    ) -> PathEntry {
+        PathEntry(name: name, isDirectory: true, contentLength: 0, eTag: "", lastModified: lastModified)
     }
 }
 

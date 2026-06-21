@@ -398,6 +398,17 @@ public actor SyncEngine {
         var diff = Diff()
 
         // Build the upsert batch for remote children.
+        //
+        // Upsert is CONDITIONAL: only new entries (cur == nil) and actually
+        // changed entries (entryChanged) are written back to the cache. Unchanged
+        // entries are skipped so their syncedAtNs is not bumped — bumping it for
+        // every poll would shift the working-set delta baseline forward even when
+        // nothing changed, producing phantom enumerateChanges deltas.
+        //
+        // IMPORTANT: the tombstone reconcile below uses `remoteChildren` (the full
+        // fresh listing) as its reference set, not `upsertBatch`. A child that was
+        // skipped here because it is unchanged is still "present remotely" and
+        // must NOT be tombstoned.
         var upsertBatch: [MetadataRecord] = []
         for (relPath, entry) in remoteChildren {
             let name = Enumerator.baseName(relPath)
@@ -428,10 +439,13 @@ public actor SyncEngine {
 
             if cur == nil {
                 diff.added += 1
+                upsertBatch.append(next)
             } else if let c = cur, Enumerator.entryChanged(current: c, next: next) {
                 diff.updated += 1
+                upsertBatch.append(next)
             }
-            upsertBatch.append(next)
+            // Unchanged entries: counted in neither added nor updated, and not
+            // appended to upsertBatch — their cached row stays exactly as-is.
         }
         await batchUpsert(upsertBatch, context: "refreshFolder upsert")
 
