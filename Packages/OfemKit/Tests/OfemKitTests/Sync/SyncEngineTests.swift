@@ -226,7 +226,7 @@ struct SyncEngineTests {
 
         // HEAD returns a paused-capacity error (wrapped as OneLakeError.httpError).
         let apiBody = #"{"errorCode":"CapacityPaused","message":"capacity is currently paused"}"#
-        let apiErr = try HTTPClientError.apiError(APIError(statusCode: 503, status: "503 Service Unavailable", body: #require(apiBody.data(using: .utf8))))
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503 Service Unavailable", body: try #require(apiBody.data(using: .utf8))))
         ol.getPropertiesResults.append(.failure(OneLakeError.httpError(apiErr)))
 
         do {
@@ -517,7 +517,7 @@ struct SyncEngineTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         let apiBody = #"{"errorCode":"CapacityPaused","message":"capacity is currently paused"}"#
-        let apiErr = try HTTPClientError.apiError(APIError(statusCode: 503, status: "503 Service Unavailable", body: #require(apiBody.data(using: .utf8))))
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503 Service Unavailable", body: try #require(apiBody.data(using: .utf8))))
         ol.listPathResults.append(.failure(OneLakeError.httpError(apiErr)))
 
         let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
@@ -566,7 +566,7 @@ struct SyncEngineTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         let apiBody = #"{"errorCode":"CapacityPaused","message":"paused"}"#
-        let apiErr = try HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: #require(apiBody.data(using: .utf8))))
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: try #require(apiBody.data(using: .utf8))))
         ol.deleteResults.append(.failure(OneLakeError.httpError(apiErr)))
 
         let key = Self.baseKey
@@ -677,7 +677,7 @@ struct SyncEngineTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         let apiBody = #"{"errorCode":"CapacityPaused","message":"paused"}"#
-        let apiErr = try HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: #require(apiBody.data(using: .utf8))))
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: try #require(apiBody.data(using: .utf8))))
         ol.createDirectoryResults.append(.failure(OneLakeError.httpError(apiErr)))
 
         let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "NewDir")
@@ -1088,7 +1088,7 @@ struct SyncEngineTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         let apiBody = #"{"errorCode":"CapacityPaused","message":"capacity is paused"}"#
-        let apiErr = try HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: #require(apiBody.data(using: .utf8))))
+        let apiErr = HTTPClientError.apiError(APIError(statusCode: 503, status: "503", body: try #require(apiBody.data(using: .utf8))))
         fabric.listWorkspacesResults.append(.failure(FabricError.httpError(apiErr)))
 
         do {

@@ -218,8 +218,8 @@ struct TokenProviderAdapterTests {
             configStore: store,
             paths: paths,
             httpBaseURLs: (
-                oneLake: #require(URL(string: "https://onelake.local")),
-                fabric: #require(URL(string: "https://fabric.local"))
+                oneLake: try #require(URL(string: "https://onelake.local")),
+                fabric: try #require(URL(string: "https://fabric.local"))
             )
         )
         await engine.shutdown()

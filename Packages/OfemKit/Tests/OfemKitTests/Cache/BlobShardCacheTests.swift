@@ -318,7 +318,7 @@ struct BlobShardCacheTests {
         let (sha, _) = try cache.store(data)
         let url = cache.fileURL(sha256: sha)
         #expect(url != nil)
-        #expect(try FileManager.default.fileExists(atPath: #require(url?.path)))
+        #expect(FileManager.default.fileExists(atPath: try #require(url?.path)))
     }
 
     @Test("fileURL returns nil when blob is not present")

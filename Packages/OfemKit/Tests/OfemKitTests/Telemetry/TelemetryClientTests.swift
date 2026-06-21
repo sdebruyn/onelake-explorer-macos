@@ -158,7 +158,7 @@ struct TelemetryClientTests {
         let events = sink.drain()
         // All 5 events must arrive (buffer-full → immediate flush, no drop).
         #expect(events.count == 5)
-        let names = events.map(\.name)
+        let names = events.map { $0.name }
         for i in 0 ..< 5 {
             #expect(names.contains("ev\(i)"), "ev\(i) should have been flushed")
         }
@@ -546,7 +546,7 @@ struct TelemetryClientTests {
         await client.flush() // succeeds → both delivered
         let delivered = sink.drain()
         #expect(delivered.count == 2)
-        let names = delivered.map(\.name)
+        let names = delivered.map { $0.name }
         #expect(names.contains("a"))
         #expect(names.contains("b"))
     }

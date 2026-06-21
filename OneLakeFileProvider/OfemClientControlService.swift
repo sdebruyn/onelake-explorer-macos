@@ -250,7 +250,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                 var pausedWorkspaces: [XPCPausedWorkspace] = []
 
                 if let engine = engineHost.existingEngine() {
-                    cacheBytes = await (try? engine.cache.blobBytes()) ?? -1
+                    cacheBytes = (try? await engine.cache.blobBytes()) ?? -1
 
                     // Query the workspace_status table for paused entries.
                     // Best-effort — a failure leaves the list empty rather than

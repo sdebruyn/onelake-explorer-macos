@@ -174,7 +174,7 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
         // Subscribe to both signals BEFORE triggering the action to avoid a race
         // where the async refresh Task completes before the test subscribes.
         let seedError = expectation(description: "seed failure error")
-        model.$lastActionError.dropFirst().compactMap(\.self).first().sink { _ in
+        model.$lastActionError.dropFirst().compactMap { $0 }.first().sink { _ in
             seedError.fulfill()
         }.store(in: &cancellables)
 
@@ -257,7 +257,7 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
         // does not linger and fire again during phase 2.
         reSignInProvider.behaviour = .fail(ReSignInFakeError.cancelled)
         let seeded = expectation(description: "error seeded")
-        model.$lastActionError.dropFirst().compactMap(\.self).first().sink { _ in
+        model.$lastActionError.dropFirst().compactMap { $0 }.first().sink { _ in
             seeded.fulfill()
         }.store(in: &cancellables)
         model.reSignIn(alias: "work", window: NSWindow())
@@ -283,7 +283,7 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
         reSignInProvider.behaviour = .fail(ReSignInFakeError.cancelled)
 
         let exp = expectation(description: "lastActionError is set")
-        model.$lastActionError.dropFirst().compactMap(\.self).first().sink { msg in
+        model.$lastActionError.dropFirst().compactMap { $0 }.first().sink { msg in
             if !msg.isEmpty { exp.fulfill() }
         }.store(in: &cancellables)
 
@@ -312,7 +312,7 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
         // Use first() on every Combine subscription to guarantee auto-cancel
         // and prevent double-fulfill crashes when the publisher fires more than once.
         let errSet = expectation(description: "error surfaced after failure")
-        model.$lastActionError.dropFirst().compactMap(\.self).first().sink { _ in
+        model.$lastActionError.dropFirst().compactMap { $0 }.first().sink { _ in
             errSet.fulfill()
         }.store(in: &cancellables)
 
@@ -345,7 +345,7 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
 
         // Subscribe before triggering the action so we cannot miss the publish.
         let errSet = expectation(description: "identity mismatch error surfaced")
-        model.$lastActionError.dropFirst().compactMap(\.self).first().sink { msg in
+        model.$lastActionError.dropFirst().compactMap { $0 }.first().sink { msg in
             if !msg.isEmpty { errSet.fulfill() }
         }.store(in: &cancellables)
 

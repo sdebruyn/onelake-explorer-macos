@@ -459,7 +459,7 @@ struct AppInsightsSinkHTTPTests {
             #expect(retriable.count == 1)
             #expect(retriable[0].name == events[1].name)
             // Events 0 and 2 must NOT appear in retriable.
-            let names = retriable.map(\.name)
+            let names = retriable.map { $0.name }
             #expect(!names.contains(events[0].name))
             #expect(!names.contains(events[2].name))
         }

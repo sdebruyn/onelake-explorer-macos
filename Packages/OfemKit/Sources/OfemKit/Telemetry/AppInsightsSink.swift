@@ -125,7 +125,7 @@ public struct AppInsightsSink: TelemetrySink {
             // Collect indices of retriable rejected items.
             let retriableIndices: [Int] = (tr.errors ?? [])
                 .filter { Self.isRetriableStatusCode($0.statusCode) }
-                .map(\.index)
+                .map { $0.index }
                 .filter { $0 >= 0 && $0 < events.count }
 
             if retriableIndices.isEmpty { return }

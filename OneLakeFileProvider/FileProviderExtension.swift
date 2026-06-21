@@ -787,7 +787,7 @@ private func engineFetchItem(
         // from real DB failures (cannotSynchronize, not noSuchItem).
         let firstFetchResult: Result<MetadataRecord, Error>
         do {
-            firstFetchResult = try await .success(engine.cache.fetch(key: key))
+            firstFetchResult = .success(try await engine.cache.fetch(key: key))
         } catch {
             firstFetchResult = .failure(error)
         }
@@ -795,7 +795,7 @@ private func engineFetchItem(
         switch firstFetchResult {
         case let .success(record):
             do {
-                return try OfemFPEItem(from: DomainItem.from(record: record))
+                return OfemFPEItem(from: try DomainItem.from(record: record))
             } catch {
                 throw FPError.invalidRecord("DomainItem.from failed for \(path): \(error)")
             }
@@ -821,7 +821,7 @@ private func engineFetchItem(
         // Retry cache lookup with full error discrimination.
         do {
             let record = try await engine.cache.fetch(key: key)
-            return try OfemFPEItem(from: DomainItem.from(record: record))
+            return OfemFPEItem(from: try DomainItem.from(record: record))
         } catch let cacheError as CacheError {
             switch cacheError {
             case .notFound:
@@ -881,7 +881,7 @@ private func engineCreateItem(
         // means "not yet cached"; other errors must propagate.
         let cacheResult: Result<MetadataRecord, Error>
         do {
-            cacheResult = try await .success(engine.cache.fetch(key: key))
+            cacheResult = .success(try await engine.cache.fetch(key: key))
         } catch {
             cacheResult = .failure(error)
         }
@@ -905,7 +905,7 @@ private func engineCreateItem(
 
         let retryResult: Result<MetadataRecord, Error>
         do {
-            retryResult = try await .success(engine.cache.fetch(key: key))
+            retryResult = .success(try await engine.cache.fetch(key: key))
         } catch {
             retryResult = .failure(error)
         }
@@ -945,7 +945,7 @@ private func engineCreateItem(
     // fall back to a synthetic item but log the situation.
     let postCreateFetch: Result<MetadataRecord, Error>
     do {
-        postCreateFetch = try await .success(engine.cache.fetch(key: key))
+        postCreateFetch = .success(try await engine.cache.fetch(key: key))
     } catch {
         postCreateFetch = .failure(error)
     }
@@ -987,7 +987,7 @@ private func engineCreateItem(
     // caps immediately — without it, a file created under Lakehouse Files/
     // would appear read-only until the next refreshFolder.
     let parentKey = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
-    let syntheticItemType = await (try? engine.cache.fetch(key: parentKey))?.itemType ?? ""
+    let syntheticItemType = (try? await engine.cache.fetch(key: parentKey))?.itemType ?? ""
     return OfemFPEItem(from: DomainItem.synthetic(
         identifier: newIdentifier,
         parentIdentifier: parentID,

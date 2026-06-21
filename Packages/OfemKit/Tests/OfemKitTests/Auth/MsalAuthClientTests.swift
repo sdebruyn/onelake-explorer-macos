@@ -491,7 +491,7 @@ struct OfemAuthInteractionRequiredAADSTSTests {
             code: -50000,
             userInfo: ["MSALSTSErrorCodesKey": [NSNumber(value: 70011)]]
         )
-        #expect(await !(auth.isInteractionRequired(err)))
+        #expect(!(await auth.isInteractionRequired(err)))
     }
 
     @Test("AADSTS50076 in MSALOAuthSubErrorKey triggers isInteractionRequired (sub-error path)")
@@ -528,7 +528,7 @@ struct OfemAuthInteractionRequiredAADSTSTests {
             code: -50000,
             userInfo: [NSLocalizedDescriptionKey: "AADSTS50076: MFA required (localized string only)"]
         )
-        #expect(await !(auth.isInteractionRequired(err)),
+        #expect(!(await auth.isInteractionRequired(err)),
                 "description-only match was removed to avoid locale-fragile detection")
     }
 
@@ -540,7 +540,7 @@ struct OfemAuthInteractionRequiredAADSTSTests {
             code: -50000,
             userInfo: [NSLocalizedDescriptionKey: "AADSTS70011: The scope requested is not valid."]
         )
-        #expect(await !(auth.isInteractionRequired(err)))
+        #expect(!(await auth.isInteractionRequired(err)))
     }
 
     @Test("non-MSAL domain never triggers isInteractionRequired")
@@ -551,7 +551,7 @@ struct OfemAuthInteractionRequiredAADSTSTests {
             code: -1009,
             userInfo: [NSLocalizedDescriptionKey: "AADSTS50076 something"]
         )
-        #expect(await !(auth.isInteractionRequired(err)))
+        #expect(!(await auth.isInteractionRequired(err)))
     }
 }
 

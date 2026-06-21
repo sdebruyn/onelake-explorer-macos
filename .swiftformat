@@ -19,3 +19,14 @@
 # SwiftFormat's default strips `self.` unconditionally, which breaks
 # compilation under Swift 6. Keep all explicit self. references intact.
 --disable redundantSelf
+
+# preferKeyPath: disabled — rewrites `{ $0.foo }` closures to `\.foo`
+# key-paths inside swift-testing `#expect(...)` macros, which breaks macro
+# expansion ("call can throw, but it is not marked with 'try'").
+--disable preferKeyPath
+
+# hoistTry / hoistAwait: disabled — moves `try`/`await` outside the
+# call that contains them; inside `#expect(...)` this breaks the macro
+# (removes the implicit try wrapping the macro requires for throwing calls).
+--disable hoistTry
+--disable hoistAwait

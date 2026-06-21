@@ -49,7 +49,7 @@ func oneLakePathURL(
     let trimmed = relPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     if !trimmed.isEmpty {
         let parts = trimmed.components(separatedBy: "/")
-        segments += parts.map(\.percentEncodedPathSegment)
+        segments += parts.map { $0.percentEncodedPathSegment }
     }
     components.percentEncodedPath = "/" + segments.joined(separator: "/")
 

@@ -363,7 +363,7 @@ public actor SyncEngine {
             itemID: VirtualIDs.itemID,
             path: key.itemID
         )
-        let folderItemType = await (try? cache.fetch(key: itemTypeKey))?.itemType ?? ""
+        let folderItemType = (try? await cache.fetch(key: itemTypeKey))?.itemType ?? ""
 
         // Build remote children set, filtering macOS metadata artefacts at emit
         // time so that remote .DS_Store / ._* files never appear in listings and
@@ -748,13 +748,13 @@ public actor SyncEngine {
         // directory row so that a freshly uploaded file under a Lakehouse
         // Files/ subtree keeps writable capabilities without waiting for the
         // next refreshFolder (fp-05).
-        var existingItemType = await (try? cache.fetch(key: key))?.itemType ?? ""
+        var existingItemType = (try? await cache.fetch(key: key))?.itemType ?? ""
         if existingItemType.isEmpty {
             let parentKey = CacheKey(
                 accountAlias: key.accountAlias, workspaceID: key.workspaceID,
                 itemID: key.itemID, path: Enumerator.parentPath(key.path)
             )
-            existingItemType = await (try? cache.fetch(key: parentKey))?.itemType ?? ""
+            existingItemType = (try? await cache.fetch(key: parentKey))?.itemType ?? ""
         }
         var row = MetadataRecord(
             accountAlias: key.accountAlias,
@@ -898,7 +898,7 @@ public actor SyncEngine {
             accountAlias: key.accountAlias, workspaceID: key.workspaceID,
             itemID: key.itemID, path: Enumerator.parentPath(key.path)
         )
-        let mkdirItemType = await (try? cache.fetch(key: parentKeyMkdir))?.itemType ?? ""
+        let mkdirItemType = (try? await cache.fetch(key: parentKeyMkdir))?.itemType ?? ""
         let row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -1038,7 +1038,7 @@ public actor SyncEngine {
                 accountAlias: key.accountAlias, workspaceID: key.workspaceID,
                 itemID: key.itemID, path: Enumerator.parentPath(key.path)
             )
-            downloadItemType = await (try? cache.fetch(key: parentKeyDl))?.itemType ?? ""
+            downloadItemType = (try? await cache.fetch(key: parentKeyDl))?.itemType ?? ""
         }
         var row = MetadataRecord(
             accountAlias: key.accountAlias,
@@ -1154,7 +1154,7 @@ public actor SyncEngine {
                 }.value
                 let freshHandleResult: Result<FileHandle, any Error> = await Task.detached(priority: .userInitiated) {
                     do {
-                        return try .success(FileHandle(forUpdating: spillURL))
+                        return .success(try FileHandle(forUpdating: spillURL))
                     } catch {
                         return .failure(SyncError.spillFileError(error))
                     }

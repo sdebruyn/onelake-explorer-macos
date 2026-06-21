@@ -18,7 +18,7 @@ struct TelemetryRedactionTests {
     func hashAliasLength() {
         let h = TelemetryRedaction.hashAlias("work")
         #expect(h.count == 8, "expected 8 chars, got \(h.count)")
-        #expect(h.allSatisfy(\.isHexDigit), "expected hex chars, got: \(h)")
+        #expect(h.allSatisfy { $0.isHexDigit }, "expected hex chars, got: \(h)")
     }
 
     @Test("hashAlias distinguishes different inputs")

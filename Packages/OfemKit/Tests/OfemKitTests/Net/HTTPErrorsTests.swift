@@ -99,10 +99,10 @@ struct APIErrorTests {
 
     @Test("description with body and one attempt omits attempt suffix")
     func descriptionBodyNoAttemptSuffix() throws {
-        let err = try APIError(
+        let err = APIError(
             statusCode: 404,
             status: "404 Not Found",
-            body: #require("resource missing".data(using: .utf8)),
+            body: try #require("resource missing".data(using: .utf8)),
             attempts: 1
         )
         #expect(err.description == "HTTP 404 Not Found: resource missing")
@@ -110,10 +110,10 @@ struct APIErrorTests {
 
     @Test("description with body and multiple attempts includes attempt suffix")
     func descriptionBodyWithAttemptSuffix() throws {
-        let err = try APIError(
+        let err = APIError(
             statusCode: 503,
             status: "503 Service Unavailable",
-            body: #require("overloaded".data(using: .utf8)),
+            body: try #require("overloaded".data(using: .utf8)),
             attempts: 3
         )
         #expect(err.description == "HTTP 503 Service Unavailable after 3 attempts: overloaded")
@@ -149,10 +149,10 @@ struct APIErrorTests {
     func descriptionBodyTruncatedAt256() throws {
         // Build a 300-character ASCII body.
         let longBody = String(repeating: "A", count: 300)
-        let err = try APIError(
+        let err = APIError(
             statusCode: 400,
             status: "400 Bad Request",
-            body: #require(longBody.data(using: .utf8)),
+            body: try #require(longBody.data(using: .utf8)),
             attempts: 1
         )
         // The resulting description should contain at most 256 'A's.
@@ -165,10 +165,10 @@ struct APIErrorTests {
 
     @Test("description trims leading/trailing whitespace from body")
     func descriptionTrimsWhitespace() throws {
-        let err = try APIError(
+        let err = APIError(
             statusCode: 422,
             status: "422 Unprocessable Entity",
-            body: #require("  trimmed  ".data(using: .utf8)),
+            body: try #require("  trimmed  ".data(using: .utf8)),
             attempts: 1
         )
         #expect(err.description == "HTTP 422 Unprocessable Entity: trimmed")
@@ -176,10 +176,10 @@ struct APIErrorTests {
 
     @Test("description treats whitespace-only body as empty (no body segment)")
     func descriptionWhitespaceOnlyBody() throws {
-        let err = try APIError(
+        let err = APIError(
             statusCode: 503,
             status: "503 Service Unavailable",
-            body: #require("   \n\t  ".data(using: .utf8)),
+            body: try #require("   \n\t  ".data(using: .utf8)),
             attempts: 1
         )
         #expect(err.description == "HTTP 503 Service Unavailable")
