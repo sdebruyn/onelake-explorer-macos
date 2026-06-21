@@ -592,4 +592,86 @@ struct SyncEngineRefreshMaterializedTests {
         )
         #expect((try? await store.fetch(key: subdirKey)) != nil)
     }
+
+    // MARK: - fpe-18: no-change poll must not re-stamp the parent row
+
+    @Test("No-change poll does not bump parent syncedAtNs (stops phantom working-set deltas)")
+    func noChangePollDoesNotBumpParentSyncedAtNs() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.folderKey
+        try await seedFolder(in: store, key: key, children: [("a.txt", "v1")])
+
+        // Record the parent row's syncedAtNs before any refresh.
+        let parentBefore = try await store.fetch(key: key)
+        let syncedBefore = parentBefore.syncedAtNs
+
+        // Two polls with an identical remote listing → diff.total == 0 both times.
+        for _ in 0 ..< 2 {
+            ol.listPathResults.append(.success(ListResult(entries: [
+                PathEntry.file(name: "a.txt", size: 0, eTag: "v1"),
+            ])))
+        }
+
+        _ = try await engine.refreshMaterializedContainer(key: key)
+        _ = try await engine.refreshMaterializedContainer(key: key)
+
+        // The parent row must not have been bumped.
+        let parentAfter = try await store.fetch(key: key)
+        #expect(parentAfter.syncedAtNs == syncedBefore)
+    }
+
+    @Test("First-sight refresh creates the parent row with correct childrenSyncedAtNs")
+    func firstSightRefreshCreatesParentRow() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // No prior cache for this key — the parent row does not exist.
+        let key = Self.folderKey
+        ol.listPathResults.append(.success(ListResult(entries: [
+            PathEntry.file(name: "a.txt", size: 0, eTag: "v1"),
+        ])))
+
+        _ = try await engine.refreshMaterializedContainer(key: key)
+
+        // The parent row must now exist and have a positive childrenSyncedAtNs.
+        let parent = try await store.fetch(key: key)
+        #expect(parent.childrenSyncedAtNs > 0)
+    }
+
+    @Test("No-change poll does not bump parent syncedAtNs (item-root key)")
+    func itemRootParentNotRestampedOnNoChangePoll() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // path == "" (item-root container): this is the exact key that used to
+        // trigger the crash-loop — every poll stamped a row with name == "" (fpe-18).
+        let key = Self.folderKey
+        try await seedFolder(in: store, key: key, children: [("report.csv", "e1")])
+
+        let parentBefore = try await store.fetch(key: key)
+        let nsBefore = try await store.maxSyncedAtNs(accountAlias: key.accountAlias)
+
+        // Two polls with an identical remote listing → diff.total == 0 both times.
+        for _ in 0 ..< 2 {
+            ol.listPathResults.append(.success(ListResult(entries: [
+                PathEntry.file(name: "report.csv", size: 0, eTag: "e1"),
+            ])))
+        }
+
+        _ = try await engine.refreshMaterializedContainer(key: key)
+        _ = try await engine.refreshMaterializedContainer(key: key)
+
+        // The parent row must not have been re-stamped (syncedAtNs unchanged).
+        let parentAfter = try await store.fetch(key: key)
+        #expect(parentAfter.syncedAtNs == parentBefore.syncedAtNs)
+
+        // maxSyncedAtNs must not have advanced (no row was upserted).
+        let nsAfter = try await store.maxSyncedAtNs(accountAlias: key.accountAlias)
+        #expect(nsAfter == nsBefore)
+    }
 }

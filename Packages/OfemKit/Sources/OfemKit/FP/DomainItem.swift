@@ -243,6 +243,18 @@ public extension DomainItem {
             return DomainItem.from(workspace: Workspace(id: record.path, displayName: record.name, type: ""))
         }
 
+        // Reject a real item-root row (path == "" with real workspace/item GUIDs).
+        //
+        // SyncEngine.refreshFolder may write a parent row with path == "" for
+        // the item-root container. That row's `name` comes from
+        // Enumerator.baseName("") == "", so emitting it as a delta item would
+        // produce filename == "" → FileProvider SIGABRT. The item-root container
+        // is always produced by DomainItem.from(fabricItem:) / the .item
+        // enumerate branch — never as an enumerable delta child (fpe-18).
+        if record.path.isEmpty {
+            throw FPError.invalidRecord("item-root row (path empty, real workspaceID/itemID) is not an enumerable item")
+        }
+
         // Construct the identifier first; derive the parent from it so the
         // path-splitting logic is owned in exactly one place: ItemIdentifier
         // (fp-03).
