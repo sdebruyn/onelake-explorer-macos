@@ -1761,20 +1761,20 @@ struct SyncEngineTests {
 
     // MARK: - refreshFolder: created_ns backfill (issue-370)
 
-    // After the v5 migration every existing cache row has created_ns = 0.  The
-    // first sync after upgrade must detect that zero and write the server-returned
-    // creation timestamp into the row so Finder can display the correct date.
-    //
-    // This test seeds a row at created_ns = 0, drives refreshFolder with a
-    // PathEntry whose creationDate is non-nil, and asserts that the stored row
-    // now carries the correct creation timestamp.
+    /// After the v5 migration every existing cache row has created_ns = 0.  The
+    /// first sync after upgrade must detect that zero and write the server-returned
+    /// creation timestamp into the row so Finder can display the correct date.
+    ///
+    /// This test seeds a row at created_ns = 0, drives refreshFolder with a
+    /// PathEntry whose creationDate is non-nil, and asserts that the stored row
+    /// now carries the correct creation timestamp.
     @Test("refreshFolder() backfills created_ns from 0 when the server returns a creationDate")
     func refreshFolderBackfillsCreatedNs() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
-        let knownUnixSeconds: TimeInterval = 1_715_526_400   // 2024-05-12T20:53:20Z
+        let knownUnixSeconds: TimeInterval = 1_715_526_400 // 2024-05-12T20:53:20Z
         let creationDate = Date(timeIntervalSince1970: knownUnixSeconds)
 
         // Use a flat folder (path = "Files") so direct children are single-segment
@@ -1791,7 +1791,7 @@ struct SyncEngineTests {
             path: childPath, parentPath: "Files", name: childName, isDir: false,
             contentLength: 42, etag: "v1"
         )
-        child.createdNs = 0   // simulate post-v5-migration state
+        child.createdNs = 0 // simulate post-v5-migration state
         try await store.upsert(parent)
         try await store.upsert(child)
 
@@ -1825,8 +1825,8 @@ struct SyncEngineTests {
                 "stored creationDate must match the server value within 1 second")
     }
 
-    // After the one-time backfill, subsequent polls must not produce spurious
-    // updated counts (creation time is immutable; entryChanged must be stable).
+    /// After the one-time backfill, subsequent polls must not produce spurious
+    /// updated counts (creation time is immutable; entryChanged must be stable).
     @Test("refreshFolder() does not re-update a row whose created_ns is already set")
     func refreshFolderNoSpuriousUpdateAfterBackfill() async throws {
         let ol = MockOneLakeClient()

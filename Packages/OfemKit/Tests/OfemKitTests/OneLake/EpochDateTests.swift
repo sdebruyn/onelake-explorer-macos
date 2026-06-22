@@ -12,7 +12,6 @@ import Testing
 
 @Suite("EpochDate fixes (#370)")
 struct EpochDateTests {
-
     // MARK: - parseFileTime
 
     // A realistic FILETIME from a live DFS listing.
@@ -55,10 +54,10 @@ struct EpochDateTests {
 
     // MARK: - convertRawEntry: JSON wire-decode round-trip
 
-    // The original bug manifested on the wire-decode leg: creationTime arrived
-    // as a JSON string but was never decoded.  This test exercises the full
-    // JSONDecoder → RawPathEntry → convertRawEntry path using a realistic DFS
-    // list-response payload.
+    /// The original bug manifested on the wire-decode leg: creationTime arrived
+    /// as a JSON string but was never decoded.  This test exercises the full
+    /// JSONDecoder → RawPathEntry → convertRawEntry path using a realistic DFS
+    /// list-response payload.
     @Test("convertRawEntry: JSON wire-decode round-trip preserves creationDate")
     func convertRawEntryJSONRoundTrip() throws {
         // A minimal but realistic DFS paths entry, matching the ADLS Gen2

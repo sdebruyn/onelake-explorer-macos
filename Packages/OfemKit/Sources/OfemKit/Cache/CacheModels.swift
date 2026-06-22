@@ -139,7 +139,6 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         nsToDate(lastAccessedNs)
     }
 
-    // periphery:ignore
     /// `syncedAtNs` as a `Date`. `nil` when zero.
     public var syncedAt: Date? {
         nsToDate(syncedAtNs)
