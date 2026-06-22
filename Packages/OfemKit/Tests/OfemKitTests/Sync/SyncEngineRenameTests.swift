@@ -109,7 +109,9 @@ struct SyncEngineRenameTests {
                 name: "deep.txt", isDir: false
             ),
         ]
-        for r in rows { try await store.upsert(r) }
+        for r in rows {
+            try await store.upsert(r)
+        }
 
         _ = try await engine.rename(key: dirKey, newName: "beta")
 

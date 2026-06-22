@@ -471,19 +471,17 @@ public actor CacheStore {
         let nowNs = clock()
         let oldPrefix = oldPath + "/"
         let newPrefix = newPath + "/"
+        let newParent = Enumerator.parentPath(newPath)
         try await dbPool.write { db in
             // Update the exact renamed row.
-            try db.execute(sql: """
-                UPDATE path_metadata
-                SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
-                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                """, arguments: [
-                    newPath,
-                    String(newPath.prefix(newPath.count - newName.count).trimmingCharacters(in: CharacterSet(charactersIn: "/"))),
-                    newName,
-                    nowNs,
-                    accountAlias, workspaceID, itemID, oldPath,
-                ])
+            try db.execute(
+                sql: """
+                    UPDATE path_metadata
+                    SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
+                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+                    """,
+                arguments: [newPath, newParent, newName, nowNs, accountAlias, workspaceID, itemID, oldPath]
+            )
             // Rewrite every descendant whose path starts with the old prefix.
             // SQLite does not have REPLACE(path, oldPrefix, newPrefix) on indexed
             // columns inside a WHERE, so we fetch + update in-loop. For a
@@ -493,39 +491,25 @@ public actor CacheStore {
                 SELECT path FROM path_metadata
                 WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
                   AND path > ? AND path < ?
-                """, arguments: [
-                    accountAlias, workspaceID, itemID,
-                    oldPath, oldPath + "\u{FFFF}",
-                ])
+                """, arguments: [accountAlias, workspaceID, itemID, oldPath, oldPath + "\u{FFFF}"])
             for oldDescPath in descendantPaths {
                 guard oldDescPath.hasPrefix(oldPrefix) else { continue }
                 let suffix = String(oldDescPath.dropFirst(oldPrefix.count))
                 let newDescPath = newPrefix + suffix
-                // Recompute parent_path: everything up to the last "/" in newDescPath.
-                let newDescParent: String
-                if let lastSlash = newDescPath.lastIndex(of: "/") {
-                    newDescParent = String(newDescPath[newDescPath.startIndex ..< lastSlash])
-                } else {
-                    newDescParent = ""
-                }
-                // Recompute name: segment after the last "/" in newDescPath.
-                let newDescName: String
-                if let lastSlash = newDescPath.lastIndex(of: "/") {
-                    newDescName = String(newDescPath[newDescPath.index(after: lastSlash)...])
-                } else {
-                    newDescName = newDescPath
-                }
-                try db.execute(sql: """
-                    UPDATE path_metadata
-                    SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
-                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                    """, arguments: [
+                try db.execute(
+                    sql: """
+                        UPDATE path_metadata
+                        SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
+                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+                        """,
+                    arguments: [
                         newDescPath,
-                        newDescParent,
-                        newDescName,
+                        Enumerator.parentPath(newDescPath),
+                        Enumerator.baseName(newDescPath),
                         nowNs,
                         accountAlias, workspaceID, itemID, oldDescPath,
-                    ])
+                    ]
+                )
             }
         }
     }

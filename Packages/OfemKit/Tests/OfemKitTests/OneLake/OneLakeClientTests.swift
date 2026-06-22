@@ -223,8 +223,9 @@ struct OneLakeClientTests {
         #expect(renameSource == "/workspace-abc/item-xyz/Files/untitled%20folder")
 
         // Verify destination URL shape.
+        let base = try #require(URL(string: "https://onelake.dfs.fabric.microsoft.com"))
         let destURL = try oneLakePathURL(
-            base: URL(string: "https://onelake.dfs.fabric.microsoft.com")!,
+            base: base,
             workspaceGUID: ws,
             itemGUID: item,
             relPath: "Files/my folder"
