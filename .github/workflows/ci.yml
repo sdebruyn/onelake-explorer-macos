@@ -192,7 +192,7 @@ jobs:
 
       - name: Upload host test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v5
+        uses: codecov/test-results-action@v1.2.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: host-junit.xml
@@ -233,7 +233,7 @@ jobs:
 
       - name: Upload FPE test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v5
+        uses: codecov/test-results-action@v1.2.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: fpe-junit.xml
@@ -361,7 +361,7 @@ jobs:
 
       - name: Upload OfemKit test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v5
+        uses: codecov/test-results-action@v1.2.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: Packages/OfemKit/ofemkit-junit.xml
