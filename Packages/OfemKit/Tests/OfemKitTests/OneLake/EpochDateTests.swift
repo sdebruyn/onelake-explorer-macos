@@ -3,7 +3,7 @@ import Foundation
 import Testing
 
 // MARK: - EpochDateTests
-//
+
 // Regression tests for issue #370: Finder showed 1 Jan 1970 for every item.
 // Root causes:
 // (a) creationDate was never parsed or stored — all items had nil creationDate.
@@ -12,6 +12,7 @@ import Testing
 
 @Suite("EpochDate fixes (#370)")
 struct EpochDateTests {
+
     // MARK: - parseFileTime
 
     // A realistic FILETIME from a live DFS listing.
@@ -50,6 +51,55 @@ struct EpochDateTests {
     @Test("parseFileTime: negative ticks return nil (below Windows epoch)")
     func parseFileTimeNegativeReturnsNil() {
         #expect(parseFileTime("-1") == nil)
+    }
+
+    // MARK: - convertRawEntry: JSON wire-decode round-trip
+
+    // The original bug manifested on the wire-decode leg: creationTime arrived
+    // as a JSON string but was never decoded.  This test exercises the full
+    // JSONDecoder → RawPathEntry → convertRawEntry path using a realistic DFS
+    // list-response payload.
+    @Test("convertRawEntry: JSON wire-decode round-trip preserves creationDate")
+    func convertRawEntryJSONRoundTrip() throws {
+        // A minimal but realistic DFS paths entry, matching the ADLS Gen2
+        // list-path wire format.  The creationTime value maps to 2024-05-12.
+        let json = """
+        {
+            "name": "item-guid/Files/data.csv",
+            "isDirectory": "false",
+            "contentLength": "1024",
+            "etag": "\\"abc\\"",
+            "lastModified": "Sun, 12 May 2024 20:53:20 GMT",
+            "creationTime": "\(Self.knownTicks)"
+        }
+        """
+        let data = try #require(json.data(using: .utf8))
+        let raw = try JSONDecoder().decode(RawPathEntry.self, from: data)
+        let entry = convertRawEntry(raw, itemGUID: "item-guid")
+
+        #expect(entry.name == "Files/data.csv", "itemGUID prefix must be stripped")
+        guard let created = entry.creationDate else {
+            Issue.record("creationDate must not be nil after JSON wire decode")
+            return
+        }
+        #expect(abs(created.timeIntervalSince1970 - Self.knownUnixSeconds) < 1,
+                "JSON-decoded creationDate must match the expected Unix timestamp")
+    }
+
+    @Test("convertRawEntry: JSON wire-decode with absent creationTime gives nil creationDate")
+    func convertRawEntryJSONRoundTripMissingCreationTime() throws {
+        let json = """
+        {
+            "name": "item-guid/Files/data.csv",
+            "contentLength": "1024",
+            "etag": "\\"abc\\"",
+            "lastModified": "Sun, 12 May 2024 20:53:20 GMT"
+        }
+        """
+        let data = try #require(json.data(using: .utf8))
+        let raw = try JSONDecoder().decode(RawPathEntry.self, from: data)
+        let entry = convertRawEntry(raw, itemGUID: "item-guid")
+        #expect(entry.creationDate == nil)
     }
 
     // MARK: - convertRawEntry creationDate

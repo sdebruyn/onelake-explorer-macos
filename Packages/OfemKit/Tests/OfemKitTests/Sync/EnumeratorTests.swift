@@ -205,4 +205,41 @@ struct EnumeratorTests {
         let next = makeRecord(parentPath: "Tables")
         #expect(Enumerator.entryChanged(current: current, next: next))
     }
+
+    // MARK: - entryChanged: createdNs backfill (issue-370)
+
+    // After the v5 migration all existing rows have created_ns = 0.  The first
+    // sync after upgrade produces a PathEntry whose creationDate is non-nil.
+    // entryChanged must return true in that case so the row is re-upserted and
+    // the creation timestamp is written into the cache.
+    @Test func entryChangedCreatedNsBackfillFromZero() {
+        var current = makeRecord()
+        var next = makeRecord()
+        current.createdNs = 0
+        next.createdNs = 1_715_526_400_000_000_000
+        #expect(Enumerator.entryChanged(current: current, next: next),
+                "must detect backfill when current.createdNs == 0 and next.createdNs != 0")
+    }
+
+    // Once backfilled, a subsequent poll with the same createdNs must not
+    // produce a spurious update.
+    @Test func entryChangedCreatedNsUnchangedReturnsFalse() {
+        var current = makeRecord()
+        var next = makeRecord()
+        current.createdNs = 1_715_526_400_000_000_000
+        next.createdNs = 1_715_526_400_000_000_000
+        #expect(!Enumerator.entryChanged(current: current, next: next),
+                "must not produce phantom update when createdNs is unchanged")
+    }
+
+    // next.createdNs == 0 means the server returned no creation time; the row
+    // must not be dirtied in that case (rule: only write when next.createdNs != 0).
+    @Test func entryChangedNextCreatedNsZeroReturnsFalse() {
+        var current = makeRecord()
+        var next = makeRecord()
+        current.createdNs = 0
+        next.createdNs = 0
+        #expect(!Enumerator.entryChanged(current: current, next: next),
+                "must not dirty the row when the server returns no creation time")
+    }
 }

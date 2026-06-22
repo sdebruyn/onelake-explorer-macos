@@ -44,6 +44,7 @@ public struct DomainItem: Sendable, Equatable {
             && lhs.metadataVersion == rhs.metadataVersion
             && lhs.capabilities == rhs.capabilities
     }
+
     // MARK: - Capability
 
     /// The set of operations the FPE may perform on an item.
@@ -197,12 +198,17 @@ public extension DomainItem {
     // MARK: Root
 
     /// Builds the root-container sentinel item for `alias`.
-    static func root(alias: String) -> DomainItem {
+    ///
+    /// `mountedAt` is used as the modification date. No server timestamp is
+    /// available for the virtual root container; passing a non-nil date
+    /// prevents Finder from displaying 1 Jan 1970.
+    static func root(alias: String, mountedAt: Date = Date()) -> DomainItem {
         DomainItem(
             identifier: .root,
             parentIdentifier: .root,
             filename: "OneLake \u{2014} \(alias)", // em-dash, like OneDrive
             isDirectory: true,
+            modificationDate: mountedAt,
             contentVersion: ContentVersion.fallback(seed: alias, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: alias, size: 0, mtime: nil),
             capabilities: CapabilitySet.readOnly
@@ -274,7 +280,12 @@ public extension DomainItem {
             // Workspace sentinel row: path holds the workspace GUID. Delegate to
             // from(workspace:) so the identifier/parent/version shape can never drift
             // from the dedicated constructor. type is irrelevant to the produced item.
-            return DomainItem.from(workspace: Workspace(id: record.path, displayName: record.name, type: ""))
+            // Pass syncedAt from the record so modificationDate is stable across
+            // polls rather than flicking to Date() on every enumeration.
+            return DomainItem.from(
+                workspace: Workspace(id: record.path, displayName: record.name, type: ""),
+                syncedAt: record.syncedAt ?? Date()
+            )
         }
 
         // Reject a real item-root row (path == "" with real workspace/item GUIDs).
@@ -412,8 +423,13 @@ enum ContentVersion {
         return fallback(seed: record.path, size: record.contentLength, mtime: record.lastModified)
     }
 
-    /// Computes the metadata version token from name + etag + size + mtime
-    /// via FNV-1a-64.
+    /// Computes the metadata version token from name + etag + size + mtime +
+    /// created via FNV-1a-64.
+    ///
+    /// `created` is included so that a `createdNs` backfill (0 → real value
+    /// after the v5 migration) produces a new token and Finder refreshes the
+    /// displayed "Date Created" without forcing a re-download of file bytes
+    /// (content version is unchanged — only metadata version changes).
     static func metadata(for record: MetadataRecord) -> Data {
         var h = FNV64a()
         h.combine(record.name)
@@ -424,6 +440,10 @@ enum ContentVersion {
         h.combine("\0")
         if let mtime = record.lastModified {
             h.combine(rfc3339(mtime))
+        }
+        h.combine("\0")
+        if let created = record.created {
+            h.combine(rfc3339(created))
         }
         return Data(h.digest().bigEndian.bytes).base64EncodedData()
     }

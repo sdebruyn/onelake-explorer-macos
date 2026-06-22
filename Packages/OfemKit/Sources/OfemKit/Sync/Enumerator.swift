@@ -116,6 +116,11 @@ enum Enumerator {
     /// cycle, causing the working-set to signal on every poll and pegging CPU.
     /// Real directory-content changes are detected via child add / tombstone
     /// reconciliation, not via the parent directory timestamp.
+    ///
+    /// `createdNs` is included so that the post-v5-migration backfill works: the
+    /// first sync after upgrade finds `current.createdNs == 0` and `next.createdNs
+    /// != 0` and writes the row. Creation time is immutable, so after the
+    /// one-time backfill this comparison never fires again.
     static func entryChanged(current: MetadataRecord, next: MetadataRecord) -> Bool {
         current.isDir != next.isDir ||
             current.contentLength != next.contentLength ||
@@ -123,7 +128,8 @@ enum Enumerator {
             (!current.isDir && current.lastModifiedNs != next.lastModifiedNs) ||
             current.name != next.name ||
             current.parentPath != next.parentPath ||
-            current.itemType != next.itemType
+            current.itemType != next.itemType ||
+            (next.createdNs != 0 && current.createdNs != next.createdNs)
     }
 
     // MARK: - Path helpers
