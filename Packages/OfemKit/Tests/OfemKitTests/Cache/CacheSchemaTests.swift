@@ -15,7 +15,7 @@ struct CacheSchemaTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let applied = try await store.appliedMigrations()
-        #expect(applied == ["v1", "v2", "v3", "v4"])
+        #expect(applied == ["v1", "v2", "v3", "v4", "v5"])
     }
 
     @Test("Fresh database creates path_metadata table")
@@ -29,7 +29,7 @@ struct CacheSchemaTests {
             "content_length", "etag", "last_modified_ns", "content_type",
             "blob_sha256", "blob_size",
             "last_accessed_ns", "synced_at_ns", "children_synced_at_ns",
-            "item_type",
+            "item_type", "created_ns",
         ]
         for col in expected {
             #expect(columns.contains(col), "Missing column: \(col)")

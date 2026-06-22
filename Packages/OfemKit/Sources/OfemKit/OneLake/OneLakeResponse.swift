@@ -16,19 +16,24 @@ public struct PathEntry: Sendable, Equatable {
     public let eTag: String
     /// Last-modified timestamp; `.distantPast` if the server did not return one.
     public let lastModified: Date
+    /// Creation timestamp; `nil` if the server did not return one or the value
+    /// was zero / unparseable.
+    public let creationDate: Date?
 
     public init(
         name: String,
         isDirectory: Bool,
         contentLength: Int64,
         eTag: String,
-        lastModified: Date
+        lastModified: Date,
+        creationDate: Date? = nil
     ) {
         self.name = name
         self.isDirectory = isDirectory
         self.contentLength = contentLength
         self.eTag = eTag
         self.lastModified = lastModified
+        self.creationDate = creationDate
     }
 }
 
@@ -77,6 +82,8 @@ struct RawPathEntry: Decodable {
     let contentLength: String?
     let etag: String?
     let lastModified: String?
+    /// .NET FILETIME ticks (100ns intervals since 1601-01-01) as a string.
+    let creationTime: String?
 }
 
 struct RawListBody: Decodable {
@@ -98,6 +105,7 @@ func convertRawEntry(_ raw: RawPathEntry, itemGUID: String) -> PathEntry {
     } else {
         .distantPast
     }
+    let created = raw.creationTime.flatMap { parseFileTime($0) }
     // onelake-12: strip the "<itemGUID>/" prefix that the DFS API prepends to
     // every name so consumers receive an item-relative path without needing to
     // know or re-strip the prefix themselves.
@@ -109,7 +117,7 @@ func convertRawEntry(_ raw: RawPathEntry, itemGUID: String) -> PathEntry {
         // the format or itemGUID is not present as a leading segment).
         raw.name
     }
-    return PathEntry(name: itemRelativeName, isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified)
+    return PathEntry(name: itemRelativeName, isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified, creationDate: created)
 }
 
 /// Extracts ``PathProperties`` from the response headers of a HEAD or GET.
@@ -147,4 +155,21 @@ private func parseHTTPDate(_ s: String) -> Date? {
         if let d = fmt.date(from: s) { return d }
     }
     return nil
+}
+
+/// Parses a .NET FILETIME string (100ns ticks since 1601-01-01 UTC) into a `Date`.
+///
+/// ADLS Gen2 DFS list responses carry `creationTime` as a decimal tick count.
+/// Returns `nil` for zero, empty, or non-numeric strings so callers can treat
+/// nil as "no creation time available".
+///
+/// Conversion: subtract the Windows epoch offset (116,444,736,000,000,000 ticks
+/// = difference between 1601-01-01 and 1970-01-01), then divide by 10,000,000
+/// to get seconds since Unix epoch.
+func parseFileTime(_ s: String) -> Date? {
+    guard !s.isEmpty, let ticks = Int64(s), ticks > 0 else { return nil }
+    let windowsEpochOffsetTicks: Int64 = 116_444_736_000_000_000
+    guard ticks > windowsEpochOffsetTicks else { return nil }
+    let unixSeconds = Double(ticks - windowsEpochOffsetTicks) / 10_000_000
+    return Date(timeIntervalSince1970: unixSeconds)
 }
