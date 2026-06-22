@@ -443,6 +443,93 @@ public actor CacheStore {
         try await reader().itemsChangedAfter(accountAlias: accountAlias, ns: ns)
     }
 
+    // MARK: - Rename (path-prefix rewrite)
+
+    /// Renames a cached path and all its descendants by rewriting the `path`,
+    /// `parent_path`, and `name` columns in a single transaction.
+    ///
+    /// - Parameters:
+    ///   - accountAlias: Account alias component of the primary key.
+    ///   - workspaceID: Workspace GUID.
+    ///   - itemID: Item GUID.
+    ///   - oldPath: The current path of the renamed entry.
+    ///   - newPath: The destination path (same parent directory, different leaf name).
+    ///   - newName: The new leaf name (final segment of `newPath`).
+    ///
+    /// The exact row at `oldPath` is updated first; then every row whose `path`
+    /// starts with `oldPath + "/"` (i.e. descendants) has its `path` and
+    /// `parent_path` rewritten to substitute the old prefix with the new one.
+    /// All updates happen atomically in one write transaction.
+    public func renamePathPrefix(
+        accountAlias: String,
+        workspaceID: String,
+        itemID: String,
+        oldPath: String,
+        newPath: String,
+        newName: String
+    ) async throws {
+        let nowNs = clock()
+        let oldPrefix = oldPath + "/"
+        let newPrefix = newPath + "/"
+        try await dbPool.write { db in
+            // Update the exact renamed row.
+            try db.execute(sql: """
+                UPDATE path_metadata
+                SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+                """, arguments: [
+                    newPath,
+                    String(newPath.prefix(newPath.count - newName.count).trimmingCharacters(in: CharacterSet(charactersIn: "/"))),
+                    newName,
+                    nowNs,
+                    accountAlias, workspaceID, itemID, oldPath,
+                ])
+            // Rewrite every descendant whose path starts with the old prefix.
+            // SQLite does not have REPLACE(path, oldPrefix, newPrefix) on indexed
+            // columns inside a WHERE, so we fetch + update in-loop. For a
+            // same-directory rename the descendant count is typically bounded and
+            // a fetch-then-update is safe and explicit.
+            let descendantPaths = try String.fetchAll(db, sql: """
+                SELECT path FROM path_metadata
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                  AND path > ? AND path < ?
+                """, arguments: [
+                    accountAlias, workspaceID, itemID,
+                    oldPath, oldPath + "\u{FFFF}",
+                ])
+            for oldDescPath in descendantPaths {
+                guard oldDescPath.hasPrefix(oldPrefix) else { continue }
+                let suffix = String(oldDescPath.dropFirst(oldPrefix.count))
+                let newDescPath = newPrefix + suffix
+                // Recompute parent_path: everything up to the last "/" in newDescPath.
+                let newDescParent: String
+                if let lastSlash = newDescPath.lastIndex(of: "/") {
+                    newDescParent = String(newDescPath[newDescPath.startIndex ..< lastSlash])
+                } else {
+                    newDescParent = ""
+                }
+                // Recompute name: segment after the last "/" in newDescPath.
+                let newDescName: String
+                if let lastSlash = newDescPath.lastIndex(of: "/") {
+                    newDescName = String(newDescPath[newDescPath.index(after: lastSlash)...])
+                } else {
+                    newDescName = newDescPath
+                }
+                try db.execute(sql: """
+                    UPDATE path_metadata
+                    SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
+                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+                    """, arguments: [
+                        newDescPath,
+                        newDescParent,
+                        newDescName,
+                        nowNs,
+                        accountAlias, workspaceID, itemID, oldDescPath,
+                    ])
+            }
+        }
+    }
+
     // MARK: - Deletion tombstones
 
     // periphery:ignore

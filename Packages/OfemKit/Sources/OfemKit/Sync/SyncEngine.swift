@@ -967,6 +967,100 @@ public actor SyncEngine {
         await track(eventName: "folder_create", alias: key.accountAlias, start: start, outcome: .success())
     }
 
+    // MARK: - Rename
+
+    /// Renames a file or directory within the same parent directory on OneLake
+    /// and re-keys the matching cache row (and any cached descendants).
+    ///
+    /// Move/reparent (changing `.parentItemIdentifier`) is out of scope: only
+    /// same-directory renames where the parent directory is unchanged are handled
+    /// here. The caller is responsible for ensuring `newName` does not contain
+    /// a path separator.
+    ///
+    /// - Parameters:
+    ///   - key: The current ``CacheKey`` of the item to rename.
+    ///   - newName: The new leaf name (final path segment, no `"/"`).
+    /// - Returns: The updated ``MetadataRecord`` under the new path so the FPE
+    ///   can build a fresh ``OfemFPEItem`` without an additional cache lookup.
+    public func rename(key: CacheKey, newName: String) async throws -> MetadataRecord {
+        let start = Date()
+        try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)
+
+        // Compute the destination path: same parent directory, new leaf name.
+        let parentDir = Enumerator.parentPath(key.path)
+        let destinationPath = parentDir.isEmpty ? newName : "\(parentDir)/\(newName)"
+
+        do {
+            try await onelake.rename(
+                alias: key.accountAlias,
+                workspaceGUID: key.workspaceID,
+                itemGUID: key.itemID,
+                sourcePath: key.path,
+                destinationPath: destinationPath
+            )
+        } catch {
+            try await withRemoteOperationError(
+                error: error, key: key, eventName: "item_rename",
+                failCode: "rename_failed", start: start
+            )
+        }
+        await offlineTracker.observe(nil)
+
+        // Re-key the cache: update the exact row and all descendants atomically.
+        do {
+            try await cache.renamePathPrefix(
+                accountAlias: key.accountAlias,
+                workspaceID: key.workspaceID,
+                itemID: key.itemID,
+                oldPath: key.path,
+                newPath: destinationPath,
+                newName: newName
+            )
+        } catch {
+            Self.log.warning("rename: cache renamePathPrefix failed err=\(error, privacy: .public)")
+        }
+
+        // Signal the working set so Finder picks up the change.
+        // (The parent container will be re-enumerated on the next poll.)
+
+        let newKey = CacheKey(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: destinationPath
+        )
+
+        // Return the updated row; fall back to a synthesised record when the
+        // cache write failed and the row is not yet present under the new key.
+        let updatedRecord: MetadataRecord
+        if let fetched = try? await cache.fetch(key: newKey) {
+            updatedRecord = fetched
+        } else {
+            // Best-effort: build from the old key's cached data.
+            let existing = try? await cache.fetch(key: key)
+            let nowNs = currentNowNs()
+            updatedRecord = MetadataRecord(
+                accountAlias: key.accountAlias,
+                workspaceID: key.workspaceID,
+                itemID: key.itemID,
+                path: destinationPath,
+                parentPath: parentDir,
+                name: newName,
+                isDir: existing?.isDir ?? false,
+                contentLength: existing?.contentLength ?? 0,
+                etag: existing?.etag ?? "",
+                lastModifiedNs: existing?.lastModifiedNs ?? 0,
+                contentType: existing?.contentType ?? "",
+                lastAccessedNs: nowNs,
+                syncedAtNs: nowNs,
+                itemType: existing?.itemType ?? ""
+            )
+        }
+
+        await track(eventName: "item_rename", alias: key.accountAlias, start: start, outcome: .success())
+        return updatedRecord
+    }
+
     // MARK: - Offline status
 
     // periphery:ignore

@@ -485,6 +485,66 @@ public final class OneLakeClient: Sendable {
         _ = try await doRequest(alias: alias, method: "PUT", url: url, body: nil, extraHeaders: nil, idempotent: true)
     }
 
+    // MARK: - Rename
+
+    /// Renames a file or directory within the same parent directory.
+    ///
+    /// Issues `PUT <destinationURL>` (the new path, same as a create URL but
+    /// at the destination) with `x-ms-rename-source` set to the URL-encoded,
+    /// leading-slash source path `/<workspaceGUID>/<itemGUID>/<sourcePath>`.
+    /// The `Content-Length: 0` and `x-ms-version` headers are injected by
+    /// `doRequest` (onelake-07). No request body.
+    public func rename(
+        alias: String,
+        workspaceGUID: String,
+        itemGUID: String,
+        sourcePath: String,
+        destinationPath: String
+    ) async throws {
+        guard !workspaceGUID.isEmpty, !itemGUID.isEmpty else {
+            throw OneLakeError.missingArgument("workspaceGUID and itemGUID required")
+        }
+        guard !sourcePath.isEmpty else {
+            throw OneLakeError.missingArgument("sourcePath required")
+        }
+        guard !destinationPath.isEmpty else {
+            throw OneLakeError.missingArgument("destinationPath required")
+        }
+
+        // Destination URL: the new path (same shape as createDirectory).
+        let destURL = try buildURL {
+            try oneLakePathURL(
+                base: baseURL,
+                workspaceGUID: workspaceGUID,
+                itemGUID: itemGUID,
+                relPath: destinationPath
+            )
+        }
+
+        // x-ms-rename-source: URL-encoded "/<workspaceGUID>/<itemGUID>/<sourcePath>".
+        // The value uses the same per-segment encoding as oneLakePathURL so that
+        // special characters in GUIDs or path names are consistently encoded.
+        var sourceComponents = URLComponents()
+        var segments = [
+            workspaceGUID.percentEncodedPathSegment,
+            itemGUID.percentEncodedPathSegment,
+        ]
+        let trimmedSource = sourcePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let sourceParts = trimmedSource.components(separatedBy: "/")
+        segments += sourceParts.map { $0.percentEncodedPathSegment }
+        sourceComponents.percentEncodedPath = "/" + segments.joined(separator: "/")
+        let renameSource = sourceComponents.percentEncodedPath
+
+        _ = try await doRequest(
+            alias: alias,
+            method: "PUT",
+            url: destURL,
+            body: nil,
+            extraHeaders: ["x-ms-rename-source": renameSource],
+            idempotent: true
+        )
+    }
+
     // MARK: - Delete
 
     /// Removes a file or directory.
