@@ -177,6 +177,34 @@ jobs:
           # Never fail the build on a Codecov hiccup or a fork PR with no token.
           fail_ci_if_error: false
 
+      - name: Export host-app test results (JUnit)
+        # Reuse the same .xcresult already produced by the test run — no
+        # second compile or test pass. The !cancelled() guard ensures this
+        # step runs even when tests fail so failing runs are captured by
+        # Codecov Test Analytics (that is the point of the feature).
+        if: ${{ !cancelled() }}
+        run: |
+          set -uo pipefail
+          xrp="$(brew --prefix xcresultparser)/bin/xcresultparser"
+          "$xrp" --output-format junit \
+            DerivedData/HostTests.xcresult > host-junit.xml
+          count=$(grep -c '<testcase' host-junit.xml || echo 0)
+          echo "host-junit.xml: $count testcase(s)"
+          if [ "$count" -eq 0 ]; then
+            echo "ERROR: host JUnit has no testcases" >&2
+            exit 1
+          fi
+
+      - name: Upload host test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1.2.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: host-junit.xml
+          flags: host
+          disable_search: true
+          fail_ci_if_error: false
+
       - name: Export FPE coverage
         run: |
           set -euo pipefail
@@ -191,6 +219,34 @@ jobs:
         uses: codecov/codecov-action@v7.0.0
         with:
           files: fpe-coverage.xml
+          flags: fpe
+          disable_search: true
+          fail_ci_if_error: false
+
+      - name: Export FPE test results (JUnit)
+        # Reuse the same .xcresult already produced by the test run — no
+        # second compile or test pass. The !cancelled() guard ensures this
+        # step runs even when tests fail so failing runs are captured by
+        # Codecov Test Analytics.
+        if: ${{ !cancelled() }}
+        run: |
+          set -uo pipefail
+          xrp="$(brew --prefix xcresultparser)/bin/xcresultparser"
+          "$xrp" --output-format junit \
+            DerivedData/FPETests.xcresult > fpe-junit.xml
+          count=$(grep -c '<testcase' fpe-junit.xml || echo 0)
+          echo "fpe-junit.xml: $count testcase(s)"
+          if [ "$count" -eq 0 ]; then
+            echo "ERROR: fpe JUnit has no testcases" >&2
+            exit 1
+          fi
+
+      - name: Upload FPE test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1.2.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: fpe-junit.xml
           flags: fpe
           disable_search: true
           fail_ci_if_error: false
@@ -263,8 +319,10 @@ jobs:
         # The engine package owns all sync/auth/cache logic. No xcodegen
         # is needed — `swift test` resolves from Package.resolved directly.
         # --enable-code-coverage emits LLVM profiles for the Codecov upload below.
+        # --xunit-output emits JUnit XML for Codecov Test Analytics; on Swift
+        # 6.1.2 this includes swift-testing results alongside XCTest.
         working-directory: Packages/OfemKit
-        run: swift test --enable-code-coverage
+        run: swift test --enable-code-coverage --xunit-output ofemkit-junit.xml
 
       - name: Export coverage to lcov
         working-directory: Packages/OfemKit
@@ -292,6 +350,38 @@ jobs:
           flags: ofemkit
           disable_search: true
           # Never fail the build on a Codecov hiccup or a fork PR with no token.
+          fail_ci_if_error: false
+
+      - name: Verify OfemKit JUnit output
+        # swift test --xunit-output writes XCTest results to ofemkit-junit.xml
+        # and Swift Testing results to the sibling ofemkit-junit-swift-testing.xml.
+        # OfemKit is 100% Swift Testing, so the primary file is always empty;
+        # count <testcase> across all matching files to cover both split and
+        # combined toolchain behaviour. Fail fast on zero so a toolchain
+        # regression doesn't silently upload an empty file.
+        if: ${{ !cancelled() }}
+        working-directory: Packages/OfemKit
+        run: |
+          set -uo pipefail
+          ls -la ofemkit-junit*.xml || true
+          count=$(cat ofemkit-junit*.xml 2>/dev/null | grep -c '<testcase' || echo 0)
+          echo "ofemkit testcases (all JUnit files): $count"
+          if [ "$count" -eq 0 ]; then
+            echo "ERROR: no <testcase> elements found across ofemkit-junit*.xml" >&2
+            echo "       --xunit-output may not be capturing swift-testing results on this toolchain." >&2
+            exit 1
+          fi
+
+      - name: Upload OfemKit test results to Codecov
+        # Upload both the XCTest file (empty but harmless) and the Swift Testing
+        # file that carries all the actual test cases.
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1.2.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: Packages/OfemKit/ofemkit-junit.xml,Packages/OfemKit/ofemkit-junit-swift-testing.xml
+          flags: ofemkit
+          disable_search: true
           fail_ci_if_error: false
 
   commitlint:
