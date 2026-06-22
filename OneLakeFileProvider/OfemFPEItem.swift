@@ -24,6 +24,7 @@ final class OfemFPEItem: NSObject, NSFileProviderItem, @unchecked Sendable {
     let contentType: UTType
     let capabilities: NSFileProviderItemCapabilities
     let documentSize: NSNumber?
+    let creationDate: Date?
     let contentModificationDate: Date?
     let itemVersion: NSFileProviderItemVersion
 
@@ -66,6 +67,7 @@ final class OfemFPEItem: NSObject, NSFileProviderItem, @unchecked Sendable {
         self.capabilities = bitmask.isEmpty ? [.allowsReading, .allowsContentEnumerating] : bitmask
 
         self.documentSize = domainItem.isDirectory ? nil : NSNumber(value: domainItem.size)
+        self.creationDate = domainItem.creationDate
         self.contentModificationDate = domainItem.modificationDate
 
         self.itemVersion = NSFileProviderItemVersion(

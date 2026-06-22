@@ -24,7 +24,27 @@ import UniformTypeIdentifiers
 ///
 /// Capabilities are expressed as a `Set<Capability>` so the FPE can map them
 /// directly to `NSFileProviderItemCapabilities` without string matching.
+///
+/// ## Equatable
+///
+/// `==` compares the structural fields that define a unique item —
+/// `identifier`, `parentIdentifier`, `filename`, `isDirectory`, `size`,
+/// `contentType`, `contentVersion`, `metadataVersion`, and `capabilities`.
+/// Timestamps (`creationDate`, `modificationDate`) are excluded: they change
+/// on every sync poll and must not affect identity.
 public struct DomainItem: Sendable, Equatable {
+    public static func == (lhs: DomainItem, rhs: DomainItem) -> Bool {
+        lhs.identifier == rhs.identifier
+            && lhs.parentIdentifier == rhs.parentIdentifier
+            && lhs.filename == rhs.filename
+            && lhs.isDirectory == rhs.isDirectory
+            && lhs.size == rhs.size
+            && lhs.contentType == rhs.contentType
+            && lhs.contentVersion == rhs.contentVersion
+            && lhs.metadataVersion == rhs.metadataVersion
+            && lhs.capabilities == rhs.capabilities
+    }
+
     // MARK: - Capability
 
     /// The set of operations the FPE may perform on an item.
@@ -128,6 +148,9 @@ public struct DomainItem: Sendable, Equatable {
     /// MIME type (e.g. `"text/csv"`). Empty when unknown.
     public let contentType: String
 
+    /// Remote creation date. `nil` when unknown.
+    public let creationDate: Date?
+
     /// Remote last-modification date. `nil` when unknown.
     public let modificationDate: Date?
 
@@ -149,6 +172,7 @@ public struct DomainItem: Sendable, Equatable {
         isDirectory: Bool,
         size: Int64 = 0,
         contentType: String = "",
+        creationDate: Date? = nil,
         modificationDate: Date? = nil,
         contentVersion: Data,
         metadataVersion: Data,
@@ -160,6 +184,7 @@ public struct DomainItem: Sendable, Equatable {
         self.isDirectory = isDirectory
         self.size = size
         self.contentType = contentType
+        self.creationDate = creationDate
         self.modificationDate = modificationDate
         self.contentVersion = contentVersion
         self.metadataVersion = metadataVersion
@@ -173,12 +198,17 @@ public extension DomainItem {
     // MARK: Root
 
     /// Builds the root-container sentinel item for `alias`.
-    static func root(alias: String) -> DomainItem {
+    ///
+    /// `mountedAt` is used as the modification date. No server timestamp is
+    /// available for the virtual root container; passing a non-nil date
+    /// prevents Finder from displaying 1 Jan 1970.
+    static func root(alias: String, mountedAt: Date = Date()) -> DomainItem {
         DomainItem(
             identifier: .root,
             parentIdentifier: .root,
             filename: "OneLake \u{2014} \(alias)", // em-dash, like OneDrive
             isDirectory: true,
+            modificationDate: mountedAt,
             contentVersion: ContentVersion.fallback(seed: alias, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: alias, size: 0, mtime: nil),
             capabilities: CapabilitySet.readOnly
@@ -188,12 +218,17 @@ public extension DomainItem {
     // MARK: From Workspace
 
     /// Builds a `DomainItem` from a ``Workspace`` returned by the Fabric API.
-    static func from(workspace: Workspace) -> DomainItem {
+    ///
+    /// `syncedAt` is used as the modification date because the Fabric workspace
+    /// list API does not return a last-modified timestamp. Passing a non-nil date
+    /// prevents Finder from displaying 1 Jan 1970.
+    static func from(workspace: Workspace, syncedAt: Date = Date()) -> DomainItem {
         DomainItem(
             identifier: .workspace(workspaceID: workspace.id),
             parentIdentifier: .root,
             filename: workspace.displayName,
             isDirectory: true,
+            modificationDate: syncedAt,
             contentVersion: ContentVersion.fallback(seed: workspace.id, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: workspace.displayName, size: 0, mtime: nil),
             capabilities: CapabilitySet.readOnly
@@ -203,12 +238,17 @@ public extension DomainItem {
     // MARK: From Fabric Item
 
     /// Builds a `DomainItem` from a ``Item`` (Fabric item) returned by the Fabric API.
-    static func from(fabricItem: Item, workspaceID: String) -> DomainItem {
+    ///
+    /// `syncedAt` is used as the modification date because the Fabric item list
+    /// API does not return a last-modified timestamp. Passing a non-nil date
+    /// prevents Finder from displaying 1 Jan 1970.
+    static func from(fabricItem: Item, workspaceID: String, syncedAt: Date = Date()) -> DomainItem {
         DomainItem(
             identifier: .item(workspaceID: workspaceID, itemID: fabricItem.id),
             parentIdentifier: .workspace(workspaceID: workspaceID),
             filename: fabricItem.displayName,
             isDirectory: true,
+            modificationDate: syncedAt,
             contentVersion: ContentVersion.fallback(seed: fabricItem.id, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: fabricItem.displayName, size: 0, mtime: nil),
             capabilities: CapabilitySet.readOnly
@@ -240,7 +280,12 @@ public extension DomainItem {
             // Workspace sentinel row: path holds the workspace GUID. Delegate to
             // from(workspace:) so the identifier/parent/version shape can never drift
             // from the dedicated constructor. type is irrelevant to the produced item.
-            return DomainItem.from(workspace: Workspace(id: record.path, displayName: record.name, type: ""))
+            // Pass syncedAt from the record so modificationDate is stable across
+            // polls rather than flicking to Date() on every enumeration.
+            return DomainItem.from(
+                workspace: Workspace(id: record.path, displayName: record.name, type: ""),
+                syncedAt: record.syncedAt ?? Date()
+            )
         }
 
         // Reject a real item-root row (path == "" with real workspace/item GUIDs).
@@ -285,6 +330,7 @@ public extension DomainItem {
             isDirectory: record.isDir,
             size: record.contentLength,
             contentType: mimeType,
+            creationDate: record.created,
             modificationDate: record.lastModified,
             contentVersion: ContentVersion.content(for: record),
             metadataVersion: ContentVersion.metadata(for: record),
@@ -340,11 +386,14 @@ public extension DomainItem {
         } else {
             ""
         }
+        let now = Date()
         return DomainItem(
             identifier: identifier,
             parentIdentifier: parentIdentifier,
             filename: name,
             isDirectory: isDirectory,
+            creationDate: now,
+            modificationDate: now,
             contentVersion: ContentVersion.fallback(seed: name, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: name, size: 0, mtime: nil),
             capabilities: computeCapabilities(isDir: isDirectory, path: path, itemType: itemType)
@@ -374,8 +423,13 @@ enum ContentVersion {
         return fallback(seed: record.path, size: record.contentLength, mtime: record.lastModified)
     }
 
-    /// Computes the metadata version token from name + etag + size + mtime
-    /// via FNV-1a-64.
+    /// Computes the metadata version token from name + etag + size + mtime +
+    /// created via FNV-1a-64.
+    ///
+    /// `created` is included so that a `createdNs` backfill (0 → real value
+    /// after the v5 migration) produces a new token and Finder refreshes the
+    /// displayed "Date Created" without forcing a re-download of file bytes
+    /// (content version is unchanged — only metadata version changes).
     static func metadata(for record: MetadataRecord) -> Data {
         var h = FNV64a()
         h.combine(record.name)
@@ -386,6 +440,10 @@ enum ContentVersion {
         h.combine("\0")
         if let mtime = record.lastModified {
             h.combine(rfc3339(mtime))
+        }
+        h.combine("\0")
+        if let created = record.created {
+            h.combine(rfc3339(created))
         }
         return Data(h.digest().bigEndian.bytes).base64EncodedData()
     }

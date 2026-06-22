@@ -427,7 +427,8 @@ public actor SyncEngine {
                 lastAccessedNs: cur?.lastAccessedNs ?? nowNs,
                 syncedAtNs: nowNs,
                 childrenSyncedAtNs: cur?.childrenSyncedAtNs ?? 0,
-                itemType: folderItemType
+                itemType: folderItemType,
+                createdNs: dateToNs(entry.creationDate) ?? cur?.createdNs ?? 0
             )
             // Carry blob linkage when etag still matches.
             if let c = cur, !c.etag.isEmpty, c.etag == entry.eTag {
