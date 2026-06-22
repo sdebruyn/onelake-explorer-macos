@@ -7,7 +7,7 @@ import Foundation
 /// Single source of truth — referenced by ``OneLakeClient/doRequest`` when
 /// injecting the `x-ms-version` header.  The dead `oneLakeVersionHeader()`
 /// helper (net-17) has been removed; the constant lives here.
-let oneLakeDFSAPIVersion = "2021-08-06"
+let oneLakeDFSAPIVersion = "2023-11-03"
 
 // MARK: - URL builder errors
 

@@ -820,6 +820,10 @@ public actor SyncEngine {
             if props.contentLength != 0 { row.contentLength = props.contentLength }
             row.lastModifiedNs = dateToNs(props.lastModified) ?? 0
             row.contentType = props.contentType
+            // Capture real creation time from the HEAD response when available.
+            // The entryChanged createdNs guard will fire a metadata update so
+            // Finder refreshes the displayed Date Created without a re-download.
+            if let cd = props.creationDate { row.createdNs = dateToNs(cd) ?? 0 }
         } catch {
             // sync-12: log HEAD failure so the empty-etag outcome is detectable.
             logger.warn("put: post-upload HEAD failed; row will have empty etag",
@@ -1095,7 +1099,11 @@ public actor SyncEngine {
             contentType: props.contentType,
             lastAccessedNs: nowNs,
             syncedAtNs: nowNs,
-            itemType: downloadItemType
+            itemType: downloadItemType,
+            // Capture real creation time from GET/HEAD response header. The
+            // entryChanged createdNs guard triggers a metadata-only update so
+            // Finder refreshes Date Created without forcing a re-download.
+            createdNs: props.creationDate.flatMap { dateToNs($0) } ?? cached?.createdNs ?? 0
         )
         if row.name.isEmpty { row.name = Enumerator.baseName(key.path) }
 

@@ -160,9 +160,9 @@ public enum CacheSchema {
             """)
         }
 
-        // v5: add created_ns to persist the DFS creationTime (FILETIME-derived Unix
-        // nanoseconds) for every path. Zero means "not known". Sourced from the
-        // ADLS Gen2 DFS list response's `creationTime` field (100ns ticks since 1601).
+        // v5: add created_ns to persist the creation timestamp for every path.
+        // Zero means "not yet captured". Sourced from the x-ms-creation-time header
+        // (RFC1123 HTTP-date) returned by HEAD/GET on ADLS Gen2 service version ≥ 2023-05-03.
         m.registerMigration("v5") { db in
             try db.execute(sql: """
             ALTER TABLE path_metadata
