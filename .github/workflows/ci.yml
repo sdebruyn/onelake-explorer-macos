@@ -184,11 +184,16 @@ jobs:
         # Codecov Test Analytics (that is the point of the feature).
         if: ${{ !cancelled() }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           xrp="$(brew --prefix xcresultparser)/bin/xcresultparser"
           "$xrp" --output-format junit \
             DerivedData/HostTests.xcresult > host-junit.xml
-          echo "host-junit.xml: $(grep -c '<testcase' host-junit.xml || echo 0) testcase(s)"
+          count=$(grep -c '<testcase' host-junit.xml || echo 0)
+          echo "host-junit.xml: $count testcase(s)"
+          if [ "$count" -eq 0 ]; then
+            echo "ERROR: host JUnit has no testcases" >&2
+            exit 1
+          fi
 
       - name: Upload host test results to Codecov
         if: ${{ !cancelled() }}
@@ -225,11 +230,16 @@ jobs:
         # Codecov Test Analytics.
         if: ${{ !cancelled() }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           xrp="$(brew --prefix xcresultparser)/bin/xcresultparser"
           "$xrp" --output-format junit \
             DerivedData/FPETests.xcresult > fpe-junit.xml
-          echo "fpe-junit.xml: $(grep -c '<testcase' fpe-junit.xml || echo 0) testcase(s)"
+          count=$(grep -c '<testcase' fpe-junit.xml || echo 0)
+          echo "fpe-junit.xml: $count testcase(s)"
+          if [ "$count" -eq 0 ]; then
+            echo "ERROR: fpe JUnit has no testcases" >&2
+            exit 1
+          fi
 
       - name: Upload FPE test results to Codecov
         if: ${{ !cancelled() }}
@@ -343,28 +353,33 @@ jobs:
           fail_ci_if_error: false
 
       - name: Verify OfemKit JUnit output
-        # Fail fast if the JUnit file is missing or empty — a silent empty
-        # upload would mask regressions in swift-testing result capture.
-        # Swift 6.1.2 includes swift-testing cases in --xunit-output; this
-        # guard surfaces if a toolchain update drops them.
+        # swift test --xunit-output writes XCTest results to ofemkit-junit.xml
+        # and Swift Testing results to the sibling ofemkit-junit-swift-testing.xml.
+        # OfemKit is 100% Swift Testing, so the primary file is always empty;
+        # count <testcase> across all matching files to cover both split and
+        # combined toolchain behaviour. Fail fast on zero so a toolchain
+        # regression doesn't silently upload an empty file.
         if: ${{ !cancelled() }}
         working-directory: Packages/OfemKit
         run: |
-          set -euo pipefail
-          count=$(grep -c '<testcase' ofemkit-junit.xml 2>/dev/null || echo 0)
-          echo "ofemkit-junit.xml: $count testcase(s)"
+          set -uo pipefail
+          ls -la ofemkit-junit*.xml || true
+          count=$(cat ofemkit-junit*.xml 2>/dev/null | grep -c '<testcase' || echo 0)
+          echo "ofemkit testcases (all JUnit files): $count"
           if [ "$count" -eq 0 ]; then
-            echo "ERROR: ofemkit-junit.xml contains no <testcase> elements." >&2
+            echo "ERROR: no <testcase> elements found across ofemkit-junit*.xml" >&2
             echo "       --xunit-output may not be capturing swift-testing results on this toolchain." >&2
             exit 1
           fi
 
       - name: Upload OfemKit test results to Codecov
+        # Upload both the XCTest file (empty but harmless) and the Swift Testing
+        # file that carries all the actual test cases.
         if: ${{ !cancelled() }}
         uses: codecov/test-results-action@v1.2.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: Packages/OfemKit/ofemkit-junit.xml
+          files: Packages/OfemKit/ofemkit-junit.xml,Packages/OfemKit/ofemkit-junit-swift-testing.xml
           flags: ofemkit
           disable_search: true
           fail_ci_if_error: false
