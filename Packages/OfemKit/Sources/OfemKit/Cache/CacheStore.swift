@@ -474,42 +474,36 @@ public actor CacheStore {
         let newParent = Enumerator.parentPath(newPath)
         try await dbPool.write { db in
             // Update the exact renamed row.
-            try db.execute(
-                sql: """
-                    UPDATE path_metadata
-                    SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
-                    WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                    """,
-                arguments: [newPath, newParent, newName, nowNs, accountAlias, workspaceID, itemID, oldPath]
-            )
+            try db.execute(sql: """
+            UPDATE path_metadata
+            SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
+            WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+            """, arguments: [newPath, newParent, newName, nowNs, accountAlias, workspaceID, itemID, oldPath])
             // Rewrite every descendant whose path starts with the old prefix.
             // SQLite does not have REPLACE(path, oldPrefix, newPrefix) on indexed
             // columns inside a WHERE, so we fetch + update in-loop. For a
             // same-directory rename the descendant count is typically bounded and
             // a fetch-then-update is safe and explicit.
             let descendantPaths = try String.fetchAll(db, sql: """
-                SELECT path FROM path_metadata
-                WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                  AND path > ? AND path < ?
-                """, arguments: [accountAlias, workspaceID, itemID, oldPath, oldPath + "\u{FFFF}"])
+            SELECT path FROM path_metadata
+            WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+              AND path > ? AND path < ?
+            """, arguments: [accountAlias, workspaceID, itemID, oldPath, oldPath + "\u{FFFF}"])
             for oldDescPath in descendantPaths {
                 guard oldDescPath.hasPrefix(oldPrefix) else { continue }
                 let suffix = String(oldDescPath.dropFirst(oldPrefix.count))
                 let newDescPath = newPrefix + suffix
-                try db.execute(
-                    sql: """
-                        UPDATE path_metadata
-                        SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
-                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                        """,
-                    arguments: [
-                        newDescPath,
-                        Enumerator.parentPath(newDescPath),
-                        Enumerator.baseName(newDescPath),
-                        nowNs,
-                        accountAlias, workspaceID, itemID, oldDescPath,
-                    ]
-                )
+                try db.execute(sql: """
+                UPDATE path_metadata
+                SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+                """, arguments: [
+                    newDescPath,
+                    Enumerator.parentPath(newDescPath),
+                    Enumerator.baseName(newDescPath),
+                    nowNs,
+                    accountAlias, workspaceID, itemID, oldDescPath,
+                ])
             }
         }
     }
