@@ -1803,8 +1803,10 @@ struct SyncEngineTests {
 
         // Wire-level JSON with no creationTime field — matches the DFS Path-List
         // schema exactly; convertRawEntry will produce creationDate: nil.
+        // The etag value is kept free of extra quotes so it round-trips to "v1",
+        // matching the value seeded into the cache above.
         let json = """
-        {"paths":[{"name":"item-1/Files/data.csv","contentLength":"42","etag":"\\"v1\\"","lastModified":"Sun, 12 May 2024 15:06:40 GMT"}]}
+        {"paths":[{"name":"item-1/Files/data.csv","contentLength":"42","etag":"v1","lastModified":"Sun, 12 May 2024 15:06:40 GMT"}]}
         """
         let rawList = try JSONDecoder().decode(RawListBody.self, from: Data(json.utf8))
         let entries = (rawList.paths ?? []).map { convertRawEntry($0, itemGUID: Self.itID) }
