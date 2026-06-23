@@ -207,23 +207,22 @@ struct OneLakeClientTests {
         let ws = "workspace-abc"
         let item = "item-xyz"
         let source = "Files/untitled folder"
+        let base = try #require(URL(string: "https://onelake.dfs.fabric.microsoft.com"))
 
-        // Mirror OneLakeClient.rename's rename-source construction.
-        var sourceComponents = URLComponents()
-        var segments = [
-            ws.percentEncodedPathSegment,
-            item.percentEncodedPathSegment,
-        ]
-        let trimmed = source.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let parts = trimmed.components(separatedBy: "/")
-        segments += parts.map { $0.percentEncodedPathSegment }
-        sourceComponents.percentEncodedPath = "/" + segments.joined(separator: "/")
-        let renameSource = sourceComponents.percentEncodedPath
+        // The rename-source header is derived from oneLakePathURL (the same
+        // helper that builds the destination URL), so drive the test through it
+        // directly and assert the hardcoded literal — re-deriving the encoding
+        // inline here could not catch a real encoding regression in the helper.
+        let renameSource = try oneLakePathURL(
+            base: base,
+            workspaceGUID: ws,
+            itemGUID: item,
+            relPath: source
+        ).percentEncodedPath
 
         #expect(renameSource == "/workspace-abc/item-xyz/Files/untitled%20folder")
 
         // Verify destination URL shape.
-        let base = try #require(URL(string: "https://onelake.dfs.fabric.microsoft.com"))
         let destURL = try oneLakePathURL(
             base: base,
             workspaceGUID: ws,

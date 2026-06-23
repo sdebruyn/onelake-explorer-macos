@@ -143,7 +143,13 @@ When the user saves a modified file, macOS calls `createItem` or `modifyItem`. T
 4. On success, returns the updated `NSFileProviderItem` with the server-assigned etag/mtime from the post-upload HEAD.
 5. On failure (network, throttling, capacity-paused), returns an `NSFileProviderError` macOS understands; macOS surfaces it in the UI and may retry later (we honor `Retry-After`).
 
-`modifyItem` only processes calls where `changedFields` includes `.contents`. Metadata-only changes (rename, reparent) are acknowledged: the extension applies what it can (no rename/reparent on OneLake) and returns the existing item unchanged, so macOS treats the call as a no-op rather than surfacing an error to the user.
+`modifyItem` handles three classes of change:
+
+- **`.contents`** — file bytes are streamed to OneLake DFS as above.
+- **`.filename` (same-directory rename)** — implemented via the ADLS Gen2 DFS rename: a `PUT` on the destination path carrying the `x-ms-rename-source` header (with the `continuation` query parameter looped until exhausted for large directories). The cache row and all cached descendants are re-keyed in one transaction, and the success path returns the **original** item identifier with the new filename/dates so the framework records a metadata change rather than a delete-and-re-add. Only items advertising `.allowsRenaming` (writable files/dirs under a Lakehouse `Files`/`Tables` subtree) reach this path.
+- **`.parentItemIdentifier` (reparent / cross-directory move)** — not yet supported; the field is left pending so the framework does not treat the move as applied.
+
+Other metadata-only changes (e.g. `lastUsedDate`, tags) are acknowledged: the extension applies what it can (nothing persisted remotely for these) and returns the existing item, so macOS treats the call as a no-op rather than surfacing an error to the user.
 
 ## Conflict resolution
 

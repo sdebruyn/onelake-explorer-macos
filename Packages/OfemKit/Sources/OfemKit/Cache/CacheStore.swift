@@ -457,9 +457,20 @@ public actor CacheStore {
     ///   - newName: The new leaf name (final segment of `newPath`).
     ///
     /// The exact row at `oldPath` is updated first; then every row whose `path`
-    /// starts with `oldPath + "/"` (i.e. descendants) has its `path` and
-    /// `parent_path` rewritten to substitute the old prefix with the new one.
-    /// All updates happen atomically in one write transaction.
+    /// starts with `oldPath + "/"` (i.e. descendants) has its `path`,
+    /// `parent_path`, and `name` rewritten to substitute the old prefix with the
+    /// new one. All updates happen atomically in one write transaction.
+    ///
+    /// DFS overwrites the destination by default, so the remote rename can
+    /// succeed even when a row already exists at `newPath` (or a descendant's
+    /// new path). The `path_metadata` primary key is
+    /// `(account_alias, workspace_id, item_id, path)`, so a plain `UPDATE … SET
+    /// path = newPath` would PK-abort against any colliding row. Each colliding
+    /// destination row (and its blob refs) is therefore deleted first.
+    ///
+    /// - Returns: The updated ``MetadataRecord`` at `newPath`, read back inside
+    ///   the same write transaction (no actor hop, no TOCTOU window), or `nil`
+    ///   when no row existed at `oldPath` to rename.
     public func renamePathPrefix(
         accountAlias: String,
         workspaceID: String,
@@ -467,44 +478,76 @@ public actor CacheStore {
         oldPath: String,
         newPath: String,
         newName: String
-    ) async throws {
+    ) async throws -> MetadataRecord? {
         let nowNs = clock()
-        let oldPrefix = oldPath + "/"
-        let newPrefix = newPath + "/"
         let newParent = Enumerator.parentPath(newPath)
-        try await dbPool.write { db in
+        return try await dbPool.write { db in
+            // Clear any pre-existing destination row (DFS overwrites it server-
+            // side) so the exact-row UPDATE below cannot PK-abort.
+            try db.execute(sql: """
+            DELETE FROM path_metadata
+            WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+            """, arguments: [accountAlias, workspaceID, itemID, newPath])
             // Update the exact renamed row.
             try db.execute(sql: """
             UPDATE path_metadata
             SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
             WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
             """, arguments: [newPath, newParent, newName, nowNs, accountAlias, workspaceID, itemID, oldPath])
-            // Rewrite every descendant whose path starts with the old prefix.
-            // SQLite does not have REPLACE(path, oldPrefix, newPrefix) on indexed
-            // columns inside a WHERE, so we fetch + update in-loop. For a
-            // same-directory rename the descendant count is typically bounded and
-            // a fetch-then-update is safe and explicit.
-            let descendantPaths = try String.fetchAll(db, sql: """
-            SELECT path FROM path_metadata
+
+            // Rewrite every descendant of the renamed entry. Reuse the same
+            // subtree primitive `delete` uses (`path LIKE oldPrefix%`) so the
+            // selection is correct-by-construction rather than relying on an
+            // in-Swift `hasPrefix` guard over a `> … < …` sort band that could
+            // re-select the just-renamed row or unrelated siblings.
+            let escapedOldPrefix = Self.escapeLike(oldPath) + "/%"
+            // Clear any colliding destination descendant rows first (same reason
+            // as the exact row above).
+            try db.execute(sql: """
+            DELETE FROM path_metadata
             WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-              AND path > ? AND path < ?
-            """, arguments: [accountAlias, workspaceID, itemID, oldPath, oldPath + "\u{FFFF}"])
-            for oldDescPath in descendantPaths {
-                guard oldDescPath.hasPrefix(oldPrefix) else { continue }
-                let suffix = String(oldDescPath.dropFirst(oldPrefix.count))
-                let newDescPath = newPrefix + suffix
-                try db.execute(sql: """
-                UPDATE path_metadata
-                SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
-                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
-                """, arguments: [
-                    newDescPath,
-                    Enumerator.parentPath(newDescPath),
-                    Enumerator.baseName(newDescPath),
-                    nowNs,
-                    accountAlias, workspaceID, itemID, oldDescPath,
-                ])
-            }
+              AND path LIKE ? ESCAPE '\\'
+            """, arguments: [accountAlias, workspaceID, itemID, Self.escapeLike(newPath) + "/%"])
+            // Set-based rewrite: SQLite has substr()/length(), so we can rewrite
+            // path and parent_path for the whole subtree in one statement rather
+            // than fetching + updating each row. `name` is unchanged for
+            // descendants (only the prefix shifts), so it is left as-is.
+            //
+            // Both columns are rewritten by stripping the `oldPath` prefix
+            // (length, no trailing slash) and prepending `newPath`:
+            //   • every descendant `path` starts with `oldPath + "/"`, so the
+            //     stripped remainder keeps its leading "/", giving newPath + "/…".
+            //   • a descendant's `parent_path` is either exactly `oldPath` (direct
+            //     child → stripped to "" → newPath) or `oldPath + "/…"` (deeper →
+            //     newPath + "/…"). Stripping `oldPath` (not `oldPath + "/"`)
+            //     handles both, where stripping the slash form would corrupt the
+            //     direct-child parent into a trailing-slash value.
+            // The substr start index is computed in SQL as `length(oldPath) + 1`
+            // (bound, not Swift's String.count) so SQLite's own character counting
+            // drives both `length()` and `substr()` — avoiding any grapheme-vs-
+            // SQLite-character mismatch for non-ASCII path names.
+            try db.execute(sql: """
+            UPDATE path_metadata
+            SET path = ? || substr(path, length(?) + 1),
+                parent_path = ? || substr(parent_path, length(?) + 1),
+                synced_at_ns = ?
+            WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+              AND path LIKE ? ESCAPE '\\'
+            """, arguments: [
+                newPath, oldPath,
+                newPath, oldPath,
+                nowNs,
+                accountAlias, workspaceID, itemID, escapedOldPrefix,
+            ])
+
+            // Read back the renamed row inside the same transaction so the caller
+            // needs no second fetch (and cannot race a concurrent poll).
+            return try MetadataRecord
+                .filter(MetadataRecord.Columns.accountAlias == accountAlias)
+                .filter(MetadataRecord.Columns.workspaceID == workspaceID)
+                .filter(MetadataRecord.Columns.itemID == itemID)
+                .filter(MetadataRecord.Columns.path == newPath)
+                .fetchOne(db)
         }
     }
 

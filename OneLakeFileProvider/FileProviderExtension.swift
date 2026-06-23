@@ -377,6 +377,28 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 return progress
             }
             let newFilename = item.filename
+            // Reject an empty filename or one containing a path separator before
+            // touching the engine. An empty name yields a trailing-slash
+            // destination (the empty-filename class fixed in a0b2e66/ab283ce);
+            // a "/"-containing name would silently turn a same-directory rename
+            // into a cross-directory move on DFS. macOS should never send one,
+            // but guard rather than rely on that.
+            guard !newFilename.isEmpty, !newFilename.contains("/") else {
+                FileProviderExtension.log.error(
+                    "modifyItem \(ofemID.opaqueLogPrefix, privacy: .public) — rejecting invalid rename filename"
+                )
+                completionHandler(nil, [], false, NSFileProviderError(.filenameCollision))
+                return progress
+            }
+            // Preserve the original identifier so the success path can return it
+            // unchanged; returning a new (path-derived) identifier would make the
+            // framework treat the rename as delete-old + add-new.
+            let originalIdentifier = ofemID
+            // Any non-filename fields delivered in the same modifyItem (e.g. a
+            // coalesced [.filename, .contents] from a save-then-rename) must stay
+            // pending so the framework re-issues a dedicated modifyItem for them;
+            // acking [] would tell the framework those changes applied → data loss.
+            let nonRenameFields = changedFields.subtracting([.filename])
             let aliasCopy = alias
             let hostCopy = engineHost
             FileProviderExtension.log.debug(
@@ -393,17 +415,23 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                         path: path
                     )
                     let updated = try await engine.sync.rename(key: key, newName: newFilename)
-                    let fpeItem = OfemFPEItem(from: try DomainItem.from(record: updated))
-                    ch.value(fpeItem, [], false, nil)
+                    // Return the ORIGINAL identifier with the new filename/size/
+                    // dates so the framework registers a metadata change, not a
+                    // delete+add (see DomainItem.from(record:overridingIdentifier:)).
+                    let fpeItem = OfemFPEItem(
+                        from: try DomainItem.from(record: updated, overridingIdentifier: originalIdentifier)
+                    )
+                    ch.value(fpeItem, nonRenameFields, false, nil)
                 } catch is CancellationError {
                     ch.value(nil, [], false, CocoaError(.userCancelled))
                 } catch {
-                    // Rename failed: leave .filename pending so the framework
-                    // retries rather than treating the item as renamed locally.
+                    // Rename failed: leave ALL changed fields pending so the
+                    // framework retries rather than treating the item as renamed
+                    // (or, for a co-delivered .contents, as uploaded) locally.
                     FileProviderExtension.log.error(
                         "modifyItem rename failed: \(error.localizedDescription, privacy: .public)"
                     )
-                    ch.value(item, [.filename], false, nil)
+                    ch.value(item, changedFields, false, nil)
                 }
             }
             progress.cancellationHandler = { task.cancel() }

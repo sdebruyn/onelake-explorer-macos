@@ -52,6 +52,7 @@ public struct DomainItem: Sendable, Equatable {
         case read
         case write
         case delete
+        case rename
         case enumerate
         case addSubitems = "add_subitems"
     }
@@ -67,9 +68,9 @@ public struct DomainItem: Sendable, Equatable {
         /// Users can create items inside but cannot rename or delete the node.
         static let managedDirectory: Set<Capability> = [.read, .enumerate, .addSubitems]
         /// Writable directories (DFS dirs under a Lakehouse Files/Tables subtree).
-        static let writableDirectory: Set<Capability> = [.read, .write, .delete, .enumerate, .addSubitems]
+        static let writableDirectory: Set<Capability> = [.read, .write, .delete, .rename, .enumerate, .addSubitems]
         /// Writable files (DFS files under a Lakehouse Files/Tables subtree).
-        static let writableFile: Set<Capability> = [.read, .write, .delete]
+        static let writableFile: Set<Capability> = [.read, .write, .delete, .rename]
     }
 
     // MARK: - Capability policy (fp-05)
@@ -261,7 +262,21 @@ public extension DomainItem {
     // MARK: From MetadataRecord
 
     /// Builds a `DomainItem` from a ``MetadataRecord`` (cache row).
-    static func from(record: MetadataRecord) throws -> DomainItem {
+    ///
+    /// - Parameter overridingIdentifier: When non-nil, the produced item carries
+    ///   this identifier (and its derived parent) instead of the one re-derived
+    ///   from `record.path`. This is used by the rename success path so the FPE
+    ///   can return the *original* item identifier it was handed alongside the
+    ///   new filename/size/dates — the `NSFileProviderReplicatedExtension`
+    ///   contract treats a returned identifier change as delete-old + add-new
+    ///   rather than a rename. Keeping the identifier stable lets the framework
+    ///   register the rename as a metadata change and preserve the working-set /
+    ///   materialized-content association (see the rename branch in
+    ///   `FileProviderExtension.modifyItem`).
+    static func from(
+        record: MetadataRecord,
+        overridingIdentifier: ItemIdentifier? = nil
+    ) throws -> DomainItem {
         guard !record.workspaceID.isEmpty, !record.itemID.isEmpty else {
             throw FPError.invalidRecord("workspaceID or itemID is empty")
         }
@@ -307,7 +322,12 @@ public extension DomainItem {
         // path-splitting logic is owned in exactly one place: ItemIdentifier
         // (fp-03). The record.path.isEmpty branch is unreachable here — the
         // empty-path guard above throws first — so we always produce .path.
-        let identifier: ItemIdentifier = .path(
+        //
+        // When `overridingIdentifier` is supplied (rename success path) the
+        // caller-supplied identifier replaces the path-derived one so the FPE
+        // returns the original identifier; the parent is still derived from
+        // whichever identifier is in effect.
+        let identifier: ItemIdentifier = overridingIdentifier ?? .path(
             workspaceID: record.workspaceID,
             itemID: record.itemID,
             path: record.path

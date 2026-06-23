@@ -511,38 +511,69 @@ public final class OneLakeClient: Sendable {
             throw OneLakeError.missingArgument("destinationPath required")
         }
 
-        // Destination URL: the new path (same shape as createDirectory).
-        let destURL = try buildURL {
+        // x-ms-rename-source: URL-encoded "/<workspaceGUID>/<itemGUID>/<sourcePath>".
+        // Derive it from the same oneLakePathURL helper used for the destination
+        // so the per-segment encoding rule lives in exactly one place and cannot
+        // drift (the source path is item-relative, so itemGUID is the second
+        // segment just like the destination). `.percentEncodedPath` yields the
+        // leading-slash, fully-encoded filesystem path the rename API expects.
+        let renameSource = try buildURL {
             try oneLakePathURL(
                 base: baseURL,
                 workspaceGUID: workspaceGUID,
                 itemGUID: itemGUID,
-                relPath: destinationPath
+                relPath: sourcePath
             )
+        }.percentEncodedPath
+
+        // ADLS Gen2 bounds the number of paths renamed per call for directory
+        // renames and returns an `x-ms-continuation` *response* header when more
+        // remain; that token must be re-sent on a subsequent invocation as the
+        // `continuation` *query parameter* (per the Path - Create REST contract)
+        // until exhausted. Without the loop a large directory is only partially
+        // renamed server-side while the cache rewrites all descendants → permanent
+        // divergence. Mirrors listDirectory's continuation handling, including its
+        // cycle-detection guard (onelake-11). Note: unlike list (which sends the
+        // token as a query param too), the token here is delivered as a header on
+        // the response, so we re-issue with it as a query param on the next PUT.
+        var continuation: String? = nil
+        var seenContinuations: Set<String> = []
+        for _ in 0 ..< Self.maxPaginationPages {
+            // Destination URL: the new path (same shape as createDirectory),
+            // plus the continuation query param on follow-up invocations.
+            let destURL = try buildURL {
+                var query: [URLQueryItem]? = nil
+                if let cont = continuation {
+                    query = [URLQueryItem(name: "continuation", value: cont)]
+                }
+                return try oneLakePathURL(
+                    base: baseURL,
+                    workspaceGUID: workspaceGUID,
+                    itemGUID: itemGUID,
+                    relPath: destinationPath,
+                    query: query
+                )
+            }
+            let (_, response) = try await doRequest(
+                alias: alias,
+                method: "PUT",
+                url: destURL,
+                body: nil,
+                extraHeaders: ["x-ms-rename-source": renameSource],
+                idempotent: true
+            )
+            guard let next = response.value(forHTTPHeaderField: "x-ms-continuation"),
+                  !next.isEmpty
+            else {
+                return
+            }
+            if seenContinuations.contains(next) {
+                throw OneLakeError.paginationExceeded(seenContinuations.count)
+            }
+            seenContinuations.insert(next)
+            continuation = next
         }
-
-        // x-ms-rename-source: URL-encoded "/<workspaceGUID>/<itemGUID>/<sourcePath>".
-        // The value uses the same per-segment encoding as oneLakePathURL so that
-        // special characters in GUIDs or path names are consistently encoded.
-        var sourceComponents = URLComponents()
-        var segments = [
-            workspaceGUID.percentEncodedPathSegment,
-            itemGUID.percentEncodedPathSegment,
-        ]
-        let trimmedSource = sourcePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let sourceParts = trimmedSource.components(separatedBy: "/")
-        segments += sourceParts.map { $0.percentEncodedPathSegment }
-        sourceComponents.percentEncodedPath = "/" + segments.joined(separator: "/")
-        let renameSource = sourceComponents.percentEncodedPath
-
-        _ = try await doRequest(
-            alias: alias,
-            method: "PUT",
-            url: destURL,
-            body: nil,
-            extraHeaders: ["x-ms-rename-source": renameSource],
-            idempotent: true
-        )
+        throw OneLakeError.paginationExceeded(Self.maxPaginationPages)
     }
 
     // MARK: - Delete
