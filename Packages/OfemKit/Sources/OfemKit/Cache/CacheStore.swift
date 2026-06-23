@@ -553,11 +553,11 @@ public actor CacheStore {
 
     // MARK: - Deletion tombstones
 
-    // periphery:ignore
     /// Writes a deletion tombstone for `identifierString` at the current time.
     ///
-    /// Called by `delete(key:)` before the hard-delete so the change path can
-    /// surface the removal to the File Provider framework.
+    /// Called by `delete(key:)` before the hard-delete, and by `SyncEngine.rename`
+    /// for the OLD identifier after a re-key, so the change path can surface the
+    /// removal to the File Provider framework.
     public func recordDeletion(accountAlias: String, identifierString: String) async throws {
         guard !accountAlias.isEmpty else { throw CacheError.missingArgument("accountAlias") }
         guard !identifierString.isEmpty else { throw CacheError.missingArgument("identifierString") }
