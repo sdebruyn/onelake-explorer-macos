@@ -481,7 +481,7 @@ public actor CacheStore {
     ) async throws -> MetadataRecord? {
         let nowNs = clock()
         let newParent = Enumerator.parentPath(newPath)
-        return try await dbPool.write { db in
+        return try await dbPool.write { db -> MetadataRecord? in
             // Clear any pre-existing destination row (DFS overwrites it server-
             // side) so the exact-row UPDATE below cannot PK-abort.
             try db.execute(sql: """

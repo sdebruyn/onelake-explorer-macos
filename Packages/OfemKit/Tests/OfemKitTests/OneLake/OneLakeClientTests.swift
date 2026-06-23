@@ -213,12 +213,17 @@ struct OneLakeClientTests {
         // helper that builds the destination URL), so drive the test through it
         // directly and assert the hardcoded literal — re-deriving the encoding
         // inline here could not catch a real encoding regression in the helper.
-        let renameSource = try oneLakePathURL(
+        // percentEncodedPath lives on URLComponents, mirroring how the client
+        // extracts it.
+        let sourceURL = try oneLakePathURL(
             base: base,
             workspaceGUID: ws,
             itemGUID: item,
             relPath: source
-        ).percentEncodedPath
+        )
+        let renameSource = try #require(
+            URLComponents(url: sourceURL, resolvingAgainstBaseURL: false)?.percentEncodedPath
+        )
 
         #expect(renameSource == "/workspace-abc/item-xyz/Files/untitled%20folder")
 

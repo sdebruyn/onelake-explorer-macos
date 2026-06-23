@@ -515,16 +515,24 @@ public final class OneLakeClient: Sendable {
         // Derive it from the same oneLakePathURL helper used for the destination
         // so the per-segment encoding rule lives in exactly one place and cannot
         // drift (the source path is item-relative, so itemGUID is the second
-        // segment just like the destination). `.percentEncodedPath` yields the
-        // leading-slash, fully-encoded filesystem path the rename API expects.
-        let renameSource = try buildURL {
+        // segment just like the destination). `percentEncodedPath` is a property
+        // of `URLComponents` (not `URL`), so decompose the built URL — this is the
+        // faithful inverse of how oneLakePathURL composes it (it sets
+        // `components.percentEncodedPath`), round-tripping the exact encoding the
+        // rename API expects.
+        let sourceURL = try buildURL {
             try oneLakePathURL(
                 base: baseURL,
                 workspaceGUID: workspaceGUID,
                 itemGUID: itemGUID,
                 relPath: sourcePath
             )
-        }.percentEncodedPath
+        }
+        guard let renameSource = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false)?
+            .percentEncodedPath
+        else {
+            throw OneLakeURLError.invalidURL("Cannot extract rename-source path from: \(sourceURL.absoluteString)")
+        }
 
         // ADLS Gen2 bounds the number of paths renamed per call for directory
         // renames and returns an `x-ms-continuation` *response* header when more
