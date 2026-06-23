@@ -242,4 +242,30 @@ struct EnumeratorTests {
         #expect(!Enumerator.entryChanged(current: current, next: next),
                 "must not dirty the row when the server returns no creation time")
     }
+
+    /// Phantom-delta guard (issue #374 / quiescentBackendProducesZeroDeltas):
+    /// when both current and next have a non-zero createdNs that differ — e.g.
+    /// because successive polls derive createdNs from different sources (the
+    /// modified-date fallback vs a later x-ms-creation-time header) — entryChanged
+    /// must return FALSE. Allowing non-zero → different-non-zero to fire would
+    /// produce a phantom diff.updated on every poll, pegging the working-set signal
+    /// even when nothing on the backend has changed.
+    @Test func entryChangedNonZeroToNonZeroDifferentCreatedNsReturnsFalse() {
+        var current = makeRecord()
+        var next = makeRecord()
+        current.createdNs = 1_715_526_400_000_000_000
+        next.createdNs = 1_715_526_400_000_000_001 // different non-zero
+        #expect(!Enumerator.entryChanged(current: current, next: next),
+                "non-zero → different-non-zero createdNs must NOT trigger an update (phantom-delta guard)")
+    }
+
+    /// Sanity: a real content change (etag) still fires even when createdNs is stable.
+    @Test func entryChangedRealChangeStillFiresWhenCreatedNsStable() {
+        var current = makeRecord(etag: "v1")
+        var next = makeRecord(etag: "v2")
+        current.createdNs = 1_715_526_400_000_000_000
+        next.createdNs = 1_715_526_400_000_000_000
+        #expect(Enumerator.entryChanged(current: current, next: next),
+                "real content change (etag) must still trigger an update")
+    }
 }

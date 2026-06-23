@@ -199,8 +199,8 @@ public extension DomainItem {
 
     /// Builds the root-container sentinel item for `alias`.
     ///
-    /// `mountedAt` is used as the modification date. No server timestamp is
-    /// available for the virtual root container; passing a non-nil date
+    /// `mountedAt` is used as both the creation and modification date. No server
+    /// timestamp is available for the virtual root container; passing a non-nil date
     /// prevents Finder from displaying 1 Jan 1970.
     static func root(alias: String, mountedAt: Date = Date()) -> DomainItem {
         DomainItem(
@@ -208,6 +208,7 @@ public extension DomainItem {
             parentIdentifier: .root,
             filename: "OneLake \u{2014} \(alias)", // em-dash, like OneDrive
             isDirectory: true,
+            creationDate: mountedAt,
             modificationDate: mountedAt,
             contentVersion: ContentVersion.fallback(seed: alias, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: alias, size: 0, mtime: nil),
@@ -219,8 +220,8 @@ public extension DomainItem {
 
     /// Builds a `DomainItem` from a ``Workspace`` returned by the Fabric API.
     ///
-    /// `syncedAt` is used as the modification date because the Fabric workspace
-    /// list API does not return a last-modified timestamp. Passing a non-nil date
+    /// `syncedAt` is used as both the creation and modification date because the
+    /// Fabric workspace list API does not return timestamps. Passing a non-nil date
     /// prevents Finder from displaying 1 Jan 1970.
     static func from(workspace: Workspace, syncedAt: Date = Date()) -> DomainItem {
         DomainItem(
@@ -228,6 +229,7 @@ public extension DomainItem {
             parentIdentifier: .root,
             filename: workspace.displayName,
             isDirectory: true,
+            creationDate: syncedAt,
             modificationDate: syncedAt,
             contentVersion: ContentVersion.fallback(seed: workspace.id, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: workspace.displayName, size: 0, mtime: nil),
@@ -239,8 +241,8 @@ public extension DomainItem {
 
     /// Builds a `DomainItem` from a ``Item`` (Fabric item) returned by the Fabric API.
     ///
-    /// `syncedAt` is used as the modification date because the Fabric item list
-    /// API does not return a last-modified timestamp. Passing a non-nil date
+    /// `syncedAt` is used as both the creation and modification date because the
+    /// Fabric item list API does not return timestamps. Passing a non-nil date
     /// prevents Finder from displaying 1 Jan 1970.
     static func from(fabricItem: Item, workspaceID: String, syncedAt: Date = Date()) -> DomainItem {
         DomainItem(
@@ -248,6 +250,7 @@ public extension DomainItem {
             parentIdentifier: .workspace(workspaceID: workspaceID),
             filename: fabricItem.displayName,
             isDirectory: true,
+            creationDate: syncedAt,
             modificationDate: syncedAt,
             contentVersion: ContentVersion.fallback(seed: fabricItem.id, size: 0, mtime: nil),
             metadataVersion: ContentVersion.fallback(seed: fabricItem.displayName, size: 0, mtime: nil),
@@ -323,6 +326,14 @@ public extension DomainItem {
             }
         }
 
+        // Determine the creation date to surface to Finder:
+        //   1. Real value: record.created (non-nil when createdNs > 0).
+        //   2. Fallback:   record.lastModified (non-nil when lastModifiedNs > 0).
+        //   3. Last resort: record.syncedAt — always set by SyncEngine; never nil
+        //      in practice, but guaranteed non-1970 so Finder is never shown the
+        //      Unix epoch. Fabricated dates are NOT written back to the cache —
+        //      created_ns stays 0 until the real x-ms-creation-time header arrives.
+        let creationDate = record.created ?? record.lastModified ?? record.syncedAt ?? Date()
         return DomainItem(
             identifier: identifier,
             parentIdentifier: parentIdentifier,
@@ -330,7 +341,7 @@ public extension DomainItem {
             isDirectory: record.isDir,
             size: record.contentLength,
             contentType: mimeType,
-            creationDate: record.created,
+            creationDate: creationDate,
             modificationDate: record.lastModified,
             contentVersion: ContentVersion.content(for: record),
             metadataVersion: ContentVersion.metadata(for: record),

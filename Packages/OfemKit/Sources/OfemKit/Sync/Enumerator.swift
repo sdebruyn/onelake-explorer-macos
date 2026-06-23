@@ -119,8 +119,18 @@ enum Enumerator {
     ///
     /// `createdNs` is included so that the post-v5-migration backfill works: the
     /// first sync after upgrade finds `current.createdNs == 0` and `next.createdNs
-    /// != 0` and writes the row. Creation time is immutable, so after the
-    /// one-time backfill this comparison never fires again.
+    /// != 0` and writes the row.
+    ///
+    /// The trigger is intentionally one-way (0 → non-zero only). Creation time is
+    /// cosmetic and immutable from the server's perspective; the real value is
+    /// captured on the first HEAD/GET and stays in the cache from then on via the
+    /// put/performDownload write paths. If two back-to-back list polls derive
+    /// different non-zero values for `createdNs` (e.g. the modified-date fallback
+    /// vs a later x-ms-creation-time header), allowing `current.createdNs !=
+    /// next.createdNs` to fire would produce phantom `diff.updated` deltas on
+    /// every poll — the exact regression guarded by `quiescentBackendProducesZeroDeltas`
+    /// (issue #374). Once a real value is in the cache, source-to-source drift is
+    /// intentionally ignored here.
     static func entryChanged(current: MetadataRecord, next: MetadataRecord) -> Bool {
         current.isDir != next.isDir ||
             current.contentLength != next.contentLength ||
@@ -129,7 +139,7 @@ enum Enumerator {
             current.name != next.name ||
             current.parentPath != next.parentPath ||
             current.itemType != next.itemType ||
-            (next.createdNs != 0 && current.createdNs != next.createdNs)
+            (current.createdNs == 0 && next.createdNs != 0)
     }
 
     // MARK: - Path helpers

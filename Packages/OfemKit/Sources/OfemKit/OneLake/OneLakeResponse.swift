@@ -57,19 +57,25 @@ public struct PathProperties: Sendable {
     public let eTag: String
     public let lastModified: Date
     public let contentType: String
+    /// Creation timestamp from the `x-ms-creation-time` response header.
+    /// `nil` when the header is absent or unparseable (service version < 2023-05-03,
+    /// or a directory entry).
+    public let creationDate: Date?
 
     public init(
         isDirectory: Bool,
         contentLength: Int64,
         eTag: String,
         lastModified: Date,
-        contentType: String
+        contentType: String,
+        creationDate: Date? = nil
     ) {
         self.isDirectory = isDirectory
         self.contentLength = contentLength
         self.eTag = eTag
         self.lastModified = lastModified
         self.contentType = contentType
+        self.creationDate = creationDate
     }
 }
 
@@ -82,8 +88,6 @@ struct RawPathEntry: Decodable {
     let contentLength: String?
     let etag: String?
     let lastModified: String?
-    /// .NET FILETIME ticks (100ns intervals since 1601-01-01) as a string.
-    let creationTime: String?
 }
 
 struct RawListBody: Decodable {
@@ -105,7 +109,6 @@ func convertRawEntry(_ raw: RawPathEntry, itemGUID: String) -> PathEntry {
     } else {
         .distantPast
     }
-    let created = raw.creationTime.flatMap { parseFileTime($0) }
     // onelake-12: strip the "<itemGUID>/" prefix that the DFS API prepends to
     // every name so consumers receive an item-relative path without needing to
     // know or re-strip the prefix themselves.
@@ -117,7 +120,9 @@ func convertRawEntry(_ raw: RawPathEntry, itemGUID: String) -> PathEntry {
         // the format or itemGUID is not present as a leading segment).
         raw.name
     }
-    return PathEntry(name: itemRelativeName, isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified, creationDate: created)
+    // creationDate is not available in DFS list responses; it is captured
+    // opportunistically via the x-ms-creation-time header on HEAD/GET.
+    return PathEntry(name: itemRelativeName, isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified)
 }
 
 /// Extracts ``PathProperties`` from the response headers of a HEAD or GET.
@@ -137,39 +142,32 @@ func propertiesFromHeaders(_ headers: [AnyHashable: Any]) -> PathProperties {
     let isDir = normalised["x-ms-resource-type"] == "directory"
     let size = normalised["content-length"].flatMap { Int64($0) } ?? 0
     let etag = normalised["etag"] ?? ""
-    let modified: Date = if let s = normalised["last-modified"], let t = parseHTTPDate(s) {
+
+    // Build formatters once and reuse for both date fields to avoid allocating
+    // 6 DateFormatter instances (3 per parseHTTPDate call) when both
+    // last-modified and x-ms-creation-time are present (net-15).
+    let fmts = makeHTTPDateFormatters()
+    let modified: Date = if let s = normalised["last-modified"], let t = parseHTTPDate(s, formatters: fmts) {
         t
     } else {
         .distantPast
     }
     let contentType = normalised["content-type"] ?? ""
-    return PathProperties(isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified, contentType: contentType)
+    // x-ms-creation-time is an RFC1123 HTTP-date returned by HEAD/GET since
+    // service version 2023-05-03. Absent or unparseable → nil.
+    let creationDate = normalised["x-ms-creation-time"].flatMap { parseHTTPDate($0, formatters: fmts) }
+    return PathProperties(isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified, contentType: contentType, creationDate: creationDate)
 }
 
 /// Parses an HTTP-date string (RFC 1123, RFC 850, or asctime).
 ///
-/// Uses `makeHTTPDateFormatters()` (per-call instances) rather than shared
-/// static singletons to avoid concurrent-access hazards (net-15).
-private func parseHTTPDate(_ s: String) -> Date? {
-    for fmt in makeHTTPDateFormatters() {
+/// Accepts an optional pre-built formatter list; when `nil` a fresh set is
+/// created via `makeHTTPDateFormatters()` to avoid concurrent-access hazards
+/// (net-15). Callers that parse multiple date fields in the same function
+/// should pass a shared list built once to avoid redundant allocations.
+private func parseHTTPDate(_ s: String, formatters: [DateFormatter]? = nil) -> Date? {
+    for fmt in formatters ?? makeHTTPDateFormatters() {
         if let d = fmt.date(from: s) { return d }
     }
     return nil
-}
-
-/// Parses a .NET FILETIME string (100ns ticks since 1601-01-01 UTC) into a `Date`.
-///
-/// ADLS Gen2 DFS list responses carry `creationTime` as a decimal tick count.
-/// Returns `nil` for zero, empty, or non-numeric strings so callers can treat
-/// nil as "no creation time available".
-///
-/// Conversion: subtract the Windows epoch offset (116,444,736,000,000,000 ticks
-/// = difference between 1601-01-01 and 1970-01-01), then divide by 10,000,000
-/// to get seconds since Unix epoch.
-func parseFileTime(_ s: String) -> Date? {
-    guard !s.isEmpty, let ticks = Int64(s), ticks > 0 else { return nil }
-    let windowsEpochOffsetTicks: Int64 = 116_444_736_000_000_000
-    guard ticks > windowsEpochOffsetTicks else { return nil }
-    let unixSeconds = Double(ticks - windowsEpochOffsetTicks) / 10_000_000
-    return Date(timeIntervalSince1970: unixSeconds)
 }
