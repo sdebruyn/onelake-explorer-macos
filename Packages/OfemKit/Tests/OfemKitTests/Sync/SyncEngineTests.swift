@@ -1794,6 +1794,10 @@ struct SyncEngineTests {
         )
         // A previously-captured real creation time (e.g. from a prior HEAD/GET).
         child.createdNs = knownCreatedNs
+        // The cached row must also carry the matching lastModifiedNs so that
+        // entryChanged does not fire due to a 0-vs-real lastModifiedNs mismatch —
+        // the test is about createdNs stability, not lastModified.
+        child.lastModifiedNs = dateToNs(Date(timeIntervalSince1970: knownUnixSeconds))
         try await store.upsert(parent)
         try await store.upsert(child)
 
@@ -1809,9 +1813,11 @@ struct SyncEngineTests {
 
         ol.listPathResults.append(.success(ListResult(entries: entries)))
 
-        // No content change (same etag), so refreshFolder carries cur?.createdNs
-        // forward. Because entryChanged only fires for non-zero createdNs that
-        // differs from cur, this poll is stable (diff.updated == 0).
+        // No content change (same etag, same lastModifiedNs), so refreshFolder
+        // carries cur?.createdNs forward. entryChanged only fires for the
+        // 0→non-zero backfill trigger; here current.createdNs is already non-zero
+        // and next.createdNs == 0 (convertRawEntry returns creationDate: nil), so
+        // the poll is stable (diff.updated == 0).
         let diff = try await engine.refreshFolder(key: parentKey)
         #expect(diff.updated == 0, "unchanged row must not produce a spurious update")
 
