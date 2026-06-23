@@ -788,7 +788,8 @@ public actor SyncEngine {
         // directory row so that a freshly uploaded file under a Lakehouse
         // Files/ subtree keeps writable capabilities without waiting for the
         // next refreshFolder (fp-05).
-        var existingItemType = (try? await cache.fetch(key: key))?.itemType ?? ""
+        let cached = try? await cache.fetch(key: key)
+        var existingItemType = cached?.itemType ?? ""
         if existingItemType.isEmpty {
             let parentKey = CacheKey(
                 accountAlias: key.accountAlias, workspaceID: key.workspaceID,
@@ -807,7 +808,11 @@ public actor SyncEngine {
             contentLength: fileSize,
             lastAccessedNs: nowNs,
             syncedAtNs: nowNs,
-            itemType: existingItemType
+            itemType: existingItemType,
+            // Carry forward a previously-captured creation time so a HEAD failure
+            // after upload does not overwrite a good createdNs with 0 (symmetric
+            // with the performDownload path that uses cached?.createdNs ?? 0).
+            createdNs: cached?.createdNs ?? 0
         )
         do {
             let props = try await onelake.getProperties(
@@ -823,7 +828,7 @@ public actor SyncEngine {
             // Capture real creation time from the HEAD response when available.
             // The entryChanged createdNs guard will fire a metadata update so
             // Finder refreshes the displayed Date Created without a re-download.
-            if let cd = props.creationDate { row.createdNs = dateToNs(cd) ?? 0 }
+            if let cd = props.creationDate { row.createdNs = dateToNs(cd) ?? cached?.createdNs ?? 0 }
         } catch {
             // sync-12: log HEAD failure so the empty-etag outcome is detectable.
             logger.warn("put: post-upload HEAD failed; row will have empty etag",
@@ -1536,6 +1541,6 @@ private func currentNowNs() -> Int64 {
 private func dateToNs(_ date: Date?) -> Int64? {
     guard let d = date else { return nil }
     let ns = d.timeIntervalSince1970 * 1_000_000_000
-    guard ns >= Double(Int64.min), ns <= Double(Int64.max) else { return 0 }
+    guard ns >= Double(Int64.min), ns <= Double(Int64.max) else { return nil }
     return Int64(ns)
 }

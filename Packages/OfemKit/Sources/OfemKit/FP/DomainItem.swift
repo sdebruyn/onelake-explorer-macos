@@ -326,12 +326,14 @@ public extension DomainItem {
             }
         }
 
-        // Fall back to the last-modified date when no real creation time has been
-        // captured yet (created_ns == 0). The cache stores created_ns = 0 until a
-        // HEAD/GET returns x-ms-creation-time; the fallback ensures Finder never
-        // displays 1 Jan 1970. The fabricated value is NOT written to the cache —
-        // created_ns stays 0 until the real header value arrives.
-        let creationDate = record.created ?? record.lastModified
+        // Determine the creation date to surface to Finder:
+        //   1. Real value: record.created (non-nil when createdNs > 0).
+        //   2. Fallback:   record.lastModified (non-nil when lastModifiedNs > 0).
+        //   3. Last resort: record.syncedAt — always set by SyncEngine; never nil
+        //      in practice, but guaranteed non-1970 so Finder is never shown the
+        //      Unix epoch. Fabricated dates are NOT written back to the cache —
+        //      created_ns stays 0 until the real x-ms-creation-time header arrives.
+        let creationDate = record.created ?? record.lastModified ?? record.syncedAt ?? Date()
         return DomainItem(
             identifier: identifier,
             parentIdentifier: parentIdentifier,

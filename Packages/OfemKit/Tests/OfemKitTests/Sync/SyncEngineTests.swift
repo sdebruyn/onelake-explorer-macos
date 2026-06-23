@@ -1759,105 +1759,102 @@ struct SyncEngineTests {
         #expect(row.itemType == "Lakehouse", "mkdir() must carry Lakehouse item_type so the new directory is immediately writable")
     }
 
-    // MARK: - refreshFolder: created_ns backfill (issue-370)
+    // MARK: - refreshFolder: created_ns preservation (issue-370)
 
-    /// After the v5 migration every existing cache row has created_ns = 0.  The
-    /// first sync after upgrade must detect that zero and write the server-returned
-    /// creation timestamp into the row so Finder can display the correct date.
+    /// `convertRawEntry` (the only production path into `refreshFolder`) never
+    /// populates `PathEntry.creationDate` — the DFS list schema has no
+    /// creationTime field. `refreshFolder` therefore always sees
+    /// `entry.creationDate == nil`, and the expression
+    ///     `dateToNs(entry.creationDate) ?? cur?.createdNs ?? 0`
+    /// collapses to `cur?.createdNs ?? 0`.
     ///
-    /// This test seeds a row at created_ns = 0, drives refreshFolder with a
-    /// PathEntry whose creationDate is non-nil, and asserts that the stored row
-    /// now carries the correct creation timestamp.
-    @Test("refreshFolder() backfills created_ns from 0 when the server returns a creationDate")
-    func refreshFolderBackfillsCreatedNs() async throws {
+    /// This test routes through `convertRawEntry` (matching production) and
+    /// verifies that a previously-captured `createdNs` value is preserved
+    /// across a sync poll — i.e. refreshFolder does not overwrite a good
+    /// `createdNs` with 0 on a no-content-change re-poll.
+    @Test("refreshFolder() preserves existing created_ns when DFS list has no creationDate (production path via convertRawEntry)")
+    func refreshFolderPreservesCreatedNsViaConvertRawEntry() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         let knownUnixSeconds: TimeInterval = 1_715_526_400 // 2024-05-12T20:53:20Z
-        let creationDate = Date(timeIntervalSince1970: knownUnixSeconds)
+        let knownCreatedNs = dateToNs(Date(timeIntervalSince1970: knownUnixSeconds))
 
-        // Use a flat folder (path = "Files") so direct children are single-segment
-        // paths and pass the Enumerator.isDirectChild guard inside refreshFolder.
         let parentKey = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files")
-        let childName = "data.csv"
-        let childPath = "Files/\(childName)"
+        let childPath = "Files/data.csv"
         let parent = MetadataRecord(
             accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
             path: "Files", parentPath: "", name: "Files", isDir: true
         )
         var child = MetadataRecord(
             accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
-            path: childPath, parentPath: "Files", name: childName, isDir: false,
+            path: childPath, parentPath: "Files", name: "data.csv", isDir: false,
             contentLength: 42, etag: "v1"
         )
-        child.createdNs = 0 // simulate post-v5-migration state
+        // A previously-captured real creation time (e.g. from a prior HEAD/GET).
+        child.createdNs = knownCreatedNs
         try await store.upsert(parent)
         try await store.upsert(child)
 
-        // Remote returns the same etag (no content change) but now includes a
-        // creationDate — as the DFS API always does.
-        ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry(
-                name: childPath, isDirectory: false, contentLength: 42,
-                eTag: "v1", lastModified: .distantPast, creationDate: creationDate
-            ),
-        ])))
+        // Wire-level JSON with no creationTime field — matches the DFS Path-List
+        // schema exactly; convertRawEntry will produce creationDate: nil.
+        let json = """
+        {"paths":[{"name":"item-1/Files/data.csv","contentLength":"42","etag":"\\"v1\\"","lastModified":"Sun, 12 May 2024 15:06:40 GMT"}]}
+        """
+        let rawList = try JSONDecoder().decode(RawListBody.self, from: Data(json.utf8))
+        let entries = (rawList.paths ?? []).map { convertRawEntry($0, itemGUID: Self.itID) }
+        // Verify this is the real production path: creationDate must be nil.
+        #expect(entries.first?.creationDate == nil, "convertRawEntry must never produce a creationDate from list JSON")
 
+        ol.listPathResults.append(.success(ListResult(entries: entries)))
+
+        // No content change (same etag), so refreshFolder carries cur?.createdNs
+        // forward. Because entryChanged only fires for non-zero createdNs that
+        // differs from cur, this poll is stable (diff.updated == 0).
         let diff = try await engine.refreshFolder(key: parentKey)
+        #expect(diff.updated == 0, "unchanged row must not produce a spurious update")
 
-        // The row must be marked as updated (entryChanged returns true for the
-        // createdNs backfill) so the working-set is signaled.
-        #expect(diff.updated == 1, "refreshFolder must count the backfilled row as updated")
-        #expect(diff.added == 0)
-        #expect(diff.removed == 0)
-
-        // The stored created_ns must now match the server value.
         let stored = try await store.fetch(key: CacheKey(
             accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: childPath
         ))
-        let storedDate = stored.created
-        guard let storedDate else {
-            Issue.record("created_ns must be non-zero after backfill")
-            return
-        }
-        #expect(abs(storedDate.timeIntervalSince1970 - knownUnixSeconds) < 1,
-                "stored creationDate must match the server value within 1 second")
+        #expect(stored.createdNs == knownCreatedNs,
+                "refreshFolder must not overwrite a good createdNs when DFS list has no creationDate")
     }
 
-    /// After the one-time backfill, subsequent polls must not produce spurious
-    /// updated counts (creation time is immutable; entryChanged must be stable).
-    @Test("refreshFolder() does not re-update a row whose created_ns is already set")
+    /// After the one-time backfill (via open/put HEAD), subsequent DFS-list polls
+    /// must not produce spurious updated counts.
+    ///
+    /// Note: `convertRawEntry` always yields `creationDate: nil`; the backfill
+    /// itself is done by `open()` / `put()` via the x-ms-creation-time HEAD header.
+    @Test("refreshFolder() does not re-update a row whose created_ns is already set (stable after HEAD backfill)")
     func refreshFolderNoSpuriousUpdateAfterBackfill() async throws {
         let ol = MockOneLakeClient()
         let (engine, store) = try makeEngine(onelake: ol)
         defer { try? FileManager.default.removeItem(at: store.root) }
 
         let knownUnixSeconds: TimeInterval = 1_715_526_400
-        let creationDate = Date(timeIntervalSince1970: knownUnixSeconds)
+        let knownCreatedNs = dateToNs(Date(timeIntervalSince1970: knownUnixSeconds))
 
         let parentKey = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files")
-        let childName = "data.csv"
-        let childPath = "Files/\(childName)"
+        let childPath = "Files/data.csv"
         let parent = MetadataRecord(
             accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
             path: "Files", parentPath: "", name: "Files", isDir: true
         )
         var child = MetadataRecord(
             accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
-            path: childPath, parentPath: "Files", name: childName, isDir: false,
+            path: childPath, parentPath: "Files", name: "data.csv", isDir: false,
             contentLength: 42, etag: "v1"
         )
-        // Seed with the already-backfilled value.
-        child.createdNs = dateToNs(creationDate)
+        child.createdNs = knownCreatedNs // already-backfilled via HEAD
         try await store.upsert(parent)
         try await store.upsert(child)
 
+        // Production-path list entry (no creationDate from convertRawEntry).
         ol.listPathResults.append(.success(ListResult(entries: [
-            PathEntry(
-                name: childPath, isDirectory: false, contentLength: 42,
-                eTag: "v1", lastModified: .distantPast, creationDate: creationDate
-            ),
+            PathEntry(name: childPath, isDirectory: false, contentLength: 42,
+                      eTag: "v1", lastModified: .distantPast),
         ])))
 
         let diff = try await engine.refreshFolder(key: parentKey)
@@ -1865,5 +1862,91 @@ struct SyncEngineTests {
         #expect(diff.updated == 0, "no spurious update once created_ns is already set")
         #expect(diff.added == 0)
         #expect(diff.removed == 0)
+    }
+
+    // MARK: - put: created_ns preserved on HEAD failure (finding #1)
+
+    /// When the post-upload HEAD fails, `put()` must not overwrite a
+    /// previously-captured `createdNs` with 0. This mirrors the symmetric guard
+    /// in `performDownload` (`cached?.createdNs ?? 0`).
+    @Test("put() preserves existing createdNs when post-upload HEAD fails")
+    func putPreservesCreatedNsOnHeadFailure() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let knownUnixSeconds: TimeInterval = 1_715_526_400
+        let knownCreatedNs = dateToNs(Date(timeIntervalSince1970: knownUnixSeconds))
+
+        // Pre-seed cache row with a real creation time captured by a prior open().
+        var existing = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: Self.path, parentPath: "Files", name: "data.csv", isDir: false,
+            contentLength: 10, etag: "old-etag"
+        )
+        existing.createdNs = knownCreatedNs
+        try await store.upsert(existing)
+
+        let src = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".csv")
+        try Data(repeating: 0xAB, count: 10).write(to: src)
+        defer { try? FileManager.default.removeItem(at: src) }
+
+        ol.writeResults.append(.success(()))
+        // HEAD fails — the row is written with createdNs carried forward from cache.
+        ol.getPropertiesResults.append(.failure(URLError(.networkConnectionLost)))
+
+        let key = Self.baseKey
+        try await engine.put(key: key, sourceURL: src)
+
+        let row = try await store.fetch(key: key)
+        #expect(row.createdNs == knownCreatedNs,
+                "put() must not overwrite a good createdNs with 0 when HEAD fails")
+    }
+
+    // MARK: - dateToNs: far-future date returns nil, not Optional(0) (finding #2)
+
+    /// A far-future `x-ms-creation-time` (outside Int64 range) must not silently
+    /// zero a good `createdNs`. `dateToNs` must return `nil` for overflow dates
+    /// so `flatMap { dateToNs($0) } ?? cached?.createdNs ?? 0` falls through to
+    /// the carried value rather than landing on `Optional(0)`.
+    @Test("dateToNs returns nil for distantFuture, allowing cached createdNs fallback to apply")
+    func dateToNsDistantFutureReturnsNilNotOptionalZero() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let knownUnixSeconds: TimeInterval = 1_715_526_400
+        let knownCreatedNs = dateToNs(Date(timeIntervalSince1970: knownUnixSeconds))
+
+        // Pre-seed with a real creation time.
+        var existing = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: Self.path, parentPath: "Files", name: "data.csv", isDir: false,
+            contentLength: 10, etag: "v1"
+        )
+        existing.createdNs = knownCreatedNs
+        try await store.upsert(existing)
+
+        let src = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".csv")
+        try Data(repeating: 0xAB, count: 10).write(to: src)
+        defer { try? FileManager.default.removeItem(at: src) }
+
+        ol.writeResults.append(.success(()))
+        // HEAD returns a far-future creation date that overflows Int64 nanoseconds.
+        let farFutureProps = PathProperties(
+            isDirectory: false, contentLength: 10, eTag: "v2",
+            lastModified: Date(), contentType: "text/csv",
+            creationDate: .distantFuture
+        )
+        ol.getPropertiesResults.append(.success(farFutureProps))
+
+        let key = Self.baseKey
+        try await engine.put(key: key, sourceURL: src)
+
+        let row = try await store.fetch(key: key)
+        #expect(row.createdNs == knownCreatedNs,
+                "overflow creation date must not clobber a good cached createdNs")
     }
 }

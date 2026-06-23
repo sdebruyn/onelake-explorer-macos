@@ -142,7 +142,12 @@ func propertiesFromHeaders(_ headers: [AnyHashable: Any]) -> PathProperties {
     let isDir = normalised["x-ms-resource-type"] == "directory"
     let size = normalised["content-length"].flatMap { Int64($0) } ?? 0
     let etag = normalised["etag"] ?? ""
-    let modified: Date = if let s = normalised["last-modified"], let t = parseHTTPDate(s) {
+
+    // Build formatters once and reuse for both date fields to avoid allocating
+    // 6 DateFormatter instances (3 per parseHTTPDate call) when both
+    // last-modified and x-ms-creation-time are present (net-15).
+    let fmts = makeHTTPDateFormatters()
+    let modified: Date = if let s = normalised["last-modified"], let t = parseHTTPDate(s, formatters: fmts) {
         t
     } else {
         .distantPast
@@ -150,16 +155,18 @@ func propertiesFromHeaders(_ headers: [AnyHashable: Any]) -> PathProperties {
     let contentType = normalised["content-type"] ?? ""
     // x-ms-creation-time is an RFC1123 HTTP-date returned by HEAD/GET since
     // service version 2023-05-03. Absent or unparseable → nil.
-    let creationDate = normalised["x-ms-creation-time"].flatMap { parseHTTPDate($0) }
+    let creationDate = normalised["x-ms-creation-time"].flatMap { parseHTTPDate($0, formatters: fmts) }
     return PathProperties(isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified, contentType: contentType, creationDate: creationDate)
 }
 
 /// Parses an HTTP-date string (RFC 1123, RFC 850, or asctime).
 ///
-/// Uses `makeHTTPDateFormatters()` (per-call instances) rather than shared
-/// static singletons to avoid concurrent-access hazards (net-15).
-private func parseHTTPDate(_ s: String) -> Date? {
-    for fmt in makeHTTPDateFormatters() {
+/// Accepts an optional pre-built formatter list; when `nil` a fresh set is
+/// created via `makeHTTPDateFormatters()` to avoid concurrent-access hazards
+/// (net-15). Callers that parse multiple date fields in the same function
+/// should pass a shared list built once to avoid redundant allocations.
+private func parseHTTPDate(_ s: String, formatters: [DateFormatter]? = nil) -> Date? {
+    for fmt in formatters ?? makeHTTPDateFormatters() {
         if let d = fmt.date(from: s) { return d }
     }
     return nil

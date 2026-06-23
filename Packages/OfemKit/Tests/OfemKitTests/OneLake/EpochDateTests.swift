@@ -136,6 +136,36 @@ struct EpochDateTests {
                 "fallback creationDate must equal modificationDate")
     }
 
+    /// When both `createdNs` and `lastModifiedNs` are 0 (e.g. a directory
+    /// listed without a Last-Modified header that was never HEADed), the
+    /// fallback chain must not produce a 1 Jan 1970 date. The final fallback
+    /// is `record.syncedAt`, which SyncEngine always writes as a real
+    /// non-epoch timestamp.
+    @Test("from(record:): creationDate is never 1 Jan 1970 even when both createdNs and lastModifiedNs are 0")
+    func fromRecordBothZeroNsNeverShowsEpoch() throws {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: "item-2",
+            path: "Files/dir",
+            parentPath: "Files",
+            name: "dir",
+            isDir: true,
+            lastModifiedNs: 0,
+            syncedAtNs: Int64(1_715_526_400) * 1_000_000_000, // 2024-05-12
+            createdNs: 0
+        )
+        let item = try DomainItem.from(record: record)
+        let epoch = Date(timeIntervalSince1970: 0)
+        // creationDate must be non-nil and not equal to 1 Jan 1970 (or close to it).
+        guard let created = item.creationDate else {
+            Issue.record("creationDate must not be nil even when both timestamps are 0")
+            return
+        }
+        let distanceFromEpoch = abs(created.timeIntervalSince(epoch))
+        #expect(distanceFromEpoch > 1_000, "creationDate must not be the Unix epoch (1 Jan 1970)")
+    }
+
     @Test("from(record:): non-zero createdNs uses real creation time")
     func fromRecordNonZeroCreatedNsUsesRealValue() throws {
         let created = Date(timeIntervalSince1970: Self.knownUnixSeconds - 3600) // 1h before mtime
