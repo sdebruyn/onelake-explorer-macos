@@ -163,7 +163,7 @@ struct EpochDateTests {
             return
         }
         let distanceFromEpoch = abs(created.timeIntervalSince(epoch))
-        #expect(distanceFromEpoch > 1_000, "creationDate must not be the Unix epoch (1 Jan 1970)")
+        #expect(distanceFromEpoch > 1000, "creationDate must not be the Unix epoch (1 Jan 1970)")
     }
 
     @Test("from(record:): non-zero createdNs uses real creation time")
