@@ -443,13 +443,121 @@ public actor CacheStore {
         try await reader().itemsChangedAfter(accountAlias: accountAlias, ns: ns)
     }
 
+    // MARK: - Rename (path-prefix rewrite)
+
+    /// Renames a cached path and all its descendants by rewriting the `path`,
+    /// `parent_path`, and `name` columns in a single transaction.
+    ///
+    /// - Parameters:
+    ///   - accountAlias: Account alias component of the primary key.
+    ///   - workspaceID: Workspace GUID.
+    ///   - itemID: Item GUID.
+    ///   - oldPath: The current path of the renamed entry.
+    ///   - newPath: The destination path (same parent directory, different leaf name).
+    ///   - newName: The new leaf name (final segment of `newPath`).
+    ///
+    /// The exact row at `oldPath` is updated first; then every row whose `path`
+    /// starts with `oldPath + "/"` (i.e. descendants) has its `path`,
+    /// `parent_path`, and `name` rewritten to substitute the old prefix with the
+    /// new one. All updates happen atomically in one write transaction.
+    ///
+    /// DFS overwrites the destination by default, so the remote rename can
+    /// succeed even when a row already exists at `newPath` (or a descendant's
+    /// new path). The `path_metadata` primary key is
+    /// `(account_alias, workspace_id, item_id, path)`, so a plain `UPDATE … SET
+    /// path = newPath` would PK-abort against any colliding row. Each colliding
+    /// destination row (and its blob refs) is therefore deleted first.
+    ///
+    /// - Returns: The updated ``MetadataRecord`` at `newPath`, read back inside
+    ///   the same write transaction (no actor hop, no TOCTOU window), or `nil`
+    ///   when no row existed at `oldPath` to rename.
+    public func renamePathPrefix(
+        accountAlias: String,
+        workspaceID: String,
+        itemID: String,
+        oldPath: String,
+        newPath: String,
+        newName: String
+    ) async throws -> MetadataRecord? {
+        let nowNs = clock()
+        let newParent = Enumerator.parentPath(newPath)
+        return try await dbPool.write { db -> MetadataRecord? in
+            // Clear any pre-existing destination row (DFS overwrites it server-
+            // side) so the exact-row UPDATE below cannot PK-abort.
+            try db.execute(sql: """
+            DELETE FROM path_metadata
+            WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+            """, arguments: [accountAlias, workspaceID, itemID, newPath])
+            // Update the exact renamed row.
+            try db.execute(sql: """
+            UPDATE path_metadata
+            SET path = ?, parent_path = ?, name = ?, synced_at_ns = ?
+            WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+            """, arguments: [newPath, newParent, newName, nowNs, accountAlias, workspaceID, itemID, oldPath])
+
+            // Rewrite every descendant of the renamed entry. Reuse the same
+            // subtree primitive `delete` uses (`path LIKE oldPrefix%`) so the
+            // selection is correct-by-construction rather than relying on an
+            // in-Swift `hasPrefix` guard over a `> … < …` sort band that could
+            // re-select the just-renamed row or unrelated siblings.
+            let escapedOldPrefix = Self.escapeLike(oldPath) + "/%"
+            // Clear any colliding destination descendant rows first (same reason
+            // as the exact row above).
+            try db.execute(sql: """
+            DELETE FROM path_metadata
+            WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+              AND path LIKE ? ESCAPE '\\'
+            """, arguments: [accountAlias, workspaceID, itemID, Self.escapeLike(newPath) + "/%"])
+            // Set-based rewrite: SQLite has substr()/length(), so we can rewrite
+            // path and parent_path for the whole subtree in one statement rather
+            // than fetching + updating each row. `name` is unchanged for
+            // descendants (only the prefix shifts), so it is left as-is.
+            //
+            // Both columns are rewritten by stripping the `oldPath` prefix
+            // (length, no trailing slash) and prepending `newPath`:
+            //   • every descendant `path` starts with `oldPath + "/"`, so the
+            //     stripped remainder keeps its leading "/", giving newPath + "/…".
+            //   • a descendant's `parent_path` is either exactly `oldPath` (direct
+            //     child → stripped to "" → newPath) or `oldPath + "/…"` (deeper →
+            //     newPath + "/…"). Stripping `oldPath` (not `oldPath + "/"`)
+            //     handles both, where stripping the slash form would corrupt the
+            //     direct-child parent into a trailing-slash value.
+            // The substr start index is computed in SQL as `length(oldPath) + 1`
+            // (bound, not Swift's String.count) so SQLite's own character counting
+            // drives both `length()` and `substr()` — avoiding any grapheme-vs-
+            // SQLite-character mismatch for non-ASCII path names.
+            try db.execute(sql: """
+            UPDATE path_metadata
+            SET path = ? || substr(path, length(?) + 1),
+                parent_path = ? || substr(parent_path, length(?) + 1),
+                synced_at_ns = ?
+            WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+              AND path LIKE ? ESCAPE '\\'
+            """, arguments: [
+                newPath, oldPath,
+                newPath, oldPath,
+                nowNs,
+                accountAlias, workspaceID, itemID, escapedOldPrefix,
+            ])
+
+            // Read back the renamed row inside the same transaction so the caller
+            // needs no second fetch (and cannot race a concurrent poll).
+            return try MetadataRecord
+                .filter(MetadataRecord.Columns.accountAlias == accountAlias)
+                .filter(MetadataRecord.Columns.workspaceID == workspaceID)
+                .filter(MetadataRecord.Columns.itemID == itemID)
+                .filter(MetadataRecord.Columns.path == newPath)
+                .fetchOne(db)
+        }
+    }
+
     // MARK: - Deletion tombstones
 
-    // periphery:ignore
     /// Writes a deletion tombstone for `identifierString` at the current time.
     ///
-    /// Called by `delete(key:)` before the hard-delete so the change path can
-    /// surface the removal to the File Provider framework.
+    /// Called by `delete(key:)` before the hard-delete, and by `SyncEngine.rename`
+    /// for the OLD identifier after a re-key, so the change path can surface the
+    /// removal to the File Provider framework.
     public func recordDeletion(accountAlias: String, identifierString: String) async throws {
         guard !accountAlias.isEmpty else { throw CacheError.missingArgument("accountAlias") }
         guard !identifierString.isEmpty else { throw CacheError.missingArgument("identifierString") }

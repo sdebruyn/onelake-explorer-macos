@@ -485,6 +485,105 @@ public final class OneLakeClient: Sendable {
         _ = try await doRequest(alias: alias, method: "PUT", url: url, body: nil, extraHeaders: nil, idempotent: true)
     }
 
+    // MARK: - Rename
+
+    /// Renames a file or directory within the same parent directory.
+    ///
+    /// Issues `PUT <destinationURL>` (the new path, same as a create URL but
+    /// at the destination) with `x-ms-rename-source` set to the URL-encoded,
+    /// leading-slash source path `/<workspaceGUID>/<itemGUID>/<sourcePath>`.
+    /// The `Content-Length: 0` and `x-ms-version` headers are injected by
+    /// `doRequest` (onelake-07). No request body.
+    public func rename(
+        alias: String,
+        workspaceGUID: String,
+        itemGUID: String,
+        sourcePath: String,
+        destinationPath: String
+    ) async throws {
+        guard !workspaceGUID.isEmpty, !itemGUID.isEmpty else {
+            throw OneLakeError.missingArgument("workspaceGUID and itemGUID required")
+        }
+        guard !sourcePath.isEmpty else {
+            throw OneLakeError.missingArgument("sourcePath required")
+        }
+        guard !destinationPath.isEmpty else {
+            throw OneLakeError.missingArgument("destinationPath required")
+        }
+
+        // x-ms-rename-source: URL-encoded "/<workspaceGUID>/<itemGUID>/<sourcePath>".
+        // Derive it from the same oneLakePathURL helper used for the destination
+        // so the per-segment encoding rule lives in exactly one place and cannot
+        // drift (the source path is item-relative, so itemGUID is the second
+        // segment just like the destination). `percentEncodedPath` is a property
+        // of `URLComponents` (not `URL`), so decompose the built URL — this is the
+        // faithful inverse of how oneLakePathURL composes it (it sets
+        // `components.percentEncodedPath`), round-tripping the exact encoding the
+        // rename API expects.
+        let sourceURL = try buildURL {
+            try oneLakePathURL(
+                base: baseURL,
+                workspaceGUID: workspaceGUID,
+                itemGUID: itemGUID,
+                relPath: sourcePath
+            )
+        }
+        guard let renameSource = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false)?
+            .percentEncodedPath
+        else {
+            throw OneLakeURLError.invalidURL("Cannot extract rename-source path from: \(sourceURL.absoluteString)")
+        }
+
+        // ADLS Gen2 bounds the number of paths renamed per call for directory
+        // renames and returns an `x-ms-continuation` *response* header when more
+        // remain; that token must be re-sent on a subsequent invocation as the
+        // `continuation` *query parameter* (per the Path - Create REST contract)
+        // until exhausted. Without the loop a large directory is only partially
+        // renamed server-side while the cache rewrites all descendants → permanent
+        // divergence. Mirrors listDirectory's continuation handling, including its
+        // cycle-detection guard (onelake-11). Note: unlike list (which sends the
+        // token as a query param too), the token here is delivered as a header on
+        // the response, so we re-issue with it as a query param on the next PUT.
+        var continuation: String? = nil
+        var seenContinuations: Set<String> = []
+        for _ in 0 ..< Self.maxPaginationPages {
+            // Destination URL: the new path (same shape as createDirectory),
+            // plus the continuation query param on follow-up invocations.
+            let destURL = try buildURL {
+                var query: [URLQueryItem]? = nil
+                if let cont = continuation {
+                    query = [URLQueryItem(name: "continuation", value: cont)]
+                }
+                return try oneLakePathURL(
+                    base: baseURL,
+                    workspaceGUID: workspaceGUID,
+                    itemGUID: itemGUID,
+                    relPath: destinationPath,
+                    query: query
+                )
+            }
+            let (_, response) = try await doRequest(
+                alias: alias,
+                method: "PUT",
+                url: destURL,
+                body: nil,
+                extraHeaders: ["x-ms-rename-source": renameSource],
+                idempotent: true
+            )
+            guard let next = response.value(forHTTPHeaderField: "x-ms-continuation"),
+                  !next.isEmpty
+            else {
+                return
+            }
+            if seenContinuations.contains(next) {
+                throw OneLakeError.paginationExceeded(seenContinuations.count)
+            }
+            seenContinuations.insert(next)
+            continuation = next
+        }
+        throw OneLakeError.paginationExceeded(Self.maxPaginationPages)
+    }
+
     // MARK: - Delete
 
     /// Removes a file or directory.

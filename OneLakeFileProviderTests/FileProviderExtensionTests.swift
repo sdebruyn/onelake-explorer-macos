@@ -87,14 +87,17 @@ final class FileProviderExtensionTests: XCTestCase {
         XCTAssertEqual(nsErr.code, NSFileProviderError.noSuchItem.rawValue)
     }
 
-    // MARK: - modifyItem — rename leaves .filename pending (fpe-09)
+    // MARK: - modifyItem — rename with invalid identifier maps to noSuchItem (fpe-09)
 
-    func testModifyItemRenameLeavesPending() async {
+    func testModifyItemRenameInvalidIdentifierMapsToNoSuchItem() async {
+        // An item whose identifier is a framework-internal constant
+        // (not a valid OFEM path identifier) triggers the parsing guard,
+        // which maps to noSuchItem — not a pending field.
         let host = MockEngineHost(alias: "test")
         let ext = makeExtension(host: host)
         let template = MockFPItem(parentID: NSFileProviderItemIdentifier.rootContainer.rawValue, filename: "renamed.txt")
 
-        var pendingFields: NSFileProviderItemFields = []
+        var capturedError: (any Error)?
         _ = await withCheckedContinuation { cont in
             _ = ext.modifyItem(
                 template,
@@ -102,14 +105,17 @@ final class FileProviderExtensionTests: XCTestCase {
                 changedFields: .filename,
                 contents: nil,
                 request: makeRequest()
-            ) { _, fields, _, _ in
-                pendingFields = fields
+            ) { _, _, _, err in
+                capturedError = err
                 cont.resume(returning: ())
             }
         }
 
-        XCTAssertTrue(pendingFields.contains(.filename),
-                      ".filename must remain pending when rename is not supported")
+        let nsErr = capturedError as NSError?
+        XCTAssertNotNil(nsErr, "expected an error for an unparseable item identifier")
+        XCTAssertEqual(nsErr?.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(nsErr?.code, NSFileProviderError.noSuchItem.rawValue,
+                       "unparseable identifier should map to noSuchItem")
     }
 
     // MARK: - modifyItem — reparent leaves .parentItemIdentifier pending

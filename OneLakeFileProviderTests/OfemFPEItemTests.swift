@@ -111,7 +111,62 @@ final class OfemFPEItemTests: XCTestCase {
         XCTAssertEqual(modDate.timeIntervalSince1970, now.timeIntervalSince1970, accuracy: 1)
     }
 
+    // MARK: - Writable file advertises .allowsRenaming (fpe rename)
+
+    func testWritableFileAdvertisesRenaming() throws {
+        // A file under a Lakehouse Files/ subtree is writable and must advertise
+        // .allowsRenaming, otherwise Finder disables Rename and modifyItem(.filename)
+        // is never dispatched.
+        let record = makeRecord(path: "Files/report.csv", name: "report.csv", isDir: false)
+        let di = try DomainItem.from(record: record)
+        let item = OfemFPEItem(from: di)
+        XCTAssertTrue(item.capabilities.contains(.allowsRenaming),
+                      "writable file must allow renaming")
+    }
+
+    // MARK: - Rename success: overriding identifier keeps the ORIGINAL id (Option B)
+
+    func testFromRecordOverridingIdentifierKeepsOriginalID() throws {
+        // The rename success path builds the returned item from the renamed cache
+        // record but overrides the identifier with the ORIGINAL one it was handed,
+        // so the framework registers a metadata change rather than delete+add.
+        let wsID = "00000000-0000-0000-0000-000000000001"
+        let itemID = "00000000-0000-0000-0000-000000000002"
+        let originalIdentifier: ItemIdentifier = .path(
+            workspaceID: wsID, itemID: itemID, path: "Files/old name.txt"
+        )
+        // Renamed record sits at the NEW path with the NEW name.
+        let renamed = makeRecord(path: "Files/new name.txt", name: "new name.txt", isDir: false)
+
+        let di = try DomainItem.from(record: renamed, overridingIdentifier: originalIdentifier)
+        let item = OfemFPEItem(from: di)
+
+        XCTAssertEqual(item.itemIdentifier.rawValue, originalIdentifier.identifierString,
+                       "rename must return the ORIGINAL identifier, not the new path-derived one")
+        XCTAssertEqual(item.filename, "new name.txt",
+                       "filename must reflect the renamed record")
+        XCTAssertEqual(item.parentItemIdentifier.rawValue,
+                       originalIdentifier.parentIdentifier.identifierString,
+                       "parent is derived from the overriding identifier")
+    }
+
     // MARK: - Helpers
+
+    private func makeRecord(path: String, name: String, isDir: Bool) -> MetadataRecord {
+        MetadataRecord(
+            accountAlias: "test",
+            workspaceID: "00000000-0000-0000-0000-000000000001",
+            itemID: "00000000-0000-0000-0000-000000000002",
+            path: path,
+            parentPath: (path as NSString).deletingLastPathComponent,
+            name: name,
+            isDir: isDir,
+            contentLength: isDir ? 0 : 42,
+            lastModifiedNs: 1_700_000_000_000_000_000,
+            itemType: "Lakehouse",
+            createdNs: 1_600_000_000_000_000_000
+        )
+    }
 
     private func makeDomainItem(
         path: String,

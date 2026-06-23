@@ -85,6 +85,18 @@ public protocol OneLakeClientProtocol: Sendable {
         path: String
     ) async throws
 
+    /// Renames a file or directory within the same parent directory.
+    ///
+    /// Issues `PUT <destinationURL>` with `x-ms-rename-source: /<workspaceGUID>/<itemGUID>/<sourcePath>`
+    /// (URL-encoded, leading slash). Both paths must share the same parent directory.
+    func rename(
+        alias: String,
+        workspaceGUID: String,
+        itemGUID: String,
+        sourcePath: String,
+        destinationPath: String
+    ) async throws
+
     /// Removes a file or directory.
     func delete(
         alias: String,

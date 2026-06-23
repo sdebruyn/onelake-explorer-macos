@@ -510,8 +510,8 @@ struct DomainItemTests {
         #expect(caps.contains(.addSubitems))
     }
 
-    @Test func recordFileHasExactlyReadWriteDelete() throws {
-        // A file under Files/ in a Lakehouse gets exactly read/write/delete.
+    @Test func recordFileHasReadWriteDeleteRename() throws {
+        // A file under Files/ in a Lakehouse gets exactly read/write/delete/rename.
         let record = MetadataRecord(
             accountAlias: "work",
             workspaceID: "ws-1",
@@ -525,7 +525,7 @@ struct DomainItemTests {
             itemType: "Lakehouse"
         )
         let item = try DomainItem.from(record: record)
-        #expect(item.capabilities == [.read, .write, .delete])
+        #expect(item.capabilities == [.read, .write, .delete, .rename])
     }
 
     @Test func recordFallbackContentVersionUsedWhenEtagIsEmpty() throws {
@@ -696,11 +696,11 @@ struct DomainItemTests {
         #expect(caps.contains(.addSubitems))
     }
 
-    @Test func syntheticFileInLakehouseHasExactlyReadWriteDelete() {
+    @Test func syntheticFileInLakehouseHasReadWriteDeleteRename() {
         let id = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files/f.txt")
         let pid = ItemIdentifier.path(workspaceID: "ws", itemID: "i", path: "Files")
         let caps = DomainItem.synthetic(identifier: id, parentIdentifier: pid, name: "f.txt", isDirectory: false, itemType: "Lakehouse").capabilities
-        #expect(caps == [.read, .write, .delete])
+        #expect(caps == [.read, .write, .delete, .rename])
     }
 
     @Test func syntheticWithoutItemTypeIsReadOnly() {
@@ -831,11 +831,11 @@ struct DomainItemTests {
     }
 
     @Test func capabilityPresetsMatchWritableDirectory() {
-        #expect(DomainItem.CapabilitySet.writableDirectory == [.read, .write, .delete, .enumerate, .addSubitems])
+        #expect(DomainItem.CapabilitySet.writableDirectory == [.read, .write, .delete, .rename, .enumerate, .addSubitems])
     }
 
     @Test func capabilityPresetsMatchWritableFile() {
-        #expect(DomainItem.CapabilitySet.writableFile == [.read, .write, .delete])
+        #expect(DomainItem.CapabilitySet.writableFile == [.read, .write, .delete, .rename])
     }
 
     @Test func rootUsesReadOnlyPreset() {

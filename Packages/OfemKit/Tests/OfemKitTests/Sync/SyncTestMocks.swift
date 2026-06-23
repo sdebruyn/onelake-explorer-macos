@@ -27,6 +27,7 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
     private(set) var readCalls: [ReadCall] = []
     private(set) var writeCalls: [WriteCall] = []
     private(set) var deleteCalls: [DeleteCall] = []
+    private(set) var renameCalls: [RenameCall] = []
 
     struct ListPathCall {
         let alias: String
@@ -73,7 +74,19 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
         let recursive: Bool
     }
 
+    struct RenameCall {
+        let alias: String
+        let workspaceGUID: String
+        let itemGUID: String
+        let sourcePath: String
+        let destinationPath: String
+    }
+
     private let lock = NSLock()
+
+    // MARK: - Scripted responses (rename)
+
+    var renameResults: [Result<Void, any Error>] = []
 
     // MARK: - OneLakeClientProtocol
 
@@ -134,6 +147,14 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
         // tests-10: record the call so tests can assert mkdir count and path.
         lock.withLock { createDirectoryCalls.append(CreateDirectoryCall(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, path: path)) }
         try dequeueVoid(&createDirectoryResults, name: "createDirectory")
+    }
+
+    func rename(
+        alias: String, workspaceGUID: String, itemGUID: String,
+        sourcePath: String, destinationPath: String
+    ) async throws {
+        lock.withLock { renameCalls.append(RenameCall(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, sourcePath: sourcePath, destinationPath: destinationPath)) }
+        try dequeueVoid(&renameResults, name: "rename")
     }
 
     func delete(
@@ -246,6 +267,7 @@ final class BlockingMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendabl
     func write(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, content _: Data, size _: Int64) async throws {}
     func write(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, sourceURL _: URL, size _: Int64) async throws {}
     func createDirectory(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String) async throws {}
+    func rename(alias _: String, workspaceGUID _: String, itemGUID _: String, sourcePath _: String, destinationPath _: String) async throws {}
     func delete(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, recursive _: Bool) async throws {}
 }
 
@@ -409,5 +431,6 @@ final class BlockingListMockOneLakeClient: OneLakeClientProtocol, @unchecked Sen
     func write(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, content _: Data, size _: Int64) async throws {}
     func write(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, sourceURL _: URL, size _: Int64) async throws {}
     func createDirectory(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String) async throws {}
+    func rename(alias _: String, workspaceGUID _: String, itemGUID _: String, sourcePath _: String, destinationPath _: String) async throws {}
     func delete(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, recursive _: Bool) async throws {}
 }

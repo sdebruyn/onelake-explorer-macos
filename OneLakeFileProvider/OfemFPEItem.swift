@@ -60,6 +60,7 @@ final class OfemFPEItem: NSObject, NSFileProviderItem, @unchecked Sendable {
             case .read: bitmask.insert(.allowsReading)
             case .write: bitmask.insert(.allowsWriting)
             case .delete: bitmask.insert(.allowsDeleting)
+            case .rename: bitmask.insert(.allowsRenaming)
             case .enumerate: bitmask.insert(.allowsContentEnumerating)
             case .addSubitems: bitmask.insert(.allowsAddingSubItems)
             }

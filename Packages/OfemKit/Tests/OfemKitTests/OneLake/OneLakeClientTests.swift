@@ -149,4 +149,93 @@ struct OneLakeClientTests {
             // expected
         }
     }
+
+    // MARK: - rename argument validation
+
+    @Test("rename: empty workspaceGUID throws missingArgument")
+    func renameEmptyWorkspace() async throws {
+        let client = makeClient()
+        await #expect {
+            try await client.rename(
+                alias: "a", workspaceGUID: "", itemGUID: itemGUID,
+                sourcePath: "Files/old", destinationPath: "Files/new"
+            )
+        } throws: { error in
+            if case OneLakeError.missingArgument = error { return true }
+            return false
+        }
+    }
+
+    @Test("rename: empty sourcePath throws missingArgument")
+    func renameEmptySource() async throws {
+        let client = makeClient()
+        await #expect {
+            try await client.rename(
+                alias: "a", workspaceGUID: wsGUID, itemGUID: itemGUID,
+                sourcePath: "", destinationPath: "Files/new"
+            )
+        } throws: { error in
+            if case OneLakeError.missingArgument = error { return true }
+            return false
+        }
+    }
+
+    @Test("rename: empty destinationPath throws missingArgument")
+    func renameEmptyDestination() async throws {
+        let client = makeClient()
+        await #expect {
+            try await client.rename(
+                alias: "a", workspaceGUID: wsGUID, itemGUID: itemGUID,
+                sourcePath: "Files/old", destinationPath: ""
+            )
+        } throws: { error in
+            if case OneLakeError.missingArgument = error { return true }
+            return false
+        }
+    }
+
+    // MARK: - rename URL construction
+
+    @Test("rename: destination URL and x-ms-rename-source header are correct")
+    func renameURLAndHeader() throws {
+        // Verify that the rename-source path shape matches the DFS filesystem
+        // path used by the server: /<workspaceGUID>/<itemGUID>/<sourcePath>.
+        //
+        // This test drives the URL-construction logic in isolation by building
+        // the same path the client would build and asserting its shape, without
+        // issuing a real network request.
+        let ws = "workspace-abc"
+        let item = "item-xyz"
+        let source = "Files/untitled folder"
+        let base = try #require(URL(string: "https://onelake.dfs.fabric.microsoft.com"))
+
+        // The rename-source header is derived from oneLakePathURL (the same
+        // helper that builds the destination URL), so drive the test through it
+        // directly and assert the hardcoded literal — re-deriving the encoding
+        // inline here could not catch a real encoding regression in the helper.
+        // percentEncodedPath lives on URLComponents, mirroring how the client
+        // extracts it.
+        let sourceURL = try oneLakePathURL(
+            base: base,
+            workspaceGUID: ws,
+            itemGUID: item,
+            relPath: source
+        )
+        let renameSource = try #require(
+            URLComponents(url: sourceURL, resolvingAgainstBaseURL: false)?.percentEncodedPath
+        )
+
+        #expect(renameSource == "/workspace-abc/item-xyz/Files/untitled%20folder")
+
+        // Verify destination URL shape.
+        let destURL = try oneLakePathURL(
+            base: base,
+            workspaceGUID: ws,
+            itemGUID: item,
+            relPath: "Files/my folder"
+        )
+        #expect(destURL.path == "/workspace-abc/item-xyz/Files/my%20folder"
+            || destURL.path == "/workspace-abc/item-xyz/Files/my folder")
+        #expect(destURL.host == "onelake.dfs.fabric.microsoft.com")
+    }
 }
