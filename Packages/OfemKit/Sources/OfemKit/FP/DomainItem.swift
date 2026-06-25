@@ -447,6 +447,16 @@ enum ContentVersion {
     /// When an etag is present it is base64-encoded directly; otherwise the
     /// token is derived from `(path, contentLength, lastModified)` via
     /// FNV-1a-64.
+    ///
+    /// IMPORTANT (#380): this reads `record.etag`, NEVER `record.subtreeEtag`.
+    /// `subtreeEtag` is the directory etag harvested from the parent listing and
+    /// advances on every descendant write at any depth; feeding it into a
+    /// container's content version would make macOS re-download/evict and churn
+    /// the thumbnail cache for that folder on every deep write — all cost, no
+    /// benefit (a folder has no content blob to re-download, and change delivery
+    /// is driven by the working set's `syncedAtNs` deltas, not folder versions).
+    /// Container rows keep `etag == ""`, so this stays on the FNV fallback for
+    /// directories. Keep `subtreeEtag` strictly out of every item version.
     static func content(for record: MetadataRecord) -> Data {
         if !record.etag.isEmpty {
             return Data(record.etag.utf8).base64EncodedData()
@@ -461,6 +471,10 @@ enum ContentVersion {
     /// after the v5 migration) produces a new token and Finder refreshes the
     /// displayed "Date Created" without forcing a re-download of file bytes
     /// (content version is unchanged — only metadata version changes).
+    ///
+    /// IMPORTANT (#380): like ``content(for:)``, this reads `record.etag` and
+    /// NEVER `record.subtreeEtag`. The harvested subtree etag is a refresh
+    /// skip-gate token only and must not advance any item's metadata version.
     static func metadata(for record: MetadataRecord) -> Data {
         var h = FNV64a()
         h.combine(record.name)

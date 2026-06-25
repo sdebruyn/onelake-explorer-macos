@@ -15,7 +15,7 @@ struct CacheSchemaTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let applied = try await store.appliedMigrations()
-        #expect(applied == ["v1", "v2", "v3", "v4", "v5"])
+        #expect(applied == ["v1", "v2", "v3", "v4", "v5", "v6"])
     }
 
     @Test("Fresh database creates path_metadata table")
@@ -29,7 +29,7 @@ struct CacheSchemaTests {
             "content_length", "etag", "last_modified_ns", "content_type",
             "blob_sha256", "blob_size",
             "last_accessed_ns", "synced_at_ns", "children_synced_at_ns",
-            "item_type", "created_ns",
+            "item_type", "created_ns", "subtree_etag",
         ]
         for col in expected {
             #expect(columns.contains(col), "Missing column: \(col)")
@@ -101,6 +101,44 @@ struct CacheSchemaTests {
         let key = CacheKey(accountAlias: "a", workspaceID: "ws-1", itemID: "item-1", path: "Files/data.csv")
         let fetched = try await store.fetch(key: key)
         #expect(fetched.itemType == "", "Pre-existing rows must default item_type to ''")
+    }
+
+    // MARK: - v6 migration: subtree_etag column (#380)
+
+    @Test("Fresh database applies v6 migration")
+    func freshDatabaseAppliesV6Migration() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let applied = try await store.appliedMigrations()
+        #expect(applied.contains("v6"))
+    }
+
+    @Test("Fresh database has subtree_etag column in path_metadata")
+    func freshDatabaseHasSubtreeEtagColumn() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let columns = try await store.readColumns(in: "path_metadata")
+        #expect(columns.contains("subtree_etag"), "Missing column: subtree_etag")
+    }
+
+    @Test("Pre-existing rows default subtree_etag to empty string after v6 migration")
+    func preExistingRowsDefaultSubtreeEtagToEmpty() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        // Insert a row without specifying subtree_etag to simulate a row from before v6.
+        let record = MetadataRecord(
+            accountAlias: "a",
+            workspaceID: "ws-1",
+            itemID: "item-1",
+            path: "Files/sub",
+            parentPath: "Files",
+            name: "sub",
+            isDir: true
+        )
+        try await store.upsert(record)
+        let key = CacheKey(accountAlias: "a", workspaceID: "ws-1", itemID: "item-1", path: "Files/sub")
+        let fetched = try await store.fetch(key: key)
+        #expect(fetched.subtreeEtag == "", "Pre-existing rows must default subtree_etag to ''")
     }
 }
 

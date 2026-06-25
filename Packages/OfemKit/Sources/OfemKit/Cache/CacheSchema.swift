@@ -14,6 +14,9 @@ import GRDB
 /// - `v3` — adds `item_type` column to `path_metadata`.
 /// - `v4` — adds `materialized_containers` table and `idx_mc_alias` index.
 /// - `v5` — adds `created_ns` column to `path_metadata` for creation timestamps.
+/// - `v6` — adds `subtree_etag` column to `path_metadata`. Only container rows
+///   carry it (the directory etag harvested from the parent listing); it gates
+///   the materialized-refresh skip-gate (#380) and never feeds item versions.
 ///
 /// Key indexes:
 /// - `idx_pm_synced_at`: composite on `(account_alias, synced_at_ns)` used
@@ -167,6 +170,26 @@ public enum CacheSchema {
             try db.execute(sql: """
             ALTER TABLE path_metadata
                 ADD COLUMN created_ns INTEGER NOT NULL DEFAULT 0;
+            """)
+        }
+
+        // v6: add subtree_etag to persist the directory etag harvested from the
+        // PARENT listing for each child container (#380). Only a container's own
+        // row carries it; child file rows leave it "". It is read as a refresh
+        // skip-gate (subtree etag unchanged ⇒ nothing changed below ⇒ skip the
+        // child list+diff) and must NEVER feed any item contentVersion/
+        // metadataVersion. Empty default so a row that has never been harvested
+        // from a parent listing reads as "" and forces a list.
+        //
+        // No migration ceremony: the project is pre-go-live and a cache rebuild
+        // on upgrade is acceptable. A plain ADD COLUMN (mirroring v3/v5) is the
+        // minimal mechanism — it both defines the column in the running schema
+        // and gives already-migrated dev DBs the column without any
+        // data-preserving / backward-compat logic.
+        m.registerMigration("v6") { db in
+            try db.execute(sql: """
+            ALTER TABLE path_metadata
+                ADD COLUMN subtree_etag TEXT NOT NULL DEFAULT '';
             """)
         }
 

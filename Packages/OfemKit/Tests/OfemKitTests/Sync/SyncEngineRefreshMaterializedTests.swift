@@ -39,6 +39,98 @@ struct SyncEngineRefreshMaterializedTests {
         return (engine, store)
     }
 
+    /// A thread-safe, settable Unix-nanosecond clock for the self-heal tests.
+    /// Mutated from the test body; read concurrently by the engine's task group.
+    private final class TestClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _nowNs: Int64
+        init(_ nowNs: Int64) {
+            _nowNs = nowNs
+        }
+
+        var nowNs: Int64 {
+            get { lock.withLock { _nowNs } }
+            set { lock.withLock { _nowNs = newValue } }
+        }
+
+        func advance(by ns: Int64) {
+            lock.withLock { _nowNs += ns }
+        }
+    }
+
+    /// Like `makeEngine` but injects a controllable `nowNsProvider` so the #380
+    /// self-heal floor can be driven deterministically without sleeping.
+    private func makeEngine(
+        onelake: any OneLakeClientProtocol,
+        clock: TestClock
+    ) throws -> (SyncEngine, CacheStore) {
+        let store = try makeTempStore()
+        let scratchDir = store.root.appending(path: "scratch", directoryHint: .isDirectory)
+        let engine = SyncEngine(
+            cache: store,
+            onelake: onelake,
+            fabric: MockFabricClient(),
+            scratchBase: scratchDir,
+            nowNsProvider: { clock.nowNs }
+        )
+        return (engine, store)
+    }
+
+    /// A directory ``PathEntry`` carrying a non-empty subtree etag — the value a
+    /// parent listing harvests for the #380 skip-gate. (`PathEntry.directory`
+    /// always uses `eTag: ""`, which would never gate.)
+    private static func dirEntry(name: String, eTag: String) -> PathEntry {
+        PathEntry(
+            name: name, isDirectory: true, contentLength: 0,
+            eTag: eTag, lastModified: Date(timeIntervalSince1970: 0)
+        )
+    }
+
+    /// Seeds an item-root container (path == "") holding a single directory
+    /// child container, plus that child's own (empty) container row. Mirrors a
+    /// materialized parent → materialized sub-container hierarchy.
+    private func seedParentWithChildContainer(
+        in store: CacheStore,
+        parent: CacheKey,
+        childName: String
+    ) async throws {
+        let syncedNs = Int64(Date().addingTimeInterval(-60).timeIntervalSince1970 * 1_000_000_000)
+        let parentRow = MetadataRecord(
+            accountAlias: parent.accountAlias,
+            workspaceID: parent.workspaceID,
+            itemID: parent.itemID,
+            path: parent.path,
+            parentPath: Enumerator.parentPath(parent.path),
+            name: parent.itemID,
+            isDir: true,
+            childrenSyncedAtNs: syncedNs
+        )
+        try await store.upsert(parentRow)
+        let childPath = parent.path.isEmpty ? childName : "\(parent.path)/\(childName)"
+        let childRow = MetadataRecord(
+            accountAlias: parent.accountAlias,
+            workspaceID: parent.workspaceID,
+            itemID: parent.itemID,
+            path: childPath,
+            parentPath: parent.path,
+            name: childName,
+            isDir: true,
+            // Child container row already enumerated once (so the skip-gate has a
+            // real container row to stamp), but no subtree etag harvested yet.
+            childrenSyncedAtNs: syncedNs
+        )
+        try await store.upsert(childRow)
+    }
+
+    private static func childContainerKey(parent: CacheKey, childName: String) -> CacheKey {
+        CacheKey(
+            accountAlias: parent.accountAlias,
+            workspaceID: parent.workspaceID,
+            itemID: parent.itemID,
+            path: parent.path.isEmpty ? childName : "\(parent.path)/\(childName)"
+        )
+    }
+
     /// Seeds a parent directory row plus its children into the cache.
     private func seedFolder(
         in store: CacheStore,
@@ -694,5 +786,227 @@ struct SyncEngineRefreshMaterializedTests {
         let parent = try await store.fetch(key: key)
         #expect(!parent.name.isEmpty)
         #expect(parent.childrenSyncedAtNs > 0)
+    }
+
+    // MARK: - #380 (a): static sub-container skipped across repeated polls
+
+    /// A materialized parent lists its child container with the SAME subtree etag
+    /// on two consecutive polls. The skip-gate must list the child's own contents
+    /// exactly once (poll 1 — first sight, subtree token not yet harvested), then
+    /// skip it on poll 2 (token unchanged). The parent is listed both times.
+    @Test("#380(a) static sub-container is skipped once its subtree etag is harvested")
+    func staticSubContainerSkippedAcrossPolls() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let parentKey = Self.folderKey // path == "" (item root, depth 0)
+        try await seedParentWithChildContainer(in: store, parent: parentKey, childName: "subdir")
+        let childKey = Self.childContainerKey(parent: parentKey, childName: "subdir")
+
+        // Poll 1: parent lists the child dir (etag SE1); child lists empty.
+        // Poll 2: parent lists the child dir (etag SE1, unchanged) → child skipped.
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE1")])))
+        ol.listPathResults.append(.success(ListResult(entries: []))) // child poll-1 list
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE1")])))
+
+        // self-heal disabled so the skip-gate alone decides.
+        _ = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: 0
+        )
+        _ = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: 0
+        )
+
+        // Parent (path == "") listed on BOTH polls; child listed only on poll 1.
+        let parentListCount = ol.listPathCalls.count(where: { $0.directory == "" })
+        let childListCount = ol.listPathCalls.count(where: { $0.directory == "subdir" })
+        #expect(parentListCount == 2)
+        #expect(childListCount == 1)
+    }
+
+    // MARK: - #380 (b): active sub-container re-listed when its subtree etag advances
+
+    @Test("#380(b) sub-container is re-listed when its subtree etag advances")
+    func activeSubContainerReListedOnEtagAdvance() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let parentKey = Self.folderKey
+        try await seedParentWithChildContainer(in: store, parent: parentKey, childName: "subdir")
+        let childKey = Self.childContainerKey(parent: parentKey, childName: "subdir")
+
+        // Poll 1: parent lists child dir (SE1); child lists empty.
+        // Poll 2: parent lists child dir (SE2, ADVANCED) → child must re-list.
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE1")])))
+        ol.listPathResults.append(.success(ListResult(entries: []))) // child poll-1 list
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE2")])))
+        ol.listPathResults.append(.success(ListResult(entries: []))) // child poll-2 list
+
+        _ = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: 0
+        )
+        _ = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: 0
+        )
+
+        // Child re-listed both polls because its subtree etag advanced.
+        let childListCount = ol.listPathCalls.count(where: { $0.directory == "subdir" })
+        #expect(childListCount == 2)
+    }
+
+    // MARK: - #380 (c): a real direct-child change is detected after the etag advances
+
+    @Test("#380(c) a new file under the sub-container is detected after its etag advances")
+    func realChildChangeDetectedAfterEtagAdvance() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let parentKey = Self.folderKey
+        try await seedParentWithChildContainer(in: store, parent: parentKey, childName: "subdir")
+        let childKey = Self.childContainerKey(parent: parentKey, childName: "subdir")
+
+        // Poll 1: parent lists child (SE1); child lists empty (seeds the token).
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE1")])))
+        ol.listPathResults.append(.success(ListResult(entries: [])))
+        _ = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: 0
+        )
+
+        let nsBefore = try await store.maxSyncedAtNs(accountAlias: Self.alias)
+
+        // Poll 2: parent lists child (SE2, advanced); child now contains a new file.
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE2")])))
+        ol.listPathResults.append(.success(ListResult(entries: [
+            PathEntry.file(name: "subdir/new.csv", size: 10, eTag: "f-new"),
+        ])))
+        let changed = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: 0
+        )
+
+        // The new file was added under the child, and the working-set baseline
+        // advanced (syncedAtNs bumped for the new row).
+        #expect(changed == true)
+        let newFileKey = CacheKey(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "subdir/new.csv"
+        )
+        #expect((try? await store.fetch(key: newFileKey)) != nil)
+        let nsAfter = try await store.maxSyncedAtNs(accountAlias: Self.alias)
+        #expect(nsAfter > nsBefore)
+    }
+
+    // MARK: - #380 (d): writing subtreeEtag produces zero working-set delta
+
+    /// After a poll that harvests a child container's subtree etag, the container
+    /// row must NOT surface in `itemsChangedAfter` (its `synced_at_ns` is not
+    /// bumped by the harvest) and `diff.total` for the child must be 0. This is
+    /// the regression guard that the skip-gate token never feeds a working-set
+    /// delta (entryChanged ignores it; the harvest is a column-only update).
+    @Test("#380(d) harvesting a subtree etag produces zero working-set delta")
+    func harvestingSubtreeEtagProducesZeroDelta() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.folderKey
+        // Seed the parent item-root holding one directory child with a known
+        // subtree etag already stored, so the next harvest is an ADVANCE.
+        let syncedNs = Int64(Date().addingTimeInterval(-60).timeIntervalSince1970 * 1_000_000_000)
+        let parentRow = MetadataRecord(
+            accountAlias: key.accountAlias, workspaceID: key.workspaceID, itemID: key.itemID,
+            path: "", parentPath: "", name: key.itemID, isDir: true,
+            childrenSyncedAtNs: syncedNs
+        )
+        let childKey = Self.childContainerKey(parent: key, childName: "subdir")
+        let childRow = MetadataRecord(
+            accountAlias: key.accountAlias, workspaceID: key.workspaceID, itemID: key.itemID,
+            path: "subdir", parentPath: "", name: "subdir", isDir: true,
+            lastModifiedNs: 0, childrenSyncedAtNs: syncedNs,
+            subtreeEtag: "SE1"
+        )
+        try await store.upsert(parentRow)
+        try await store.upsert(childRow)
+
+        let nsBefore = try await store.maxSyncedAtNs(accountAlias: key.accountAlias)
+        let childSyncedBefore = try await store.fetch(key: childKey).syncedAtNs
+
+        // refreshFolder(parent) lists the child dir with an ADVANCED subtree etag
+        // (SE2). The harvest must update only the child's subtree_etag column.
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE2")])))
+        let diff = try await engine.refreshMaterializedContainer(key: key)
+
+        // The directory child's listing is unchanged (#379: dir etag ignored), so
+        // the parent refresh produces no diff.
+        #expect(diff.total == 0)
+
+        // The child container row's subtree_etag advanced…
+        let childAfter = try await store.fetch(key: childKey)
+        #expect(childAfter.subtreeEtag == "SE2")
+        // …but its synced_at_ns did NOT move (harvest is a column-only update).
+        #expect(childAfter.syncedAtNs == childSyncedBefore)
+
+        // And the child container row does not surface as a working-set change.
+        let changes = try await store.itemsChangedAfter(accountAlias: key.accountAlias, ns: nsBefore)
+        #expect(!changes.updated.contains { $0.path == "subdir" })
+    }
+
+    // MARK: - #380 (e): self-heal floor forces a re-list past the interval
+
+    /// With self-heal disabled (interval 0) an unchanged subtree etag is always
+    /// skipped; with the interval elapsed the container is force re-listed even
+    /// though its subtree etag is unchanged.
+    @Test("#380(e) self-heal floor forces a non-gated re-list once the interval elapses")
+    func selfHealFloorForcesReList() async throws {
+        let clock = TestClock(1_000_000_000_000)
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol, clock: clock)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let parentKey = Self.folderKey
+        try await seedParentWithChildContainer(in: store, parent: parentKey, childName: "subdir")
+        let childKey = Self.childContainerKey(parent: parentKey, childName: "subdir")
+
+        // Interval = 10 min. Poll 1 (first sight) seeds the token and records the
+        // self-heal timestamp; the child lists once.
+        let interval = 10
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE1")])))
+        ol.listPathResults.append(.success(ListResult(entries: []))) // child poll-1
+        _ = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: interval
+        )
+        let childListAfterPoll1 = ol.listPathCalls.count(where: { $0.directory == "subdir" })
+        #expect(childListAfterPoll1 == 1)
+
+        // Poll 2, only 1 minute later: subtree etag unchanged AND no heal due →
+        // child skipped.
+        clock.advance(by: 60 * 1_000_000_000) // +1 min
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE1")])))
+        _ = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: interval
+        )
+        let childListAfterPoll2 = ol.listPathCalls.count(where: { $0.directory == "subdir" })
+        #expect(childListAfterPoll2 == 1, "child must be skipped while inside the self-heal interval")
+
+        // Poll 3, now past the interval: subtree etag STILL unchanged but the
+        // self-heal floor forces a re-list.
+        clock.advance(by: Int64(interval) * 60 * 1_000_000_000) // +10 min → past interval
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE1")])))
+        ol.listPathResults.append(.success(ListResult(entries: []))) // forced child re-list
+        _ = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: interval
+        )
+        let childListAfterPoll3 = ol.listPathCalls.count(where: { $0.directory == "subdir" })
+        #expect(childListAfterPoll3 == 2, "self-heal floor must force a re-list past the interval")
     }
 }

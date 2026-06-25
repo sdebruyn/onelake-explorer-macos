@@ -59,6 +59,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         public static let childrenSyncedAtNs = Column("children_synced_at_ns")
         public static let itemType = Column("item_type")
         public static let createdNs = Column("created_ns")
+        public static let subtreeEtag = Column("subtree_etag")
     }
 
     // MARK: Fields
@@ -121,6 +122,17 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
     /// Remote creation timestamp as Unix nanoseconds. Zero = unknown.
     public var createdNs: Int64
 
+    /// Directory subtree etag for a container row, harvested from the PARENT
+    /// listing (#380). Empty (`""`) for file rows and for container rows that
+    /// have never been seen in a parent listing. Used ONLY as a refresh
+    /// skip-gate: when a container's harvested subtree etag is unchanged since
+    /// the last poll, its child list+diff is skipped. It must NEVER feed any
+    /// item `contentVersion`/`metadataVersion` — the directory etag advances on
+    /// every descendant write, so feeding it into a version would churn
+    /// re-download/eviction for no benefit (see #379 / #380 and the guard in
+    /// `ContentVersion.content(for:)`).
+    public var subtreeEtag: String
+
     // MARK: Computed helpers
 
     /// `lastModifiedNs` as a `Date`. `nil` when zero.
@@ -170,7 +182,8 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         syncedAtNs: Int64 = 0,
         childrenSyncedAtNs: Int64 = 0,
         itemType: String = "",
-        createdNs: Int64 = 0
+        createdNs: Int64 = 0,
+        subtreeEtag: String = ""
     ) {
         self.accountAlias = accountAlias
         self.workspaceID = workspaceID
@@ -190,6 +203,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         self.childrenSyncedAtNs = childrenSyncedAtNs
         self.itemType = itemType
         self.createdNs = createdNs
+        self.subtreeEtag = subtreeEtag
     }
 
     // MARK: FetchableRecord
@@ -213,6 +227,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         childrenSyncedAtNs = row[Columns.childrenSyncedAtNs]
         itemType = row[Columns.itemType] ?? ""
         createdNs = row[Columns.createdNs] ?? 0
+        subtreeEtag = row[Columns.subtreeEtag] ?? ""
     }
 
     // MARK: PersistableRecord
@@ -236,6 +251,7 @@ public struct MetadataRecord: FetchableRecord, PersistableRecord, Sendable {
         container[Columns.childrenSyncedAtNs] = childrenSyncedAtNs
         container[Columns.itemType] = itemType
         container[Columns.createdNs] = createdNs
+        container[Columns.subtreeEtag] = subtreeEtag
     }
 }
 

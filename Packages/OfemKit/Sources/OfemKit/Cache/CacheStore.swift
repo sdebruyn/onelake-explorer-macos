@@ -313,6 +313,37 @@ public actor CacheStore {
         }
     }
 
+    // MARK: - Metadata: subtree etag (#380)
+
+    /// Writes ONLY the `subtree_etag` column for `key`, leaving every other
+    /// column — crucially `synced_at_ns` — untouched.
+    ///
+    /// The directory subtree etag (#380) is harvested from the parent listing as
+    /// a refresh skip-gate token. It must update without bumping `synced_at_ns`:
+    /// a `synced_at_ns` bump would surface the container row in
+    /// `itemsChangedAfter` and produce a phantom working-set delta on every poll
+    /// that harvested a new subtree etag (the exact regression guarded by the
+    /// "writing subtreeEtag produces zero working-set delta" test). Because
+    /// `entryChanged` ignores directory etag (#379) the full-row upsert path
+    /// would never persist an advancing subtree etag anyway, so this targeted
+    /// UPDATE is the only correct way to keep the skip-gate token fresh.
+    ///
+    /// A no-op (zero rows affected) when the row does not exist; the caller
+    /// harvests from a listing it just performed, so a missing row simply means
+    /// the container row has not been written yet and will pick the etag up on
+    /// its next full upsert.
+    public func updateSubtreeEtag(key: CacheKey, etag: String) async throws {
+        try validateKey(key)
+        try await dbPool.write { db in
+            try db.execute(sql: """
+                           UPDATE path_metadata
+                           SET subtree_etag = ?
+                           WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+                           """,
+                           arguments: [etag, key.accountAlias, key.workspaceID, key.itemID, key.path])
+        }
+    }
+
     // MARK: - Metadata: delete
 
     /// Removes the row for `key` and all its descendants (for directories).
