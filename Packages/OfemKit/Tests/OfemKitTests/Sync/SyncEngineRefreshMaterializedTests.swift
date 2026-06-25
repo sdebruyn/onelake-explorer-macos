@@ -815,16 +815,22 @@ struct SyncEngineRefreshMaterializedTests {
             alias: Self.alias, keys: [parentKey, childKey],
             concurrencyCap: 1, selfHealIntervalMinutes: 0
         )
+        // After poll 1 the child has been listed exactly once and its row stamped.
+        #expect(ol.listPathCalls.count(where: { $0.directory == "subdir" }) == 1)
+        let childSyncedAfterPoll1 = try await store.fetch(key: childKey).syncedAtNs
+
         _ = await engine.refreshMaterialized(
             alias: Self.alias, keys: [parentKey, childKey],
             concurrencyCap: 1, selfHealIntervalMinutes: 0
         )
 
-        // Parent (path == "") listed on BOTH polls; child listed only on poll 1.
-        let parentListCount = ol.listPathCalls.count(where: { $0.directory == "" })
+        // Poll 2 SKIPPED the child: its own listPath was not issued again…
         let childListCount = ol.listPathCalls.count(where: { $0.directory == "subdir" })
-        #expect(parentListCount == 2)
-        #expect(childListCount == 1)
+        #expect(childListCount == 1, "child must be skipped on poll 2 (subtree etag unchanged)")
+        // …and the skip wrote nothing — the child row's syncedAtNs is unchanged.
+        let childSyncedAfterPoll2 = try await store.fetch(key: childKey).syncedAtNs
+        #expect(childSyncedAfterPoll2 == childSyncedAfterPoll1,
+                "a skipped child must not be re-stamped (no listPath, no upsert)")
     }
 
     // MARK: - #380 (b): active sub-container re-listed when its subtree etag advances
@@ -919,7 +925,11 @@ struct SyncEngineRefreshMaterializedTests {
         let key = Self.folderKey
         // Seed the parent item-root holding one directory child with a known
         // subtree etag already stored, so the next harvest is an ADVANCE.
+        // The child carries a NON-ZERO syncedAtNs so the preservation assertion
+        // below proves the harvest leaves it untouched (a 0 default would make
+        // the check a vacuous 0 == 0).
         let syncedNs = Int64(Date().addingTimeInterval(-60).timeIntervalSince1970 * 1_000_000_000)
+        let childSyncedSeed = syncedNs + 5_000_000_000 // distinct, non-zero
         let parentRow = MetadataRecord(
             accountAlias: key.accountAlias, workspaceID: key.workspaceID, itemID: key.itemID,
             path: "", parentPath: "", name: key.itemID, isDir: true,
@@ -929,14 +939,18 @@ struct SyncEngineRefreshMaterializedTests {
         let childRow = MetadataRecord(
             accountAlias: key.accountAlias, workspaceID: key.workspaceID, itemID: key.itemID,
             path: "subdir", parentPath: "", name: "subdir", isDir: true,
-            lastModifiedNs: 0, childrenSyncedAtNs: syncedNs,
+            lastModifiedNs: 0, syncedAtNs: childSyncedSeed, childrenSyncedAtNs: syncedNs,
             subtreeEtag: "SE1"
         )
         try await store.upsert(parentRow)
         try await store.upsert(childRow)
 
-        let nsBefore = try await store.maxSyncedAtNs(accountAlias: key.accountAlias)
         let childSyncedBefore = try await store.fetch(key: childKey).syncedAtNs
+        #expect(childSyncedBefore == childSyncedSeed) // sanity: non-zero baseline
+        // Anchor strictly BELOW the child's syncedAtNs so that IF the harvest
+        // bumped synced_at_ns, the child row WOULD appear in itemsChangedAfter —
+        // making the "zero delta" assertion below non-vacuous.
+        let nsBefore = childSyncedSeed - 1
 
         // refreshFolder(parent) lists the child dir with an ADVANCED subtree etag
         // (SE2). The harvest must update only the child's subtree_etag column.
@@ -953,8 +967,11 @@ struct SyncEngineRefreshMaterializedTests {
         // …but its synced_at_ns did NOT move (harvest is a column-only update).
         #expect(childAfter.syncedAtNs == childSyncedBefore)
 
-        // And the child container row does not surface as a working-set change.
+        // And the harvest produced ZERO working-set delta: the anchor is below
+        // the child's syncedAtNs, so a bumped row would surface here. The set is
+        // empty (and, specifically, the child container row is absent).
         let changes = try await store.itemsChangedAfter(accountAlias: key.accountAlias, ns: nsBefore)
+        #expect(changes.updated.isEmpty)
         #expect(!changes.updated.contains { $0.path == "subdir" })
     }
 
@@ -1008,5 +1025,45 @@ struct SyncEngineRefreshMaterializedTests {
         )
         let childListAfterPoll3 = ol.listPathCalls.count(where: { $0.directory == "subdir" })
         #expect(childListAfterPoll3 == 2, "self-heal floor must force a re-list past the interval")
+    }
+
+    // MARK: - #380 (f): a child is NOT skipped when its parent threw this pass
+
+    /// Regression for the false-negative bug: a child may be skipped only when its
+    /// parent genuinely vouched for the child's subtree token THIS pass (listed
+    /// successfully, or was itself skipped). If the parent's refresh THREW
+    /// (offline / paused, swallowed), it re-stamped nothing — the child's stored
+    /// token equals the prior snapshot trivially, but that is NOT evidence the
+    /// subtree is unchanged. The child must attempt its own list.
+    @Test("#380(f) child is not skipped when its parent threw (stale-token false negative)")
+    func childNotSkippedWhenParentThrew() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let parentKey = Self.folderKey
+        try await seedParentWithChildContainer(in: store, parent: parentKey, childName: "subdir")
+        let childKey = Self.childContainerKey(parent: parentKey, childName: "subdir")
+
+        // Pre-seed the child's subtree token so prior == current == "SE1": with the
+        // OLD set-membership vouching, the child would be wrongly skipped here.
+        try await store.updateSubtreeEtag(key: childKey, etag: "SE1")
+
+        // Parent (depth 0) lists FIRST and throws offline; child (depth 1) lists next.
+        let offlineError = OneLakeError.httpError(
+            HTTPClientError.transport(URLError(.notConnectedToInternet))
+        )
+        ol.listPathResults.append(.failure(offlineError)) // parent throws → vouches for nothing
+        ol.listPathResults.append(.success(ListResult(entries: []))) // child's own list
+
+        _ = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: 0
+        )
+
+        // The child must have attempted its own listPath despite the matching
+        // token, because its parent threw and could not vouch for it.
+        let childListCount = ol.listPathCalls.count(where: { $0.directory == "subdir" })
+        #expect(childListCount == 1, "child must list when its parent threw (no valid vouch)")
     }
 }

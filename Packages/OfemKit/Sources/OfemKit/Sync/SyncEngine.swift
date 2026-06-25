@@ -109,6 +109,16 @@ public actor SyncEngine {
     /// wall clock. Defaults to the real clock.
     private nonisolated let nowNsProvider: @Sendable () -> Int64
 
+    /// Account aliases with a ``refreshMaterialized`` pass currently in flight
+    /// (#380). The production caller `pollMaterialized` spawns an unstructured
+    /// `Task` per XPC poll with no cross-pass mutual exclusion, and the
+    /// per-alias semaphore only caps concurrency *within* a pass — so two
+    /// overlapping same-alias passes could interleave across the `cache.fetch`
+    /// suspension points and break the "a parent vouched THIS pass" guarantee.
+    /// A second pass for an alias already in flight returns early: the in-flight
+    /// pass already covers this poll's freshness.
+    private var refreshInFlightAliases: Set<String> = []
+
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "SyncEngine")
 
     // MARK: - Init
@@ -669,11 +679,26 @@ public actor SyncEngine {
     ) async -> Bool {
         guard !keys.isEmpty else { return false }
 
+        // Per-alias re-entrancy guard (#380). Two overlapping same-alias passes
+        // would interleave across the `cache.fetch` suspension points below and
+        // break the "a parent vouched THIS pass" invariant the skip-gate relies
+        // on. If a pass is already in flight for this alias, return early — that
+        // pass already covers this poll's freshness.
+        guard !refreshInFlightAliases.contains(alias) else { return false }
+        refreshInFlightAliases.insert(alias)
+        defer { refreshInFlightAliases.remove(alias) }
+
         let semaphore = refreshSemaphore(for: alias, cap: concurrencyCap)
 
         // 0. ONE snapshot of every key's prior subtree etag, before anything
         // lists. The parent wave will overwrite a child's stored value, so this
         // is the only point at which the pre-pass value is observable.
+        //
+        // Deferred optimisation (#380): this is N serialized `cache.fetch` reads,
+        // and the per-wave current-etag reads below add another N. CacheStore has
+        // no bulk keyed read yet; a single `(stableKeyString -> subtree_etag)`
+        // read would collapse both to one transaction. Left for a follow-up to
+        // keep this PR's diff scoped to correctness.
         var priorSubtreeEtag: [String: String] = [:]
         for key in keys {
             priorSubtreeEtag[key.stableKeyString] = (try? await cache.fetch(key: key))?.subtreeEtag ?? ""
@@ -681,7 +706,6 @@ public actor SyncEngine {
 
         // 1. Depth-sort into waves so parents precede children. depth is the
         // number of path segments; the item-root container (path == "") is 0.
-        let keysInThisPass = Set(keys.map(\.stableKeyString))
         let waves = Dictionary(grouping: keys, by: Self.containerDepth(of:))
             .sorted { $0.key < $1.key }
             .map(\.value)
@@ -696,6 +720,19 @@ public actor SyncEngine {
         // diagnostic — each child does a clean `await counter.add(n)` hop).
         let counter = DiffTotalCounter()
 
+        // Per-pass vouching evidence (#380). A child may be SKIPPED only when its
+        // parent genuinely vouches for the child's subtree token this pass —
+        // i.e. the parent either listed SUCCESSFULLY (re-stamping the child) or
+        // was itself SKIPPED (its own token unchanged ⇒ nothing changed anywhere
+        // below ⇒ the child is unchanged too). A parent that THREW (offline /
+        // paused / cancelled, swallowed in the wave task group) re-stamped
+        // nothing, so it vouches for NOTHING and the child must attempt its own
+        // list. Because waves are sequential — each wave's task group is fully
+        // awaited before the next wave's decisions run — both sets are complete
+        // for the parent depth before any child is evaluated.
+        var listedOK: Set<String> = []
+        var skipped: Set<String> = []
+
         // 2. Process waves sequentially (a parent wave must finish stamping
         // before its child wave reads the post-stamp value); within a wave the
         // refreshFolder calls run concurrently, semaphore-capped.
@@ -707,14 +744,22 @@ public actor SyncEngine {
             var toList: [CacheKey] = []
             for key in wave {
                 let keyString = key.stableKeyString
-                let parentListedThisPass = Self.parentKeyString(of: key).map(keysInThisPass.contains) ?? false
 
-                let healDue: Bool
-                if selfHealNsThreshold > 0 {
-                    let last = lastSelfHealNs[keyString]
-                    healDue = last == nil || nowNs - (last ?? 0) >= selfHealNsThreshold
+                // A parent vouches only if it actually re-stamped this child
+                // (listed OK) or was itself skipped (subtree unchanged below).
+                // Orphan (no parent key) or a parent that threw ⇒ not vouched.
+                let parentVouched = Self.parentKeyString(of: key)
+                    .map { listedOK.contains($0) || skipped.contains($0) } ?? false
+
+                let healDue: Bool = if selfHealNsThreshold > 0, let last = lastSelfHealNs[keyString] {
+                    // Monotonic-safe: a backward wall-clock step (NTP/manual)
+                    // makes nowNs <= last; fail TOWARD healing rather than away,
+                    // so a stuck/negative delta never silently disables the floor.
+                    nowNs <= last || nowNs - last >= selfHealNsThreshold
                 } else {
-                    healDue = false
+                    // Threshold disabled (0) ⇒ never heal-due; no prior heal
+                    // recorded ⇒ first sight is heal-due so the token is seeded.
+                    selfHealNsThreshold > 0
                 }
 
                 // CURRENT value: stamped by the parent wave already (if any).
@@ -722,27 +767,30 @@ public actor SyncEngine {
                 let prior = priorSubtreeEtag[keyString] ?? ""
                 let unchanged = !currentSubtreeEtag.isEmpty && currentSubtreeEtag == prior
 
-                if !healDue, parentListedThisPass, unchanged {
+                if !healDue, parentVouched, unchanged {
                     // SKIP: subtree token unchanged and a parent vouched for it
-                    // this pass → nothing changed below → no listPath.
+                    // this pass → nothing changed below → no listPath. Record the
+                    // skip so this key's own children may in turn be vouched.
+                    skipped.insert(keyString)
                     continue
-                }
-                if healDue {
-                    lastSelfHealNs[keyString] = nowNs
                 }
                 toList.append(key)
             }
 
             guard !toList.isEmpty else { continue }
 
-            await withTaskGroup(of: Void.self) { group in
+            // Each task reports (keyString, listedOK, diffTotal) back so the
+            // outer loop can fold success into `listedOK` and advance
+            // `lastSelfHealNs` ONLY on a real list (never on a swallowed throw).
+            let waveResults = await withTaskGroup(of: (String, Bool, Int).self) { group -> [(String, Bool, Int)] in
                 for key in toList {
                     group.addTask {
+                        let keyString = key.stableKeyString
                         do {
                             try await semaphore.wait()
                         } catch {
                             // Cancellation while waiting for a slot — non-fatal.
-                            return
+                            return (keyString, false, 0)
                         }
                         defer { semaphore.signal() }
 
@@ -756,14 +804,31 @@ public actor SyncEngine {
                         } catch {
                             // Offline, cancellation, or workspace-paused: silent
                             // no-op. refreshFolder rethrows before its destructive
-                            // reconcile, so the cache is intact.
-                            return
+                            // reconcile, so the cache is intact — and this key
+                            // vouches for nothing (listedOK == false).
+                            return (keyString, false, 0)
                         }
-
-                        if diff.total > 0 {
-                            await counter.add(diff.total)
-                        }
+                        return (keyString, true, diff.total)
                     }
+                }
+                var results: [(String, Bool, Int)] = []
+                for await r in group {
+                    results.append(r)
+                }
+                return results
+            }
+
+            for (keyString, ok, total) in waveResults {
+                guard ok else { continue }
+                listedOK.insert(keyString)
+                // Record the self-heal timestamp ONLY after a successful list, so
+                // a container that was offline at list time stays heal-due next
+                // poll instead of deferring the backstop a full interval.
+                if selfHealNsThreshold > 0 {
+                    lastSelfHealNs[keyString] = nowNs
+                }
+                if total > 0 {
+                    await counter.add(total)
                 }
             }
         }

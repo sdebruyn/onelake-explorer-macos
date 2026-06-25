@@ -449,14 +449,18 @@ enum ContentVersion {
     /// FNV-1a-64.
     ///
     /// IMPORTANT (#380): this reads `record.etag`, NEVER `record.subtreeEtag`.
-    /// `subtreeEtag` is the directory etag harvested from the parent listing and
-    /// advances on every descendant write at any depth; feeding it into a
-    /// container's content version would make macOS re-download/evict and churn
-    /// the thumbnail cache for that folder on every deep write — all cost, no
-    /// benefit (a folder has no content blob to re-download, and change delivery
-    /// is driven by the working set's `syncedAtNs` deltas, not folder versions).
-    /// Container rows keep `etag == ""`, so this stays on the FNV fallback for
-    /// directories. Keep `subtreeEtag` strictly out of every item version.
+    /// `subtreeEtag` is a SEPARATE column — the directory etag harvested from the
+    /// parent listing as a refresh skip-gate token — and advances on every
+    /// descendant write at any depth. Feeding it into a container's content
+    /// version would make macOS re-download/evict and churn the thumbnail cache
+    /// for that folder on every deep write — all cost, no benefit (a folder has
+    /// no content blob to re-download, and change delivery is driven by the
+    /// working set's `syncedAtNs` deltas, not folder versions). Note: directory
+    /// CHILD rows DO carry a non-empty `etag` (written by `refreshFolder` from
+    /// the DFS `2023-11-03` listing), so this takes the base64 branch for them —
+    /// that is the pre-existing, unchanged behaviour; only the parent/item-root
+    /// container's OWN row keeps `etag == ""`. The invariant this PR adds is
+    /// narrower: `subtreeEtag` (the new column) is never read here.
     static func content(for record: MetadataRecord) -> Data {
         if !record.etag.isEmpty {
             return Data(record.etag.utf8).base64EncodedData()
