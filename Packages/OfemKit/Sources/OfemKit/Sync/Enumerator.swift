@@ -106,20 +106,39 @@ enum Enumerator {
     /// real capability-only drift that must surface as a diff and be flushed
     /// to Finder via the next working-set poll.
     ///
-    /// `lastModifiedNs` is intentionally skipped for directory entries.
-    /// ADLS Gen2 advances a directory's `lastModified` timestamp whenever any
-    /// descendant is written (e.g. a Delta table commit), so this field changes
-    /// on every active-table poll even when the directory's own child listing is
-    /// completely unchanged. Directories carry an empty etag and zero
-    /// contentLength, making `lastModifiedNs` the only differing field in that
-    /// scenario — comparing it would produce a phantom `diff.updated > 0` every
-    /// cycle, causing the working-set to signal on every poll and pegging CPU.
-    /// Real directory-content changes are detected via child add / tombstone
-    /// reconciliation, not via the parent directory timestamp.
+    /// `lastModifiedNs`, `etag`, and `contentLength` are intentionally skipped
+    /// for directory entries (guarded by `!current.isDir`).
     ///
-    /// `createdNs` is included so that the post-v5-migration backfill works: the
-    /// first sync after upgrade finds `current.createdNs == 0` and `next.createdNs
-    /// != 0` and writes the row.
+    /// **`lastModifiedNs`** (skipped since PR #361): ADLS Gen2 advances a
+    /// directory's `lastModified` whenever any descendant is written (e.g. a
+    /// Delta table commit), so this field changes on every active-table poll
+    /// even when the directory's own child listing is completely unchanged.
+    ///
+    /// **`etag` and `contentLength`** (skipped since DFS API version
+    /// `2023-11-03`, issue #378): prior to that version directories carried an
+    /// empty etag and zero contentLength — only `lastModifiedNs` changed under
+    /// descendant writes. Starting from `2023-11-03` the *List Paths* response
+    /// returns a non-empty etag for directories that advances together with
+    /// `lastModified` on any descendant write, so the unconditional etag
+    /// comparison would now fire a phantom `diff.updated` for every directory
+    /// that is a child of an active Delta table. Skipping `etag` (and
+    /// `contentLength` defensively) for directories preserves the
+    /// "directory metadata is noise" invariant established in #361.
+    ///
+    /// Real directory-content changes are detected via child add / tombstone
+    /// reconciliation, not via the parent directory's own metadata.
+    ///
+    /// `createdNs` backfill is also skipped for directories (guarded by
+    /// `!current.isDir`). Directories are never HEAD/GET'd and the DFS list
+    /// does not populate `creationDate` for them, so `next.createdNs` for a
+    /// directory is always derived from the zero fallback. Gating the one-way
+    /// backfill trigger on `!current.isDir` closes a latent phantom-delta vector
+    /// consistent with the other three directory-metadata guards, and fully
+    /// encodes the "directory metadata is noise" invariant.
+    ///
+    /// For **files**, `createdNs` is included so that the post-v5-migration
+    /// backfill works: the first sync after upgrade finds `current.createdNs == 0`
+    /// and `next.createdNs != 0` and writes the row.
     ///
     /// The trigger is intentionally one-way (0 → non-zero only). Creation time is
     /// cosmetic and immutable from the server's perspective; the real value is
@@ -133,13 +152,13 @@ enum Enumerator {
     /// intentionally ignored here.
     static func entryChanged(current: MetadataRecord, next: MetadataRecord) -> Bool {
         current.isDir != next.isDir ||
-            current.contentLength != next.contentLength ||
-            current.etag != next.etag ||
+            (!current.isDir && current.contentLength != next.contentLength) ||
+            (!current.isDir && current.etag != next.etag) ||
             (!current.isDir && current.lastModifiedNs != next.lastModifiedNs) ||
             current.name != next.name ||
             current.parentPath != next.parentPath ||
             current.itemType != next.itemType ||
-            (current.createdNs == 0 && next.createdNs != 0)
+            (!current.isDir && current.createdNs == 0 && next.createdNs != 0)
     }
 
     // MARK: - Path helpers

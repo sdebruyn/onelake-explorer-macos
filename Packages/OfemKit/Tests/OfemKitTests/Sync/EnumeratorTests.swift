@@ -176,15 +176,17 @@ struct EnumeratorTests {
         #expect(Enumerator.entryChanged(current: current, next: next))
     }
 
+    // isDir: false is explicit — the guard added in #378 suppresses these
+    // comparisons for directories; these tests must remain file-specific.
     @Test func entryChangedContentLengthChange() {
-        let current = makeRecord(contentLength: 100)
-        let next = makeRecord(contentLength: 200)
+        let current = makeRecord(isDir: false, contentLength: 100)
+        let next = makeRecord(isDir: false, contentLength: 200)
         #expect(Enumerator.entryChanged(current: current, next: next))
     }
 
     @Test func entryChangedEtagChange() {
-        let current = makeRecord(etag: "abc")
-        let next = makeRecord(etag: "def")
+        let current = makeRecord(isDir: false, etag: "abc")
+        let next = makeRecord(isDir: false, etag: "def")
         #expect(Enumerator.entryChanged(current: current, next: next))
     }
 
@@ -267,5 +269,67 @@ struct EnumeratorTests {
         next.createdNs = 1_715_526_400_000_000_000
         #expect(Enumerator.entryChanged(current: current, next: next),
                 "real content change (etag) must still trigger an update")
+    }
+
+    // MARK: - entryChanged: directory metadata noise guard (issue #378)
+
+    /// Since DFS API version 2023-11-03, directory list entries carry a non-empty
+    /// etag that advances with lastModified on any descendant write.  A directory
+    /// whose only change from the cached record is the etag must NOT produce a
+    /// phantom diff.updated (the "directory metadata is noise" invariant from #361).
+    @Test func entryChangedDirectoryEtagOnlyChangeReturnsFalse() {
+        let current = makeRecord(isDir: true, etag: "etag-before")
+        let next = makeRecord(isDir: true, etag: "etag-after")
+        #expect(!Enumerator.entryChanged(current: current, next: next),
+                "directory etag-only change must not produce a phantom diff.updated")
+    }
+
+    /// Defensive: directories always report contentLength 0, but if the value
+    /// somehow drifts the comparison must still be suppressed for directories.
+    @Test func entryChangedDirectoryContentLengthOnlyChangeReturnsFalse() {
+        let current = makeRecord(isDir: true, contentLength: 0)
+        let next = makeRecord(isDir: true, contentLength: 4096)
+        #expect(!Enumerator.entryChanged(current: current, next: next),
+                "directory contentLength-only change must not produce a phantom diff.updated")
+    }
+
+    /// Guard against over-broad regression: a file whose etag changes must still
+    /// be detected as changed.
+    @Test func entryChangedFileEtagChangeReturnsTrue() {
+        let current = makeRecord(isDir: false, etag: "etag-v1")
+        let next = makeRecord(isDir: false, etag: "etag-v2")
+        #expect(Enumerator.entryChanged(current: current, next: next),
+                "file etag change must still trigger an update")
+    }
+
+    /// Regression anchor for #361: a directory whose only change is lastModifiedNs
+    /// must not trigger a diff (the original phantom-delta guard).
+    @Test func entryChangedDirectoryLastModifiedOnlyChangeReturnsFalse() {
+        let current = makeRecord(isDir: true, lastModifiedNs: 1_000_000)
+        let next = makeRecord(isDir: true, lastModifiedNs: 2_000_000)
+        #expect(!Enumerator.entryChanged(current: current, next: next),
+                "directory lastModifiedNs-only change must not produce a phantom diff.updated")
+    }
+
+    /// Directories are never HEAD/GET'd so their createdNs is always zero from
+    /// the list response; the one-way backfill trigger must be suppressed for
+    /// directories to close the latent phantom-delta vector.
+    @Test func entryChangedDirectoryCreatedNsZeroToNonZeroReturnsFalse() {
+        var current = makeRecord(isDir: true)
+        var next = makeRecord(isDir: true)
+        current.createdNs = 0
+        next.createdNs = 1_715_526_400_000_000_000
+        #expect(!Enumerator.entryChanged(current: current, next: next),
+                "directory createdNs backfill trigger must not fire — directories never receive a real creation time")
+    }
+
+    /// Sanity: the file createdNs backfill trigger must still fire for files.
+    @Test func entryChangedFileCreatedNsZeroToNonZeroReturnsTrue() {
+        var current = makeRecord(isDir: false)
+        var next = makeRecord(isDir: false)
+        current.createdNs = 0
+        next.createdNs = 1_715_526_400_000_000_000
+        #expect(Enumerator.entryChanged(current: current, next: next),
+                "file createdNs backfill trigger must still fire")
     }
 }
