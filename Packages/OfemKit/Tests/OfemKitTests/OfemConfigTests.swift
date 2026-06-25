@@ -449,6 +449,28 @@ struct OfemConfigTests {
                 "value 90 (above max \(SyncConfig.maxSelfHealIntervalM)) must clamp down to max")
     }
 
+    @Test("selfHealIntervalM: 10 (exact min) stays 10")
+    func selfHealIntervalMAtMinPreserved() throws {
+        let paths = makePaths()
+        let toml = "[sync]\nself_heal_interval_m = 10\n"
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().sync.selfHealIntervalM == 10,
+                "exact min value \(SyncConfig.minSelfHealIntervalM) must not be clamped further")
+    }
+
+    @Test("selfHealIntervalM: 60 (exact max) stays 60")
+    func selfHealIntervalMAtMaxPreserved() throws {
+        let paths = makePaths()
+        let toml = "[sync]\nself_heal_interval_m = 60\n"
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().sync.selfHealIntervalM == 60,
+                "exact max value \(SyncConfig.maxSelfHealIntervalM) must not be clamped further")
+    }
+
     @Test("selfHealIntervalM: 30 stays 30")
     func selfHealIntervalMInRangePreserved() throws {
         let paths = makePaths()

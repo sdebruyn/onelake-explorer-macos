@@ -23,8 +23,10 @@
 //   treats 0 as "use the built-in default".
 // - selfHealIntervalM — self-heal full-refresh interval in minutes.
 //   0 = disabled; values in [10, 60] are valid. Decoded as 0 when absent
-//   (backward-compatible); the host treats 0 as "use the built-in default"
-//   (SyncConfig.defaultSelfHealIntervalM).
+//   (backward-compatible with FPE builds that predate this field).
+//   The host preserves the last-known non-zero value on refresh; a 0 from
+//   the FPE is accepted verbatim only after a non-zero value has already
+//   been observed. No default substitution is performed by the host.
 
 import Foundation
 
@@ -56,8 +58,10 @@ import Foundation
     /// "use the built-in default" (SyncConfig.defaultMaterializedPollIntervalS).
     @objc public let materializedPollIntervalS: Int
     /// Self-heal full-refresh interval in minutes.
-    /// `0` means disabled or "use the built-in default". Decoded as 0 when absent
+    /// `0` means the floor is disabled. Decoded as 0 when the key is absent
     /// (backward-compatible with FPE builds that predate this field).
+    /// The host preserves the last-known non-zero value across refreshes and
+    /// accepts 0 verbatim once a non-zero value has been observed.
     @objc public let selfHealIntervalM: Int
 
     // MARK: - Init

@@ -152,17 +152,21 @@ extension SyncConfig: Codable {
             SyncConfig.minMaterializedPollIntervalS,
             min(SyncConfig.maxMaterializedPollIntervalS, rawPoll)
         )
-        let rawHeal = try c.decodeIfPresent(Int.self, forKey: .selfHealIntervalM)
-            ?? SyncConfig.defaultSelfHealIntervalM
-        // 0 is the "disabled" sentinel and is preserved as-is.
-        // Any non-zero value is clamped to [min, max] so a hand-edited value is valid.
-        if rawHeal == 0 {
-            selfHealIntervalM = 0
+        // `decodeIfPresent` returns nil when the key is absent; nil → default.
+        // An explicit 0 is preserved: it signals "disabled", not "absent".
+        if let rawHeal = try c.decodeIfPresent(Int.self, forKey: .selfHealIntervalM) {
+            if rawHeal == 0 {
+                // Explicit 0 = disabled sentinel; preserved as-is.
+                selfHealIntervalM = 0
+            } else {
+                // Non-zero: clamp to [min, max] so a hand-edited value is valid.
+                selfHealIntervalM = max(
+                    SyncConfig.minSelfHealIntervalM,
+                    min(SyncConfig.maxSelfHealIntervalM, rawHeal)
+                )
+            }
         } else {
-            selfHealIntervalM = max(
-                SyncConfig.minSelfHealIntervalM,
-                min(SyncConfig.maxSelfHealIntervalM, rawHeal)
-            )
+            selfHealIntervalM = SyncConfig.defaultSelfHealIntervalM
         }
     }
 

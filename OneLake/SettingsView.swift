@@ -338,14 +338,12 @@ private struct AdvancedSettingsTab: View {
     }
 
     /// True once the FPE status has been fetched and the self-heal interval is loaded.
-    /// A returned value of 0 means "disabled" and is still considered loaded.
+    /// Uses the dedicated `engineStatusReceived` flag so this does not implicitly
+    /// depend on an unrelated sibling field (e.g. `materializedPollIntervalS`):
+    /// `selfHealIntervalM` can legitimately be 0 (disabled) even after the FPE
+    /// has replied, so a non-zero proxy would be incorrect.
     private var selfHealLoaded: Bool {
-        // selfHealIntervalM starts at 0 (unset). The FPE always returns a
-        // value once it has started; 0 from the FPE means "disabled".
-        // We treat the field as loaded once we've received the first non-zero
-        // status reply — represented here by the materializedPollIntervalS
-        // having been populated (both arrive in the same status reply).
-        model.materializedPollIntervalS > 0
+        model.engineStatusReceived
     }
 
     /// Whether self-heal is currently enabled (non-zero interval).

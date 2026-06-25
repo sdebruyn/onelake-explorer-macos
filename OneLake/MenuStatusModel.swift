@@ -192,6 +192,13 @@ final class MenuStatusModel: ObservableObject {
     /// (enabled) or 0 (disabled).
     @Published private(set) var selfHealIntervalM: Int = 0
 
+    /// True once at least one successful `getEngineStatus` reply has been
+    /// applied to this model. Settings rows that can legitimately hold the
+    /// disabled-sentinel value (e.g. `selfHealIntervalM == 0`) should gate
+    /// their "loaded" state on this flag rather than on a sibling field's
+    /// non-zero value, to avoid invisible coupling between unrelated knobs.
+    @Published private(set) var engineStatusReceived: Bool = false
+
     /// Last action error for display to the user. nil if the last action succeeded.
     /// Set by destructive actions (removeAccount, cacheClear, setDefaultAccount)
     /// when they fail so the UI can surface a non-intrusive inline message.
@@ -463,6 +470,12 @@ final class MenuStatusModel: ObservableObject {
                     selfHealIntervalM = status.selfHealIntervalM
                 }
             }
+
+            // Mark that at least one successful status reply has been applied.
+            // Settings rows that cannot use a sibling field's non-zero value as
+            // a "loaded" proxy (e.g. selfHealIntervalM may be 0 when disabled)
+            // should gate on this flag instead.
+            engineStatusReceived = true
 
             // Map XPCPausedWorkspace entries to PausedWorkspaceInfo.
             pausedWorkspaces = status.pausedWorkspaces.map { xpc in
