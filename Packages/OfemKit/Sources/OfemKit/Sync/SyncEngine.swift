@@ -40,6 +40,14 @@ public actor SyncEngine {
     /// type into the public API).
     public static let defaultPauseProbeInterval: Duration = .seconds(120)
 
+    /// Default self-heal floor for ``refreshMaterialized`` (#380): force a
+    /// non-gated full re-list of each container at least this often as insurance
+    /// against the empirical "directory etag advances on any descendant write"
+    /// invariant. PR B wires this to a configurable advanced setting
+    /// (10–60 min, disableable); PR A uses this default and a `0 ⇒ disabled`
+    /// parameter so the behaviour is testable in isolation.
+    public static let defaultSelfHealIntervalMinutes = 30
+
     // MARK: - Dependencies (private — callers must go through SyncEngine API)
 
     //
@@ -89,6 +97,28 @@ public actor SyncEngine {
     /// now-cancelled task) removing an entry that belongs to a newer task.
     private var downloadGenerations: [String: UInt64] = [:]
 
+    /// Per-container timestamp (Unix nanoseconds) of the last self-heal forced
+    /// full re-list in ``refreshMaterialized`` (#380). Keyed by
+    /// ``CacheKey/stableKeyString``. Absent ⇒ never self-healed yet ⇒ the first
+    /// poll forces a list and records the timestamp, so steady-state self-heals
+    /// land roughly one interval apart rather than all firing on poll 1.
+    private var lastSelfHealNs: [String: Int64] = [:]
+
+    /// Injectable time source (Unix nanoseconds) used by the self-heal floor so
+    /// tests can drive elapsed time deterministically instead of sleeping on the
+    /// wall clock. Defaults to the real clock.
+    private nonisolated let nowNsProvider: @Sendable () -> Int64
+
+    /// Account aliases with a ``refreshMaterialized`` pass currently in flight
+    /// (#380). The production caller `pollMaterialized` spawns an unstructured
+    /// `Task` per XPC poll with no cross-pass mutual exclusion, and the
+    /// per-alias semaphore only caps concurrency *within* a pass — so two
+    /// overlapping same-alias passes could interleave across the `cache.fetch`
+    /// suspension points and break the "a parent vouched THIS pass" guarantee.
+    /// A second pass for an alias already in flight returns early: the in-flight
+    /// pass already covers this poll's freshness.
+    private var refreshInFlightAliases: Set<String> = []
+
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "SyncEngine")
 
     // MARK: - Init
@@ -106,6 +136,9 @@ public actor SyncEngine {
     /// - scratchBase: Directory for download spill files. Defaults to
     /// `<tmp>/ofem-download-partials/<pid>`.
     /// - pauseProbeInterval: Minimum gap between workspace-recovery probes.
+    /// - nowNsProvider: Injectable Unix-nanosecond clock for the #380 self-heal
+    ///   floor. Defaults to the real wall clock; tests pass a controllable
+    ///   source to drive elapsed time deterministically.
     public init(
         cache: CacheStore,
         onelake: any OneLakeClientProtocol,
@@ -115,9 +148,14 @@ public actor SyncEngine {
         maxConcurrentDownloads: Int = SyncEngine.defaultMaxConcurrentDownloads,
         maxConcurrentUploads: Int = SyncEngine.defaultMaxConcurrentUploads,
         scratchBase: URL? = nil,
-        pauseProbeInterval: Duration = SyncEngine.defaultPauseProbeInterval
+        pauseProbeInterval: Duration = SyncEngine.defaultPauseProbeInterval,
+        nowNsProvider: (@Sendable () -> Int64)? = nil
     ) {
         self.cache = cache
+        // Resolve the default inside the init body: the default-argument
+        // expression is evaluated in the caller's scope, where the private
+        // global `currentNowNs()` is not visible. `nil` ⇒ real wall clock.
+        self.nowNsProvider = nowNsProvider ?? { currentNowNs() }
         self.onelake = onelake
         self.fabric = fabric
         self.logger = logger
@@ -428,7 +466,17 @@ public actor SyncEngine {
                 syncedAtNs: nowNs,
                 childrenSyncedAtNs: cur?.childrenSyncedAtNs ?? 0,
                 itemType: folderItemType,
-                createdNs: dateToNs(entry.creationDate) ?? cur?.createdNs ?? 0
+                createdNs: dateToNs(entry.creationDate) ?? cur?.createdNs ?? 0,
+                // #380 skip-gate harvest: a directory child's etag is its subtree
+                // token (advances on any descendant write). Stamp it on the child
+                // container's own row so the next refreshMaterialized can compare
+                // it. Files carry "". When this row IS rewritten below (e.g. its
+                // itemType changed) the freshest harvested value is persisted;
+                // when it is NOT rewritten — the common case, since entryChanged
+                // ignores directory etag (#379) — the targeted updateSubtreeEtag
+                // pass after the batch keeps the token current without a
+                // synced_at_ns bump.
+                subtreeEtag: entry.isDirectory ? entry.eTag : ""
             )
             // Carry blob linkage when etag still matches.
             if let c = cur, !c.etag.isEmpty, c.etag == entry.eTag {
@@ -449,6 +497,31 @@ public actor SyncEngine {
             // appended to upsertBatch — their cached row stays exactly as-is.
         }
         await batchUpsert(upsertBatch, context: "refreshFolder upsert")
+
+        // #380 subtree-etag harvest: keep each directory child's skip-gate token
+        // current WITHOUT bumping synced_at_ns. A dir child that exists but was
+        // not re-upserted (the common case — entryChanged ignores directory etag
+        // per #379) would otherwise freeze its subtree_etag at first-sight, so
+        // the skip-gate would never see the token advance. Stamp only the rows
+        // whose harvested etag actually differs from the cached value; rows in
+        // upsertBatch already carry the fresh value, so skip those.
+        let upsertedPaths = Set(upsertBatch.map(\.path))
+        for (relPath, entry) in remoteChildren where entry.isDirectory {
+            guard !upsertedPaths.contains(relPath) else { continue }
+            let cachedSubtreeEtag = cachedByPath[relPath]?.subtreeEtag ?? ""
+            guard cachedSubtreeEtag != entry.eTag else { continue }
+            let childKey = CacheKey(
+                accountAlias: key.accountAlias,
+                workspaceID: key.workspaceID,
+                itemID: key.itemID,
+                path: relPath
+            )
+            do {
+                try await cache.updateSubtreeEtag(key: childKey, etag: entry.eTag)
+            } catch {
+                Self.log.warning("refreshFolder: updateSubtreeEtag failed err=\(error, privacy: .public)")
+            }
+        }
 
         // Delete cached children that disappeared remotely in one batch.
         var deleteBatch: [CacheKey] = []
@@ -502,7 +575,12 @@ public actor SyncEngine {
                 lastAccessedNs: existingParentLastAccessed == 0 ? nowNs : existingParentLastAccessed,
                 syncedAtNs: nowNs,
                 childrenSyncedAtNs: nowNs,
-                itemType: folderItemType
+                itemType: folderItemType,
+                // Carry the container's own subtree etag (harvested by ITS parent
+                // listing, #380) forward. A full re-upsert here must never reset
+                // it to "" — that would erase the skip-gate token a parent wave
+                // just stamped and make refreshMaterialized always re-list.
+                subtreeEtag: existingParent?.subtreeEtag ?? ""
             )
             do { try await cache.upsert(parent) } catch {
                 Self.log.warning("refreshFolder: upsert parent failed err=\(error, privacy: .public)")
@@ -551,73 +629,233 @@ public actor SyncEngine {
         try await refreshFolder(key: key)
     }
 
-    /// Refreshes a set of materialized containers with a per-alias concurrency cap.
+    /// Refreshes a set of materialized containers, parent-driven, with a
+    /// subtree-etag skip-gate (#380) and a per-alias concurrency cap.
     ///
-    /// Fans out over `keys`, calling ``refreshMaterializedContainer(key:)`` for
-    /// each with at most `concurrencyCap` concurrent DFS round-trips for `alias`.
-    /// The cap is stored per alias (mirroring the `downloadSlots`/`uploadSlots`
-    /// pattern) so concurrent calls for the same account share the same gate.
+    /// ## Skip-gate (#380)
     ///
-    /// Per-key errors (offline, cancellation, workspace paused) are treated as
-    /// non-fatal: they are silently swallowed and do not abort the remaining
-    /// keys. No failure telemetry is emitted for individual key failures here;
-    /// the caller (host poll loop) owns the lifecycle.
+    /// Containers are processed in **depth-ordered waves** (parents before
+    /// children) so that when a parent is listed it harvests each child
+    /// container's directory etag (its subtree token) onto the child's cache row
+    /// via ``refreshFolder(key:)``. A child whose harvested `subtreeEtag` is
+    /// unchanged since the last poll has — by the ADLS Gen2 `2023-11-03`
+    /// deep-advance invariant — no descendant change anywhere below it, so its
+    /// own `listPath` is skipped entirely. This collapses steady-state cost from
+    /// O(materialized containers) lists to O(containers whose subtree changed).
+    ///
+    /// CRITICAL ORDERING: the prior `subtreeEtag` of every key is snapshotted
+    /// ONCE at the very start, BEFORE any wave lists. The parent wave overwrites
+    /// each child's stored `subtreeEtag`, so the child wave compares its CURRENT
+    /// (post-parent-stamp) value against that prior snapshot. Snapshotting
+    /// per-wave-at-its-start would compare a value against itself and never skip.
+    ///
+    /// An orphan child (its parent is not in `keys`) is never stamped by a parent
+    /// wave this pass, so it always lists — matching today's behaviour. Safe.
+    ///
+    /// ## Self-heal floor (#380)
+    ///
+    /// As insurance against the empirical deep-advance invariant, each container
+    /// is forced through a non-gated full re-list at least every
+    /// `selfHealIntervalMinutes`. `0` disables the floor (always honour the
+    /// skip-gate). PR B wires the interval to a configurable advanced setting.
+    ///
+    /// Per-key errors (offline, cancellation, workspace paused) are non-fatal:
+    /// silently swallowed, never aborting the remaining keys.
     ///
     /// - Parameters:
     ///   - alias: Account alias owning all `keys`; also the per-alias semaphore key.
     ///   - keys: Containers to refresh; no FileProvider types.
-    ///   - concurrencyCap: Maximum concurrent ``refreshMaterializedContainer(key:)``
-    ///     calls for this alias. Ignored on subsequent calls once the semaphore is
-    ///     created (the stored semaphore retains its original cap).
+    ///   - concurrencyCap: Maximum concurrent ``refreshFolder(key:)`` calls within
+    ///     a single depth wave for this alias. Stored per alias; ignored on
+    ///     subsequent calls once the semaphore is created.
+    ///   - selfHealIntervalMinutes: Forced non-gated re-list cadence per container.
+    ///     `0` disables the floor. Defaults to ``defaultSelfHealIntervalMinutes``.
     /// - Returns: `true` iff at least one container produced `diff.total > 0`.
     public func refreshMaterialized(
         alias: String,
         keys: [CacheKey],
-        concurrencyCap: Int
+        concurrencyCap: Int,
+        selfHealIntervalMinutes: Int = SyncEngine.defaultSelfHealIntervalMinutes
     ) async -> Bool {
         guard !keys.isEmpty else { return false }
 
+        // Per-alias re-entrancy guard (#380). Two overlapping same-alias passes
+        // would interleave across the `cache.fetch` suspension points below and
+        // break the "a parent vouched THIS pass" invariant the skip-gate relies
+        // on. If a pass is already in flight for this alias, return early — that
+        // pass already covers this poll's freshness.
+        guard !refreshInFlightAliases.contains(alias) else { return false }
+        refreshInFlightAliases.insert(alias)
+        defer { refreshInFlightAliases.remove(alias) }
+
         let semaphore = refreshSemaphore(for: alias, cap: concurrencyCap)
 
-        // Accumulate per-task diff totals via an actor-isolated counter.
+        // 0. ONE snapshot of every key's prior subtree etag, before anything
+        // lists. The parent wave will overwrite a child's stored value, so this
+        // is the only point at which the pre-pass value is observable.
         //
-        // Swift 6 strict-concurrency inside a `SyncEngine` actor method:
-        // `withTaskGroup(of: Int.self)` trips "sending 'group' risks causing data
-        // races" because child closures capture actor-isolated `self` and the
-        // group itself is sent across isolation boundaries. The DiffTotalCounter
-        // actor is the correct pattern here — each child task calls `await
-        // counter.add(n)` which is a well-typed actor hop rather than a raw send.
+        // Deferred optimisation (#380): this is N serialized `cache.fetch` reads,
+        // and the per-wave current-etag reads below add another N. CacheStore has
+        // no bulk keyed read yet; a single `(stableKeyString -> subtree_etag)`
+        // read would collapse both to one transaction. Left for a follow-up to
+        // keep this PR's diff scoped to correctness.
+        var priorSubtreeEtag: [String: String] = [:]
+        for key in keys {
+            priorSubtreeEtag[key.stableKeyString] = (try? await cache.fetch(key: key))?.subtreeEtag ?? ""
+        }
+
+        // 1. Depth-sort into waves so parents precede children. depth is the
+        // number of path segments; the item-root container (path == "") is 0.
+        let waves = Dictionary(grouping: keys, by: Self.containerDepth(of:))
+            .sorted { $0.key < $1.key }
+            .map(\.value)
+
+        let nowNs = nowNsProvider()
+        let selfHealNsThreshold: Int64 = selfHealIntervalMinutes > 0
+            ? Int64(selfHealIntervalMinutes) * 60 * 1_000_000_000
+            : 0
+
+        // Accumulate per-task diff totals via an actor-isolated counter (the
+        // DiffTotalCounter pattern sidesteps the Swift 6 "sending 'group'"
+        // diagnostic — each child does a clean `await counter.add(n)` hop).
         let counter = DiffTotalCounter()
 
-        await withTaskGroup(of: Void.self) { group in
-            for key in keys {
-                group.addTask {
-                    do {
-                        try await semaphore.wait()
-                    } catch {
-                        // Cancellation while waiting for a slot — non-fatal.
-                        return
-                    }
-                    defer { semaphore.signal() }
+        // Per-pass vouching evidence (#380). A child may be SKIPPED only when its
+        // parent genuinely vouches for the child's subtree token this pass —
+        // i.e. the parent either listed SUCCESSFULLY (re-stamping the child) or
+        // was itself SKIPPED (its own token unchanged ⇒ nothing changed anywhere
+        // below ⇒ the child is unchanged too). A parent that THREW (offline /
+        // paused / cancelled, swallowed in the wave task group) re-stamped
+        // nothing, so it vouches for NOTHING and the child must attempt its own
+        // list. Because waves are sequential — each wave's task group is fully
+        // awaited before the next wave's decisions run — both sets are complete
+        // for the parent depth before any child is evaluated.
+        var listedOK: Set<String> = []
+        var skipped: Set<String> = []
 
-                    let diff: Diff
-                    do {
-                        diff = try await self.refreshMaterializedContainer(key: key)
-                    } catch {
-                        // Offline, cancellation, or workspace-paused: silent no-op.
-                        // refreshFolder rethrows before its destructive reconcile, so
-                        // the cache is intact.
-                        return
-                    }
+        // 2. Process waves sequentially (a parent wave must finish stamping
+        // before its child wave reads the post-stamp value); within a wave the
+        // refreshFolder calls run concurrently, semaphore-capped.
+        for wave in waves {
+            // Compute each key's skip decision on the actor BEFORE spawning, so
+            // the decision reads consistent actor state (lastSelfHealNs) and the
+            // post-parent-stamp subtree etag. The set of keys actually needing a
+            // list is then fanned out concurrently.
+            var toList: [CacheKey] = []
+            for key in wave {
+                let keyString = key.stableKeyString
 
-                    if diff.total > 0 {
-                        await counter.add(diff.total)
+                // A parent vouches only if it actually re-stamped this child
+                // (listed OK) or was itself skipped (subtree unchanged below).
+                // Orphan (no parent key) or a parent that threw ⇒ not vouched.
+                let parentVouched = Self.parentKeyString(of: key)
+                    .map { listedOK.contains($0) || skipped.contains($0) } ?? false
+
+                let healDue: Bool = if selfHealNsThreshold > 0, let last = lastSelfHealNs[keyString] {
+                    // Monotonic-safe: a backward wall-clock step (NTP/manual)
+                    // makes nowNs <= last; fail TOWARD healing rather than away,
+                    // so a stuck/negative delta never silently disables the floor.
+                    nowNs <= last || nowNs - last >= selfHealNsThreshold
+                } else {
+                    // Threshold disabled (0) ⇒ never heal-due; no prior heal
+                    // recorded ⇒ first sight is heal-due so the token is seeded.
+                    selfHealNsThreshold > 0
+                }
+
+                // CURRENT value: stamped by the parent wave already (if any).
+                let currentSubtreeEtag = (try? await cache.fetch(key: key))?.subtreeEtag ?? ""
+                let prior = priorSubtreeEtag[keyString] ?? ""
+                let unchanged = !currentSubtreeEtag.isEmpty && currentSubtreeEtag == prior
+
+                if !healDue, parentVouched, unchanged {
+                    // SKIP: subtree token unchanged and a parent vouched for it
+                    // this pass → nothing changed below → no listPath. Record the
+                    // skip so this key's own children may in turn be vouched.
+                    skipped.insert(keyString)
+                    continue
+                }
+                toList.append(key)
+            }
+
+            guard !toList.isEmpty else { continue }
+
+            // Each task reports (keyString, listedOK, diffTotal) back so the
+            // outer loop can fold success into `listedOK` and advance
+            // `lastSelfHealNs` ONLY on a real list (never on a swallowed throw).
+            let waveResults = await withTaskGroup(of: (String, Bool, Int).self) { group -> [(String, Bool, Int)] in
+                for key in toList {
+                    group.addTask {
+                        let keyString = key.stableKeyString
+                        do {
+                            try await semaphore.wait()
+                        } catch {
+                            // Cancellation while waiting for a slot — non-fatal.
+                            return (keyString, false, 0)
+                        }
+                        defer { semaphore.signal() }
+
+                        let diff: Diff
+                        do {
+                            // Go through refreshMaterializedContainer — the
+                            // documented single-container entry that bypasses the
+                            // skip-gate. The gate has already decided this key
+                            // needs a list; the container refresh just performs it.
+                            diff = try await self.refreshMaterializedContainer(key: key)
+                        } catch {
+                            // Offline, cancellation, or workspace-paused: silent
+                            // no-op. refreshFolder rethrows before its destructive
+                            // reconcile, so the cache is intact — and this key
+                            // vouches for nothing (listedOK == false).
+                            return (keyString, false, 0)
+                        }
+                        return (keyString, true, diff.total)
                     }
+                }
+                var results: [(String, Bool, Int)] = []
+                for await r in group {
+                    results.append(r)
+                }
+                return results
+            }
+
+            for (keyString, ok, total) in waveResults {
+                guard ok else { continue }
+                listedOK.insert(keyString)
+                // Record the self-heal timestamp ONLY after a successful list, so
+                // a container that was offline at list time stays heal-due next
+                // poll instead of deferring the backstop a full interval.
+                if selfHealNsThreshold > 0 {
+                    lastSelfHealNs[keyString] = nowNs
+                }
+                if total > 0 {
+                    await counter.add(total)
                 }
             }
         }
 
         return await counter.total > 0
+    }
+
+    /// Number of path segments in a container key's path; the item-root
+    /// container (path == "") is depth 0. Used to order ``refreshMaterialized``
+    /// waves parent-before-child (#380).
+    private static func containerDepth(of key: CacheKey) -> Int {
+        key.path.isEmpty ? 0 : key.path.split(separator: "/").count
+    }
+
+    /// The ``CacheKey/stableKeyString`` of `key`'s parent container, or `nil`
+    /// when `key` is an item-root container (path == "") and therefore has no
+    /// in-domain parent container. Used by ``refreshMaterialized`` to decide
+    /// whether a parent vouched for the child's subtree token this pass (#380).
+    private static func parentKeyString(of key: CacheKey) -> String? {
+        guard !key.path.isEmpty else { return nil }
+        let parentKey = CacheKey(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: Enumerator.parentPath(key.path)
+        )
+        return parentKey.stableKeyString
     }
 
     // MARK: - Open (download)
