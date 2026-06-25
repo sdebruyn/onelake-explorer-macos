@@ -337,6 +337,27 @@ private struct AdvancedSettingsTab: View {
         )
     }
 
+    /// True once the FPE status has been fetched and the self-heal interval is loaded.
+    /// Uses the dedicated `engineStatusReceived` flag so this does not implicitly
+    /// depend on an unrelated sibling field (e.g. `materializedPollIntervalS`):
+    /// `selfHealIntervalM` can legitimately be 0 (disabled) even after the FPE
+    /// has replied, so a non-zero proxy would be incorrect.
+    private var selfHealLoaded: Bool {
+        model.engineStatusReceived
+    }
+
+    /// Whether self-heal is currently enabled (non-zero interval).
+    private var selfHealEnabled: Bool {
+        model.selfHealIntervalM > 0
+    }
+
+    private var selfHealIntervalBinding: Binding<Int> {
+        Binding(
+            get: { model.selfHealIntervalM > 0 ? model.selfHealIntervalM : SyncConfig.defaultSelfHealIntervalM },
+            set: { model.setSelfHealInterval($0) }
+        )
+    }
+
     var body: some View {
         Form {
             Section {
@@ -375,6 +396,7 @@ private struct AdvancedSettingsTab: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Content refresh interval")
+                            // swiftlint:disable:next line_length
                             Text("How often open folders are polled for new files (\(SyncConfig.minMaterializedPollIntervalS)–\(SyncConfig.maxMaterializedPollIntervalS) s).")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -383,6 +405,45 @@ private struct AdvancedSettingsTab: View {
                     .disabled(!model.hasAccounts)
                 } else {
                     LabeledContent("Content refresh interval") {
+                        Text("Loading…").foregroundStyle(.secondary)
+                    }
+                }
+
+                if selfHealLoaded {
+                    LabeledContent {
+                        HStack(spacing: 8) {
+                            Toggle("", isOn: Binding(
+                                get: { selfHealEnabled },
+                                set: { enabled in
+                                    model.setSelfHealInterval(
+                                        enabled ? SyncConfig.defaultSelfHealIntervalM : 0
+                                    )
+                                }
+                            ))
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            if selfHealEnabled {
+                                Stepper("", value: selfHealIntervalBinding,
+                                        in: SyncConfig.minSelfHealIntervalM ... SyncConfig.maxSelfHealIntervalM,
+                                        step: 5)
+                                    .labelsHidden()
+                                Text("\(model.selfHealIntervalM) min")
+                                    .font(.body.monospacedDigit())
+                                    .frame(minWidth: 56, alignment: .trailing)
+                            }
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Self-heal full refresh")
+                            // swiftlint:disable:next line_length
+                            Text("Periodically force a full re-list of open folders as insurance against missed changes (\(SyncConfig.minSelfHealIntervalM)–\(SyncConfig.maxSelfHealIntervalM) min).")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .disabled(!model.hasAccounts)
+                } else {
+                    LabeledContent("Self-heal full refresh") {
                         Text("Loading…").foregroundStyle(.secondary)
                     }
                 }

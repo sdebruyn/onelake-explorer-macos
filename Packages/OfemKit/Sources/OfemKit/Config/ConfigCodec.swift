@@ -140,22 +140,40 @@ extension LogConfig: Codable {
 extension SyncConfig: Codable {
     enum CodingKeys: String, CodingKey {
         case materializedPollIntervalS = "materialized_poll_interval_s"
+        case selfHealIntervalM = "self_heal_interval_m"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        let raw = try c.decodeIfPresent(Int.self, forKey: .materializedPollIntervalS)
+        let rawPoll = try c.decodeIfPresent(Int.self, forKey: .materializedPollIntervalS)
             ?? SyncConfig.defaultMaterializedPollIntervalS
         // Clamp to [min, max] so a hand-edited value is always valid.
         materializedPollIntervalS = max(
             SyncConfig.minMaterializedPollIntervalS,
-            min(SyncConfig.maxMaterializedPollIntervalS, raw)
+            min(SyncConfig.maxMaterializedPollIntervalS, rawPoll)
         )
+        // `decodeIfPresent` returns nil when the key is absent; nil → default.
+        // An explicit 0 is preserved: it signals "disabled", not "absent".
+        if let rawHeal = try c.decodeIfPresent(Int.self, forKey: .selfHealIntervalM) {
+            if rawHeal == 0 {
+                // Explicit 0 = disabled sentinel; preserved as-is.
+                selfHealIntervalM = 0
+            } else {
+                // Non-zero: clamp to [min, max] so a hand-edited value is valid.
+                selfHealIntervalM = max(
+                    SyncConfig.minSelfHealIntervalM,
+                    min(SyncConfig.maxSelfHealIntervalM, rawHeal)
+                )
+            }
+        } else {
+            selfHealIntervalM = SyncConfig.defaultSelfHealIntervalM
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(materializedPollIntervalS, forKey: .materializedPollIntervalS)
+        try c.encode(selfHealIntervalM, forKey: .selfHealIntervalM)
     }
 }
 

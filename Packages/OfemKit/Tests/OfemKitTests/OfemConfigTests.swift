@@ -403,4 +403,110 @@ struct OfemConfigTests {
         #expect(snap.log.level == def.log.level)
         #expect(snap.cache.maxSizeGB == def.cache.maxSizeGB)
     }
+
+    // MARK: - SyncConfig.selfHealIntervalM
+
+    @Test("selfHealIntervalM: absent key defaults to 30")
+    func selfHealIntervalMDefaultsTo30() throws {
+        let paths = makePaths()
+        try writeFile("install_id = \"x\"\n", at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().sync.selfHealIntervalM == SyncConfig.defaultSelfHealIntervalM,
+                "absent self_heal_interval_m must default to \(SyncConfig.defaultSelfHealIntervalM)")
+    }
+
+    @Test("selfHealIntervalM: 0 is preserved as disabled sentinel")
+    func selfHealIntervalMZeroDisabled() throws {
+        let paths = makePaths()
+        let toml = "[sync]\nself_heal_interval_m = 0\n"
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().sync.selfHealIntervalM == 0,
+                "self_heal_interval_m = 0 must be preserved as the disabled sentinel")
+    }
+
+    @Test("selfHealIntervalM: 5 (below min) clamps up to 10")
+    func selfHealIntervalMClampsBelowMinToMin() throws {
+        let paths = makePaths()
+        let toml = "[sync]\nself_heal_interval_m = 5\n"
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().sync.selfHealIntervalM == SyncConfig.minSelfHealIntervalM,
+                "value 5 (below min \(SyncConfig.minSelfHealIntervalM)) must clamp up to min")
+    }
+
+    @Test("selfHealIntervalM: 90 (above max) clamps down to 60")
+    func selfHealIntervalMClampsAboveMaxToMax() throws {
+        let paths = makePaths()
+        let toml = "[sync]\nself_heal_interval_m = 90\n"
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().sync.selfHealIntervalM == SyncConfig.maxSelfHealIntervalM,
+                "value 90 (above max \(SyncConfig.maxSelfHealIntervalM)) must clamp down to max")
+    }
+
+    @Test("selfHealIntervalM: 10 (exact min) stays 10")
+    func selfHealIntervalMAtMinPreserved() throws {
+        let paths = makePaths()
+        let toml = "[sync]\nself_heal_interval_m = 10\n"
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().sync.selfHealIntervalM == 10,
+                "exact min value \(SyncConfig.minSelfHealIntervalM) must not be clamped further")
+    }
+
+    @Test("selfHealIntervalM: 60 (exact max) stays 60")
+    func selfHealIntervalMAtMaxPreserved() throws {
+        let paths = makePaths()
+        let toml = "[sync]\nself_heal_interval_m = 60\n"
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().sync.selfHealIntervalM == 60,
+                "exact max value \(SyncConfig.maxSelfHealIntervalM) must not be clamped further")
+    }
+
+    @Test("selfHealIntervalM: 30 stays 30")
+    func selfHealIntervalMInRangePreserved() throws {
+        let paths = makePaths()
+        let toml = "[sync]\nself_heal_interval_m = 30\n"
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        #expect(store.snapshot().sync.selfHealIntervalM == 30,
+                "in-range value 30 must be preserved as-is")
+    }
+
+    @Test("selfHealIntervalM: round-trips through encode/decode")
+    func selfHealIntervalMRoundTrips() async throws {
+        let paths = makePaths()
+        let store = try OfemConfigStore(paths: paths)
+
+        try await store.updateAndSave { cfg in
+            cfg.sync.selfHealIntervalM = 45
+        }
+
+        let store2 = try OfemConfigStore(paths: paths)
+        #expect(store2.snapshot().sync.selfHealIntervalM == 45,
+                "selfHealIntervalM = 45 must survive an encode/decode round-trip")
+    }
+
+    @Test("selfHealIntervalM: 0 round-trips through encode/decode")
+    func selfHealIntervalMZeroRoundTrips() async throws {
+        let paths = makePaths()
+        let store = try OfemConfigStore(paths: paths)
+
+        try await store.updateAndSave { cfg in
+            cfg.sync.selfHealIntervalM = 0
+        }
+
+        let store2 = try OfemConfigStore(paths: paths)
+        #expect(store2.snapshot().sync.selfHealIntervalM == 0,
+                "selfHealIntervalM = 0 (disabled) must survive an encode/decode round-trip")
+    }
 }

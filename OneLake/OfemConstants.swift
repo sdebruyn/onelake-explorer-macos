@@ -39,4 +39,5 @@ enum OfemConfigKey {
     static let netMaxDownloads = "net.max_concurrent_downloads_per_account"
     static let logLevel = "log.level"
     static let syncMaterializedPollIntervalS = "sync.materialized_poll_interval_s"
+    static let syncSelfHealIntervalM = "sync.self_heal_interval_m"
 }
