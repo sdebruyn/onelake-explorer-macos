@@ -128,9 +128,17 @@ enum Enumerator {
     /// Real directory-content changes are detected via child add / tombstone
     /// reconciliation, not via the parent directory's own metadata.
     ///
-    /// `createdNs` is included so that the post-v5-migration backfill works: the
-    /// first sync after upgrade finds `current.createdNs == 0` and `next.createdNs
-    /// != 0` and writes the row.
+    /// `createdNs` backfill is also skipped for directories (guarded by
+    /// `!current.isDir`). Directories are never HEAD/GET'd and the DFS list
+    /// does not populate `creationDate` for them, so `next.createdNs` for a
+    /// directory is always derived from the zero fallback. Gating the one-way
+    /// backfill trigger on `!current.isDir` closes a latent phantom-delta vector
+    /// consistent with the other three directory-metadata guards, and fully
+    /// encodes the "directory metadata is noise" invariant.
+    ///
+    /// For **files**, `createdNs` is included so that the post-v5-migration
+    /// backfill works: the first sync after upgrade finds `current.createdNs == 0`
+    /// and `next.createdNs != 0` and writes the row.
     ///
     /// The trigger is intentionally one-way (0 → non-zero only). Creation time is
     /// cosmetic and immutable from the server's perspective; the real value is
@@ -150,7 +158,7 @@ enum Enumerator {
             current.name != next.name ||
             current.parentPath != next.parentPath ||
             current.itemType != next.itemType ||
-            (current.createdNs == 0 && next.createdNs != 0)
+            (!current.isDir && current.createdNs == 0 && next.createdNs != 0)
     }
 
     // MARK: - Path helpers
