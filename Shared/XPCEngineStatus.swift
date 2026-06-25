@@ -21,6 +21,10 @@
 // - materializedPollIntervalS — cadence of the materialized-container poll
 //   loop in seconds. Decoded as 0 when absent (backward-compatible); the host
 //   treats 0 as "use the built-in default".
+// - selfHealIntervalM — self-heal full-refresh interval in minutes.
+//   0 = disabled; values in [10, 60] are valid. Decoded as 0 when absent
+//   (backward-compatible); the host treats 0 as "use the built-in default"
+//   (SyncConfig.defaultSelfHealIntervalM).
 
 import Foundation
 
@@ -51,6 +55,10 @@ import Foundation
     /// Decoded as 0 when absent (backward-compatible); the host treats 0 as
     /// "use the built-in default" (SyncConfig.defaultMaterializedPollIntervalS).
     @objc public let materializedPollIntervalS: Int
+    /// Self-heal full-refresh interval in minutes.
+    /// `0` means disabled or "use the built-in default". Decoded as 0 when absent
+    /// (backward-compatible with FPE builds that predate this field).
+    @objc public let selfHealIntervalM: Int
 
     // MARK: - Init
 
@@ -64,7 +72,8 @@ import Foundation
         logLevel: String,
         pausedWorkspaces: [XPCPausedWorkspace] = [],
         needsSignIn: Bool = false,
-        materializedPollIntervalS: Int = 0
+        materializedPollIntervalS: Int = 0,
+        selfHealIntervalM: Int = 0
     ) {
         self.cacheBytes = cacheBytes
         self.cacheMaxBytes = cacheMaxBytes
@@ -76,6 +85,7 @@ import Foundation
         self.pausedWorkspaces = pausedWorkspaces
         self.needsSignIn = needsSignIn
         self.materializedPollIntervalS = materializedPollIntervalS
+        self.selfHealIntervalM = selfHealIntervalM
         super.init()
     }
 
@@ -89,6 +99,7 @@ import Foundation
         case pausedWorkspaces
         case needsSignIn
         case materializedPollIntervalS
+        case selfHealIntervalM
     }
 
     @objc public func encode(with coder: NSCoder) {
@@ -102,6 +113,7 @@ import Foundation
         coder.encode(pausedWorkspaces as NSArray, forKey: Keys.pausedWorkspaces.rawValue)
         coder.encode(needsSignIn, forKey: Keys.needsSignIn.rawValue)
         coder.encode(materializedPollIntervalS, forKey: Keys.materializedPollIntervalS.rawValue)
+        coder.encode(selfHealIntervalM, forKey: Keys.selfHealIntervalM.rawValue)
     }
 
     @objc public required init?(coder: NSCoder) {
@@ -122,6 +134,9 @@ import Foundation
         // Default 0 for archives written before this field was added;
         // the host treats 0 as "use the built-in default".
         materializedPollIntervalS = coder.decodeInteger(forKey: Keys.materializedPollIntervalS.rawValue)
+        // Default 0 for archives written before this field was added;
+        // the host treats 0 as "use the built-in default" (SyncConfig.defaultSelfHealIntervalM).
+        selfHealIntervalM = coder.decodeInteger(forKey: Keys.selfHealIntervalM.rawValue)
         super.init()
     }
 }

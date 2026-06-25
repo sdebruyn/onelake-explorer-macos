@@ -187,6 +187,11 @@ final class MenuStatusModel: ObservableObject {
     /// 0 means "not yet fetched"; once populated stays in [30, 600].
     @Published private(set) var materializedPollIntervalS: Int = 0
 
+    /// Self-heal full-refresh interval in minutes (Settings → Advanced).
+    /// 0 means "not yet fetched or disabled". Once populated stays in [10, 60]
+    /// (enabled) or 0 (disabled).
+    @Published private(set) var selfHealIntervalM: Int = 0
+
     /// Last action error for display to the user. nil if the last action succeeded.
     /// Set by destructive actions (removeAccount, cacheClear, setDefaultAccount)
     /// when they fail so the UI can surface a non-intrusive inline message.
@@ -281,6 +286,8 @@ final class MenuStatusModel: ObservableObject {
     private var setNetDownloadsTask: Task<Void, Never>?
     /// In-flight debounce timer for setMaterializedPollInterval.
     private var setMaterializedPollTask: Task<Void, Never>?
+    /// In-flight debounce timer for setSelfHealInterval.
+    private var setSelfHealIntervalTask: Task<Void, Never>?
 
     // MARK: - Write fence (snapshot vs setter race)
 
@@ -304,6 +311,7 @@ final class MenuStatusModel: ObservableObject {
         case logLevel
         case telemetry
         case materializedPollInterval
+        case selfHealInterval
     }
 
     /// Counted multiset: each concurrent writer for the same key increments the
@@ -336,6 +344,8 @@ final class MenuStatusModel: ObservableObject {
     static let setNetConcurrencyDebounce: Duration = .milliseconds(750)
     /// Debounce window for the poll-interval Stepper.
     static let setPollIntervalDebounce: Duration = .milliseconds(750)
+    /// Debounce window for the self-heal interval Stepper.
+    static let setSelfHealIntervalDebounce: Duration = .milliseconds(750)
 
     // MARK: - Refresh
 
@@ -444,6 +454,14 @@ final class MenuStatusModel: ObservableObject {
             if status.materializedPollIntervalS > 0, !isFenced(.materializedPollInterval) {
                 materializedPollIntervalS = status.materializedPollIntervalS
                 ChangeWatcher.shared.materializedPollInterval = .seconds(status.materializedPollIntervalS)
+            }
+            if !isFenced(.selfHealInterval) {
+                // 0 from an older FPE means "not yet available"; preserve the last-known
+                // value so the UI does not snap back. Once populated, publish verbatim
+                // (0 = disabled is a valid user choice).
+                if status.selfHealIntervalM > 0 || selfHealIntervalM == 0 {
+                    selfHealIntervalM = status.selfHealIntervalM
+                }
             }
 
             // Map XPCPausedWorkspace entries to PausedWorkspaceInfo.
@@ -718,6 +736,33 @@ final class MenuStatusModel: ObservableObject {
             guard let self, !Task.isCancelled else { return }
             await self.writeConfig(
                 key: OfemConfigKey.syncMaterializedPollIntervalS,
+                value: String(clamped)
+            )
+            refresh()
+        }
+    }
+
+    /// Stage a new self-heal full-refresh interval (in minutes).
+    ///
+    /// Optimistically updates `selfHealIntervalM` immediately, then debounces the
+    /// actual XPC + TOML write so a held Stepper does not flood the FPE.
+    /// Pass `0` to disable the self-heal floor.
+    func setSelfHealInterval(_ minutes: Int) {
+        // 0 is the "disabled" sentinel and is preserved as-is.
+        // Non-zero values are clamped to [min, max].
+        let clamped = minutes == 0 ? 0 : max(
+            SyncConfig.minSelfHealIntervalM,
+            min(SyncConfig.maxSelfHealIntervalM, minutes)
+        )
+        beginWrite(.selfHealInterval)
+        selfHealIntervalM = clamped
+        setSelfHealIntervalTask?.cancel()
+        setSelfHealIntervalTask = Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.endWrite(.selfHealInterval) } }
+            try? await Task.sleep(for: MenuStatusModel.setSelfHealIntervalDebounce)
+            guard let self, !Task.isCancelled else { return }
+            await self.writeConfig(
+                key: OfemConfigKey.syncSelfHealIntervalM,
                 value: String(clamped)
             )
             refresh()

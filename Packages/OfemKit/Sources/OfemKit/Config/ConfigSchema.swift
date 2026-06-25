@@ -173,16 +173,42 @@ public struct SyncConfig: Sendable {
     /// Maximum allowed cadence in seconds (10 minutes).
     public static let maxMaterializedPollIntervalS = 600
 
+    /// Default self-heal full-refresh interval in minutes.
+    public static let defaultSelfHealIntervalM = 30
+    /// Minimum allowed self-heal interval in minutes (values 1–9 clamp up to this).
+    public static let minSelfHealIntervalM = 10
+    /// Maximum allowed self-heal interval in minutes.
+    public static let maxSelfHealIntervalM = 60
+
     /// How often the host polls each account's materialized containers for
     /// remote changes and signals `.workingSet` when a delta is found.
     /// Values below `minMaterializedPollIntervalS` are clamped up at load time.
     public var materializedPollIntervalS: Int
 
-    public init(materializedPollIntervalS: Int = SyncConfig.defaultMaterializedPollIntervalS) {
+    /// Forced full-refresh interval for the self-heal floor in minutes.
+    /// `0` disables the floor (the skip-gate always applies). Values in
+    /// `1–9` are clamped up to `minSelfHealIntervalM`; values above
+    /// `maxSelfHealIntervalM` are clamped down. Default 30.
+    public var selfHealIntervalM: Int
+
+    public init(
+        materializedPollIntervalS: Int = SyncConfig.defaultMaterializedPollIntervalS,
+        selfHealIntervalM: Int = SyncConfig.defaultSelfHealIntervalM
+    ) {
         self.materializedPollIntervalS = max(
             SyncConfig.minMaterializedPollIntervalS,
             min(SyncConfig.maxMaterializedPollIntervalS, materializedPollIntervalS)
         )
+        // 0 is the "disabled" sentinel and is preserved as-is.
+        // Any non-zero value is clamped to [minSelfHealIntervalM, maxSelfHealIntervalM].
+        if selfHealIntervalM == 0 {
+            self.selfHealIntervalM = 0
+        } else {
+            self.selfHealIntervalM = max(
+                SyncConfig.minSelfHealIntervalM,
+                min(SyncConfig.maxSelfHealIntervalM, selfHealIntervalM)
+            )
+        }
     }
 }
 

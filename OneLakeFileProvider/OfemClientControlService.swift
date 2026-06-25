@@ -282,7 +282,8 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                     logLevel: cfg.log.level,
                     pausedWorkspaces: pausedWorkspaces,
                     needsSignIn: engineHost.needsSignIn,
-                    materializedPollIntervalS: cfg.sync.materializedPollIntervalS
+                    materializedPollIntervalS: cfg.sync.materializedPollIntervalS,
+                    selfHealIntervalM: cfg.sync.selfHealIntervalM
                 )
                 replyOnce.callOnce { rb.fn(status, nil) }
             } catch {
@@ -311,6 +312,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             case netMaxDownloads(Int)
             case logLevel(String)
             case syncMaterializedPollIntervalS(Int)
+            case syncSelfHealIntervalM(Int)
         }
 
         let result: Result<ValidatedConfig, SetConfigError>
@@ -369,6 +371,17 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             let clamped = max(SyncConfig.minMaterializedPollIntervalS,
                               min(SyncConfig.maxMaterializedPollIntervalS, n))
             result = .success(.syncMaterializedPollIntervalS(clamped))
+        case "sync.self_heal_interval_m":
+            guard let n = Int(value) else {
+                result = .failure(.invalidValue(key: key, value: value,
+                                                reason: "expected an integer"))
+                break
+            }
+            // 0 is the "disabled" sentinel and is preserved as-is.
+            // Non-zero values are clamped to [min, max].
+            let clamped = n == 0 ? 0 : max(SyncConfig.minSelfHealIntervalM,
+                                           min(SyncConfig.maxSelfHealIntervalM, n))
+            result = .success(.syncSelfHealIntervalM(clamped))
         default:
             result = .failure(.unknownKey(key))
         }
@@ -411,6 +424,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                     case let .netMaxDownloads(n): cfg.net.maxConcurrentDownloadsPerAccount = n
                     case let .logLevel(lvl): cfg.log.level = lvl
                     case let .syncMaterializedPollIntervalS(n): cfg.sync.materializedPollIntervalS = n
+                    case let .syncSelfHealIntervalM(n): cfg.sync.selfHealIntervalM = n
                     }
                 }
 
@@ -453,12 +467,20 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                 // Read the materialized-container set for `alias` from the
                 // cache. The FPE is the sole writer; no host-side cache access.
                 let keys = try await engine.cache.materializedContainers(alias: alias)
+                // Read the configured self-heal interval from the shared config store.
+                // Falls back to the engine's built-in default when the store is unavailable.
+                let selfHealIntervalM: Int = if let configStore = try? engineHost.configStore() {
+                    configStore.snapshot().sync.selfHealIntervalM
+                } else {
+                    SyncEngine.defaultSelfHealIntervalMinutes
+                }
                 // Fan out refreshes with a per-alias concurrency cap that
                 // mirrors the download-semaphore cap used elsewhere in the engine.
                 let changed = await engine.sync.refreshMaterialized(
                     alias: alias,
                     keys: keys,
-                    concurrencyCap: 4
+                    concurrencyCap: 4,
+                    selfHealIntervalMinutes: selfHealIntervalM
                 )
                 replyOnce.callOnce { rb.fn(changed, nil) }
             } catch {
