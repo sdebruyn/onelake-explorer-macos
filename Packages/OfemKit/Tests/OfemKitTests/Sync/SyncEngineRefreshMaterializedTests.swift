@@ -947,10 +947,11 @@ struct SyncEngineRefreshMaterializedTests {
 
         let childSyncedBefore = try await store.fetch(key: childKey).syncedAtNs
         #expect(childSyncedBefore == childSyncedSeed) // sanity: non-zero baseline
-        // Anchor strictly BELOW the child's syncedAtNs so that IF the harvest
-        // bumped synced_at_ns, the child row WOULD appear in itemsChangedAfter —
-        // making the "zero delta" assertion below non-vacuous.
-        let nsBefore = childSyncedSeed - 1
+        // Anchor at EXACTLY the child's current syncedAtNs. itemsChangedAfter uses
+        // a strict `synced_at_ns > ns`, so the unbumped child (still == anchor) is
+        // correctly excluded, while a harvest that DID bump it (→ strictly greater)
+        // WOULD surface — making the absence assertion below non-vacuous.
+        let nsBefore = childSyncedSeed
 
         // refreshFolder(parent) lists the child dir with an ADVANCED subtree etag
         // (SE2). The harvest must update only the child's subtree_etag column.
@@ -967,11 +968,12 @@ struct SyncEngineRefreshMaterializedTests {
         // …but its synced_at_ns did NOT move (harvest is a column-only update).
         #expect(childAfter.syncedAtNs == childSyncedBefore)
 
-        // And the harvest produced ZERO working-set delta: the anchor is below
-        // the child's syncedAtNs, so a bumped row would surface here. The set is
-        // empty (and, specifically, the child container row is absent).
+        // The harvest produced ZERO working-set delta for the child container row:
+        // anchored at its syncedAtNs, a bump would surface it here. (The parent
+        // item-root row is legitimately re-stamped by refreshMaterializedContainer
+        // and is non-enumerable — rejected by DomainItem.from — so it is not part
+        // of this assertion.)
         let changes = try await store.itemsChangedAfter(accountAlias: key.accountAlias, ns: nsBefore)
-        #expect(changes.updated.isEmpty)
         #expect(!changes.updated.contains { $0.path == "subdir" })
     }
 
@@ -1065,5 +1067,69 @@ struct SyncEngineRefreshMaterializedTests {
         // token, because its parent threw and could not vouch for it.
         let childListCount = ol.listPathCalls.count(where: { $0.directory == "subdir" })
         #expect(childListCount == 1, "child must list when its parent threw (no valid vouch)")
+    }
+
+    // MARK: - #380 (g): an offline heal-due re-list does NOT advance the floor
+
+    /// Regression for the self-heal backstop bug: `lastSelfHealNs` must be
+    /// recorded only AFTER a successful list, never before. If it were stamped
+    /// in the decision phase (before the possibly-throwing list), a container
+    /// that goes offline exactly when its heal is due would still advance the
+    /// timestamp and defer the next forced re-list a full interval — defeating
+    /// the floor precisely while offline persists. With the fix, an offline
+    /// heal-due attempt leaves the timestamp untouched, so the container stays
+    /// heal-due and re-lists on the very next pass once connectivity returns.
+    @Test("#380(g) offline heal-due attempt does not advance lastSelfHealNs")
+    func offlineHealDueDoesNotAdvanceFloor() async throws {
+        let clock = TestClock(1_000_000_000_000)
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol, clock: clock)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let parentKey = Self.folderKey
+        try await seedParentWithChildContainer(in: store, parent: parentKey, childName: "subdir")
+        let childKey = Self.childContainerKey(parent: parentKey, childName: "subdir")
+
+        let interval = 10
+        let offlineError = OneLakeError.httpError(
+            HTTPClientError.transport(URLError(.notConnectedToInternet))
+        )
+
+        // Poll 1 (first sight): child lists once, seeds token + records the
+        // self-heal timestamp at T0.
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE1")])))
+        ol.listPathResults.append(.success(ListResult(entries: []))) // child poll-1
+        _ = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: interval
+        )
+        #expect(ol.listPathCalls.count(where: { $0.directory == "subdir" }) == 1)
+
+        // Advance PAST the interval so the child is heal-due, then go offline on
+        // the child's forced re-list. The parent still lists (vouches), but the
+        // child's own listPath throws → the floor timestamp must NOT advance.
+        clock.advance(by: Int64(interval) * 60 * 1_000_000_000) // +10 min → past interval
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE1")])))
+        ol.listPathResults.append(.failure(offlineError)) // child heal-due re-list throws
+        _ = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: interval
+        )
+        #expect(ol.listPathCalls.count(where: { $0.directory == "subdir" }) == 2,
+                "child attempts its heal-due re-list even though it throws offline")
+
+        // Poll 3 WITHOUT advancing the clock further. Had the offline attempt
+        // advanced lastSelfHealNs, the child would now be inside a fresh interval
+        // (delta 0) and — with an unchanged token — be SKIPPED. Because the fix
+        // left the timestamp at T0 (delta still ≥ interval), the child is STILL
+        // heal-due and lists a third time.
+        ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE1")])))
+        ol.listPathResults.append(.success(ListResult(entries: []))) // child re-list now online
+        _ = await engine.refreshMaterialized(
+            alias: Self.alias, keys: [parentKey, childKey],
+            concurrencyCap: 1, selfHealIntervalMinutes: interval
+        )
+        #expect(ol.listPathCalls.count(where: { $0.directory == "subdir" }) == 3,
+                "offline heal-due attempt must not advance the floor; child stays heal-due and re-lists")
     }
 }
