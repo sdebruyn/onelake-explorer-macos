@@ -71,8 +71,9 @@ struct FPErrorClassifyTests {
         #expect(FPError.classify(HTTPClientError.unauthorized) == .notAuthenticated)
     }
 
-    @Test func httpForbiddenMapsToNotAuthenticated() {
-        #expect(FPError.classify(HTTPClientError.forbidden) == .notAuthenticated)
+    @Test func httpForbiddenMapsToCannotSynchronize() {
+        // HTTP 403: authenticated-but-not-authorised — must not trigger markNeedsSignIn.
+        #expect(FPError.classify(HTTPClientError.forbidden) == .cannotSynchronize)
     }
 
     @Test func httpNotFoundMapsToNoSuchItem() {
@@ -101,8 +102,9 @@ struct FPErrorClassifyTests {
         #expect(FPError.classify(OneLakeError.unauthorized) == .notAuthenticated)
     }
 
-    @Test func oneLakeForbiddenMapsToNotAuthenticated() {
-        #expect(FPError.classify(OneLakeError.forbidden) == .notAuthenticated)
+    @Test func oneLakeForbiddenMapsToCannotSynchronize() {
+        // HTTP 403: authenticated-but-not-authorised — must not trigger markNeedsSignIn.
+        #expect(FPError.classify(OneLakeError.forbidden) == .cannotSynchronize)
     }
 
     @Test func oneLakeNotFoundMapsToNoSuchItem() {
@@ -119,8 +121,9 @@ struct FPErrorClassifyTests {
         #expect(FPError.classify(FabricError.unauthorized) == .notAuthenticated)
     }
 
-    @Test func fabricForbiddenMapsToNotAuthenticated() {
-        #expect(FPError.classify(FabricError.forbidden) == .notAuthenticated)
+    @Test func fabricForbiddenMapsToCannotSynchronize() {
+        // HTTP 403: authenticated-but-not-authorised — must not trigger markNeedsSignIn.
+        #expect(FPError.classify(FabricError.forbidden) == .cannotSynchronize)
     }
 
     @Test func fabricNotFoundMapsToNoSuchItem() {
@@ -166,6 +169,54 @@ struct FPErrorClassifyTests {
 
     @Test func fabricRetriesExhaustedMapsToServerUnreachable() {
         #expect(FPError.classify(FabricError.retriesExhausted(attempts: 2)) == .serverUnreachable)
+    }
+
+    // MARK: - 401 / tokenAcquisitionFailed guard: must still map to notAuthenticated
+
+    @Test func httpUnauthorizedStillMapsToNotAuthenticated() {
+        // Regression guard: 401 must always produce notAuthenticated, regardless of the
+        // 403-reclassification in this change.
+        #expect(FPError.classify(HTTPClientError.unauthorized) == .notAuthenticated)
+    }
+
+    @Test func tokenAcquisitionFailedStillMapsToNotAuthenticated() {
+        // Regression guard: a token-acquisition failure is an auth problem.
+        #expect(FPError.classify(HTTPClientError.tokenAcquisitionFailed(URLError(.badURL))) == .notAuthenticated)
+    }
+
+    @Test func oneLakeUnauthorizedStillMapsToNotAuthenticated() {
+        #expect(FPError.classify(OneLakeError.unauthorized) == .notAuthenticated)
+    }
+
+    @Test func fabricUnauthorizedStillMapsToNotAuthenticated() {
+        #expect(FPError.classify(FabricError.unauthorized) == .notAuthenticated)
+    }
+
+    // MARK: - sentinelWithBody: non-paused 403 must not trigger markNeedsSignIn
+
+    @Test("HTTPClientError.sentinelWithBody(.forbidden) maps to cannotSynchronize")
+    func httpSentinelWithBodyForbiddenMapsToCannotSynchronize() {
+        let ae = APIError(
+            statusCode: 403,
+            status: "403 Forbidden",
+            body: Data(#"{"errorCode":"InsufficientPrivileges"}"#.utf8)
+        )
+        let err = HTTPClientError.sentinelWithBody(.forbidden, ae)
+        // A non-paused 403 body: PauseManager will not intercept this (InsufficientPrivileges
+        // is not in pausedErrorCodes), so FPError.classify must return cannotSynchronize —
+        // never notAuthenticated, which would call markNeedsSignIn.
+        #expect(FPError.classify(err) == .cannotSynchronize)
+    }
+
+    @Test("OneLakeError.httpError(.sentinelWithBody(.forbidden)) maps to cannotSynchronize")
+    func oneLakeHttpErrorSentinelWithBodyForbiddenMapsToCannotSynchronize() {
+        let ae = APIError(
+            statusCode: 403,
+            status: "403 Forbidden",
+            body: Data(#"{"errorCode":"InsufficientPrivileges"}"#.utf8)
+        )
+        let err = OneLakeError.httpError(HTTPClientError.sentinelWithBody(.forbidden, ae))
+        #expect(FPError.classify(err) == .cannotSynchronize)
     }
 
     // MARK: - Unknown error falls back to cannotSynchronize

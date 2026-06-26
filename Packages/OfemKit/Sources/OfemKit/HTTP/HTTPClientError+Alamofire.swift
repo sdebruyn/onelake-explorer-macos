@@ -59,7 +59,14 @@ extension HTTPClientError {
                 attempts: retryCount + 1
             )
             if let sentinel = ae.sentinel {
-                self = sentinel
+                // For body-relevant statuses (401/403/429/5xx) carry the APIError
+                // alongside the sentinel so downstream callers such as PauseManager
+                // can inspect the response body. Non-body-relevant sentinels keep the
+                // bare typed case so their consumers (e.g. SyncEngine.notFound) are
+                // unaffected and the body is not needlessly retained.
+                let bodyRelevant = ae.statusCode == 401 || ae.statusCode == 403
+                    || ae.statusCode == 429 || ae.statusCode >= 500
+                self = bodyRelevant ? .sentinelWithBody(sentinel, ae) : sentinel
             } else {
                 self = .apiError(ae)
             }

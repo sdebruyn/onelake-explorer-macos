@@ -159,6 +159,47 @@ struct PauseManagerTests {
         }
     }
 
+    // MARK: - sentinelWithBody path (tests-14: closing the body-stripping gap)
+
+    @Test("isPausedCapacityError returns true for paused-capacity 403 body via sentinelWithBody")
+    func isPausedViaSentinelWithBody403() throws {
+        let (mgr, store) = try makeManager()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let ae = APIError(
+            statusCode: 403, status: "403 Forbidden",
+            body: Data(#"{"errorCode":"CapacityPaused"}"#.utf8)
+        )
+        let err = OneLakeError.httpError(HTTPClientError.sentinelWithBody(.forbidden, ae))
+        #expect(mgr.isPausedCapacityError(err))
+    }
+
+    @Test("isPausedCapacityError returns false for non-paused 403 body via sentinelWithBody")
+    func isNotPausedForPermissionDenied403() throws {
+        let (mgr, store) = try makeManager()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let ae = APIError(
+            statusCode: 403, status: "403 Forbidden",
+            body: Data(#"{"errorCode":"InsufficientPrivileges","message":"You do not have permission."}"#.utf8)
+        )
+        let err = OneLakeError.httpError(HTTPClientError.sentinelWithBody(.forbidden, ae))
+        #expect(!mgr.isPausedCapacityError(err))
+    }
+
+    @Test("markPausedIfNeeded marks workspace paused from 403 sentinelWithBody with paused body")
+    func markPausedFrom403SentinelWithBody() async throws {
+        let (mgr, store) = try makeManager()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let ae = APIError(
+            statusCode: 403, status: "403 Forbidden",
+            body: Data(#"{"errorCode":"WorkspaceCapacityPaused"}"#.utf8)
+        )
+        let err = OneLakeError.httpError(HTTPClientError.sentinelWithBody(.forbidden, ae))
+        let paused = await mgr.markPausedIfNeeded(workspaceID: "ws-sentinel", alias: "c", error: err)
+        #expect(paused)
+        let status = try await store.workspaceStatus(accountAlias: "c", workspaceID: "ws-sentinel")
+        #expect(status.state == .paused)
+    }
+
     // MARK: - Helpers
 
     private func makeAPIError(body: String) -> HTTPClientError {
