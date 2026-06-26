@@ -83,34 +83,62 @@ build: bootstrap OneLake.xcodeproj/project.pbxproj ## Build OneLake.app (Debug, 
 
 # Install the freshly built Debug app into /Applications and relaunch.
 #
-# Three things must happen in order to guarantee the NEW binary is active:
+# Steps, in order, to guarantee the NEW binary is active:
 #
-#   1. Quit the host app so the bundle is not in use while we swap it on disk.
-#   2. Kill the running FPE (.appex) process.  macOS caches the extension binary
-#      and keeps the old process alive even after the bundle is replaced — the
-#      stale process would continue serving the previous binary until the next
-#      reboot.  pkill exits non-zero when no matching process is found, which is
-#      normal on a clean machine, so we tolerate that.
-#   3. Copy the new bundle with ditto (not cp -R) — ditto preserves bundle
-#      structure, resource forks, and extended attributes correctly on macOS.
-#      Removing the destination first ensures no stale files from the old
-#      bundle linger after the copy.
-#
-# This mirrors the LaunchServices awareness in the clean target: a stale FPE
-# registration (or a stale running process) causes macOS to return
-# NSFileProviderError.providerNotFound (-2001) instead of mounting.
+#   1. Guard: validate INSTALL_APP so an accidental command-line override can
+#      never expand rm -rf to a path outside /Applications.
+#   2. Quit the host app and poll for it to fully exit.  osascript delivers
+#      the Quit Event and returns immediately; the actual shutdown (domain
+#      deregistration, XPC teardown) can take several seconds on a loaded
+#      system, so polling is safer than a fixed sleep.
+#   3. Kill the running FPE (.appex) process (anchored to /Applications so
+#      worktree builds are not disturbed) and wait for it to exit.  macOS
+#      caches the extension binary and keeps the old process alive after the
+#      bundle is replaced on disk.  fileproviderd monitors the registered
+#      .appex path — not the inode — so removing the bundle while the process
+#      is still winding down can leave the File Provider domain in a faulted
+#      state.
+#   4. Stage the copy via a .new sibling so the existing /Applications bundle
+#      is preserved if ditto fails mid-copy (disk full, read-only volume,
+#      wrong source path).  ditto (not cp -R) preserves bundle structure,
+#      resource forks, and extended attributes correctly on macOS.
+#   5. Unregister the DerivedData copy from LaunchServices before launching
+#      the /Applications copy.  Without this, both copies are registered
+#      under the same bundle ID (dev.debruyn.ofem) — the documented
+#      NSFileProviderError.providerNotFound (-2001) failure mode from the
+#      clean target comment.
+#   6. Relaunch so the host re-registers its File Provider domains with macOS.
 install: build ## Build and install Debug app into /Applications, then relaunch
+	# Guard: INSTALL_APP must be a .app bundle path under /Applications so an
+	# accidental override (e.g. make install INSTALL_APP=/Applications) cannot
+	# expand rm -rf to a destructive path outside the expected location.
+	@case "$(INSTALL_APP)" in \
+		/Applications/*.app) ;; \
+		*) echo "ERROR: INSTALL_APP must be a .app path under /Applications (got: $(INSTALL_APP))"; exit 1 ;; \
+	esac
 	# Quit the host app gracefully; tolerate "not running" (non-zero exit).
 	osascript -e 'tell application "OneLake" to quit' 2>/dev/null || true
-	# Give the host a moment to finish its graceful shutdown sequence.
-	sleep 1
-	# Terminate the stale FPE process so macOS reloads the extension from the
-	# new bundle on next launch rather than reusing the cached old binary.
-	pkill -f 'OneLake.app/Contents/PlugIns/OneLakeFileProvider.appex' 2>/dev/null || true
-	# Remove the stale /Applications bundle so no old files linger after ditto.
+	# Poll for the host to fully exit (max 10 s, 0.5 s intervals) — osascript
+	# returns after delivering the Quit Event, not after the app has exited.
+	@n=0; until ! pgrep -xq 'OneLake' 2>/dev/null || [ $$n -ge 20 ]; do sleep 0.5; n=$$((n+1)); done
+	# Terminate the stale /Applications FPE process so macOS reloads the
+	# extension from the new bundle; tolerate "not found" (non-zero exit).
+	pkill -f '/Applications/OneLake.app/Contents/PlugIns/OneLakeFileProvider.appex' 2>/dev/null || true
+	# Poll for the FPE to exit before touching the bundle; fileproviderd
+	# monitors the .appex path and may fault the domain if it disappears
+	# while the old process is still winding down.
+	@until ! pgrep -f 'OneLakeFileProvider.appex' >/dev/null 2>&1; do sleep 0.5; done
+	# Stage the new bundle first so rm -rf only runs after ditto succeeds;
+	# if ditto fails (disk full, /Applications temporarily read-only), the
+	# existing installation is preserved.
+	ditto "$(BUILT_APP)" "$(INSTALL_APP).new"
 	rm -rf "$(INSTALL_APP)"
-	# Copy the freshly built bundle — ditto is the correct macOS bundle-copy tool.
-	ditto "$(BUILT_APP)" "$(INSTALL_APP)"
+	mv "$(INSTALL_APP).new" "$(INSTALL_APP)"
+	# Unregister the DerivedData copy from LaunchServices before launching
+	# /Applications/OneLake.app.  A duplicate registration under the same
+	# bundle ID (dev.debruyn.ofem) triggers providerNotFound (-2001).
+	@lsreg="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"; \
+	if [ -x "$$lsreg" ]; then "$$lsreg" -u "$(BUILT_APP)" 2>/dev/null || true; fi
 	# Relaunch the host app so it re-registers its File Provider domains with macOS.
 	open "$(INSTALL_APP)"
 
@@ -190,7 +218,8 @@ clean: ## Remove build artefacts and unregister app from LaunchServices
 		for app in \
 			"$(CURDIR)/DerivedData/Build/Products/Debug/OneLake.app" \
 			"$(CURDIR)/build/Release/Build/Products/Release/OneLake.app" \
-			"$(CURDIR)/build/Export/OneLake.app"; do \
+			"$(CURDIR)/build/Export/OneLake.app" \
+			"$(INSTALL_APP)"; do \
 			if [ -d "$$app" ]; then "$$lsreg" -u "$$app" 2>/dev/null || true; fi; \
 		done; \
 	fi
