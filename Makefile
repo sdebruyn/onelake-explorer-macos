@@ -3,6 +3,7 @@
 # Day-to-day:
 #   make app        — signed macOS app; THE build to run after pulling
 #   make build      — Debug build of OneLake.app via xcodebuild
+#   make install    — build + install Debug app into /Applications and relaunch
 #   make test       — run Swift unit tests (OfemKit + host-app logic)
 #   make build-ci   — unsigned compile-only build (used in CI)
 #   make clean      — remove build artefacts + unregister from LaunchServices
@@ -11,13 +12,17 @@
 XCODE_PROJECT := OneLake.xcodeproj
 APPLE_CONFIG  := Local.xcconfig
 
+# Paths used by the install target.
+BUILT_APP   := $(CURDIR)/DerivedData/Build/Products/Debug/OneLake.app
+INSTALL_APP := /Applications/OneLake.app
+
 # Prevent concurrent runs of the test/build targets from contending on the
 # SwiftPM build lock. `make -j` can invoke multiple recipe lines in parallel
 # within a target; .NOTPARALLEL disables that for the entire Makefile so the
 # OfemKit `swift test` and host `xcodebuild` invocations always serialize.
 .NOTPARALLEL:
 
-.PHONY: app bootstrap gen build build-ci test test-integration format format-lint lint scan clean help
+.PHONY: app bootstrap gen build build-ci install test test-integration format format-lint lint scan clean help
 
 # Build the signed macOS app. This is THE single build to run after pulling main.
 app: build ## Build signed macOS app (THE build to run after pulling)
@@ -75,6 +80,39 @@ build: bootstrap OneLake.xcodeproj/project.pbxproj ## Build OneLake.app (Debug, 
 		-derivedDataPath DerivedData \
 		-allowProvisioningUpdates \
 		build
+
+# Install the freshly built Debug app into /Applications and relaunch.
+#
+# Three things must happen in order to guarantee the NEW binary is active:
+#
+#   1. Quit the host app so the bundle is not in use while we swap it on disk.
+#   2. Kill the running FPE (.appex) process.  macOS caches the extension binary
+#      and keeps the old process alive even after the bundle is replaced — the
+#      stale process would continue serving the previous binary until the next
+#      reboot.  pkill exits non-zero when no matching process is found, which is
+#      normal on a clean machine, so we tolerate that.
+#   3. Copy the new bundle with ditto (not cp -R) — ditto preserves bundle
+#      structure, resource forks, and extended attributes correctly on macOS.
+#      Removing the destination first ensures no stale files from the old
+#      bundle linger after the copy.
+#
+# This mirrors the LaunchServices awareness in the clean target: a stale FPE
+# registration (or a stale running process) causes macOS to return
+# NSFileProviderError.providerNotFound (-2001) instead of mounting.
+install: build ## Build and install Debug app into /Applications, then relaunch
+	# Quit the host app gracefully; tolerate "not running" (non-zero exit).
+	osascript -e 'tell application "OneLake" to quit' 2>/dev/null || true
+	# Give the host a moment to finish its graceful shutdown sequence.
+	sleep 1
+	# Terminate the stale FPE process so macOS reloads the extension from the
+	# new bundle on next launch rather than reusing the cached old binary.
+	pkill -f 'OneLake.app/Contents/PlugIns/OneLakeFileProvider.appex' 2>/dev/null || true
+	# Remove the stale /Applications bundle so no old files linger after ditto.
+	rm -rf "$(INSTALL_APP)"
+	# Copy the freshly built bundle — ditto is the correct macOS bundle-copy tool.
+	ditto "$(BUILT_APP)" "$(INSTALL_APP)"
+	# Relaunch the host app so it re-registers its File Provider domains with macOS.
+	open "$(INSTALL_APP)"
 
 # Compile the app + .appex unsigned (no signing identity, no provisioning
 # round-trip). This is the CI build gate: it catches Swift compile
