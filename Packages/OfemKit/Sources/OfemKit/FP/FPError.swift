@@ -104,14 +104,25 @@ public enum FPError: Error, Sendable, CustomStringConvertible {
 
 private func httpCode(for error: HTTPClientError) -> FPError.Code {
     switch error {
-    case .unauthorized, .forbidden, .tokenAcquisitionFailed:
+    case .unauthorized, .tokenAcquisitionFailed:
         .notAuthenticated
+    case .forbidden:
+        // HTTP 403 means authenticated-but-not-authorised — the token is valid.
+        // Must NOT map to .notAuthenticated (which triggers markNeedsSignIn).
+        // A paused-capacity 403 arrives as .sentinelWithBody and is intercepted
+        // by PauseManager upstream before FPError.classify is called; only a
+        // genuine permission denial or an unrecognised body reaches this arm.
+        .cannotSynchronize
     case .notFound, .gone:
         .noSuchItem
     case .throttled:
         .serverBusy
     case .transport, .retriesExhausted, .cancelled:
         .serverUnreachable
+    case let .sentinelWithBody(s, _):
+        // Delegate to the typed sentinel. The body was already offered to
+        // PauseManager upstream; strip it here to reach the correct code.
+        httpCode(for: s)
     case .conflict, .preconditionFailed, .payloadTooLarge, .unsupportedMediaType,
          .rangeNotSatisfiable, .unprocessableEntity, .serverError, .apiError,
          .responseTooLarge:
@@ -121,8 +132,14 @@ private func httpCode(for error: HTTPClientError) -> FPError.Code {
 
 private func oneLakeCode(for error: OneLakeError) -> FPError.Code {
     switch error {
-    case .unauthorized, .forbidden:
+    case .unauthorized:
         return .notAuthenticated
+    case .forbidden:
+        // HTTP 403: authenticated-but-not-authorised. A paused-capacity 403
+        // arrives as .httpError(.sentinelWithBody) and is intercepted by
+        // PauseManager before reaching here. A direct .forbidden (bare sentinel
+        // from a non-Alamofire path) must also not trigger markNeedsSignIn.
+        return .cannotSynchronize
     case .notFound, .gone:
         return .noSuchItem
     case .retriesExhausted, .cancelled:
@@ -145,17 +162,29 @@ private func oneLakeCode(for error: OneLakeError) -> FPError.Code {
 
 private func fabricCode(for error: FabricError) -> FPError.Code {
     switch error {
-    case .unauthorized, .forbidden:
-        .notAuthenticated
+    case .unauthorized:
+        return .notAuthenticated
+    case .forbidden:
+        // HTTP 403: authenticated-but-not-authorised. Same reasoning as
+        // oneLakeCode: must not trigger markNeedsSignIn.
+        return .cannotSynchronize
     case .notFound, .gone:
-        .noSuchItem
+        return .noSuchItem
     case .rateLimited:
-        .serverBusy
+        return .serverBusy
     case .retriesExhausted, .cancelled:
-        .serverUnreachable
+        return .serverUnreachable
+    case let .httpError(inner):
+        // Unwrap the wrapped HTTPClientError so that auth failures (401) and
+        // throttling (429) carried as .sentinelWithBody classify correctly —
+        // mirroring oneLakeCode (sync-12 equivalent for the Fabric path).
+        if let httpErr = inner as? HTTPClientError {
+            return httpCode(for: httpErr)
+        }
+        return .cannotSynchronize
     case .missingArgument, .paginationExceeded, .payloadTooLarge,
-         .rangeNotSatisfiable, .serverError, .httpError, .decodeFailed,
+         .rangeNotSatisfiable, .serverError, .decodeFailed,
          .loopingPagination, .continuationURIHostMismatch:
-        .cannotSynchronize
+        return .cannotSynchronize
     }
 }

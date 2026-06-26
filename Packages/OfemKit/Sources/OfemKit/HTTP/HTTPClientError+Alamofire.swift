@@ -59,7 +59,22 @@ extension HTTPClientError {
                 attempts: retryCount + 1
             )
             if let sentinel = ae.sentinel {
-                self = sentinel
+                // For body-relevant sentinels (401/403/429/5xx) carry the APIError
+                // alongside the sentinel so downstream callers such as PauseManager
+                // can inspect the response body. Non-body-relevant sentinels keep the
+                // bare typed case so their consumers (e.g. SyncEngine.notFound) are
+                // unaffected and the body is not needlessly retained.
+                //
+                // Match on the sentinel case (not raw status codes) so the
+                // body-relevant set stays in sync with sentinel(for:) — a drift
+                // would silently strip a body PauseManager needs.
+                let bodyRelevant = switch sentinel {
+                case .unauthorized, .forbidden, .throttled, .serverError:
+                    true
+                default:
+                    false
+                }
+                self = bodyRelevant ? .sentinelWithBody(sentinel, ae) : sentinel
             } else {
                 self = .apiError(ae)
             }

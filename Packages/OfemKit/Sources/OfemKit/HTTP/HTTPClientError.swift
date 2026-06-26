@@ -47,6 +47,21 @@ public indirect enum HTTPClientError: Error, Sendable {
     /// An HTTP response outside the 2xx range, carrying the raw details.
     case apiError(APIError)
 
+    /// A body-relevant HTTP sentinel (401/403/429/5xx) whose response body is
+    /// preserved for downstream callers such as ``PauseManager/isPausedCapacityError``.
+    ///
+    /// The first associated value is the typed sentinel for callers that only need
+    /// the error category. The second carries the full ``APIError`` (including the
+    /// response body) for callers that must inspect the body — e.g. to distinguish
+    /// a paused-capacity 403 from a permission-denied 403.
+    ///
+    /// Produced by ``HTTPClientError/init(afError:response:body:retryCount:)`` for
+    /// sentinel statuses where the body may carry a diagnostic payload (401, 403,
+    /// 429, 5xx). Non-body-relevant sentinels (404, 409, 410, 412, 413, 415, 416,
+    /// 422) keep the bare typed case so their consumers (e.g. `SyncEngine.notFound`)
+    /// remain unchanged.
+    case sentinelWithBody(HTTPClientError, APIError)
+
     // MARK: Transport / infrastructure errors
 
     /// The request was cancelled by the caller's `Task` or the session.
