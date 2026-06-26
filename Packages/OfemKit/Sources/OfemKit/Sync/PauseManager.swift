@@ -239,22 +239,39 @@ private func extractAPIErrorBody(_ error: any Error) -> String? {
     return nil
 }
 
-/// Parses the `errorCode` field from a Fabric JSON error body.
+/// Parses a paused-capacity error code from a JSON error body.
 ///
-/// Only top-level keys are inspected. ADLS Gen2 / DFS error bodies may use a
-/// nested `{"error":{"code":"…","message":"…"}}` shape (key is `code`, not
-/// `errorCode`, one level down). Such bodies return `nil` here and fall through
-/// to the prose regex. Extending this to read nested shapes is a follow-up
-/// once a real paused F-SKU body is captured (see open questions in issue #385).
+/// Checks two shapes:
+/// 1. Top-level `errorCode` — Fabric REST contract (primary).
+/// 2. Nested `{"error":{"code":"…"}}` — ADLS Gen2 / DFS contract (fallback).
+///
+/// Both values are lowercased before returning so callers can match against
+/// ``pausedErrorCodes`` case-insensitively.
+///
+/// Note: the exact key and nesting for a *paused-capacity* 403 on the DFS path
+/// is unconfirmed — the nested shape is based on the documented ADLS Gen2
+/// error contract. Verify against a real paused F-SKU body and extend
+/// ``pausedErrorCodes`` accordingly (see open questions in issue #385).
 private func extractErrorCode(from body: String) -> String? {
     guard let data = body.data(using: .utf8),
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { return nil }
 
+    // 1. Top-level errorCode — Fabric REST error contract.
     for (key, value) in json {
         if key.lowercased() == "errorcode", let code = value as? String {
             return code.lowercased()
         }
     }
+
+    // 2. Nested {"error":{"code":"…"}} — ADLS Gen2 / DFS error contract.
+    if let errorObj = json["error"] as? [String: Any] {
+        for (key, value) in errorObj {
+            if key.lowercased() == "code", let code = value as? String {
+                return code.lowercased()
+            }
+        }
+    }
+
     return nil
 }
