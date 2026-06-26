@@ -124,12 +124,6 @@ extension OneLakeError {
             // but spelling it out removes the dependency on that indirection and
             // prevents future refactors from silently regressing it.
             return .unauthorized
-        case let HTTPClientError.sentinelWithBody(sentinel, ae):
-            // Body-carrying sentinel: route through .httpError so the APIError body
-            // remains reachable by PauseManager.extractAPIErrorBody. The typed
-            // sentinel inside is exposed via FPError.httpCode(for: .sentinelWithBody)
-            // for code paths that do not need the body.
-            return .httpError(HTTPClientError.sentinelWithBody(sentinel, ae))
         case let HTTPClientError.serverError(code):
             return .serverError(code)
         case let HTTPClientError.retriesExhausted(attempts, last):

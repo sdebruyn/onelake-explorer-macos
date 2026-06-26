@@ -240,6 +240,12 @@ private func extractAPIErrorBody(_ error: any Error) -> String? {
 }
 
 /// Parses the `errorCode` field from a Fabric JSON error body.
+///
+/// Only top-level keys are inspected. ADLS Gen2 / DFS error bodies may use a
+/// nested `{"error":{"code":"…","message":"…"}}` shape (key is `code`, not
+/// `errorCode`, one level down). Such bodies return `nil` here and fall through
+/// to the prose regex. Extending this to read nested shapes is a follow-up
+/// once a real paused F-SKU body is captured (see open questions in issue #385).
 private func extractErrorCode(from body: String) -> String? {
     guard let data = body.data(using: .utf8),
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]

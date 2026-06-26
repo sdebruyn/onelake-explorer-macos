@@ -219,6 +219,42 @@ struct FPErrorClassifyTests {
         #expect(FPError.classify(err) == .cannotSynchronize)
     }
 
+    // MARK: - Wire-accurate wrapped-form guards (tests-14: regression guards for
+
+    //         the sentinelWithBody path through OneLakeError/FabricError .httpError)
+
+    @Test("OneLakeError.httpError(.sentinelWithBody(.unauthorized)) maps to notAuthenticated")
+    func oneLakeHttpErrorSentinelWithBodyUnauthorizedMapsToNotAuthenticated() {
+        // Wire-accurate representation of a real 401 on the DFS path after this PR.
+        let ae = APIError(statusCode: 401, status: "401 Unauthorized", body: Data(#"{"errorCode":"TokenExpired"}"#.utf8))
+        let err = OneLakeError.httpError(HTTPClientError.sentinelWithBody(.unauthorized, ae))
+        #expect(FPError.classify(err) == .notAuthenticated)
+    }
+
+    @Test("FabricError.httpError(.sentinelWithBody(.unauthorized)) maps to notAuthenticated")
+    func fabricHttpErrorSentinelWithBodyUnauthorizedMapsToNotAuthenticated() {
+        // Wire-accurate representation of a real 401 on the Fabric REST path after this PR.
+        let ae = APIError(statusCode: 401, status: "401 Unauthorized", body: Data(#"{"errorCode":"TokenExpired"}"#.utf8))
+        let err = FabricError.httpError(HTTPClientError.sentinelWithBody(.unauthorized, ae))
+        #expect(FPError.classify(err) == .notAuthenticated)
+    }
+
+    @Test("OneLakeError.httpError(.sentinelWithBody(.throttled)) maps to serverBusy")
+    func oneLakeHttpErrorSentinelWithBodyThrottledMapsToServerBusy() {
+        // Wire-accurate representation of a real 429 on the DFS path after this PR.
+        let ae = APIError(statusCode: 429, status: "429 Too Many Requests", body: Data(#"{"errorCode":"RequestBlocked"}"#.utf8))
+        let err = OneLakeError.httpError(HTTPClientError.sentinelWithBody(.throttled, ae))
+        #expect(FPError.classify(err) == .serverBusy)
+    }
+
+    @Test("FabricError.httpError(.sentinelWithBody(.throttled)) maps to serverBusy")
+    func fabricHttpErrorSentinelWithBodyThrottledMapsToServerBusy() {
+        // Wire-accurate representation of a real 429 on the Fabric REST path after this PR.
+        let ae = APIError(statusCode: 429, status: "429 Too Many Requests", body: Data(#"{"errorCode":"RequestBlocked"}"#.utf8))
+        let err = FabricError.httpError(HTTPClientError.sentinelWithBody(.throttled, ae))
+        #expect(FPError.classify(err) == .serverBusy)
+    }
+
     // MARK: - Unknown error falls back to cannotSynchronize
 
     @Test func unknownErrorMapsToCannotSynchronize() {

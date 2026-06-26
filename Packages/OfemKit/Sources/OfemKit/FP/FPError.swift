@@ -174,8 +174,16 @@ private func fabricCode(for error: FabricError) -> FPError.Code {
         .serverBusy
     case .retriesExhausted, .cancelled:
         .serverUnreachable
+    case let .httpError(inner):
+        // Unwrap the wrapped HTTPClientError so that auth failures (401) and
+        // throttling (429) carried as .sentinelWithBody classify correctly —
+        // mirroring oneLakeCode (sync-12 equivalent for the Fabric path).
+        if let httpErr = inner as? HTTPClientError {
+            return httpCode(for: httpErr)
+        }
+        return .cannotSynchronize
     case .missingArgument, .paginationExceeded, .payloadTooLarge,
-         .rangeNotSatisfiable, .serverError, .httpError, .decodeFailed,
+         .rangeNotSatisfiable, .serverError, .decodeFailed,
          .loopingPagination, .continuationURIHostMismatch:
         .cannotSynchronize
     }

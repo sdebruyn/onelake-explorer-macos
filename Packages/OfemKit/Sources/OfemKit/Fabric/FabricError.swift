@@ -159,12 +159,6 @@ extension FabricError {
                 return .unauthorized
             }
             return .retriesExhausted(attempts: attempts)
-        case let HTTPClientError.sentinelWithBody(sentinel, ae):
-            // Body-carrying sentinel: route through .httpError so the APIError body
-            // remains reachable by PauseManager.extractAPIErrorBody. The typed
-            // sentinel inside is exposed via FPError.httpCode(for: .sentinelWithBody)
-            // for code paths that do not need the body.
-            return .httpError(HTTPClientError.sentinelWithBody(sentinel, ae))
         case let HTTPClientError.serverError(code):
             return .serverError(code)
         default:
