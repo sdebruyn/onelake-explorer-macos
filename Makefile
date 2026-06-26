@@ -3,6 +3,7 @@
 # Day-to-day:
 #   make app        — signed macOS app; THE build to run after pulling
 #   make build      — Debug build of OneLake.app via xcodebuild
+#   make install    — build + install Debug app into /Applications and relaunch
 #   make test       — run Swift unit tests (OfemKit + host-app logic)
 #   make build-ci   — unsigned compile-only build (used in CI)
 #   make clean      — remove build artefacts + unregister from LaunchServices
@@ -11,13 +12,18 @@
 XCODE_PROJECT := OneLake.xcodeproj
 APPLE_CONFIG  := Local.xcconfig
 
+# Paths used by the install and clean targets.
+BUILT_APP   := $(CURDIR)/DerivedData/Build/Products/Debug/OneLake.app
+INSTALL_APP := /Applications/OneLake.app
+LSREGISTER  := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+
 # Prevent concurrent runs of the test/build targets from contending on the
 # SwiftPM build lock. `make -j` can invoke multiple recipe lines in parallel
 # within a target; .NOTPARALLEL disables that for the entire Makefile so the
 # OfemKit `swift test` and host `xcodebuild` invocations always serialize.
 .NOTPARALLEL:
 
-.PHONY: app bootstrap gen build build-ci test test-integration format format-lint lint scan clean help
+.PHONY: app bootstrap gen build build-ci install test test-integration format format-lint lint scan clean help
 
 # Build the signed macOS app. This is THE single build to run after pulling main.
 app: build ## Build signed macOS app (THE build to run after pulling)
@@ -75,6 +81,70 @@ build: bootstrap OneLake.xcodeproj/project.pbxproj ## Build OneLake.app (Debug, 
 		-derivedDataPath DerivedData \
 		-allowProvisioningUpdates \
 		build
+
+# Install the freshly built Debug app into /Applications and relaunch.
+#
+# Steps, in order, to guarantee the NEW binary is active:
+#
+#   1. Guard: refuse if INSTALL_APP does not end in /OneLake.app so an
+#      accidental override cannot expand rm -rf to a destructive path.
+#   2. Quit the host app and poll for it to fully exit.  osascript delivers
+#      the Quit Event and returns immediately; the actual shutdown (domain
+#      deregistration, XPC teardown) can take several seconds on a loaded
+#      system, so polling is safer than a fixed sleep.
+#   3. Kill the running FPE (.appex) process (anchored to /Applications so
+#      worktree builds are not disturbed) and wait for it to exit.  macOS
+#      caches the extension binary and keeps the old process alive after the
+#      bundle is replaced on disk.  fileproviderd monitors the registered
+#      .appex path — not the inode — so removing the bundle while the process
+#      is still winding down can leave the File Provider domain in a faulted
+#      state.
+#   4. Stage the copy via a .new sibling (cleaning up any leftover from a prior
+#      failed install first) so rm -rf only runs after ditto succeeds — a
+#      mid-copy ditto failure (disk full, read-only volume) leaves the existing
+#      /Applications bundle intact.  ditto (not cp -R) preserves bundle
+#      structure, resource forks, and extended attributes correctly on macOS.
+#   5. Unregister the DerivedData copy from LaunchServices before launching
+#      the /Applications copy.  Without this, both copies are registered
+#      under the same bundle ID (dev.debruyn.ofem) — the documented
+#      NSFileProviderError.providerNotFound (-2001) failure mode from the
+#      clean target comment.  The single remaining registration also removes
+#      any osascript display-name ambiguity on the next install run.
+#   6. Relaunch so the host re-registers its File Provider domains with macOS.
+install: build ## Build and install Debug app into /Applications, then relaunch
+	# Guard: refuse if INSTALL_APP does not end in /OneLake.app so an accidental
+	# override (e.g. make install INSTALL_APP=/Applications) cannot rm -rf a
+	# broader path.
+	@case "$(INSTALL_APP)" in */OneLake.app) ;; *) echo "ERROR: INSTALL_APP must end in /OneLake.app (got: $(INSTALL_APP))"; exit 1 ;; esac
+	# Quit the host app gracefully; tolerate "not running" (non-zero exit).
+	# osascript resolves the app by display name via LaunchServices; the
+	# lsregister step below ensures only the /Applications copy is registered
+	# at launch time, so there is no ambiguity between copies.
+	osascript -e 'tell application "OneLake" to quit' 2>/dev/null || true
+	# Poll for the host to fully exit (max 10 s, 0.5 s intervals) — osascript
+	# returns after delivering the Quit Event, not after the app has exited.
+	@n=0; until ! pgrep -xq 'OneLake' 2>/dev/null || [ $$n -ge 20 ]; do sleep 0.5; n=$$((n+1)); done
+	# Terminate the stale /Applications FPE process so macOS reloads the
+	# extension from the new bundle; tolerate "not found" (non-zero exit).
+	pkill -f '/Applications/OneLake.app/Contents/PlugIns/OneLakeFileProvider.appex' 2>/dev/null || true
+	# Poll for the FPE to exit before touching the bundle; fileproviderd
+	# monitors the .appex path and may fault the domain if it disappears
+	# while the old process is still winding down.
+	@n=0; until ! pgrep -f '/Applications/OneLake.app/Contents/PlugIns/OneLakeFileProvider.appex' >/dev/null 2>&1 || [ $$n -ge 20 ]; do sleep 0.5; n=$$((n+1)); done
+	# Remove any leftover staging bundle from a previous failed install.
+	rm -rf "$(INSTALL_APP).new"
+	# Stage the new bundle first so rm -rf only runs after ditto succeeds;
+	# if ditto fails (disk full, /Applications temporarily read-only), the
+	# existing installation is preserved.
+	ditto "$(BUILT_APP)" "$(INSTALL_APP).new"
+	rm -rf "$(INSTALL_APP)"
+	mv "$(INSTALL_APP).new" "$(INSTALL_APP)"
+	# Unregister the DerivedData copy from LaunchServices before launching
+	# /Applications/OneLake.app.  A duplicate registration under the same
+	# bundle ID (dev.debruyn.ofem) triggers providerNotFound (-2001).
+	@if [ -x "$(LSREGISTER)" ]; then "$(LSREGISTER)" -u "$(BUILT_APP)" 2>/dev/null || true; fi
+	# Relaunch the host app so it re-registers its File Provider domains with macOS.
+	open "$(INSTALL_APP)"
 
 # Compile the app + .appex unsigned (no signing identity, no provisioning
 # round-trip). This is the CI build gate: it catches Swift compile
@@ -147,13 +217,13 @@ test-integration: ## Run live integration tests (needs OFEM_TOKEN_* + OFEM_TEST_
 # (-2001) and the Finder mount never appears. Always run `make clean`
 # before removing a worktree you built the app in.
 clean: ## Remove build artefacts and unregister app from LaunchServices
-	@lsreg="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"; \
-	if [ -x "$$lsreg" ]; then \
+	@if [ -x "$(LSREGISTER)" ]; then \
 		for app in \
 			"$(CURDIR)/DerivedData/Build/Products/Debug/OneLake.app" \
 			"$(CURDIR)/build/Release/Build/Products/Release/OneLake.app" \
-			"$(CURDIR)/build/Export/OneLake.app"; do \
-			if [ -d "$$app" ]; then "$$lsreg" -u "$$app" 2>/dev/null || true; fi; \
+			"$(CURDIR)/build/Export/OneLake.app" \
+			"$(INSTALL_APP)"; do \
+			if [ -d "$$app" ]; then "$(LSREGISTER)" -u "$$app" 2>/dev/null || true; fi; \
 		done; \
 	fi
 	rm -rf OneLake.xcodeproj OneLake.xcworkspace build DerivedData
