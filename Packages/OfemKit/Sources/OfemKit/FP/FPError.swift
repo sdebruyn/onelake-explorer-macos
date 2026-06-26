@@ -163,17 +163,17 @@ private func oneLakeCode(for error: OneLakeError) -> FPError.Code {
 private func fabricCode(for error: FabricError) -> FPError.Code {
     switch error {
     case .unauthorized:
-        .notAuthenticated
+        return .notAuthenticated
     case .forbidden:
         // HTTP 403: authenticated-but-not-authorised. Same reasoning as
         // oneLakeCode: must not trigger markNeedsSignIn.
-        .cannotSynchronize
+        return .cannotSynchronize
     case .notFound, .gone:
-        .noSuchItem
+        return .noSuchItem
     case .rateLimited:
-        .serverBusy
+        return .serverBusy
     case .retriesExhausted, .cancelled:
-        .serverUnreachable
+        return .serverUnreachable
     case let .httpError(inner):
         // Unwrap the wrapped HTTPClientError so that auth failures (401) and
         // throttling (429) carried as .sentinelWithBody classify correctly —
@@ -185,6 +185,6 @@ private func fabricCode(for error: FabricError) -> FPError.Code {
     case .missingArgument, .paginationExceeded, .payloadTooLarge,
          .rangeNotSatisfiable, .serverError, .decodeFailed,
          .loopingPagination, .continuationURIHostMismatch:
-        .cannotSynchronize
+        return .cannotSynchronize
     }
 }
