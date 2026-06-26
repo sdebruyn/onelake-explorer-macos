@@ -130,7 +130,7 @@ install: build ## Build and install Debug app into /Applications, then relaunch
 	# Poll for the FPE to exit before touching the bundle; fileproviderd
 	# monitors the .appex path and may fault the domain if it disappears
 	# while the old process is still winding down.
-	@until ! pgrep -f 'OneLakeFileProvider.appex' >/dev/null 2>&1; do sleep 0.5; done
+	@n=0; until ! pgrep -f '/Applications/OneLake.app/Contents/PlugIns/OneLakeFileProvider.appex' >/dev/null 2>&1 || [ $$n -ge 20 ]; do sleep 0.5; n=$$((n+1)); done
 	# Remove any leftover staging bundle from a previous failed install.
 	rm -rf "$(INSTALL_APP).new"
 	# Stage the new bundle first so rm -rf only runs after ditto succeeds;
