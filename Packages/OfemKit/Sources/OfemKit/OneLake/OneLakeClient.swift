@@ -402,6 +402,36 @@ public final class OneLakeClient: Sendable {
             )
         }
 
+        // Stage the upload at a temp sibling path and commit it via rename
+        // (finding F11) — see writeFromHandle's doc comment for the rationale.
+        let stagingPath = temporaryUploadPath(for: path)
+        do {
+            try await createAppendFlush(
+                alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID,
+                path: stagingPath, content: content, size: size
+            )
+            try await rename(
+                alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID,
+                sourcePath: stagingPath, destinationPath: path
+            )
+        } catch {
+            await cleanupStagingPath(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, path: stagingPath)
+            throw error
+        }
+    }
+
+    /// Performs the DFS create + chunked append + flush sequence for an
+    /// in-memory buffer against `path`. Extracted so `write(content:size:)`
+    /// can run it against a staging path and only expose `path` itself once
+    /// the rename has committed.
+    private func createAppendFlush(
+        alias: String,
+        workspaceGUID: String,
+        itemGUID: String,
+        path: String,
+        content: Data,
+        size: Int64
+    ) async throws {
         // 1. Create file.
         let createURL = try buildURL {
             try oneLakePathURL(
@@ -625,7 +655,45 @@ public final class OneLakeClient: Sendable {
     ///
     /// The file handle must be positioned at the start of the content to upload
     /// and must remain valid for the duration of the call.
+    ///
+    /// Stages the upload at a temp sibling path and commits it via rename
+    /// (finding F11): creating directly at the live destination immediately
+    /// truncates any existing content to 0 bytes (DFS create is a full
+    /// overwrite; flush is a separate, later request). If the process or
+    /// network dies after create but before flush — and the retry budget is
+    /// exhausted — the destination is left committed at 0 bytes with the
+    /// previous content permanently gone. Staging at a temp path in the same
+    /// item/directory means the commit is a metadata-only rename, so an
+    /// interrupted upload leaves the original destination untouched.
     private func writeFromHandle(
+        alias: String,
+        workspaceGUID: String,
+        itemGUID: String,
+        path: String,
+        handle: FileHandle,
+        size: Int64
+    ) async throws {
+        let stagingPath = temporaryUploadPath(for: path)
+        do {
+            try await createAppendFlush(
+                alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID,
+                path: stagingPath, handle: handle, size: size
+            )
+            try await rename(
+                alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID,
+                sourcePath: stagingPath, destinationPath: path
+            )
+        } catch {
+            await cleanupStagingPath(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, path: stagingPath)
+            throw error
+        }
+    }
+
+    /// Performs the DFS create + chunked append + flush sequence, streaming
+    /// from `handle`, against `path`. Extracted so `writeFromHandle` can run
+    /// it against a staging path and only expose `path` itself once the
+    /// rename has committed.
+    private func createAppendFlush(
         alias: String,
         workspaceGUID: String,
         itemGUID: String,
@@ -721,6 +789,44 @@ public final class OneLakeClient: Sendable {
             )
         }
         _ = try await doRequest(alias: alias, method: "PATCH", url: flushURL, body: nil, extraHeaders: nil, idempotent: true)
+    }
+
+    // MARK: - Upload staging (finding F11)
+
+    /// Derives a unique staging path in the same directory as `path`.
+    ///
+    /// The temp+rename dance needs a sibling within the same item so the
+    /// commit is a metadata-only rename rather than a copy. The
+    /// `.ofem-upload-` prefix (distinct from the `._` AppleDouble prefix
+    /// ``isMacOSMetadata`` matches on) plus a UUID makes collisions with
+    /// real content or a concurrent upload of the same file effectively
+    /// impossible.
+    private func temporaryUploadPath(for path: String) -> String {
+        let uuid = UUID().uuidString
+        guard let slash = path.lastIndex(of: "/") else {
+            return ".ofem-upload-\(uuid)-\(path)"
+        }
+        let dir = path[path.startIndex ..< slash]
+        let name = path[path.index(after: slash)...]
+        return "\(dir)/.ofem-upload-\(uuid)-\(name)"
+    }
+
+    /// Best-effort removal of a staging file left behind by a failed upload.
+    ///
+    /// Never throws: a cleanup failure must not mask the original error that
+    /// triggered it, and an orphaned staging file is harmless — it is never
+    /// referenced by anything until the rename that never happened.
+    private func cleanupStagingPath(
+        alias: String,
+        workspaceGUID: String,
+        itemGUID: String,
+        path: String
+    ) async {
+        do {
+            try await delete(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, path: path)
+        } catch {
+            Self.log.debug("OneLakeClient: staging cleanup failed for \(path, privacy: .private): \(String(describing: error), privacy: .public)")
+        }
     }
 
     /// Executes a DFS request via the Alamofire session for `(alias, .oneLake)`.
