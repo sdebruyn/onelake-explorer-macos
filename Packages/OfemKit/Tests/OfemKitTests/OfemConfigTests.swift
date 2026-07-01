@@ -2,6 +2,31 @@ import Foundation
 @testable import OfemKit
 import Testing
 
+// MARK: - SyncOverlapTracker
+
+/// Synchronous counterpart to `AsyncPathMutexTests`'s actor-based
+/// `OverlapTracker`, usable from inside `updateAndSave`'s synchronous
+/// `mutator` closure (which cannot `await` an actor). NSLock-guarded,
+/// mirroring the registry-lock pattern used throughout `OfemKit` itself.
+private final class SyncOverlapTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = 0
+    private(set) var maxConcurrent = 0
+    private(set) var totalEntries = 0
+
+    func enter() {
+        lock.withLock {
+            current += 1
+            totalEntries += 1
+            maxConcurrent = max(maxConcurrent, current)
+        }
+    }
+
+    func exit() {
+        lock.withLock { current -= 1 }
+    }
+}
+
 // MARK: - OfemConfigTests
 
 @Suite("OfemConfig + OfemConfigStore")
@@ -237,6 +262,56 @@ struct OfemConfigTests {
         }
 
         // Must not throw.
+        let store2 = try OfemConfigStore(paths: paths)
+        #expect(!store2.snapshot().installID.isEmpty)
+    }
+
+    // MARK: - F12: updateAndSave lock-window regression
+
+    /// Regression test for the fcntl-lock-released-early bug (F12) as it
+    /// applies to `updateAndSave` specifically: `ConfigFileLock.release()`
+    /// used to run in a `defer` scheduled *after* `continuation.resume(...)`,
+    /// which only schedules the awaiting Task rather than waiting for it —
+    /// so the resumed Task could reach `AsyncPathMutex.shared.release(path:)`
+    /// before the fd was actually closed, narrowly reopening the same
+    /// clobber window this PR exists to close. The fix moved `lock.release()`
+    /// to run explicitly before each `resume(...)` call.
+    ///
+    /// A single test process can't observe the cross-process fd-close
+    /// ordering directly (see the "Intra-process write safety" note below —
+    /// `fcntl` always grants the same process its own lock immediately,
+    /// regardless of other open fds). What this test *can* prove: many
+    /// overlapping `updateAndSave` calls on the same store/path (a) never
+    /// let two mutator invocations run concurrently — the same in-process
+    /// invariant `AsyncPathMutexTests` proves for the mutex in isolation —
+    /// and (b) all complete without hanging. A double-release-style bug
+    /// (like the one this review caught during development) corrupts
+    /// `AsyncPathMutex`'s internal bookkeeping and manifests here as a hang,
+    /// exactly as it did in the analogous `FileTokenStoreTests` regression
+    /// test.
+    @Test("concurrent updateAndSave calls on the same path never overlap their critical section")
+    func concurrentUpdateAndSaveNeverOverlapsCriticalSection() async throws {
+        let paths = makePaths()
+        let store = try OfemConfigStore(paths: paths)
+        let tracker = SyncOverlapTracker()
+
+        await withTaskGroup(of: Void.self) { group in
+            for i in 0 ..< 15 {
+                group.addTask {
+                    _ = try? await store.updateAndSave { cfg in
+                        tracker.enter()
+                        cfg.installID = "run-\(i)"
+                        tracker.exit()
+                    }
+                }
+            }
+        }
+
+        #expect(tracker.maxConcurrent <= 1,
+                "updateAndSave's mutator must never run concurrently for the same path")
+        #expect(tracker.totalEntries == 15,
+                "all 15 turns must complete — a hang here means a lost/duplicated release")
+
         let store2 = try OfemConfigStore(paths: paths)
         #expect(!store2.snapshot().installID.isEmpty)
     }

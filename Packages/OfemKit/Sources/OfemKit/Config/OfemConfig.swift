@@ -181,16 +181,32 @@ public final class OfemConfigStore: Sendable {
             // queue.sync is fast (just I/O, no sleeping) so blocking this thread
             // briefly is acceptable. The serial queue ensures intra-process
             // callers don't interleave their own read-modify-write cycles.
+            // NOTE: `lock.release()` is called explicitly on both branches
+            // below, immediately before `continuation.resume(...)` — NOT via
+            // `defer`. `continuation.resume()` only *schedules* the awaiting
+            // Task; it does not wait for the rest of this closure to finish.
+            // A `defer { lock.release() }` placed after `resume()` would race
+            // the resumed Task against this GCD thread: the resumed Task
+            // could reach `AsyncPathMutex.shared.release(path:)` below and
+            // free the mutex for a second in-process caller — which would
+            // then acquire the (per-process) fcntl lock immediately — before
+            // this thread's deferred `lock.release()` actually closes the
+            // fd, reintroducing the exact F12 clobber this mutex exists to
+            // prevent, just in a narrower window. Releasing the fcntl lock
+            // *before* resuming establishes a genuine happens-before: the fd
+            // is guaranteed closed before the resumed Task can possibly call
+            // `AsyncPathMutex.shared.release(path:)`.
             let fresh: OfemConfig = try await withCheckedThrowingContinuation { continuation in
                 queue.async {
-                    defer { lock.release() }
                     do {
                         var fresh = try Self.load(from: paths)
                         try mutator(&fresh)
                         try Self.save(fresh, to: paths)
                         self.config = fresh
+                        lock.release()
                         continuation.resume(returning: fresh)
                     } catch {
+                        lock.release()
                         continuation.resume(throwing: error)
                     }
                 }
