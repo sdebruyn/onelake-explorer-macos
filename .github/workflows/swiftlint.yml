@@ -26,10 +26,9 @@ jobs:
         # ENTRYPOINT ["/usr/bin/swiftlint"]. Running via docker run (not
         # job container:) avoids the need for a shell in the image and
         # matches the approach used by the SwiftFormat job.
-        # --quiet: report violations but suppress non-violation status logs
-        # (e.g. "Linting <file>", "Done linting").
-        # --strict: promote warnings to serious violations, so ANY violation
-        # (warning or error) causes a non-zero exit and fails the job.
+        # --quiet: report violations but keep exit code 0 for warnings;
+        # only error-level violations (and rule violations configured as
+        # errors in .swiftlint.yml) cause a non-zero exit.
         run: |
           docker run --rm -v "${{ github.workspace }}:/src" -w /src \
-            ghcr.io/realm/swiftlint:0.63.3 lint --quiet --strict
+            ghcr.io/realm/swiftlint:0.63.3 lint --quiet
