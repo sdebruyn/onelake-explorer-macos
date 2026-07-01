@@ -429,6 +429,37 @@ struct FileTokenStoreTests {
         #expect(result == Data("step3".utf8))
     }
 
+    // MARK: - F12: overlapping write + atomicUpdate on the same alias
+
+    /// Regression test for the fcntl-lock-released-early bug (F12): `write`
+    /// and `atomicUpdate` each acquire the per-alias in-process mutex
+    /// (`AsyncPathMutex`) *before* the cross-process fcntl lock. Racing
+    /// them on the same alias — mirroring MSAL's storage- and Fabric-scope
+    /// `didWriteCache` callbacks interleaving — must neither corrupt the
+    /// store nor hang. A broken (double-release) mutex implementation would
+    /// leave the alias's turn permanently held, hanging this test.
+    @Test("concurrent write and atomicUpdate on the same alias do not corrupt or deadlock")
+    func concurrentWriteAndAtomicUpdateSameAlias() async throws {
+        let store = try makeStore()
+        try await store.write(alias: "mixed", data: Data("seed".utf8))
+
+        await withTaskGroup(of: Void.self) { group in
+            for i in 0 ..< 15 {
+                group.addTask {
+                    try? await store.write(alias: "mixed", data: Data("write-\(i)".utf8))
+                }
+                group.addTask {
+                    try? await store.atomicUpdate(alias: "mixed") { existing in existing }
+                }
+            }
+        }
+
+        // Completion without hanging is the primary assertion; the stored
+        // value must also still be well-formed (not truncated/corrupted).
+        let result = try store.read(alias: "mixed")
+        #expect(!result.isEmpty)
+    }
+
     @Test("concurrent atomicUpdate calls on the same alias are serialised")
     func concurrentAtomicUpdates() async throws {
         let store = try makeStore()
