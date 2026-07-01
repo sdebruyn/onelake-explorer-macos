@@ -336,6 +336,31 @@ final class FPEEngineHost: EngineProviding {
             }
             activeHostLock.withLock { _activeHostCount = 0 }
         }
+
+        // periphery:ignore
+        /// **Test-only.** Installs `store` as the process-wide shared config
+        /// store, bypassing `sharedConfigStore()`'s real on-disk construction
+        /// (`OfemConfigStore()` resolves the real App Group container, or
+        /// falls back to `$HOME`, both unsafe to touch from a unit test).
+        /// Callers should pass an `OfemConfigStore(paths: OfemPaths(root:))`
+        /// backed by a disposable temp directory.
+        static func installSharedConfigStoreForTesting(_ store: OfemConfigStore) {
+            sharedStoreLock.withLock { _sharedConfigStore = store }
+        }
+
+        // periphery:ignore
+        /// **Test-only.** Installs `cache`/`telemetry` as the process-wide
+        /// shared instances, bypassing `sharedCache()`/`sharedTelemetry()`'s
+        /// real on-disk / network construction. Lets tests exercise
+        /// `reloadEngine()`'s live-config propagation (`peekSharedCache()`,
+        /// `peekSharedTelemetry()`) against disposable, temp-directory-backed
+        /// instances instead of the real App Group container.
+        static func installSharedSubsystemsForTesting(cache: CacheStore, telemetry: TelemetryClient) {
+            sharedSubsystemsLock.withLock {
+                _sharedCache = cache
+                _sharedTelemetry = telemetry
+            }
+        }
     #endif
 
     // MARK: - Mutable state (guarded by lock)
@@ -526,8 +551,12 @@ final class FPEEngineHost: EngineProviding {
     /// shared-subsystem design eliminates. Config fields that only affect
     /// those subsystems (`cache.maxBytes`, `telemetry`) instead take effect
     /// through live setters (``CacheStore/setMaxBlobBytes(_:)``,
-    /// ``TelemetryClient/setOptOut(_:)``) called at the end of this method —
-    /// no FPE process restart required.
+    /// ``TelemetryClient/setOptOut(_:)``) called at the end of this method,
+    /// with no FPE process restart needed. For the telemetry opt-out
+    /// specifically, see `TelemetryClient`'s class-level doc for the precise
+    /// guarantee: no event enqueued at or after the opt-out is transmitted,
+    /// and an already-in-flight send is cancelled best-effort — not
+    /// instantaneously aborted.
     func reloadEngine() async {
         let (existing, startTask): (OfemEngine?, Task<Void, Never>?) = lock.withLock {
             let e = _engine
