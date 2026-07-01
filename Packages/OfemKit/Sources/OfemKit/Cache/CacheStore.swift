@@ -181,16 +181,22 @@ public actor CacheStore {
         maxBlobBytes = value
     }
 
-    // periphery:ignore
-    /// Current eviction budget. Test-only introspection — production callers
-    /// have no legitimate need to read this back (they only ever set it).
-    /// Exposed so `FPEEngineHostTests` can assert that `reloadEngine()`
-    /// actually propagates a config change to the shared `CacheStore`
-    /// without needing to write gigabyte-scale blob data to observe eviction
-    /// behaviour (`cache.max_size_gb` is whole-GB granularity).
-    public var maxBlobBytesForTesting: Int64 {
-        maxBlobBytes
-    }
+    #if DEBUG
+        // periphery:ignore
+        /// Current eviction budget. Test-only introspection — production
+        /// callers have no legitimate need to read this back (they only ever
+        /// set it). Exposed so `FPEEngineHostTests` can assert that
+        /// `reloadEngine()` actually propagates a config change to the shared
+        /// `CacheStore` without needing to write gigabyte-scale blob data to
+        /// observe eviction behaviour (`cache.max_size_gb` is whole-GB
+        /// granularity).
+        ///
+        /// `#if DEBUG`-gated (matching `FPEEngineHost`'s `*ForTesting` seams)
+        /// so this test-only surface never ships in a Release build.
+        public var maxBlobBytesForTesting: Int64 {
+            maxBlobBytes
+        }
+    #endif
 
     // MARK: - Read-only factory (host process)
 
