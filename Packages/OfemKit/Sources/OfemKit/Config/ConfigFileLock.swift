@@ -32,9 +32,15 @@ import Foundation
 //
 // `acquire()` opens the fd before spawning the blocking thread, and the
 // thread closes/releases the fd on every exit path (success, timeout,
-// system error). `OfemConfigStore.updateAndSave` wraps the held lock in a
-// `defer { lock.release() }` block, so the fd is always closed even when
-// `mutator` or `save` throws.
+// system error). `OfemConfigStore.updateAndSave` releases the held lock
+// explicitly — calling `lock.release()` immediately before each
+// `continuation.resume(...)` (both the success and the error branch),
+// rather than in a `defer` scheduled after `resume(...)` — so the fd is
+// always closed even when `mutator` or `save` throws, AND closing the fd
+// is guaranteed to happen-before the awaiting Task can resume. The latter
+// matters because `resume(...)` only schedules the awaiting Task; it does
+// not wait for the rest of the closure to run, so a `defer` positioned
+// after it would not give that ordering guarantee (F12).
 
 /// A scoped handle for a held `fcntl` exclusive record lock.
 ///

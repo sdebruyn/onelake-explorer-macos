@@ -266,31 +266,35 @@ struct OfemConfigTests {
         #expect(!store2.snapshot().installID.isEmpty)
     }
 
-    // MARK: - F12: updateAndSave lock-window regression
+    // MARK: - updateAndSave / AsyncPathMutex integration sanity check
 
-    /// Regression test for the fcntl-lock-released-early bug (F12) as it
-    /// applies to `updateAndSave` specifically: `ConfigFileLock.release()`
-    /// used to run in a `defer` scheduled *after* `continuation.resume(...)`,
-    /// which only schedules the awaiting Task rather than waiting for it —
-    /// so the resumed Task could reach `AsyncPathMutex.shared.release(path:)`
-    /// before the fd was actually closed, narrowly reopening the same
-    /// clobber window this PR exists to close. The fix moved `lock.release()`
-    /// to run explicitly before each `resume(...)` call.
+    /// **What this test does *not* prove**: the specific F12 fix — that
+    /// `ConfigFileLock.release()` now happens-before the resumed Task can
+    /// call `AsyncPathMutex.shared.release(path:)` — is *not*, and cannot
+    /// be, verified here. `updateAndSave`'s read-modify-write body always
+    /// runs on `serialQueue`, a single serial `DispatchQueue`; GCD
+    /// guarantees blocks on a serial queue run strictly one at a time
+    /// regardless of what any other synchronisation does or doesn't
+    /// guarantee. So two overlapping `updateAndSave` calls could never let
+    /// their mutator closures truly overlap even *before* this PR's fix —
+    /// this test would pass identically against the old, buggy ordering.
+    /// The F12 fix itself is established by code reasoning, not a test:
+    /// `lock.release()` runs synchronously, on the same GCD thread, before
+    /// each `continuation.resume(...)` call (see the comments at the
+    /// `updateAndSave` call site and in `ConfigFileLock.swift`) — a
+    /// same-process test has no way to observe whether a *peer process*
+    /// could have slipped in during the old, racier ordering.
     ///
-    /// A single test process can't observe the cross-process fd-close
-    /// ordering directly (see the "Intra-process write safety" note below —
-    /// `fcntl` always grants the same process its own lock immediately,
-    /// regardless of other open fds). What this test *can* prove: many
-    /// overlapping `updateAndSave` calls on the same store/path (a) never
-    /// let two mutator invocations run concurrently — the same in-process
-    /// invariant `AsyncPathMutexTests` proves for the mutex in isolation —
-    /// and (b) all complete without hanging. A double-release-style bug
-    /// (like the one this review caught during development) corrupts
-    /// `AsyncPathMutex`'s internal bookkeeping and manifests here as a hang,
-    /// exactly as it did in the analogous `FileTokenStoreTests` regression
-    /// test.
-    @Test("concurrent updateAndSave calls on the same path never overlap their critical section")
-    func concurrentUpdateAndSaveNeverOverlapsCriticalSection() async throws {
+    /// **What this test *does* prove**: `updateAndSave`'s `AsyncPathMutex`
+    /// integration doesn't deadlock or leak a turn under contention. A
+    /// double-release-style bug (like the one this review caught during
+    /// development) corrupts `AsyncPathMutex`'s internal bookkeeping and
+    /// manifests here as a hang, exactly as it did in the analogous
+    /// `FileTokenStoreTests` regression test. The `maxConcurrent <= 1`
+    /// assertion is a sanity check on the pre-existing `serialQueue`
+    /// invariant, not evidence of the fcntl-ordering fix.
+    @Test("concurrent updateAndSave calls on the same path do not deadlock or overlap their mutator")
+    func concurrentUpdateAndSaveDoesNotDeadlockOrOverlapMutator() async throws {
         let paths = makePaths()
         let store = try OfemConfigStore(paths: paths)
         let tracker = SyncOverlapTracker()
