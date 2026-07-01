@@ -88,11 +88,16 @@ public struct TelemetryConfiguration: Sendable {
 /// ### Opt-out
 ///
 /// Telemetry is disabled when:
-/// - `TelemetryConfiguration.optOut == true`, **or**
-/// - The environment variable `OFEM_TELEMETRY` is set to `0` or `false`.
+/// - `TelemetryConfiguration.optOut == true` at construction, **or**
+/// - The environment variable `OFEM_TELEMETRY` is set to `0` or `false`, **or**
+/// - ``setOptOut(_:)`` was last called with `true`.
 ///
-/// When disabled the client uses `NoopTelemetrySink`, which silently discards
-/// every event.  The background flush timer is not started.
+/// When disabled at construction time the client uses `NoopTelemetrySink`,
+/// which silently discards every event. ``setOptOut(_:)`` additionally gates
+/// every subsequent ``track(_:)`` call on a live, actor-isolated flag so a
+/// runtime opt-out (e.g. via the host app's `setConfig`) takes effect
+/// immediately — with no process restart — even though `sink` itself is
+/// fixed at construction.
 public actor TelemetryClient {
     // MARK: - State
 
@@ -100,6 +105,11 @@ public actor TelemetryClient {
     private let batch: TelemetryBatch
     private let commonProps: [String: String]
     private let configuration: TelemetryConfiguration
+
+    /// Live opt-out flag, consulted on every ``track(_:)`` call. Seeded from
+    /// `configuration.optOut` (plus the `OFEM_TELEMETRY` env override) at
+    /// construction and updatable afterwards via ``setOptOut(_:)``.
+    private var optOut: Bool
 
     private var flushTask: Task<Void, Never>?
     private var isClosed = false
@@ -133,6 +143,7 @@ public actor TelemetryClient {
 
         self.sink = effectiveSink
         self.configuration = configuration
+        self.optOut = effectiveOptOut
         self.batch = TelemetryBatch(maxSize: configuration.maxBatchSize)
 
         let platform = configuration.platform.isEmpty ? "darwin" : configuration.platform
@@ -189,8 +200,12 @@ public actor TelemetryClient {
     /// Enqueues `event`. Common properties are merged in; `time` defaults to
     /// `Date()` when absent. Non-blocking from the caller; the actor
     /// serialises access internally.
+    ///
+    /// A no-op when ``setOptOut(_:)`` most recently set the live opt-out flag
+    /// to `true` — checked on every call so a runtime opt-out takes effect
+    /// immediately, not just the opt-out state at construction time.
     public func track(_ event: TelemetryEvent) async {
-        guard !isClosed else { return }
+        guard !isClosed, !optOut else { return }
 
         var ev = event
         if ev.time == nil { ev.time = Date() }
@@ -210,6 +225,28 @@ public actor TelemetryClient {
         let bufferFull = await batch.enqueue(ev)
         if bufferFull {
             await flush()
+        }
+    }
+
+    // MARK: - Live opt-out
+
+    /// Updates the opt-out flag live, without requiring a new `TelemetryClient`.
+    ///
+    /// Actor isolation serialises this against concurrent `track()` calls —
+    /// there is no torn read, no separate lock needed. Every ``track(_:)``
+    /// call made after `setOptOut(true)` returns is a no-op.
+    ///
+    /// Also discards any events already buffered but not yet flushed, so a
+    /// background flush cannot ship pre-opt-out events to the sink after the
+    /// caller believes telemetry has been disabled.
+    ///
+    /// Called by `FPEEngineHost.reloadEngine()` after a `setConfig(telemetry:)`
+    /// XPC call so the opt-out takes effect immediately — the shared
+    /// `TelemetryClient` singleton is not rebuilt on reload.
+    public func setOptOut(_ value: Bool) async {
+        optOut = value
+        if value {
+            _ = await batch.drain()
         }
     }
 

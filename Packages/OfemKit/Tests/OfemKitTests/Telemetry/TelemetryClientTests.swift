@@ -142,6 +142,56 @@ struct TelemetryClientTests {
         #expect(sink.count == 0, "opt-out client must not send to real sink")
     }
 
+    // MARK: - Live opt-out (F4/A1: telemetry opt-out takes effect without restart)
+
+    @Test("setOptOut(true) stops subsequent track() calls from reaching the sink")
+    func setOptOutTrueStopsFutureTracking() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+
+        // Telemetry starts enabled — a track() before opt-out reaches the sink.
+        await client.track(TelemetryEvent(name: "before_opt_out"))
+        await client.flush()
+        #expect(sink.count == 1)
+
+        await client.setOptOut(true)
+
+        // No restart, no new TelemetryClient — the same actor instance now
+        // drops every subsequent track() call.
+        await client.track(TelemetryEvent(name: "after_opt_out"))
+        await client.flush()
+        #expect(sink.count == 1, "setOptOut(true) must stop further events from reaching the sink")
+    }
+
+    @Test("setOptOut(true) discards events already buffered but not yet flushed")
+    func setOptOutTrueDropsBufferedEvents() async {
+        let sink = MemoryTelemetrySink()
+        // Long flush interval so the background timer cannot race the assertion.
+        let client = makeClient(sink: sink, flushInterval: .seconds(3600))
+
+        await client.track(TelemetryEvent(name: "queued_before_opt_out"))
+        await client.setOptOut(true)
+        await client.flush()
+
+        #expect(sink.count == 0, "events queued before opt-out must not survive a post-opt-out flush")
+    }
+
+    @Test("setOptOut(false) re-enables tracking after a live opt-out")
+    func setOptOutFalseReenablesTracking() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+
+        await client.setOptOut(true)
+        await client.track(TelemetryEvent(name: "dropped"))
+        await client.flush()
+        #expect(sink.count == 0)
+
+        await client.setOptOut(false)
+        await client.track(TelemetryEvent(name: "resumed"))
+        await client.flush()
+        #expect(sink.count == 1)
+    }
+
     @Test("buffer overflow triggers immediate flush so no events are dropped (store-18)")
     func bufferOverflowTriggersFlush() async {
         let sink = MemoryTelemetrySink()

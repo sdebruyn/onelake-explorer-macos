@@ -39,7 +39,10 @@ public actor CacheStore {
     // Internal so test targets can run direct SQL assertions.
     let dbPool: DatabasePool
     private let blobs: BlobShardCache
-    private let maxBlobBytes: Int64
+    /// LRU eviction threshold for blob bytes. `var` (not `let`) so
+    /// ``setMaxBlobBytes(_:)`` can update the budget live; actor isolation
+    /// serialises the update against concurrent reads/writes.
+    private var maxBlobBytes: Int64
 
     /// Clock injection seam: returns the current time as Unix nanoseconds.
     /// Defaults to wall clock; override in tests for deterministic ordering.
@@ -144,6 +147,27 @@ public actor CacheStore {
     /// isolation).
     public nonisolated func reader() -> CacheReader {
         CacheReader(db: dbPool, logger: logger)
+    }
+
+    // MARK: - Live budget update
+
+    /// Updates the LRU eviction budget live, without recreating `CacheStore`.
+    ///
+    /// The new limit applies on the next ``storeBlob(key:data:)`` /
+    /// ``storeBlobFromURL(_:key:)`` write (both call ``evictToLimit()``
+    /// automatically) or the next explicit ``evictToLimit()`` call — it does
+    /// not retroactively evict already-cached blobs the moment this is
+    /// called. `0` disables eviction (matches the `init` semantics).
+    ///
+    /// Actor isolation serialises this against concurrent reads of
+    /// `maxBlobBytes` — no separate lock needed.
+    ///
+    /// Called by `FPEEngineHost.reloadEngine()` after a
+    /// `setConfig(cache.max_size_gb:)` XPC call so the budget takes effect
+    /// immediately — the shared `CacheStore` singleton is not rebuilt on
+    /// reload.
+    public func setMaxBlobBytes(_ value: Int64) {
+        maxBlobBytes = value
     }
 
     // MARK: - Read-only factory (host process)

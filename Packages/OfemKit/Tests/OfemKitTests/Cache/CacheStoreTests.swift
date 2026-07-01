@@ -531,6 +531,71 @@ struct CacheStoreTests {
         #expect(total <= 6)
     }
 
+    // MARK: - Live budget update (F4/A1: cache.max_size_gb takes effect without restart)
+
+    @Test("setMaxBlobBytes lowers the effective eviction budget on the next write")
+    func setMaxBlobBytesAppliesOnNextWrite() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        // Start generous (100 bytes) so the first two 4-byte blobs both fit.
+        let store = try CacheStore(root: tmp, maxBlobBytes: 100)
+
+        func add(path: String, accessedNs: Int64) async throws {
+            var rec = MetadataRecord(
+                accountAlias: "a", workspaceID: "w", itemID: "i",
+                path: path, parentPath: "", name: path, isDir: false
+            )
+            rec.lastAccessedNs = accessedNs
+            try await store.upsert(rec)
+            try await store.storeBlob(
+                key: CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: path),
+                data: Data(path.utf8.prefix(4))
+            )
+        }
+
+        try await add(path: "old.txt", accessedNs: 100)
+        try await add(path: "new.txt", accessedNs: 200)
+        #expect(try await store.blobBytes() == 8)
+
+        // Tighten the budget live — no CacheStore recreation.
+        await store.setMaxBlobBytes(6)
+
+        // The lowered budget is not retroactively enforced until the next
+        // write/eviction — the previously-written 8 bytes are still on disk.
+        #expect(try await store.blobBytes() == 8)
+
+        // The next storeBlob write enforces the new budget automatically.
+        try await add(path: "third.txt", accessedNs: 300)
+        #expect(try await store.blobBytes() <= 6)
+    }
+
+    @Test("setMaxBlobBytes takes effect on an explicit evictToLimit call")
+    func setMaxBlobBytesAppliesOnExplicitEviction() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        // Start unlimited (0) so writes never auto-evict.
+        let store = try CacheStore(root: tmp, maxBlobBytes: 0)
+
+        var rec = MetadataRecord(
+            accountAlias: "a", workspaceID: "w", itemID: "i",
+            path: "f.bin", parentPath: "", name: "f.bin", isDir: false
+        )
+        rec.lastAccessedNs = 100
+        try await store.upsert(rec)
+        try await store.storeBlob(
+            key: CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "f.bin"),
+            data: Data(repeating: 0, count: 8)
+        )
+        #expect(try await store.blobBytes() == 8)
+
+        await store.setMaxBlobBytes(4)
+        let (evicted, _) = try await store.evictToLimit()
+        #expect(evicted == 1)
+        #expect(try await store.blobBytes() == 0)
+    }
+
     // MARK: - Orphan sweep at init (store-03 regression)
 
     @Test("Init-time orphan sweep removes blob files with no DB reference")
