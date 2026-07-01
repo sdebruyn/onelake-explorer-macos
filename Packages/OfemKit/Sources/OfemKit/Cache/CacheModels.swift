@@ -352,13 +352,15 @@ public struct WorkspaceStatusRecord: FetchableRecord, PersistableRecord, Sendabl
 
 // MARK: - DeletionTombstoneRecord
 
-/// A soft-delete log row recording that an item was removed during remote
-/// reconciliation.
+/// A soft-delete log row recording that an identifier was removed, so the
+/// change path can surface the removal to the File Provider framework.
 ///
-/// `refreshFolder` writes one row here before hard-deleting from
-/// `path_metadata`.  `itemsChangedAfter` queries this table to return
-/// deleted identifier strings so `enumerateChanges` can call
-/// `didDeleteItems(withIdentifiers:)` and Finder reflects the removal.
+/// Consumed by `itemsChangedAfter` → `enumerateChanges` → `didDeleteItems`.
+/// Writers: `delete(key:)`, `batchDelete(recordTombstones: true)` (the
+/// `refreshFolder` reconcile and `expireDiscoveryRows`), and `SyncEngine.rename`
+/// via `recordDeletion`. A tombstone is cleared when its identifier is
+/// re-created (`upsert` / `batchUpsert` / `renamePathPrefix`) and is reconciled
+/// by timestamp against the live row in `itemsChangedAfter`.
 public struct DeletionTombstoneRecord: FetchableRecord, PersistableRecord, Sendable {
     public static let databaseTableName = "deletion_tombstones"
 

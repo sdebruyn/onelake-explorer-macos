@@ -205,6 +205,11 @@ public actor CacheStore {
         let frozen = r
         try await dbPool.write { db in
             try frozen.upsert(db)
+            // Clear any deletion tombstone shadowing this identifier: re-creating a
+            // path must not stay hidden behind a stale tombstone. itemsChangedAfter
+            // also reconciles by timestamp, but clearing here keeps the table small
+            // and makes the common recreate case unambiguous.
+            try Self.clearTombstone(db, record: frozen)
         }
     }
 
@@ -231,12 +236,22 @@ public actor CacheStore {
             try await dbPool.write { db in
                 for record in chunk {
                     try record.upsert(db)
+                    // Clear any tombstone shadowing this identifier (see upsert).
+                    try Self.clearTombstone(db, record: record)
                 }
             }
         }
     }
 
     /// Deletes rows for all `keys` inside a single GRDB write transaction.
+    ///
+    /// When `recordTombstones` is `true`, a deletion tombstone is written for
+    /// every removed row (the delta-visible identifier from
+    /// ``tombstoneIdentifierString(workspaceID:itemID:path:)``, `nil` rows
+    /// skipped) BEFORE the hard-delete, in the same transaction, so
+    /// `itemsChangedAfter` → `enumerateChanges` can deliver the removal to the
+    /// File Provider framework via `didDeleteItems`. Pass `false` for
+    /// cache-maintenance deletes that must not surface as a Finder removal.
     ///
     /// Blob link cleanup (orphan blobs) is deferred to the background orphan
     /// sweep; this method focuses on the transactional delete. It is safe
@@ -248,11 +263,52 @@ public actor CacheStore {
     ///
     /// Large batches are chunked into sub-transactions of up to
     /// ``batchChunkSize`` keys to bound WAL growth.
-    public func batchDelete(_ keys: [CacheKey]) async throws {
+    public func batchDelete(_ keys: [CacheKey], recordTombstones: Bool) async throws {
         guard !keys.isEmpty else { return }
+        // One clock read for the whole batch so every tombstone shares a single
+        // deleted_at_ns source with synced_at_ns (never Date() from a caller).
+        let nowNs = clock()
         for chunk in keys.chunked(by: Self.batchChunkSize) {
             try await dbPool.write { db in
                 for key in chunk {
+                    // Collect the paths this key's delete will remove — INSIDE the
+                    // transaction (not before, which would open a TOCTOU window) —
+                    // so a tombstone can be written for each before the hard-delete,
+                    // mirroring delete(key:).
+                    let deletedPaths: [String]
+                    if key.path.isEmpty {
+                        deletedPaths = try String.fetchAll(db, sql: """
+                        SELECT path FROM path_metadata
+                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                        """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
+                    } else {
+                        let (exact, prefix) = Self.subtreeArguments(for: key)
+                        deletedPaths = try String.fetchAll(db, sql: """
+                        SELECT path FROM path_metadata
+                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                          AND (\(Self.subtreeWhereSuffix))
+                        """, arguments: [
+                            key.accountAlias, key.workspaceID, key.itemID,
+                            exact, prefix,
+                        ])
+                    }
+
+                    if recordTombstones {
+                        for path in deletedPaths {
+                            guard let identStr = Self.tombstoneIdentifierString(
+                                workspaceID: key.workspaceID,
+                                itemID: key.itemID,
+                                path: path
+                            ) else { continue }
+                            let tombstone = DeletionTombstoneRecord(
+                                accountAlias: key.accountAlias,
+                                identifierString: identStr,
+                                deletedAtNs: nowNs
+                            )
+                            try tombstone.save(db)
+                        }
+                    }
+
                     if key.path.isEmpty {
                         // Empty path: wipe entire item — mirrors delete(key:) semantics.
                         try db.execute(sql: """
@@ -453,10 +509,11 @@ public actor CacheStore {
 
     // MARK: - Sync anchor helpers
 
-    /// Returns the maximum `synced_at_ns` value across all rows for the given
-    /// `accountAlias`, or `0` when there are no rows. Delegates to ``CacheReader``.
-    public func maxSyncedAtNs(accountAlias: String) async throws -> Int64 {
-        try await reader().maxSyncedAtNs(accountAlias: accountAlias)
+    /// Returns the sync anchor for `accountAlias` — the newest of any
+    /// `synced_at_ns` and any `deleted_at_ns` — or `0` when neither table has a
+    /// row. Delegates to ``CacheReader``.
+    public func syncAnchorNs(accountAlias: String) async throws -> Int64 {
+        try await reader().syncAnchorNs(accountAlias: accountAlias)
     }
 
     /// Returns items changed and deletions recorded after `ns` for `accountAlias`.
@@ -570,6 +627,20 @@ public actor CacheStore {
                 nowNs,
                 accountAlias, workspaceID, itemID, escapedOldPrefix,
             ])
+
+            // Clear any tombstones covering the DESTINATION subtree in this same
+            // transaction: renaming INTO a previously-deleted name (or over a
+            // subtree that had been reconciled away) must not leave the re-created
+            // rows shadowed by their old tombstones. SyncEngine.rename writes the
+            // OLD-identifier tombstone only AFTER this call, so it is unaffected.
+            let destIdentifier = Self.identifierString(
+                workspaceID: workspaceID, itemID: itemID, path: newPath
+            )
+            try db.execute(sql: """
+            DELETE FROM deletion_tombstones
+            WHERE account_alias = ?
+              AND (identifier_string = ? OR identifier_string LIKE ? ESCAPE '\\')
+            """, arguments: [accountAlias, destIdentifier, Self.escapeLike(destIdentifier) + "/%"])
 
             // Read back the renamed row inside the same transaction so the caller
             // needs no second fetch (and cannot race a concurrent poll).
@@ -1254,6 +1325,42 @@ public actor CacheStore {
             return "\(workspaceID)/\(itemID)"
         }
         return "\(workspaceID)/\(itemID)/\(path)"
+    }
+
+    /// The delta-visible `ItemIdentifier.identifierString` for a row, or `nil`
+    /// when the row must NOT be tombstoned.
+    ///
+    /// Discovery rows use ``VirtualIDs`` sentinels for their workspace/item id:
+    /// - Workspace-discovery rows (`workspaceID == VirtualIDs.workspaceID`) map to
+    ///   the domain root, whose container deltas are remount-driven via the
+    ///   ChangeWatcher — never via a tombstone. Returns `nil`.
+    /// - Item-discovery rows (`itemID == VirtualIDs.itemID`) store the item GUID
+    ///   in `path`; their delta identifier is `"<workspaceID>/<itemGUID>"` (the
+    ///   `.item` identifier form). An empty path is the item-listing root row,
+    ///   which is never a delta item, so it returns `nil`.
+    /// - Every other row is a real path and maps through ``identifierString``.
+    static func tombstoneIdentifierString(workspaceID: String, itemID: String, path: String) -> String? {
+        if workspaceID == VirtualIDs.workspaceID { return nil }
+        if itemID == VirtualIDs.itemID { return path.isEmpty ? nil : "\(workspaceID)/\(path)" }
+        return identifierString(workspaceID: workspaceID, itemID: itemID, path: path)
+    }
+
+    /// Deletes any tombstone shadowing `record`'s identifier, in `db`.
+    ///
+    /// A no-op when the record maps to no delta-visible identifier
+    /// (``tombstoneIdentifierString(workspaceID:itemID:path:)`` returns `nil`).
+    /// Called from within the same write transaction as the upsert so a
+    /// re-created path never stays hidden behind its old tombstone.
+    static func clearTombstone(_ db: Database, record: MetadataRecord) throws {
+        guard let identStr = tombstoneIdentifierString(
+            workspaceID: record.workspaceID,
+            itemID: record.itemID,
+            path: record.path
+        ) else { return }
+        try db.execute(sql: """
+        DELETE FROM deletion_tombstones
+        WHERE account_alias = ? AND identifier_string = ?
+        """, arguments: [record.accountAlias, identStr])
     }
 
     // MARK: SQL escape helper
