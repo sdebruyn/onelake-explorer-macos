@@ -1,3 +1,4 @@
+import Foundation
 @testable import OfemKit
 import Testing
 
@@ -30,6 +31,17 @@ struct MacOSMetadataTests {
 
     @Test func fsEventsIsMetadata() {
         #expect(isMacOSMetadata(".fseventsd"))
+    }
+
+    @Test func ofemUploadStagingFileIsMetadata() {
+        // finding F11: OneLakeClient's upload-staging file must be hidden the
+        // same way `._*` AppleDouble junk is, whether caught mid-flight by a
+        // concurrent listing or orphaned by a hard kill before the rename.
+        #expect(isMacOSMetadata("\(ofemUploadStagingPrefix)\(UUID().uuidString)-report.csv"))
+    }
+
+    @Test func ofemUploadStagingFileInSubdirIsMetadata() {
+        #expect(isMacOSMetadata("Files/\(ofemUploadStagingPrefix)\(UUID().uuidString)-report.csv"))
     }
 
     // MARK: - Files that should NOT be skipped

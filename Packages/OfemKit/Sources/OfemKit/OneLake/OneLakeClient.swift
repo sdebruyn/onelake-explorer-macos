@@ -410,6 +410,9 @@ public final class OneLakeClient: Sendable {
                 alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID,
                 path: stagingPath, content: content, size: size
             )
+            // See writeFromHandle's rename call for the lost-ack/retry
+            // trade-off this shares (it applies to every upload, not just
+            // the FileHandle-based one).
             try await rename(
                 alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID,
                 sourcePath: stagingPath, destinationPath: path
@@ -679,6 +682,20 @@ public final class OneLakeClient: Sendable {
                 alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID,
                 path: stagingPath, handle: handle, size: size
             )
+            // Non-blocking trade-off, not specific to this call site but worth
+            // flagging here since this rename now sits on the hot path of every
+            // upload rather than just explicit renames: SessionPool's
+            // RetryPolicy retries PUT on transport failures where no response
+            // was received (lost connection, timeout, …). If this rename
+            // actually landed server-side but the ack was lost, the retried PUT
+            // re-sends the same `x-ms-rename-source: stagingPath` — but the
+            // source is already gone, so the retry comes back
+            // notFound/SourcePathNotFound and this call reports failure even
+            // though the destination was committed correctly. Not data loss
+            // (worst case: a spurious error plus a harmless redundant
+            // re-upload, consistent with last-write-wins) — deliberately not
+            // special-cased here; idempotent-retry handling belongs in the
+            // shared retry/DELETE path, not duplicated per call site.
             try await rename(
                 alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID,
                 sourcePath: stagingPath, destinationPath: path
@@ -796,19 +813,21 @@ public final class OneLakeClient: Sendable {
     /// Derives a unique staging path in the same directory as `path`.
     ///
     /// The temp+rename dance needs a sibling within the same item so the
-    /// commit is a metadata-only rename rather than a copy. The
-    /// `.ofem-upload-` prefix (distinct from the `._` AppleDouble prefix
-    /// ``isMacOSMetadata`` matches on) plus a UUID makes collisions with
-    /// real content or a concurrent upload of the same file effectively
-    /// impossible.
+    /// commit is a metadata-only rename rather than a copy. ``isMacOSMetadata``
+    /// treats every ``ofemUploadStagingPrefix``-prefixed name as hidden junk
+    /// (the same way it already hides `._*` AppleDouble files), so a staging
+    /// file caught mid-flight by a concurrent listing — or orphaned by a hard
+    /// kill before the terminal rename — never surfaces in Finder. A UUID
+    /// makes collisions with real content or a concurrent upload of the same
+    /// file effectively impossible.
     private func temporaryUploadPath(for path: String) -> String {
         let uuid = UUID().uuidString
         guard let slash = path.lastIndex(of: "/") else {
-            return ".ofem-upload-\(uuid)-\(path)"
+            return "\(ofemUploadStagingPrefix)\(uuid)-\(path)"
         }
         let dir = path[path.startIndex ..< slash]
         let name = path[path.index(after: slash)...]
-        return "\(dir)/.ofem-upload-\(uuid)-\(name)"
+        return "\(dir)/\(ofemUploadStagingPrefix)\(uuid)-\(name)"
     }
 
     /// Best-effort removal of a staging file left behind by a failed upload.

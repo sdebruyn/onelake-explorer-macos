@@ -88,7 +88,7 @@ struct OneLakeUploadStagingTests {
         #expect(Set(stagingPaths).count == 1)
         let stagingPath = try #require(stagingPaths.first)
         #expect(stagingPath != Self.destPath)
-        #expect(stagingPath.hasPrefix("Files/.ofem-upload-"))
+        #expect(stagingPath.hasPrefix("Files/\(ofemUploadStagingPrefix)"))
 
         // Only the final request — the rename — may reference the destination.
         for req in requests.dropLast() {
@@ -137,6 +137,69 @@ struct OneLakeUploadStagingTests {
 
         let stagingPath = try #require(itemRelativePath(requests[0].url))
         let cleanup = requests[3]
+        #expect(cleanup.method == "DELETE")
+        #expect(itemRelativePath(cleanup.url) == stagingPath)
+    }
+
+    @Test("write(sourceURL:): a rename failure after a fully-uploaded staging file propagates the rename's own error, not the cleanup delete's")
+    func renameFailurePropagatesOwnErrorAndCleansUp() async throws {
+        let content = Data("hello onelake".utf8)
+        let sourceURL = try makeSourceFile(content)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+        // create/append/flush all succeed — the staging path holds the full
+        // upload — and only the terminal rename fails. This is the most
+        // interesting failure mode: real bytes already exist somewhere when
+        // it happens.
+        let (client, queueID) = await makeClient(stubs: [
+            .init(status: 201), // create
+            .init(status: 202), // append
+            .init(status: 200), // flush
+            .init(status: 404), // rename fails (e.g. a lost-ack retry hitting SourcePathNotFound)
+            .init(status: 503), // cleanup delete also fails — must never be what propagates
+        ])
+        defer { MockURLProtocol.clearQueue(id: queueID) }
+
+        var thrown: (any Error)?
+        do {
+            try await client.write(
+                alias: "test",
+                workspaceGUID: Self.wsGUID,
+                itemGUID: Self.itemGUID,
+                path: Self.destPath,
+                sourceURL: sourceURL,
+                size: Int64(content.count)
+            )
+            Issue.record("expected write to throw")
+        } catch {
+            thrown = error
+        }
+
+        // The propagated error must be the rename's own 404 (.notFound), not
+        // swallowed or replaced by whatever the best-effort cleanup delete
+        // (stubbed 503 above) returned.
+        guard let oneLakeErr = thrown as? OneLakeError, case .notFound = oneLakeErr else {
+            Issue.record("expected the rename's .notFound to propagate, got \(String(describing: thrown))")
+            return
+        }
+
+        let requests = MockURLProtocol.recordedRequests(id: queueID)
+        #expect(requests.count == 5) // create, append, flush, failed rename, cleanup delete
+
+        // create/append/flush all landed on the same staging path.
+        let stagingPath = try #require(itemRelativePath(requests[0].url))
+        for req in requests[0 ..< 3] {
+            #expect(itemRelativePath(req.url) == stagingPath)
+        }
+
+        // The rename is the only request that ever references the
+        // destination — and it failed, so nothing was ever committed there.
+        let rename = requests[3]
+        #expect(rename.method == "PUT")
+        #expect(itemRelativePath(rename.url) == Self.destPath)
+
+        // The (still fully-populated) staging file gets a best-effort delete.
+        let cleanup = requests[4]
         #expect(cleanup.method == "DELETE")
         #expect(itemRelativePath(cleanup.url) == stagingPath)
     }
