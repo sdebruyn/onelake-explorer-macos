@@ -1,4 +1,5 @@
 import Foundation
+import os.log
 import TOMLKit
 
 // MARK: - Codable conformances for config schema types
@@ -15,10 +16,17 @@ import TOMLKit
 // Clamping strategy: performed inside the `init(from:)` of the owning type,
 // not in a separate decoding shim, so the bounds are discoverable and testable
 // on the type itself.
+//
+// `[accounts]` decoding is the one exception to plain `decodeIfPresent`: each
+// entry is decoded independently so one malformed row (a hand-edited typo, or
+// a future schema change that adds a required `Account` field) cannot throw
+// away every other account. See `OfemConfig.decodeAccountsLeniently(from:)`.
 
 // MARK: OfemConfig
 
 extension OfemConfig: Codable {
+    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "ConfigCodec")
+
     enum CodingKeys: String, CodingKey {
         case installID = "install_id"
         case telemetry
@@ -28,6 +36,24 @@ extension OfemConfig: Codable {
         case log
         case sync
         case accounts
+    }
+
+    /// Dynamic key used to walk the `[accounts]` table by alias without a
+    /// fixed `CodingKeys` enum — the aliases are user-chosen and unknown at
+    /// compile time.
+    private struct AccountAliasKey: CodingKey {
+        let stringValue: String
+        init?(stringValue: String) {
+            self.stringValue = stringValue
+        }
+
+        var intValue: Int? {
+            nil
+        }
+
+        init?(intValue _: Int) {
+            nil
+        }
     }
 
     public init(from decoder: Decoder) throws {
@@ -40,7 +66,7 @@ extension OfemConfig: Codable {
         net = try c.decodeIfPresent(NetConfig.self, forKey: .net) ?? defaults.net
         log = try c.decodeIfPresent(LogConfig.self, forKey: .log) ?? defaults.log
         sync = try c.decodeIfPresent(SyncConfig.self, forKey: .sync) ?? defaults.sync
-        accounts = try c.decodeIfPresent([String: Account].self, forKey: .accounts) ?? defaults.accounts
+        accounts = try Self.decodeAccountsLeniently(from: c, defaults: defaults.accounts)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -53,6 +79,45 @@ extension OfemConfig: Codable {
         try c.encode(log, forKey: .log)
         try c.encode(sync, forKey: .sync)
         try c.encode(accounts, forKey: .accounts)
+    }
+
+    /// Decodes `[accounts]` one entry at a time so a single malformed row
+    /// (missing/mistyped required field) is skipped rather than failing the
+    /// whole config parse (F13).
+    ///
+    /// `[String: Account].self` via `decodeIfPresent` does NOT swallow a
+    /// value-decode error — only a missing key. A hand-edited typo on one
+    /// account, or a future schema change that adds a required `Account`
+    /// field, would otherwise throw out of `OfemConfig.init(from:)` and be
+    /// treated upstream as a corrupt file, discarding every account and
+    /// forcing every alias to sign in again. Decoding each entry
+    /// independently confines the damage to the one bad row.
+    ///
+    /// A structurally malformed `[accounts]` section itself (e.g. `accounts`
+    /// present but not a table) still propagates — that is genuine file
+    /// corruption, not a single bad row, and the backup-and-reset path in
+    /// `SharedOfemAuth` is the right response.
+    private static func decodeAccountsLeniently(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        defaults: [String: Account]
+    ) throws -> [String: Account] {
+        guard container.contains(.accounts) else { return defaults }
+        let accountsContainer = try container.nestedContainer(keyedBy: AccountAliasKey.self, forKey: .accounts)
+
+        var accounts: [String: Account] = [:]
+        for key in accountsContainer.allKeys {
+            do {
+                accounts[key.stringValue] = try accountsContainer.decode(Account.self, forKey: key)
+            } catch {
+                // key.stringValue is the user-chosen alias (not PII); the
+                // error is a Codable DecodingError describing which field
+                // failed, not the offending value, so it is safe to log.
+                Self.log.warning(
+                    "OfemConfig: skipping unparseable [accounts.\(key.stringValue, privacy: .public)] entry: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+        return accounts
     }
 }
 

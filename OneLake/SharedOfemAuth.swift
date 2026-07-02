@@ -327,6 +327,22 @@ final class SharedOfemAuth {
             Self.log.error(
                 "SharedOfemAuth.reSignIn: identity mismatch for alias=\(alias, privacy: .public) — expected homeAccountID=\(expectedHomeAccountID, privacy: .private) got=\(returnedHomeAccountID, privacy: .private)"
             )
+
+            // acquireToken above already wrote the rejected identity's tokens to
+            // the shared Keychain — MSAL persists on success, before this
+            // mismatch check runs. Purge them (C13) so no orphaned refresh
+            // token is left behind for an identity the user never approved for
+            // this alias. Best-effort: a purge failure must not mask the
+            // identity-mismatch error the user needs to see.
+            do {
+                try await auth.purgeToken(homeAccountID: returnedHomeAccountID, tenantID: tenantID, clientID: effectiveClientID)
+                Self.log.info("SharedOfemAuth.reSignIn: purged mismatched-identity tokens for alias=\(alias, privacy: .public)")
+            } catch {
+                Self.log.warning(
+                    "SharedOfemAuth.reSignIn: failed to purge mismatched-identity tokens for alias=\(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+
             throw InteractiveSignInError.identityMismatch(
                 expected: expectedHomeAccountID,
                 got: returnedHomeAccountID
