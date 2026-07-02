@@ -138,9 +138,11 @@ and Google Drive integrate".
 
 ## Consequences for the rest of the architecture
 
-- The item-identifier shape `<accountAlias>/<workspaceGUID>/<itemGUID>/<path>`
-  is unaffected — the alias is still the first path component
-  *within* the domain.
+- The item-identifier shape is `<workspaceGUID>/<itemGUID>/<path>` — it has
+  no alias component. The alias is carried by the per-account
+  `NSFileProviderDomain` itself (one domain per alias), not by the
+  identifier string; see
+  `Packages/OfemKit/Sources/OfemKit/FP/ItemIdentifier.swift`.
 - `~/OneLake/<alias>/...` in CLAUDE.md should be read as a logical
   path, not a filesystem path. The filesystem-visible path is
   `~/Library/CloudStorage/OneLake-<alias>/...`. The menu bar app's

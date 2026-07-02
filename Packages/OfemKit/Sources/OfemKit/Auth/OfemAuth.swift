@@ -199,6 +199,38 @@ public actor OfemAuth: TokenProvider {
         evictClients(for: alias, in: snap)
     }
 
+    /// Purges the MSAL Keychain refresh token for `homeAccountID` under the
+    /// given `(clientID, tenantID)` pair, without touching any `config.toml`
+    /// account record.
+    ///
+    /// Used by the host app's re-authentication flow (`SharedOfemAuth.reSignIn`,
+    /// C13) when the interactive prompt returns tokens for an identity that
+    /// does not match the alias being re-authenticated. MSAL persists on a
+    /// successful interactive flow before the caller can inspect the result,
+    /// so by the time the mismatch is detected the wrong identity's tokens are
+    /// already in the shared Keychain — this purges them so no orphaned
+    /// refresh token survives for an identity the user never approved for
+    /// this alias.
+    ///
+    /// A missing cache entry (`MsalAuthClientError.accountNotFound`) is
+    /// treated as a benign no-op, matching `removeAccount(alias:)`.
+    ///
+    /// No-op when `cacheStrategy` is not `.msalKeychain` — the file-backed
+    /// fallback cache is alias-scoped and interactive sign-in always uses
+    /// `.msalKeychain`, so there is nothing to purge there.
+    public func purgeToken(homeAccountID: String, tenantID: String, clientID: String) async throws {
+        guard cacheStrategy == .msalKeychain, !homeAccountID.isEmpty else { return }
+        // alias is unused by MsalApplicationConfig for .msalKeychain — only
+        // the (clientID, tenantID) pair determines which MSAL client (and
+        // therefore Keychain cache) this resolves to.
+        let client = try clientFor(clientID: clientID, tenantID: tenantID, alias: "")
+        do {
+            try client.removeAccount(homeAccountID: homeAccountID)
+        } catch let MsalAuthClientError.accountNotFound(id) {
+            Self.log.debug("OfemAuth: purgeToken: homeAccountID=\(id, privacy: .public) not in MSAL cache (already absent)")
+        }
+    }
+
     /// Returns the alias of the configured default account.
     public func defaultAccount() -> String? {
         let snap = configStore.snapshot()

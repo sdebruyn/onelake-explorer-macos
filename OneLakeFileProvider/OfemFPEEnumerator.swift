@@ -323,7 +323,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
 
             do {
                 let engine = try await hostCopy.engine()
-                let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+                let currentNs = (try? await engine.cache.syncAnchorNs(accountAlias: aliasCopy)) ?? 0
 
                 // If the anchor is ahead of the cache the DB may have been
                 // reset (or a new process started). Expire so the framework
@@ -426,7 +426,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
         let anchorTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
-                let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+                let ns = (try? await engine.cache.syncAnchorNs(accountAlias: aliasCopy)) ?? 0
                 ch.fn(encodeSyncAnchor(ns))
             } catch is CancellationError {
                 // Task was cancelled (enumerator invalidated); do not call the
@@ -752,7 +752,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                     }
                 }
 
-                let currentNs = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+                let currentNs = (try? await engine.cache.syncAnchorNs(accountAlias: aliasCopy)) ?? 0
 
                 // If the anchor is ahead of the cache the DB may have been
                 // reset (or a new process started). Expire so the framework
@@ -858,7 +858,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
         let anchorTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
-                let ns = (try? await engine.cache.maxSyncedAtNs(accountAlias: aliasCopy)) ?? 0
+                let ns = (try? await engine.cache.syncAnchorNs(accountAlias: aliasCopy)) ?? 0
                 ch.fn(encodeSyncAnchor(ns))
             } catch is CancellationError {
                 // Task was cancelled (enumerator invalidated); do not call the

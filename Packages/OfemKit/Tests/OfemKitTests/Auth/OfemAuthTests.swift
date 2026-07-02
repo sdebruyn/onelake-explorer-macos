@@ -239,6 +239,81 @@ struct OfemAuthTests {
         // The mock's removeAccount should have been called with the account's homeAccountID.
         #expect(mockClient.removedHomeAccountIDs == [homeID])
     }
+
+    // MARK: - purgeToken (C13)
+
+    @Test("purgeToken calls MSAL remove for the given homeAccountID")
+    func purgeTokenCallsMsalRemove() async throws {
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let factory = MockMsalAuthClientFactory()
+        let mockClient = MockMsalAuthClient()
+        factory.stubbedClient = mockClient
+
+        let auth = OfemAuth(configStore: store, cacheStrategy: .msalKeychain, msalClientFactory: factory)
+        try await auth.purgeToken(homeAccountID: "orphaned-home-id", tenantID: "t1", clientID: "c1")
+
+        #expect(mockClient.removedHomeAccountIDs == ["orphaned-home-id"])
+    }
+
+    @Test("purgeToken does not touch any config.toml account record")
+    func purgeTokenLeavesConfigUntouched() async throws {
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let factory = MockMsalAuthClientFactory()
+        factory.stubbedClient = MockMsalAuthClient()
+
+        let auth = OfemAuth(configStore: store, cacheStrategy: .msalKeychain, msalClientFactory: factory)
+        try await auth.addAccount(makeAccount(alias: "work"))
+
+        // Purge an unrelated identity — the registered "work" account must survive.
+        try await auth.purgeToken(homeAccountID: "some-other-identity", tenantID: "t1", clientID: "c1")
+
+        let accounts = await auth.listAccounts()
+        #expect(accounts.map(\.alias) == ["work"])
+    }
+
+    @Test("purgeToken swallows accountNotFound as a benign no-op")
+    func purgeTokenSwallowsAccountNotFound() async throws {
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let factory = MockMsalAuthClientFactory()
+        let mockClient = MockMsalAuthClient()
+        mockClient.removeError = MsalAuthClientError.accountNotFound("orphaned-home-id")
+        factory.stubbedClient = mockClient
+
+        let auth = OfemAuth(configStore: store, cacheStrategy: .msalKeychain, msalClientFactory: factory)
+        // Must not throw — an already-absent cache entry is not a failure.
+        try await auth.purgeToken(homeAccountID: "orphaned-home-id", tenantID: "t1", clientID: "c1")
+    }
+
+    @Test("purgeToken propagates unexpected MSAL removal errors")
+    func purgeTokenPropagatesUnexpectedErrors() async throws {
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let factory = MockMsalAuthClientFactory()
+        let mockClient = MockMsalAuthClient()
+        mockClient.removeError = NSError(domain: "test", code: 1)
+        factory.stubbedClient = mockClient
+
+        let auth = OfemAuth(configStore: store, cacheStrategy: .msalKeychain, msalClientFactory: factory)
+        await #expect(throws: (any Error).self) {
+            try await auth.purgeToken(homeAccountID: "orphaned-home-id", tenantID: "t1", clientID: "c1")
+        }
+    }
+
+    @Test("purgeToken is a no-op for an empty homeAccountID")
+    func purgeTokenNoOpForEmptyHomeAccountID() async throws {
+        let (store, _t) = try makeStore(label: "OfemAuthTests")
+        defer { try? FileManager.default.removeItem(at: _t) }
+        let factory = MockMsalAuthClientFactory()
+        factory.stubbedClient = MockMsalAuthClient()
+
+        let auth = OfemAuth(configStore: store, cacheStrategy: .msalKeychain, msalClientFactory: factory)
+        try await auth.purgeToken(homeAccountID: "", tenantID: "t1", clientID: "c1")
+
+        #expect(factory.makeClientCallCount == 0, "an empty homeAccountID must not build an MSAL client")
+    }
 }
 
 // MARK: - OfemAuthTokenTests
