@@ -569,13 +569,16 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
     // MARK: - Config key constants (host-05)
 
     func testConfigKeys_matchExpectedLiterals() {
-        XCTAssertEqual(OfemConfigKey.cacheMaxSizeGB, "cache.max_size_gb")
-        XCTAssertEqual(OfemConfigKey.telemetry, "telemetry")
-        XCTAssertEqual(OfemConfigKey.netMaxUploads, "net.max_concurrent_uploads_per_account")
-        XCTAssertEqual(OfemConfigKey.netMaxDownloads, "net.max_concurrent_downloads_per_account")
-        XCTAssertEqual(OfemConfigKey.logLevel, "log.level")
-        XCTAssertEqual(OfemConfigKey.syncMaterializedPollIntervalS, "sync.materialized_poll_interval_s")
-        XCTAssertEqual(OfemConfigKey.syncSelfHealIntervalM, "sync.self_heal_interval_m")
+        // Guards against an accidental rawValue change on the wire — the FPE
+        // and config.toml both key off these exact dotted strings, and
+        // OfemConfigKey.rawValue is what actually crosses the XPC boundary.
+        XCTAssertEqual(OfemConfigKey.cacheMaxSizeGB.rawValue, "cache.max_size_gb")
+        XCTAssertEqual(OfemConfigKey.telemetry.rawValue, "telemetry")
+        XCTAssertEqual(OfemConfigKey.netMaxUploads.rawValue, "net.max_concurrent_uploads_per_account")
+        XCTAssertEqual(OfemConfigKey.netMaxDownloads.rawValue, "net.max_concurrent_downloads_per_account")
+        XCTAssertEqual(OfemConfigKey.logLevel.rawValue, "log.level")
+        XCTAssertEqual(OfemConfigKey.syncMaterializedPollIntervalS.rawValue, "sync.materialized_poll_interval_s")
+        XCTAssertEqual(OfemConfigKey.syncSelfHealIntervalM.rawValue, "sync.self_heal_interval_m")
     }
 }
 

@@ -54,9 +54,11 @@ import Foundation
     /// in-memory snapshot.
     ///
     /// The canonical key vocabulary is `OfemConfigKey` (see
-    /// `Shared/OfemConfigKey.swift`); both the host's debounced setters and
-    /// the FPE's `setConfig` switch key off those constants rather than raw
-    /// string literals, so the two sides cannot drift (xpc-10). Supported keys
+    /// `Shared/OfemConfigKey.swift`); the host's debounced setters send
+    /// `OfemConfigKey.<case>.rawValue` and the FPE's `setConfig` switch is
+    /// exhaustive over `OfemConfigKey` (no `default:` arm), so a case added
+    /// to the enum without a matching FPE arm fails to compile rather than
+    /// falling through to `.unknownKey` at runtime (xpc-10). Supported keys
     /// and their value formats:
     ///   - `OfemConfigKey.telemetry`                    ("on" | "off")
     ///   - `OfemConfigKey.cacheMaxSizeGB`                (integer string, 1–100)

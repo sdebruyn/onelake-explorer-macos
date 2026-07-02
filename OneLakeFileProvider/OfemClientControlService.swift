@@ -289,78 +289,81 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             case syncSelfHealIntervalM(Int)
         }
 
-        // Switch on the shared `OfemConfigKey` constants (rather than raw
-        // string literals) so a key added to that enum without a matching
-        // case here fails at compile time instead of silently falling
-        // through to `.unknownKey` at runtime (xpc-10).
+        // Decode the raw wire key into the shared `OfemConfigKey` enum first,
+        // then switch over THAT — with no `default:` arm — so a case added to
+        // `OfemConfigKey` without a matching arm here fails the build instead
+        // of silently falling through to `.unknownKey` at runtime (xpc-10).
+        // `key: String` on the wire is unchanged; only local dispatch changes.
         let result: Result<ValidatedConfig, SetConfigError>
-        switch key {
-        case OfemConfigKey.telemetry:
-            guard value == "on" || value == "off" else {
-                result = .failure(.invalidValue(key: key, value: value,
-                                                reason: "expected \"on\" or \"off\""))
-                break
+        if let configKey = OfemConfigKey(rawValue: key) {
+            switch configKey {
+            case .telemetry:
+                guard value == "on" || value == "off" else {
+                    result = .failure(.invalidValue(key: key, value: value,
+                                                    reason: "expected \"on\" or \"off\""))
+                    break
+                }
+                result = .success(.telemetry(value == "on"))
+            case .cacheMaxSizeGB:
+                guard let gb = Int(value) else {
+                    result = .failure(.invalidValue(key: key, value: value,
+                                                    reason: "expected an integer"))
+                    break
+                }
+                // 0 is the "no limit" sentinel; positive values are
+                // clamped to [minSizeGB, maxSizeGB].
+                let clamped = gb == 0 ? 0 : min(max(gb, CacheConfig.minSizeGB), CacheConfig.maxSizeGB)
+                result = .success(.cacheMaxSizeGB(clamped))
+            case .netMaxUploads:
+                guard let n = Int(value) else {
+                    result = .failure(.invalidValue(key: key, value: value,
+                                                    reason: "expected an integer"))
+                    break
+                }
+                // xpc-07: use named constants from NetConfig.
+                // Upper bound is per-protocol (16 uploads); the shared
+                // NetConfig.maxConcurrent (64) is the absolute ceiling
+                // for any concurrency field — the XPC protocol caps
+                // uploads more tightly to avoid swamping the endpoint.
+                result = .success(.netMaxUploads(min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxUploadsPerAccount)))
+            case .netMaxDownloads:
+                guard let n = Int(value) else {
+                    result = .failure(.invalidValue(key: key, value: value,
+                                                    reason: "expected an integer"))
+                    break
+                }
+                // xpc-08: use named constants from NetConfig.
+                result = .success(.netMaxDownloads(min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxDownloadsPerAccount)))
+            case .logLevel:
+                let allowed = ["debug", "info", "warn", "error"]
+                guard allowed.contains(value) else {
+                    result = .failure(.invalidValue(key: key, value: value,
+                                                    reason: "expected one of \(allowed.joined(separator: ", "))"))
+                    break
+                }
+                result = .success(.logLevel(value))
+            case .syncMaterializedPollIntervalS:
+                guard let n = Int(value) else {
+                    result = .failure(.invalidValue(key: key, value: value,
+                                                    reason: "expected an integer"))
+                    break
+                }
+                let clamped = max(SyncConfig.minMaterializedPollIntervalS,
+                                  min(SyncConfig.maxMaterializedPollIntervalS, n))
+                result = .success(.syncMaterializedPollIntervalS(clamped))
+            case .syncSelfHealIntervalM:
+                guard let n = Int(value) else {
+                    result = .failure(.invalidValue(key: key, value: value,
+                                                    reason: "expected an integer"))
+                    break
+                }
+                // 0 is the "disabled" sentinel and is preserved as-is.
+                // Non-zero values are clamped to [min, max].
+                let clamped = n == 0 ? 0 : max(SyncConfig.minSelfHealIntervalM,
+                                               min(SyncConfig.maxSelfHealIntervalM, n))
+                result = .success(.syncSelfHealIntervalM(clamped))
             }
-            result = .success(.telemetry(value == "on"))
-        case OfemConfigKey.cacheMaxSizeGB:
-            guard let gb = Int(value) else {
-                result = .failure(.invalidValue(key: key, value: value,
-                                                reason: "expected an integer"))
-                break
-            }
-            // 0 is the "no limit" sentinel; positive values are
-            // clamped to [minSizeGB, maxSizeGB].
-            let clamped = gb == 0 ? 0 : min(max(gb, CacheConfig.minSizeGB), CacheConfig.maxSizeGB)
-            result = .success(.cacheMaxSizeGB(clamped))
-        case OfemConfigKey.netMaxUploads:
-            guard let n = Int(value) else {
-                result = .failure(.invalidValue(key: key, value: value,
-                                                reason: "expected an integer"))
-                break
-            }
-            // xpc-07: use named constants from NetConfig.
-            // Upper bound is per-protocol (16 uploads); the shared
-            // NetConfig.maxConcurrent (64) is the absolute ceiling
-            // for any concurrency field — the XPC protocol caps
-            // uploads more tightly to avoid swamping the endpoint.
-            result = .success(.netMaxUploads(min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxUploadsPerAccount)))
-        case OfemConfigKey.netMaxDownloads:
-            guard let n = Int(value) else {
-                result = .failure(.invalidValue(key: key, value: value,
-                                                reason: "expected an integer"))
-                break
-            }
-            // xpc-08: use named constants from NetConfig.
-            result = .success(.netMaxDownloads(min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxDownloadsPerAccount)))
-        case OfemConfigKey.logLevel:
-            let allowed = ["debug", "info", "warn", "error"]
-            guard allowed.contains(value) else {
-                result = .failure(.invalidValue(key: key, value: value,
-                                                reason: "expected one of \(allowed.joined(separator: ", "))"))
-                break
-            }
-            result = .success(.logLevel(value))
-        case OfemConfigKey.syncMaterializedPollIntervalS:
-            guard let n = Int(value) else {
-                result = .failure(.invalidValue(key: key, value: value,
-                                                reason: "expected an integer"))
-                break
-            }
-            let clamped = max(SyncConfig.minMaterializedPollIntervalS,
-                              min(SyncConfig.maxMaterializedPollIntervalS, n))
-            result = .success(.syncMaterializedPollIntervalS(clamped))
-        case OfemConfigKey.syncSelfHealIntervalM:
-            guard let n = Int(value) else {
-                result = .failure(.invalidValue(key: key, value: value,
-                                                reason: "expected an integer"))
-                break
-            }
-            // 0 is the "disabled" sentinel and is preserved as-is.
-            // Non-zero values are clamped to [min, max].
-            let clamped = n == 0 ? 0 : max(SyncConfig.minSelfHealIntervalM,
-                                           min(SyncConfig.maxSelfHealIntervalM, n))
-            result = .success(.syncSelfHealIntervalM(clamped))
-        default:
+        } else {
             result = .failure(.unknownKey(key))
         }
 
