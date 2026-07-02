@@ -5,8 +5,8 @@
 // - FPE creates one FPEEngineHost per domain (one per account alias).
 // - Engine-backed enumerators (OfemFPEEnumerator) handle all
 //   list/enumerate operations.
-// - Fetch and write operations call SyncEngine.open / put / delete /
-//   mkdir directly through OfemKit.
+// - Fetch and write operations call SyncEngine.openReturningRecord / put /
+//   delete / mkdir directly through OfemKit.
 //
 // Error mapping: FPError.classify(error) maps any OfemKit error to a
 // stable FPError.Code which nsFileProviderError(for:) (FPErrorMapping.swift)
@@ -213,33 +213,40 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let task = Task {
             do {
                 let engine = try await hostCopy.engine()
-                let domainItem = try await engineFetchItem(
-                    identifier: ofemID,
-                    alias: aliasCopy,
-                    engine: engine
-                )
 
-                // Seed the progress with the known size so Finder shows
-                // a determinate progress bar when the size is known.
-                let knownSize = domainItem.documentSize?.int64Value ?? 0
-                if knownSize > 0 {
-                    progress.totalUnitCount = knownSize
+                // Download (or serve from cache) first, then build the
+                // returned item from the SAME record that describes what was
+                // just served — not a snapshot fetched before the download
+                // ran. The old order fetched the item, then downloaded, then
+                // handed back the pre-download version alongside the
+                // post-download bytes, so the framework recorded a stale
+                // contentVersion and re-downloaded the "changed" file on the
+                // next cycle. openReturningRecord also folds what used to be
+                // several separate metadata reads (item lookup, freshness
+                // check, blob link) into the single read/write `open()`
+                // already performs.
+                let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
+                let (_, record) = try await engine.sync.openReturningRecord(key: key)
+                let domainItem: OfemFPEItem
+                do {
+                    domainItem = OfemFPEItem(from: try DomainItem.from(record: record))
+                } catch {
+                    throw FPError.invalidRecord("DomainItem.from failed for \(path): \(error)")
                 }
 
-                // Download via the sync engine and hand the blob to the FPE
-                // without a full copy. open() downloads the blob into the cache
-                // if not already present. handoffBlob then hard-links the cache
-                // file to `dest` so the FPE hands that path to the system
-                // without a second full on-disk copy (fpe-06). Because cache
-                // blobs are immutable content-addressed files, the hard link is
-                // safe: a cache eviction of the entry removes the shard dir
-                // entry but leaves the inode (and `dest`) intact.
-                let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
-                _ = try await engine.sync.open(key: key)
+                if let size = domainItem.documentSize?.int64Value, size > 0 {
+                    progress.totalUnitCount = size
+                }
 
-                // Remove dest first so retries are idempotent.
+                // Remove dest first so retries are idempotent, then hand off
+                // the blob to the FPE without a full copy: handoffBlob hard-
+                // links the cache file to `dest` (fpe-06) using the record we
+                // already have, rather than re-fetching it. Because cache
+                // blobs are immutable content-addressed files, the hard link
+                // is safe: a cache eviction of the entry removes the shard
+                // dir entry but leaves the inode (and `dest`) intact.
                 try? FileManager.default.removeItem(at: dest)
-                try await engine.cache.handoffBlob(key: key, to: dest)
+                try await engine.cache.handoffBlob(record: record, to: dest)
 
                 // Update progress from the file size on disk.
                 let actualBytes: Int64 = if let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path),
@@ -247,7 +254,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 {
                     sz.int64Value
                 } else {
-                    knownSize
+                    domainItem.documentSize?.int64Value ?? 0
                 }
                 if progress.totalUnitCount < actualBytes {
                     progress.totalUnitCount = actualBytes
@@ -740,12 +747,22 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         // Parse first so we can branch on the typed identifier.
         let ofemID = try parseOfemItemIdentifier(containerItemIdentifier.rawValue)
 
-        // Working set / trash → lightweight empty enumerator (no engine needed).
-        // Trash is not supported; returning an empty enumerator prevents macOS
-        // from retrying indefinitely.
-        if ofemID == .workingSet || ofemID == .trash {
+        // Trash → real always-empty enumerator (no engine needed). OneLake has
+        // no trash concept; this must NOT share OfemWorkingSetEnumerator, which
+        // refreshes workspaces and reports alias-wide deltas that don't belong
+        // to the trash container (see the note in OfemFPEEnumerator.swift).
+        if ofemID == .trash {
             FileProviderExtension.log.debug(
-                "enumerator(for: .workingSet/.trash) for \(self.alias, privacy: .public)"
+                "enumerator(for: .trash) for \(self.alias, privacy: .public)"
+            )
+            return OfemTrashEnumerator()
+        }
+        // Working set → lightweight enumerator that drives real cache deltas
+        // (no items, but enumerateChanges refreshes workspaces and reports
+        // updates/deletions — see OfemWorkingSetEnumerator).
+        if ofemID == .workingSet {
+            FileProviderExtension.log.debug(
+                "enumerator(for: .workingSet) for \(self.alias, privacy: .public)"
             )
             return OfemWorkingSetEnumerator(alias: alias, engineHost: engineHost)
         }

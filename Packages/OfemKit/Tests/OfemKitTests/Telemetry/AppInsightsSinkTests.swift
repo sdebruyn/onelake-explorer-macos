@@ -336,6 +336,31 @@ struct AppInsightsEnvelopeTests {
         let baseData = try #require(dataDict["baseData"] as? [String: Any], "'baseData' key must be a dictionary")
         #expect(baseData["measurements"] == nil, "measurements must be nil for bare event")
     }
+
+    @Test("baseData.name is scrubbed like the redundant props[\"event\"] copy (C12)")
+    func baseDataNameIsScrubbed() throws {
+        // Event names are currently static literals, but baseData.name must
+        // go through the same redaction boundary as every other string that
+        // reaches the envelope — defence in depth against a future call site
+        // that builds a dynamic name.
+        let event = TelemetryEvent(name: "app start@bad chars")
+        let envelope = AppInsightsEnvelope.from(
+            event: event, iKey: "k", role: "r", installID: "", sdkTag: "s"
+        )
+
+        let data = try JSONEncoder().encode(envelope)
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            "envelope JSON must be a dictionary"
+        )
+        let dataDict = try #require(json["data"] as? [String: Any], "'data' key must be a dictionary")
+        let baseData = try #require(dataDict["baseData"] as? [String: Any], "'baseData' key must be a dictionary")
+        let props = baseData["properties"] as? [String: Any]
+
+        #expect(baseData["name"] as? String == "redacted")
+        // Same scrubbing outcome as the redundant props["event"] copy.
+        #expect(props?["event"] as? String == "redacted")
+    }
 }
 
 // MARK: - HTTP status handling tests
