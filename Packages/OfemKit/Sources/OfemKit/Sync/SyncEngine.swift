@@ -48,6 +48,20 @@ public actor SyncEngine {
     /// parameter so the behaviour is testable in isolation.
     public static let defaultSelfHealIntervalMinutes = 30
 
+    /// Default freshness window for ``open(key:)``'s cache-hit path: a row
+    /// synced within this long ago is served without a `getProperties` HEAD.
+    /// Aligned with `ChangeWatcher`'s default `materializedPollInterval`
+    /// (60 s): `syncedAtNs` is stamped fresh by the initial download and by
+    /// any subsequent `refreshFolder` pass that observes an actual change for
+    /// this row (an unchanged row's `syncedAtNs` is deliberately left alone —
+    /// see `refreshFolder`'s upsert-batch comment). So the window mainly
+    /// covers the common burst case — Quick Look, a re-open shortly after a
+    /// download or a poll-observed change — not an indefinitely-refreshed
+    /// guarantee; a stable file still re-validates with a real HEAD roughly
+    /// once per window. `.zero` disables the fast path (always HEAD, today's
+    /// behaviour).
+    public static let defaultBlobFreshnessTTL: Duration = .seconds(60)
+
     // MARK: - Dependencies (private — callers must go through SyncEngine API)
 
     //
@@ -90,7 +104,7 @@ public actor SyncEngine {
     /// VALUE is delivered (not when the spawning frame unwinds) so a second
     /// caller that arrives while the task is still running always finds the
     /// entry (sync-24 fix).
-    private var inFlightDownloads: [String: Task<URL, any Error>] = [:]
+    private var inFlightDownloads: [String: Task<OpenResult, any Error>] = [:]
 
     /// Generation counter per key — incremented each time a new download task is
     /// spawned for a key. Used to guard against a stale cleanup (from a previous,
@@ -108,6 +122,12 @@ public actor SyncEngine {
     /// tests can drive elapsed time deterministically instead of sleeping on the
     /// wall clock. Defaults to the real clock.
     private nonisolated let nowNsProvider: @Sendable () -> Int64
+
+    /// ``defaultBlobFreshnessTTL`` (or the constructor-supplied override) used
+    /// to gate ``open(key:)``'s freshness HEAD. Converted to nanoseconds
+    /// inline where compared, mirroring how ``refreshMaterialized`` derives
+    /// its self-heal threshold from `selfHealIntervalMinutes`.
+    private nonisolated let blobFreshnessTTL: Duration
 
     /// Account aliases with a ``refreshMaterialized`` pass currently in flight
     /// (#380). The production caller `pollMaterialized` spawns an unstructured
@@ -136,6 +156,10 @@ public actor SyncEngine {
     /// - scratchBase: Directory for download spill files. Defaults to
     /// `<tmp>/ofem-download-partials/<pid>`.
     /// - pauseProbeInterval: Minimum gap between workspace-recovery probes.
+    /// - blobFreshnessTTL: Minimum row age below which ``open(key:)`` trusts a
+    ///   cached blob without a `getProperties` HEAD. `.zero` always
+    ///   HEADs (today's behaviour); tests that want to force a HEAD on every
+    ///   open pass `.zero` explicitly.
     /// - nowNsProvider: Injectable Unix-nanosecond clock for the #380 self-heal
     ///   floor. Defaults to the real wall clock; tests pass a controllable
     ///   source to drive elapsed time deterministically.
@@ -149,6 +173,7 @@ public actor SyncEngine {
         maxConcurrentUploads: Int = SyncEngine.defaultMaxConcurrentUploads,
         scratchBase: URL? = nil,
         pauseProbeInterval: Duration = SyncEngine.defaultPauseProbeInterval,
+        blobFreshnessTTL: Duration = SyncEngine.defaultBlobFreshnessTTL,
         nowNsProvider: (@Sendable () -> Int64)? = nil
     ) {
         self.cache = cache
@@ -156,6 +181,7 @@ public actor SyncEngine {
         // expression is evaluated in the caller's scope, where the private
         // global `currentNowNs()` is not visible. `nil` ⇒ real wall clock.
         self.nowNsProvider = nowNsProvider ?? { currentNowNs() }
+        self.blobFreshnessTTL = blobFreshnessTTL
         self.onelake = onelake
         self.fabric = fabric
         self.logger = logger
@@ -229,7 +255,8 @@ public actor SyncEngine {
         }
 
         let seen = Set(ws.map(\.id))
-        let rows = ws.map { w in
+        let cachedByPath = await discoveryChildrenByPath(parent: parentKey)
+        let candidates = ws.map { w in
             MetadataRecord(
                 accountAlias: alias,
                 workspaceID: VirtualIDs.workspaceID,
@@ -238,10 +265,11 @@ public actor SyncEngine {
                 parentPath: "",
                 name: w.displayName,
                 isDir: true,
-                lastAccessedNs: nowNs,
+                lastAccessedNs: cachedByPath[w.id]?.lastAccessedNs ?? nowNs,
                 syncedAtNs: nowNs
             )
         }
+        let rows = Self.buildDiscoveryUpsertBatch(candidates: candidates, cachedByPath: cachedByPath)
         await batchUpsert(rows, context: "listWorkspaces")
         // The parent of the workspaces listing is the domain root — root must
         // never be signalled (a root signal forces `.syncAnchorExpired` →
@@ -305,7 +333,8 @@ public actor SyncEngine {
         }
 
         let seen = Set(storageItems.map(\.id))
-        let rows = storageItems.map { it in
+        let cachedByPath = await discoveryChildrenByPath(parent: parentKey)
+        let candidates = storageItems.map { it in
             MetadataRecord(
                 accountAlias: alias,
                 workspaceID: workspaceID,
@@ -314,11 +343,12 @@ public actor SyncEngine {
                 parentPath: "",
                 name: it.displayName,
                 isDir: true,
-                lastAccessedNs: nowNs,
+                lastAccessedNs: cachedByPath[it.id]?.lastAccessedNs ?? nowNs,
                 syncedAtNs: nowNs,
                 itemType: it.type
             )
         }
+        let rows = Self.buildDiscoveryUpsertBatch(candidates: candidates, cachedByPath: cachedByPath)
         await batchUpsert(rows, context: "listItems")
         await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
 
@@ -864,6 +894,14 @@ public actor SyncEngine {
 
     // MARK: - Open (download)
 
+    /// Result of a successful ``open(key:)``: the servable file URL plus the
+    /// metadata record describing exactly what it points to.
+    /// Threaded through internally so ``openReturningRecord(key:)`` gets both
+    /// from the single read/write pass ``open(key:)`` already performs,
+    /// instead of the caller fetching the row again afterward.
+    private typealias OpenResult = (url: URL, record: MetadataRecord)
+
+    // periphery:ignore - only test callers remain; exclude_tests: true hides them from periphery
     /// Downloads a file, serving from the local blob cache when fresh.
     ///
     /// Returns a file URL rather than in-memory `Data` so the FPE can write
@@ -877,7 +915,32 @@ public actor SyncEngine {
     ///
     /// The blob cache is checked BEFORE acquiring a download semaphore slot, so
     /// cache hits never consume a slot.
+    ///
+    /// The sole production caller (`FileProviderExtension.fetchContents`) now
+    /// uses ``openReturningRecord(key:)`` instead, so it also needs the served
+    /// record; this URL-only entry point is kept as the minimal public API for
+    /// any caller that only needs the file (matching `blobURL(key:)` /
+    /// `handoffBlob(key:to:)` below) and is exercised extensively by the
+    /// `open()` test suite.
     public func open(key: CacheKey) async throws -> URL {
+        try await performOpen(key: key).url
+    }
+
+    /// Like ``open(key:)`` but also returns the ``MetadataRecord`` describing
+    /// exactly what was served.
+    ///
+    /// Used by the FPE's `fetchContents`, which needs a version-accurate
+    /// `NSFileProviderItem` for the SAME bytes it hands back: building that
+    /// item from a fetch taken before `open()` ran left its `contentVersion`
+    /// stale relative to a just-completed re-download, causing a redundant
+    /// re-download the next cycle. Re-fetching after `open()` instead would
+    /// fix the staleness but re-read the row a second time; returning the
+    /// record `open()` already has in hand needs neither.
+    public func openReturningRecord(key: CacheKey) async throws -> (url: URL, record: MetadataRecord) {
+        try await performOpen(key: key)
+    }
+
+    private func performOpen(key: CacheKey) async throws -> OpenResult {
         let start = Date()
         try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)
 
@@ -885,18 +948,50 @@ public actor SyncEngine {
         let cached = try? await cache.fetch(key: key)
 
         if let c = cached, !c.blobSHA256.isEmpty {
+            // A row synced within blobFreshnessTTL is presumed fresh — it was
+            // stamped either by this file's own last download/revalidate or
+            // by a refreshFolder pass that observed a real change to it, so
+            // re-validating with a getProperties HEAD on every single open
+            // (Quick Look, a burst of re-opens) is a redundant round trip
+            // that closely-spaced opens would otherwise all pay. Skip the
+            // HEAD entirely inside the window; an unchanged row's syncedAtNs
+            // is not refreshed by the poll (see defaultBlobFreshnessTTL), so
+            // it still re-validates with a real HEAD roughly once per window.
+            let rowAgeNs = currentNowNs() - c.syncedAtNs
+            let ttlNs = Int64(blobFreshnessTTL.seconds * 1_000_000_000)
+            if c.syncedAtNs > 0, rowAgeNs >= 0, rowAgeNs < ttlNs,
+               let blobURL = await cache.blobURL(record: c)
+            {
+                do { try await cache.touch(key: key) } catch {
+                    Self.log.warning("open: touch failed err=\(error, privacy: .public)")
+                }
+                await track(eventName: "file_download", alias: key.accountAlias, start: start, outcome: .success())
+                return (blobURL, c)
+            }
+
+            // Outside the TTL, a known-offline engine skips the HEAD too:
+            // issuing one would just block until the network timeout before
+            // falling back to the same stale blob the catch-block offline
+            // path below would serve anyway.
+            if await offlineTracker.currentlyOffline(), let blobURL = await cache.blobURL(record: c) {
+                logger.debug("offline; serving stale cached blob without a freshness HEAD", metadata: ["path": key.path])
+                await track(eventName: "file_download", alias: key.accountAlias, start: start,
+                            outcome: .successWithCode("served_stale_offline"))
+                return (blobURL, c)
+            }
+
             // Attempt to serve from blob cache — done BEFORE acquiring a slot
             // so cache hits do not consume download bandwidth.
             do {
                 let (fresh, _) = try await isBlobFresh(key: key, cached: c)
                 if fresh {
                     await offlineTracker.observe(nil)
-                    if let blobURL = try? await cache.blobURL(key: key) {
+                    if let blobURL = await cache.blobURL(record: c) {
                         do { try await cache.touch(key: key) } catch {
                             Self.log.warning("open: touch failed err=\(error, privacy: .public)")
                         }
                         await track(eventName: "file_download", alias: key.accountAlias, start: start, outcome: .success())
-                        return blobURL
+                        return (blobURL, c)
                     }
                 }
                 // Remote moved on — fall through to download.
@@ -911,11 +1006,11 @@ public actor SyncEngine {
                     throw SyncError.workspacePaused
                 }
                 // Offline fallback: serve stale blob when the HEAD failed offline.
-                if await offlineTracker.currentlyOffline(), let blobURL = try? await cache.blobURL(key: key) {
+                if await offlineTracker.currentlyOffline(), let blobURL = await cache.blobURL(record: c) {
                     logger.debug("offline; serving stale cached blob", metadata: ["path": key.path])
                     await track(eventName: "file_download", alias: key.accountAlias, start: start,
                                 outcome: .successWithCode("served_stale_offline"))
-                    return blobURL
+                    return (blobURL, c)
                 }
                 throw error
             }
@@ -959,7 +1054,7 @@ public actor SyncEngine {
         // Snapshot mutable state needed inside the unstructured task so it
         // doesn't capture `self` via actor isolation.
         let gen = myGeneration
-        let task = Task<URL, any Error> { [self] in
+        let task = Task<OpenResult, any Error> { [self] in
             defer {
                 // Remove the map entry after the task value is delivered so
                 // late-arriving joiners always find a live entry (sync-24 fix).
@@ -1409,9 +1504,9 @@ public actor SyncEngine {
     ///
     /// Acquires a semaphore slot, handles the 412-resume-discard-retry path
     /// (using ``ResumePlan`` for clean state representation), and returns a
-    /// file URL. All blocking filesystem I/O runs off the actor via
-    /// `Task.detached` (sync-14).
-    private func performDownload(key: CacheKey, start: Date, cached: MetadataRecord?) async throws -> URL {
+    /// file URL alongside the metadata record just written for it. All
+    /// blocking filesystem I/O runs off the actor via `Task.detached` (sync-14).
+    private func performDownload(key: CacheKey, start: Date, cached: MetadataRecord?) async throws -> OpenResult {
         try await acquireDownloadSlot(alias: key.accountAlias)
         defer { releaseDownloadSlot(alias: key.accountAlias) }
 
@@ -1548,28 +1643,32 @@ public actor SyncEngine {
             // the cache is inconsistent.
             await track(eventName: "file_download", alias: key.accountAlias, start: start,
                         outcome: .success(bytes: spillSize))
-            return spillURL
+            return (spillURL, downloadRow)
         }
 
-        // Move/copy spill file into the blob cache.
+        // Move/copy spill file into the blob cache. storeBlobFromURL returns
+        // the sha256/size it just computed, so `row` can carry them without a
+        // redundant re-fetch of the record we just upserted.
         do {
-            try await cache.storeBlobFromURL(spillURL, key: key)
+            let (sha, size) = try await cache.storeBlobFromURL(spillURL, key: key)
+            row.blobSHA256 = sha
+            row.blobSize = size
         } catch {
             Self.log.warning("open: storeBlobFromURL failed (blob cache inconsistent) err=\(error, privacy: .public)")
         }
 
         // Return the blob URL when available; fall back to the spill file when
         // the cache store failed.
-        if let blobURL = try? await cache.blobURL(key: key) {
+        if let blobURL = await cache.blobURL(record: row) {
             await track(eventName: "file_download", alias: key.accountAlias, start: start,
                         outcome: .success(bytes: spillSize))
-            return blobURL
+            return (blobURL, row)
         } else {
             logger.warn("open: blob cache unavailable; returning spill file URL",
                         metadata: ["path": key.path])
             await track(eventName: "file_download", alias: key.accountAlias, start: start,
                         outcome: .success(bytes: spillSize))
-            return spillURL
+            return (spillURL, row)
         }
     }
 
@@ -1717,6 +1816,41 @@ public actor SyncEngine {
         if cached.etag.isEmpty { return (false, props) }
         if !props.eTag.isEmpty, props.eTag == cached.etag { return (true, props) }
         return (false, props)
+    }
+
+    /// Returns the cached discovery rows under `parent`, keyed by `path`
+    /// (the workspace or item GUID). Used by ``listWorkspaces(alias:)`` and
+    /// ``listItems(alias:workspaceID:)`` to look up each freshly discovered
+    /// row's prior state before deciding whether to upsert it.
+    private func discoveryChildrenByPath(parent: CacheKey) async -> [String: MetadataRecord] {
+        let kids = (try? await cache.children(of: parent)) ?? []
+        var byPath: [String: MetadataRecord] = [:]
+        for k in kids {
+            byPath[k.path] = k
+        }
+        return byPath
+    }
+
+    /// Builds the conditional upsert batch for a discovery listing (workspaces
+    /// or items), mirroring ``refreshFolder(key:)``'s conditional-upsert
+    /// discipline (#361/#379): a `candidate` is written back only when it is
+    /// new (absent from `cachedByPath`) or ``Enumerator/entryChanged(current:next:)``
+    /// reports a real change (displayName or itemType — the only fields that
+    /// vary for discovery rows, since they carry no etag/lastModified).
+    ///
+    /// An unchanged candidate is left out of the result entirely, so its
+    /// cached row (and `syncedAtNs`) stays exactly as-is. Bumping `syncedAtNs`
+    /// on every discovery poll — even when nothing changed — would shift the
+    /// working-set delta baseline forward every pass, producing a phantom
+    /// `didUpdate` for every workspace/item on every poll.
+    private static func buildDiscoveryUpsertBatch(
+        candidates: [MetadataRecord],
+        cachedByPath: [String: MetadataRecord]
+    ) -> [MetadataRecord] {
+        candidates.filter { next in
+            guard let cur = cachedByPath[next.path] else { return true }
+            return Enumerator.entryChanged(current: cur, next: next)
+        }
     }
 
     /// Deletes discovery rows for `parent` that are absent from `seen`.
