@@ -6,9 +6,11 @@ import Foundation
 /// engine object.
 ///
 /// `OfemEngine` is a **facade / wire-up container** that builds the per-alias
-/// dependency graph (auth → session pool → Fabric + OneLake clients → sync
-/// engine) using process-wide shared subsystems (cache, telemetry, session
-/// pool) that are injected at initialisation time.
+/// dependency graph (logger → Fabric + OneLake clients → sync engine) using
+/// process-wide shared subsystems (cache, telemetry, session pool) that are
+/// injected at initialisation time. Authentication is not part of this
+/// graph: the `OfemAuth` backing the shared `SessionPool`'s token provider is
+/// built once by the caller (`FPEEngineHost`) before any engine exists.
 ///
 /// ## Process-wide shared vs per-alias
 ///
@@ -25,15 +27,16 @@ import Foundation
 ///
 /// Per-alias subsystems that remain private to each `OfemEngine`:
 ///
-/// - `OfemAuth` — per-account `MSALPublicClientApplication` + Keychain slice.
 /// - `SyncEngine` — per-account download/upload semaphores + in-flight map.
-/// - `OfemLogger` — category tag includes the alias for easy log filtering.
+/// - `OfemLogger` — one instance per engine, but the log category is the
+///   fixed string `"engine"` (not alias-specific); the file sink writes to
+///   the shared, process-wide `paths.logDir`.
 ///
 /// ## Thread safety
 ///
-/// `OfemEngine` is a Swift `actor`. Public properties (`auth`, `cache`,
-/// `sync`, `telemetry`, `logger`) are `nonisolated` so callers can read them
-/// from any context without hopping to the engine's executor.
+/// `OfemEngine` is a Swift `actor`. Public properties (`cache`, `sync`,
+/// `telemetry`, `logger`, `sessionPool`) are `nonisolated` so callers can
+/// read them from any context without hopping to the engine's executor.
 ///
 /// ## Telemetry ownership
 ///
@@ -51,10 +54,6 @@ import Foundation
 /// `FPEEngineHost.shutdownSharedSubsystems()`.
 public actor OfemEngine {
     // MARK: - Public subsystems
-
-    /// Authentication facade (token acquisition, account management).
-    // periphery:ignore
-    public nonisolated let auth: OfemAuth
 
     /// Metadata + blob cache (process-wide shared instance, arch-04).
     public nonisolated let cache: CacheStore
@@ -148,8 +147,6 @@ public actor OfemEngine {
 
         let perAlias = try OfemEngine.buildPerAliasSubsystems(
             cfg: cfg,
-            configStore: configStore,
-            auth: nil,
             paths: paths,
             cache: sharedCache,
             telemetry: sharedTelemetry,
@@ -161,7 +158,6 @@ public actor OfemEngine {
         self.cache = sharedCache
         self.telemetry = sharedTelemetry
         self.sessionPool = sharedSessionPool
-        self.auth = perAlias.auth
         self.sync = perAlias.sync
         // Injected init does NOT own the shared subsystems (engine-03).
         self.subsystemOwnership = .shared
@@ -218,15 +214,14 @@ public actor OfemEngine {
             maxBlobBytes: cfg.cache.maxBytes
         )
 
-        // Build auth first so the owned pool uses the same instance.
+        // Auth backing the owned session pool's token provider. Not stored on
+        // the engine — nothing in production reads `OfemEngine.auth`; only
+        // the `SessionPool` needs a `TokenProvider` (F7).
         let ownedAuth = OfemAuth(configStore: configStore)
-        // Build owned session pool backed by the same OfemAuth actor.
         let ownedPool = SessionPool(tokenProvider: ownedAuth)
 
         let perAlias = try OfemEngine.buildPerAliasSubsystems(
             cfg: cfg,
-            configStore: configStore,
-            auth: ownedAuth,
             paths: paths,
             cache: ownedCache,
             telemetry: ownedTelemetry,
@@ -238,7 +233,6 @@ public actor OfemEngine {
         self.cache = ownedCache
         self.telemetry = ownedTelemetry
         self.sessionPool = ownedPool
-        self.auth = perAlias.auth
         self.sync = perAlias.sync
         // Standalone init owns every subsystem it created (engine-03).
         // CacheStore is already held by self.cache (ARC); no need to store
@@ -299,12 +293,11 @@ public actor OfemEngine {
     /// Per-alias subsystems produced by `buildPerAliasSubsystems`.
     private struct PerAliasSubsystems {
         let logger: OfemLogger
-        let auth: OfemAuth
         let sync: SyncEngine
     }
 
-    /// Wires up all per-alias subsystems (logger, auth, HTTP clients, sync
-    /// engine) given already-resolved shared subsystems.
+    /// Wires up all per-alias subsystems (logger, HTTP clients, sync engine)
+    /// given already-resolved shared subsystems.
     ///
     /// Extracted so both initialisers share identical wiring logic and future
     /// changes only need to be applied once.
@@ -313,8 +306,6 @@ public actor OfemEngine {
     /// so that both inits read the config exactly once (engine-01).
     private static func buildPerAliasSubsystems(
         cfg: OfemConfig,
-        configStore: OfemConfigStore,
-        auth existingAuth: OfemAuth?,
         paths: OfemPaths,
         cache: CacheStore,
         telemetry: TelemetryClient,
@@ -335,19 +326,14 @@ public actor OfemEngine {
         )
         let logger = OfemLogger(configuration: logConfig)
 
-        // 2. Auth — reuse the provided instance when the caller already built
-        //    it (standalone init pre-builds auth so the SessionPool and the
-        //    engine use the same actor). Otherwise build a fresh one.
-        let auth = existingAuth ?? OfemAuth(configStore: configStore)
-
-        // 3. HTTP clients — use the provided session pool.
+        // 2. HTTP clients — use the provided session pool.
         let oneLakeURL = httpBaseURLs?.oneLake ?? OneLakeClient.defaultBaseURL
         let fabricURL = httpBaseURLs?.fabric ?? OfemEngine.defaultFabricBaseURL
 
         let onelake = OneLakeClient(sessionPool: sessionPool, baseURL: oneLakeURL, logger: logger)
         let fabric = FabricClient(sessionPool: sessionPool, baseURL: fabricURL, logger: logger)
 
-        // 4. Sync engine (per-alias).
+        // 3. Sync engine (per-alias).
         let scratchBase = paths.cacheDir.appendingPathComponent("partials")
         let syncEngine = SyncEngine(
             cache: cache,
@@ -358,6 +344,6 @@ public actor OfemEngine {
             scratchBase: scratchBase
         )
 
-        return PerAliasSubsystems(logger: logger, auth: auth, sync: syncEngine)
+        return PerAliasSubsystems(logger: logger, sync: syncEngine)
     }
 }

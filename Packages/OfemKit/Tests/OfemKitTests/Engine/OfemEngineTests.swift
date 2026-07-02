@@ -48,11 +48,11 @@ struct OfemEngineStandaloneTests {
         // All public subsystems must be reachable without an actor hop
         // (nonisolated let).  Access them so the compiler confirms they are
         // non-nil references.
-        _ = engine.auth
         _ = engine.cache
         _ = engine.sync
         _ = engine.telemetry
         _ = engine.logger
+        _ = engine.sessionPool
         await engine.shutdown()
     }
 
