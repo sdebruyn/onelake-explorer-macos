@@ -250,28 +250,30 @@ final class OfemFPEClient {
 
     // MARK: - Protocol version check
 
-    /// Queries the FPE's protocol version via an already-typed proxy and
-    /// surfaces a mismatch via the model.
+    /// Compares an already-obtained FPE-reported version against
+    /// `ofemControlProtocolVersion` and surfaces a mismatch via the model.
     ///
-    /// Extracted from the NSXPCConnection-level helper so tests can inject a
-    /// fake proxy without needing a real XPC connection.
+    /// Synchronous by design: tests exercise the compare/notify/log logic in
+    /// `evaluateVersion` directly with a plain `Int`, instead of routing a
+    /// fake proxy through an async reply-callback continuation. An earlier
+    /// version of this seam wrapped `proxy.getProtocolVersion(reply:)` in a
+    /// non-throwing `withCheckedContinuation` with no fault path of its own —
+    /// safe only because tests happened to feed it a synchronous fake, but
+    /// nothing stopped a future production caller from handing it a real
+    /// (fault-prone) XPC proxy and silently reintroducing the xpc-12 hang
+    /// shape. This seam can't hang because it never awaits anything.
     ///
     /// - Parameters:
-    ///   - proxy:            A typed proxy conforming to `OfemClientControlProtocol`.
+    ///   - reportedVersion:  The FPE's reported protocol version.
     ///   - domainIdentifier: Used for log messages only (not logged as PII).
-    /// - Returns: The FPE's reported version.
+    /// - Returns: `reportedVersion`, unchanged.
     @discardableResult
     func checkProtocolVersion(
-        proxy: any OfemClientControlProtocol,
+        reportedVersion: Int,
         domainIdentifier: String
-    ) async -> Int {
-        let fpeVersion: Int = await withCheckedContinuation { continuation in
-            proxy.getProtocolVersion { version in
-                continuation.resume(returning: version)
-            }
-        }
-        evaluateVersion(fpeVersion, domainIdentifier: domainIdentifier)
-        return fpeVersion
+    ) -> Int {
+        evaluateVersion(reportedVersion, domainIdentifier: domainIdentifier)
+        return reportedVersion
     }
 
     /// Connection-level wrapper: performs the handshake through the shared
@@ -310,7 +312,7 @@ final class OfemFPEClient {
 
     /// Compares `fpeVersion` to `ofemControlProtocolVersion` and surfaces a
     /// mismatch via `MenuStatusModel.lastActionError` (xpc-06). Shared by
-    /// both the proxy-injecting test entry point and the connection-level
+    /// both the synchronous test entry point and the connection-level
     /// production path so the compare/log/notify logic is defined once.
     private func evaluateVersion(_ fpeVersion: Int, domainIdentifier: String) {
         if fpeVersion != ofemControlProtocolVersion {
