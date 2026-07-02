@@ -220,7 +220,7 @@ struct SyncEngineRefreshMaterializedTests {
         try await seedFolder(in: store, key: key, children: [("keep.txt", "e1"), ("gone.txt", "e2")])
 
         // Record the max synced_at_ns before the refresh so we can query changes after.
-        let nsBefore = try await store.maxSyncedAtNs(accountAlias: key.accountAlias)
+        let nsBefore = try await store.syncAnchorNs(accountAlias: key.accountAlias)
 
         // Remote no longer has "gone.txt".
         ol.listPathResults.append(.success(ListResult(entries: [
@@ -251,13 +251,17 @@ struct SyncEngineRefreshMaterializedTests {
         let keepRow = try? await store.fetch(key: keepKey)
         #expect(keepRow != nil)
 
-        // itemsChangedAfter surfaces updated rows (refreshFolder bumps synced_at_ns
-        // for all upserted children, including keep.txt). Note: batchDelete does
-        // not write File-Provider tombstones — that is the role of CacheStore.delete.
+        // itemsChangedAfter now surfaces the removal as a tombstone: refreshFolder's
+        // batchDelete(recordTombstones: true) writes one for the vanished child, and
+        // the timestamp reconcile keeps it because there is no live row to shadow it.
         let changes = try await store.itemsChangedAfter(
             accountAlias: key.accountAlias,
             ns: nsBefore
         )
+        let goneIdentifier = "\(key.workspaceID)/\(key.itemID)/gone.txt"
+        #expect(changes.deletedIdentifierStrings.contains(goneIdentifier))
+        // The parent row is re-stamped on a non-empty diff, so `updated` is
+        // non-empty even though keep.txt (unchanged etag) is not re-upserted.
         #expect(!changes.updated.isEmpty)
     }
 
@@ -746,7 +750,7 @@ struct SyncEngineRefreshMaterializedTests {
         try await seedFolder(in: store, key: key, children: [("report.csv", "e1")])
 
         let parentBefore = try await store.fetch(key: key)
-        let nsBefore = try await store.maxSyncedAtNs(accountAlias: key.accountAlias)
+        let nsBefore = try await store.syncAnchorNs(accountAlias: key.accountAlias)
 
         // Two polls with an identical remote listing → diff.total == 0 both times.
         for _ in 0 ..< 2 {
@@ -762,8 +766,8 @@ struct SyncEngineRefreshMaterializedTests {
         let parentAfter = try await store.fetch(key: key)
         #expect(parentAfter.syncedAtNs == parentBefore.syncedAtNs)
 
-        // maxSyncedAtNs must not have advanced (no row was upserted).
-        let nsAfter = try await store.maxSyncedAtNs(accountAlias: key.accountAlias)
+        // The sync anchor must not have advanced (no row upserted, none deleted).
+        let nsAfter = try await store.syncAnchorNs(accountAlias: key.accountAlias)
         #expect(nsAfter == nsBefore)
     }
 
@@ -886,7 +890,7 @@ struct SyncEngineRefreshMaterializedTests {
             concurrencyCap: 1, selfHealIntervalMinutes: 0
         )
 
-        let nsBefore = try await store.maxSyncedAtNs(accountAlias: Self.alias)
+        let nsBefore = try await store.syncAnchorNs(accountAlias: Self.alias)
 
         // Poll 2: parent lists child (SE2, advanced); child now contains a new file.
         ol.listPathResults.append(.success(ListResult(entries: [Self.dirEntry(name: "subdir", eTag: "SE2")])))
@@ -905,7 +909,7 @@ struct SyncEngineRefreshMaterializedTests {
             accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "subdir/new.csv"
         )
         #expect((try? await store.fetch(key: newFileKey)) != nil)
-        let nsAfter = try await store.maxSyncedAtNs(accountAlias: Self.alias)
+        let nsAfter = try await store.syncAnchorNs(accountAlias: Self.alias)
         #expect(nsAfter > nsBefore)
     }
 
