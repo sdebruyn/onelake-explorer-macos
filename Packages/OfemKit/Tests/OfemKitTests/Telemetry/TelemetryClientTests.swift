@@ -67,6 +67,60 @@ final class PartialRejectSink: TelemetrySink, @unchecked Sendable {
     }
 }
 
+// MARK: - BlockingTelemetrySink
+
+/// A `TelemetrySink` whose `send(_:)` parks until either `release()` is
+/// called or the enclosing `Task` is cancelled — used to deterministically
+/// exercise the "opt-out lands while a flush is already mid-send" race
+/// (`TelemetryClient` is a reentrant actor, so this window is real; see
+/// `setOptOutCancelsInFlightSend` below). `MemoryTelemetrySink.send` returns
+/// instantly and can never be caught mid-flight.
+///
+/// Cancellation is observed cooperatively via `Task.isCancelled`, matching
+/// how the real `AppInsightsSink` observes cancellation through
+/// `URLSession`'s async API — no `withTaskCancellationHandler` needed for
+/// a polling loop this short-lived.
+final class BlockingTelemetrySink: TelemetrySink, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _sendStarted = false
+    private var _released = false
+    private var _delivered: [TelemetryEvent] = []
+    private var _wasCancelled = false
+
+    /// `true` once `send(_:)` has been called and is parked, waiting.
+    var sendStarted: Bool {
+        lock.withLock { _sendStarted }
+    }
+
+    /// Events that reached the "delivered" branch (i.e. were NOT cancelled).
+    var delivered: [TelemetryEvent] {
+        lock.withLock { _delivered }
+    }
+
+    /// `true` if the parked `send(_:)` observed cancellation.
+    var wasCancelled: Bool {
+        lock.withLock { _wasCancelled }
+    }
+
+    /// Unblocks a parked `send(_:)` so it proceeds to "deliver" the events.
+    func release() {
+        lock.withLock { _released = true }
+    }
+
+    func send(_ events: [TelemetryEvent]) async throws {
+        lock.withLock { _sendStarted = true }
+        while true {
+            if Task.isCancelled {
+                lock.withLock { _wasCancelled = true }
+                throw CancellationError()
+            }
+            if lock.withLock({ _released }) { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        lock.withLock { _delivered.append(contentsOf: events) }
+    }
+}
+
 // MARK: - Tests
 
 @Suite("TelemetryClient")
@@ -140,6 +194,88 @@ struct TelemetryClientTests {
         await client.track(TelemetryEvent(name: "app_start"))
         await client.flush()
         #expect(sink.count == 0, "opt-out client must not send to real sink")
+    }
+
+    // MARK: - Live opt-out (F4/A1: telemetry opt-out takes effect without restart)
+
+    @Test("setOptOut(true) stops subsequent track() calls from reaching the sink")
+    func setOptOutTrueStopsFutureTracking() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+
+        // Telemetry starts enabled — a track() before opt-out reaches the sink.
+        await client.track(TelemetryEvent(name: "before_opt_out"))
+        await client.flush()
+        #expect(sink.count == 1)
+
+        await client.setOptOut(true)
+
+        // No restart, no new TelemetryClient — the same actor instance now
+        // drops every subsequent track() call.
+        await client.track(TelemetryEvent(name: "after_opt_out"))
+        await client.flush()
+        #expect(sink.count == 1, "setOptOut(true) must stop further events from reaching the sink")
+    }
+
+    @Test("setOptOut(true) discards events already buffered but not yet flushed")
+    func setOptOutTrueDropsBufferedEvents() async {
+        let sink = MemoryTelemetrySink()
+        // Long flush interval so the background timer cannot race the assertion.
+        let client = makeClient(sink: sink, flushInterval: .seconds(3600))
+
+        await client.track(TelemetryEvent(name: "queued_before_opt_out"))
+        await client.setOptOut(true)
+        await client.flush()
+
+        #expect(sink.count == 0, "events queued before opt-out must not survive a post-opt-out flush")
+    }
+
+    @Test("setOptOut(false) re-enables tracking after a live opt-out")
+    func setOptOutFalseReenablesTracking() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+
+        await client.setOptOut(true)
+        await client.track(TelemetryEvent(name: "dropped"))
+        await client.flush()
+        #expect(sink.count == 0)
+
+        await client.setOptOut(false)
+        await client.track(TelemetryEvent(name: "resumed"))
+        await client.flush()
+        #expect(sink.count == 1)
+    }
+
+    @Test("setOptOut(true) cancels a flush already parked inside sink.send")
+    func setOptOutCancelsInFlightSend() async throws {
+        // Reproduces the reentrancy window: flush() drains the buffer and
+        // calls sink.send BEFORE setOptOut(true) runs, so the post-drain
+        // `!optOut` check in flush() cannot see it — only cancelling the
+        // in-flight send closes this window.
+        let sink = BlockingTelemetrySink()
+        let client = makeClient(sink: sink, flushInterval: .seconds(3600))
+
+        await client.track(TelemetryEvent(name: "in_flight"))
+
+        // Run flush() concurrently so the test can observe it parked mid-send
+        // (a plain `await client.flush()` here would deadlock the test itself).
+        let flushTask = Task { await client.flush() }
+
+        // Deterministic poll for "send() has started" — no fixed sleep-and-hope.
+        while !sink.sendStarted {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        await client.setOptOut(true)
+        await flushTask.value
+
+        #expect(sink.wasCancelled, "the parked send() must observe cancellation from setOptOut(true)")
+        #expect(sink.delivered.isEmpty, "a cancelled send must not have delivered any events")
+
+        // And the ordinary post-opt-out guarantee still holds on top of this.
+        await client.track(TelemetryEvent(name: "after_opt_out"))
+        await client.flush()
+        #expect(sink.delivered.isEmpty)
     }
 
     @Test("buffer overflow triggers immediate flush so no events are dropped (store-18)")
