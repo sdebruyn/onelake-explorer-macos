@@ -216,7 +216,7 @@ public actor OfemEngine {
 
         // Auth backing the owned session pool's token provider. Not stored on
         // the engine — nothing in production reads `OfemEngine.auth`; only
-        // the `SessionPool` needs a `TokenProvider` (F7).
+        // the `SessionPool` needs a `TokenProvider`.
         let ownedAuth = OfemAuth(configStore: configStore)
         let ownedPool = SessionPool(tokenProvider: ownedAuth)
 
