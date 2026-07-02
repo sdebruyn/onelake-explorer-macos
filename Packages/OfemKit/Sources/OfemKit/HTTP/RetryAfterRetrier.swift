@@ -14,16 +14,20 @@ import Foundation
 /// `request.retryCount` is shared across the whole interceptor chain (it
 /// counts total retry cycles, not per-retrier attempts), so capping it here at
 /// ``maxRetries`` bounds the combined Retry-After + `RetryPolicy` budget to
-/// ``maxRetries`` attempts — matching `RetryPolicy(retryLimit: 5)` in
-/// `SessionPool` rather than stacking on top of it. Without this cap, a
-/// sustained 429/503 with a valid `Retry-After` (throttling, or a paused
-/// Fabric capacity) retries forever because Alamofire only advances to the
-/// next retrier on `.doNotRetry`, so `RetryPolicy`'s limit never applies.
+/// ``maxRetries`` attempts — matching `SessionPool`'s `JitteredRetryPolicy`
+/// rather than stacking on top of it. Without this cap, a sustained 429/503
+/// with a valid `Retry-After` (throttling, or a paused Fabric capacity)
+/// retries forever because Alamofire only advances to the next retrier on
+/// `.doNotRetry`, so `RetryPolicy`'s limit never applies.
 struct RetryAfterRetrier: RequestRetrier {
     /// Maximum delay accepted from a `Retry-After` header (seconds).
     static let maxDelay: TimeInterval = 30
-    /// Maximum number of Retry-After-driven retries, aligned with
-    /// `RetryPolicy(retryLimit: 5)` in `SessionPool`.
+    /// Maximum number of Retry-After-driven retries.
+    ///
+    /// Single source of truth for the combined retry budget: `SessionPool`
+    /// reads this value to configure `JitteredRetryPolicy(retryLimit:)`
+    /// rather than hard-coding its own limit, so the two retriers sharing
+    /// `request.retryCount` cannot drift out of sync.
     static let maxRetries = 5
 
     func retry(

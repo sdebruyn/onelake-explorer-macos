@@ -121,7 +121,9 @@ public actor SessionPool {
             retriers: [
                 RetryAfterRetrier(),
                 JitteredRetryPolicy(
-                    retryLimit: 5,
+                    // Single source of truth shared with RetryAfterRetrier's
+                    // own cap — see RetryAfterRetrier.maxRetries.
+                    retryLimit: UInt(RetryAfterRetrier.maxRetries),
                     retryableHTTPMethods: [
                         .get, .head, .put, .delete, .options,
                         // PATCH is added for OneLake append/flush: position-addressed

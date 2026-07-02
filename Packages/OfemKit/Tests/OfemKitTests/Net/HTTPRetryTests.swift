@@ -181,9 +181,9 @@ private final class AttemptCounter: RequestAdapter, @unchecked Sendable {
 struct RetryAfterRetrierBudgetTests {
     /// F3: a sustained 429 with a parseable `Retry-After` header must stop
     /// retrying once the shared `request.retryCount` budget (aligned with
-    /// `RetryPolicy(retryLimit: 5)`) is spent, not retry forever. Registering
-    /// more stubs than the budget allows proves the retrier stopped because of
-    /// the cap, not because the mock queue ran dry.
+    /// `JitteredRetryPolicy(retryLimit:)`) is spent, not retry forever.
+    /// Registering more stubs than the budget allows proves the retrier
+    /// stopped because of the cap, not because the mock queue ran dry.
     @Test("sustained 429 + Retry-After stops after the shared retry cap and surfaces the error")
     func stopsAfterMaxRetries() async {
         let queueID = "retry-budget-\(UUID().uuidString)"
@@ -198,12 +198,17 @@ struct RetryAfterRetrierBudgetTests {
         config.urlCache = nil
 
         let counter = AttemptCounter()
-        // Mirrors SessionPool's retrier chain: RetryAfterRetrier ahead of
-        // RetryPolicy so an explicit Retry-After wins, both sharing one
-        // request.retryCount budget.
+        // Mirrors SessionPool's actual retrier chain (not a stand-in): the
+        // production RetryAfterRetrier ahead of the production
+        // JitteredRetryPolicy, both sharing one request.retryCount budget.
         let interceptor = Interceptor(
             adapters: [counter, QueueIDAdapter(queueID: queueID)],
-            retriers: [RetryAfterRetrier(), RetryPolicy(retryLimit: 5, retryableHTTPStatusCodes: [429])]
+            retriers: [
+                RetryAfterRetrier(),
+                JitteredRetryPolicy(
+                    retryLimit: UInt(RetryAfterRetrier.maxRetries), retryableHTTPStatusCodes: [429]
+                ),
+            ]
         )
         let session = Session(configuration: config, interceptor: interceptor)
 
