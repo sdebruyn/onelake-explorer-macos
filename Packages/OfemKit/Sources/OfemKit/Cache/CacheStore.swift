@@ -400,6 +400,15 @@ public actor CacheStore {
         try await reader().children(of: key)
     }
 
+    // MARK: - Metadata: subtree etags (bulk read)
+
+    /// Returns the `subtree_etag` of each key in `keys` that has a row, keyed by
+    /// ``CacheKey/stableKeyString``, in a single read transaction. Delegates to
+    /// ``CacheReader/subtreeEtags(for:)``.
+    public func subtreeEtags(for keys: [CacheKey]) async throws -> [String: String] {
+        try await reader().subtreeEtags(for: keys)
+    }
+
     // MARK: - Metadata: touch
 
     /// Bumps `last_accessed_ns` for `key` to the current time.

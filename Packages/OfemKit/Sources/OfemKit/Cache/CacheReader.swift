@@ -92,6 +92,38 @@ public final class CacheReader: Sendable {
         }
     }
 
+    // MARK: - Metadata: subtree etags (bulk read)
+
+    /// Returns the `subtree_etag` of each key in `keys` that has a row, keyed by
+    /// ``CacheKey/stableKeyString``.
+    ///
+    /// Collapses what would otherwise be one read transaction (and one actor hop)
+    /// per key into a SINGLE `db.read` snapshot wrapping N primary-key point
+    /// lookups. ``SyncEngine/refreshMaterialized(alias:keys:concurrencyCap:)``
+    /// uses it once for the pre-pass prior snapshot and once per depth wave for
+    /// the post-parent-stamp current values (#380).
+    ///
+    /// Keys with no row are omitted from the result; the caller treats an absent
+    /// key as an empty token (`""`), matching how the previous per-key `fetch`
+    /// plus `try?` path behaved for a missing row. Invalid keys simply match no
+    /// row rather than throwing, so one bad key never voids the whole snapshot.
+    public func subtreeEtags(for keys: [CacheKey]) async throws -> [String: String] {
+        guard !keys.isEmpty else { return [:] }
+        return try await db.read { db in
+            var result: [String: String] = [:]
+            result.reserveCapacity(keys.count)
+            for key in keys {
+                if let etag = try String.fetchOne(db, sql: """
+                SELECT subtree_etag FROM path_metadata
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
+                """, arguments: [key.accountAlias, key.workspaceID, key.itemID, key.path]) {
+                    result[key.stableKeyString] = etag
+                }
+            }
+            return result
+        }
+    }
+
     /// Returns the distinct `(accountAlias, workspaceID, itemID)` triples for
     /// which at least one metadata row was accessed at or after `since`.
     public func hotItems(since: Date) async throws -> [CacheKey] {
