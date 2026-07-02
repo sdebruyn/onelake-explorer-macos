@@ -39,7 +39,17 @@ public actor CacheStore {
     // Internal so test targets can run direct SQL assertions.
     let dbPool: DatabasePool
     private let blobs: BlobShardCache
-    private let maxBlobBytes: Int64
+    /// LRU eviction threshold for blob bytes. `var` (not `let`) so
+    /// ``setMaxBlobBytes(_:)`` can update the budget live. Actor isolation
+    /// serialises reads and writes made from actor-isolated code (e.g. the
+    /// `guard maxBlobBytes > 0` checks in ``storeBlob(key:data:)`` and
+    /// ``storeBlobFromURL(_:key:)``) — but it does **not** protect a read
+    /// made from inside a `dbPool.write { }` closure, which runs on GRDB's
+    /// writer queue, off this actor. ``evictToLimit()`` snapshots the value
+    /// into a local `let` before entering that closure for exactly this
+    /// reason; do not reintroduce a direct `maxBlobBytes` reference inside
+    /// a `dbPool.write { }` / `dbPool.read { }` closure.
+    private var maxBlobBytes: Int64
 
     /// Clock injection seam: returns the current time as Unix nanoseconds.
     /// Defaults to wall clock; override in tests for deterministic ordering.
@@ -145,6 +155,48 @@ public actor CacheStore {
     public nonisolated func reader() -> CacheReader {
         CacheReader(db: dbPool, logger: logger)
     }
+
+    // MARK: - Live budget update
+
+    /// Updates the LRU eviction budget live, without recreating `CacheStore`.
+    ///
+    /// The new limit applies on the next ``storeBlob(key:data:)`` /
+    /// ``storeBlobFromURL(_:key:)`` write (both call ``evictToLimit()``
+    /// automatically) or the next explicit ``evictToLimit()`` call — it does
+    /// not retroactively evict already-cached blobs the moment this is
+    /// called. `0` disables eviction (matches the `init` semantics).
+    ///
+    /// Actor isolation serialises this write against concurrent calls made
+    /// from other actor-isolated code — no separate lock needed for *that*.
+    /// It does **not**, by itself, make every existing read of
+    /// `maxBlobBytes` safe; see the property's doc comment for the one call
+    /// site (inside a `dbPool.write { }` closure) that has to snapshot the
+    /// value instead of reading `self.maxBlobBytes` directly.
+    ///
+    /// Called by `FPEEngineHost.reloadEngine()` after a
+    /// `setConfig(cache.max_size_gb:)` XPC call so the budget takes effect
+    /// immediately — the shared `CacheStore` singleton is not rebuilt on
+    /// reload.
+    public func setMaxBlobBytes(_ value: Int64) {
+        maxBlobBytes = value
+    }
+
+    #if DEBUG
+        // periphery:ignore
+        /// Current eviction budget. Test-only introspection — production
+        /// callers have no legitimate need to read this back (they only ever
+        /// set it). Exposed so `FPEEngineHostTests` can assert that
+        /// `reloadEngine()` actually propagates a config change to the shared
+        /// `CacheStore` without needing to write gigabyte-scale blob data to
+        /// observe eviction behaviour (`cache.max_size_gb` is whole-GB
+        /// granularity).
+        ///
+        /// `#if DEBUG`-gated (matching `FPEEngineHost`'s `*ForTesting` seams)
+        /// so this test-only surface never ships in a Release build.
+        public var maxBlobBytesForTesting: Int64 {
+            maxBlobBytes
+        }
+    #endif
 
     // MARK: - Read-only factory (host process)
 
@@ -1012,7 +1064,17 @@ public actor CacheStore {
     ///
     /// - Returns: `(evicted, reclaimed)` — number of rows cleared and bytes freed.
     public func evictToLimit() async throws -> (evicted: Int, reclaimed: Int64) {
-        guard maxBlobBytes > 0 else { return (0, 0) }
+        // Snapshot the budget on the actor's own executor *before* entering
+        // `dbPool.write { }` below. That closure runs on GRDB's writer queue,
+        // not on this actor — since `setMaxBlobBytes(_:)` made `maxBlobBytes`
+        // a `var`, referencing `self.maxBlobBytes` directly from inside the
+        // closure would be a data race with a concurrent `setMaxBlobBytes`
+        // call (actor isolation only serialises access from actor-isolated
+        // code; it does not extend into a closure handed to another queue).
+        // `budget` is a frozen `let` Int64 — trivially `Sendable`, safe to
+        // capture into the closure.
+        let budget = maxBlobBytes
+        guard budget > 0 else { return (0, 0) }
 
         struct EvictionCandidate {
             var accountAlias: String
@@ -1028,10 +1090,10 @@ public actor CacheStore {
             let total = try Int64.fetchOne(db, sql: """
             SELECT COALESCE(SUM(blob_size), 0) FROM path_metadata WHERE blob_sha256 != ''
             """) ?? 0
-            guard total > maxBlobBytes else { return [] }
+            guard total > budget else { return [] }
 
             // How many bytes we need to shed.
-            var overage = total - maxBlobBytes
+            var overage = total - budget
 
             // Select victims in LRU order until overage is covered.
             let rows = try Row.fetchAll(db, sql: """
