@@ -209,6 +209,54 @@ final class FileProviderExtensionTests: XCTestCase {
         XCTAssertTrue(sources.isEmpty, "non-rootContainer should expose no services")
     }
 
+    // MARK: - enumerator(for:) — trash gets a real empty enumerator, not the working-set one
+
+    /// OneLake has no trash: `.trashContainer` must route to `OfemTrashEnumerator`,
+    /// never to `OfemWorkingSetEnumerator`. Before this was fixed, both sentinels
+    /// shared the working-set enumerator, so trash enumeration would trigger a
+    /// throttled `listWorkspaces` refresh and report alias-wide cache deltas
+    /// under the trash container — behaviour that has nothing to do with trash.
+    func testEnumeratorForTrashIsNotWorkingSetAndNeverTouchesEngine() throws {
+        let host = MockEngineHost(alias: "test")
+        let ext = makeExtension(host: host)
+
+        let enumerator = try ext.enumerator(for: .trashContainer, request: makeRequest())
+
+        // Downcast to the concrete type: it both proves trash gets a real
+        // OfemTrashEnumerator (not OfemWorkingSetEnumerator — a different
+        // final class, so the two are mutually exclusive) and lets the calls
+        // below dispatch statically instead of through the optional-chained
+        // NSFileProviderEnumerator protocol requirements.
+        let trashEnumerator = try XCTUnwrap(
+            enumerator as? OfemTrashEnumerator,
+            "trash must get a real empty enumerator, not the working-set one"
+        )
+
+        let itemsObserver = SpyEnumerationObserver()
+        trashEnumerator.enumerateItems(for: itemsObserver, startingAt: NSFileProviderPage.initialPageSortedByName as NSFileProviderPage)
+        XCTAssertTrue(itemsObserver.didEnumerateCalled)
+        XCTAssertTrue(itemsObserver.enumeratedItems.isEmpty)
+        XCTAssertTrue(itemsObserver.finishEnumeratingCalled)
+
+        let changesObserver = SpyChangeObserver()
+        trashEnumerator.enumerateChanges(for: changesObserver, from: encodeSyncAnchor(0))
+        XCTAssertTrue(changesObserver.finished)
+        XCTAssertFalse(changesObserver.finishedWithError)
+
+        XCTAssertEqual(host.engineCallCount, 0, "trash enumeration must never build/touch the engine")
+    }
+
+    /// Regression guard: `.workingSet` must keep vending the real
+    /// `OfemWorkingSetEnumerator` (only trash was mis-routed).
+    func testEnumeratorForWorkingSetReturnsWorkingSetEnumerator() throws {
+        let host = MockEngineHost(alias: "test")
+        let ext = makeExtension(host: host)
+
+        let enumerator = try ext.enumerator(for: .workingSet, request: makeRequest())
+
+        XCTAssertTrue(enumerator is OfemWorkingSetEnumerator)
+    }
+
     // MARK: - Helpers
 
     private func makeExtension(host: MockEngineHost) -> FileProviderExtension {
