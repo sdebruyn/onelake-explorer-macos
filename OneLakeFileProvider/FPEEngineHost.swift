@@ -252,6 +252,24 @@ final class FPEEngineHost: EngineProviding {
         }
     }
 
+    /// Returns the process-wide `CacheStore` if one has already been built,
+    /// `nil` otherwise. Unlike ``sharedCache()`` this never constructs one.
+    ///
+    /// Used by ``reloadEngine()`` to propagate a live `cache.max_size_gb`
+    /// change to the shared budget without forcing a first-time construction
+    /// (SQLite open, directory creation) on a host whose engine — and
+    /// therefore the shared subsystems — has never been built.
+    private static func peekSharedCache() -> CacheStore? {
+        sharedSubsystemsLock.withLock { _sharedCache }
+    }
+
+    /// Returns the process-wide `TelemetryClient` if one has already been
+    /// built, `nil` otherwise. Unlike ``sharedTelemetry()`` this never
+    /// constructs one. See ``peekSharedCache()`` for the rationale.
+    private static func peekSharedTelemetry() -> TelemetryClient? {
+        sharedSubsystemsLock.withLock { _sharedTelemetry }
+    }
+
     /// Returns (or lazily creates) the process-wide `SessionPool`.
     ///
     /// The pool is backed by an `OfemAuth` instance that shares the process-wide
@@ -317,6 +335,31 @@ final class FPEEngineHost: EngineProviding {
                 _sharedSessionPool = nil
             }
             activeHostLock.withLock { _activeHostCount = 0 }
+        }
+
+        // periphery:ignore
+        /// **Test-only.** Installs `store` as the process-wide shared config
+        /// store, bypassing `sharedConfigStore()`'s real on-disk construction
+        /// (`OfemConfigStore()` resolves the real App Group container, or
+        /// falls back to `$HOME`, both unsafe to touch from a unit test).
+        /// Callers should pass an `OfemConfigStore(paths: OfemPaths(root:))`
+        /// backed by a disposable temp directory.
+        static func installSharedConfigStoreForTesting(_ store: OfemConfigStore) {
+            sharedStoreLock.withLock { _sharedConfigStore = store }
+        }
+
+        // periphery:ignore
+        /// **Test-only.** Installs `cache`/`telemetry` as the process-wide
+        /// shared instances, bypassing `sharedCache()`/`sharedTelemetry()`'s
+        /// real on-disk / network construction. Lets tests exercise
+        /// `reloadEngine()`'s live-config propagation (`peekSharedCache()`,
+        /// `peekSharedTelemetry()`) against disposable, temp-directory-backed
+        /// instances instead of the real App Group container.
+        static func installSharedSubsystemsForTesting(cache: CacheStore, telemetry: TelemetryClient) {
+            sharedSubsystemsLock.withLock {
+                _sharedCache = cache
+                _sharedTelemetry = telemetry
+            }
         }
     #endif
 
@@ -503,11 +546,17 @@ final class FPEEngineHost: EngineProviding {
     ///
     /// **Process-wide shared subsystems are NOT recreated on reload.**
     /// `CacheStore`, `TelemetryClient`, and `HTTPGateRegistry` are
-    /// process-wide singletons captured at first construction.  Config fields
-    /// that only affect those subsystems (e.g. `cache.maxBytes`,
-    /// `telemetry`) will not take effect until the FPE process restarts.
-    /// This is intentional: the shared-subsystem design eliminates N-pools,
-    /// and recreating them on every reload would re-introduce that hazard.
+    /// process-wide singletons captured at first construction — recreating
+    /// them on every reload would re-introduce the N-pools hazard the
+    /// shared-subsystem design eliminates. Config fields that only affect
+    /// those subsystems (`cache.maxBytes`, `telemetry`) instead take effect
+    /// through live setters (``CacheStore/setMaxBlobBytes(_:)``,
+    /// ``TelemetryClient/setOptOut(_:)``) called at the end of this method,
+    /// with no FPE process restart needed. For the telemetry opt-out
+    /// specifically, see `TelemetryClient`'s class-level doc for the precise
+    /// guarantee: no event enqueued at or after the opt-out is transmitted,
+    /// and an already-in-flight send is cancelled best-effort — not
+    /// instantaneously aborted.
     func reloadEngine() async {
         let (existing, startTask): (OfemEngine?, Task<Void, Never>?) = lock.withLock {
             let e = _engine
@@ -533,6 +582,25 @@ final class FPEEngineHost: EngineProviding {
             await e.shutdown()
             Self.log.info("FPEEngineHost[\(self.alias, privacy: .public)]: engine reloaded after config change")
         }
+
+        // Apply config fields that only affect the process-wide shared
+        // subsystems (arch-04). Only touch subsystems that ALREADY exist —
+        // `reloadEngine()` must not force-construct `CacheStore` (SQLite
+        // open) or `TelemetryClient` (AppInsightsSink init) on a host whose
+        // engine has never been built. When they are eventually constructed
+        // (first real `engine()` call), `sharedCache()`/`sharedTelemetry()`
+        // read the current on-disk config at that point, so a never-yet-built
+        // subsystem needs no live update here — it starts correct.
+        let telemetry = Self.peekSharedTelemetry()
+        let cache = Self.peekSharedCache()
+        guard telemetry != nil || cache != nil else { return }
+        // `sharedConfigStore()` is guaranteed already created at this point:
+        // both `sharedCache()` and `sharedTelemetry()` call it as their first
+        // step, so a non-nil peek above implies the config store already
+        // exists — this call hits the cheap fast path, no fresh TOML load.
+        guard let cfg = try? Self.sharedConfigStore().snapshot() else { return }
+        await telemetry?.setOptOut(!cfg.telemetry)
+        await cache?.setMaxBlobBytes(cfg.cache.maxBytes)
     }
 
     /// Shuts down the engine permanently.

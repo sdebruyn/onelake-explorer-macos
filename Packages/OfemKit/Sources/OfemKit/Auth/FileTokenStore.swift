@@ -44,6 +44,21 @@ import os.log
 /// `FileTokenStoreCacheDelegate` bridges these async methods back to the
 /// synchronous MSAL delegate calls via `DispatchSemaphore` on MSAL's own
 /// internal (non-cooperative) thread.
+///
+/// **Lock acquisition order — in-process mutex before fcntl (F12)**:
+/// `fcntl` record locks are owned by the *process*, not the file
+/// descriptor — a second `F_SETLKW` from the same process on a file it
+/// already holds succeeds immediately, and `close()` on *any* fd for that
+/// file drops *every* lock the process holds on it. If two same-process
+/// writers both "acquired" the fcntl lock and only serialised via
+/// `serialQueue` afterwards, the first writer's `close(fd)` would silently
+/// release the lock for the whole process while the second writer was
+/// still mid-write, leaving that write unprotected against the peer
+/// process. To prevent this, `atomicUpdate`, `write`, and `delete` each
+/// acquire a per-alias in-process async mutex (``AsyncPathMutex``) *before*
+/// calling `acquireAliasLockAsync`, so at most one in-process caller ever
+/// holds an open lock fd for a given alias at a time. See
+/// ``AsyncPathMutex`` for the full explanation.
 public final class FileTokenStore: Sendable {
     private let root: URL
 
@@ -123,58 +138,78 @@ public final class FileTokenStore: Sendable {
     /// - Throws: ``FileTokenStoreError`` variants on I/O failures.
     public func atomicUpdate(alias: String, transform: (Data) throws -> Data?) async throws {
         let dest = tokenURL(for: alias)
+        let mutexKey = aliasMutexKey(alias: alias)
 
-        // Acquire the cross-process lock asynchronously (F_SETLKW on dedicated thread).
-        let lockFD = try await acquireAliasLockAsync(alias: alias)
-        defer { releaseAliasLock(lockFD) }
+        // F12: serialise in-process callers BEFORE acquiring the
+        // cross-process fcntl lock — see `AsyncPathMutex` for why the
+        // ordering here is load-bearing. The whole fcntl-acquire → I/O →
+        // fcntl-release sequence below is captured into `outcome` so that
+        // exactly one `release(path:)` call is made regardless of which
+        // path (success or throw) produced it — releasing twice for a
+        // single `acquire` would hand the turn to a waiter prematurely.
+        await AsyncPathMutex.shared.acquire(path: mutexKey)
+        let outcome: Result<Void, Error>
+        do {
+            // Acquire the cross-process lock asynchronously (F_SETLKW on dedicated thread).
+            let lockFD = try await acquireAliasLockAsync(alias: alias)
+            defer { releaseAliasLock(lockFD) }
 
-        // Intra-process serialisation: the per-path serial queue ensures
-        // at most one write is in flight per process for this tokens dir.
-        var outerError: Error?
-        serialQueue.sync {
-            do {
-                // Read existing bytes (empty Data if none).
-                let existing: Data
+            // Intra-process serialisation: the per-path serial queue ensures
+            // at most one write is in flight per process for this tokens dir.
+            var outerError: Error?
+            serialQueue.sync {
                 do {
-                    existing = try Data(contentsOf: dest)
-                } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-                    existing = Data()
-                } catch {
-                    throw FileTokenStoreError.readFailed(alias, error)
-                }
+                    // Read existing bytes (empty Data if none).
+                    let existing: Data
+                    do {
+                        existing = try Data(contentsOf: dest)
+                    } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                        existing = Data()
+                    } catch {
+                        throw FileTokenStoreError.readFailed(alias, error)
+                    }
 
-                // Apply the transform.
-                let newData: Data? = try transform(existing)
-                guard let data = newData, !data.isEmpty else { return }
+                    // Apply the transform.
+                    let newData: Data? = try transform(existing)
+                    guard let data = newData, !data.isEmpty else { return }
 
-                // Write atomically (tmp + rename).
-                let tmpURL = root.appending(
-                    path: ".tmp-\(ProcessInfo.processInfo.globallyUniqueString).bin",
-                    directoryHint: .notDirectory
-                )
-                let fm = FileManager.default
+                    // Write atomically (tmp + rename).
+                    let tmpURL = root.appending(
+                        path: ".tmp-\(ProcessInfo.processInfo.globallyUniqueString).bin",
+                        directoryHint: .notDirectory
+                    )
+                    let fm = FileManager.default
 
-                do { try data.write(to: tmpURL) } catch {
-                    throw FileTokenStoreError.writeFailed(alias, error)
-                }
-                do {
-                    try fm.setAttributes([.posixPermissions: 0o600],
-                                         ofItemAtPath: tmpURL.path(percentEncoded: false))
+                    do { try data.write(to: tmpURL) } catch {
+                        throw FileTokenStoreError.writeFailed(alias, error)
+                    }
+                    do {
+                        try fm.setAttributes([.posixPermissions: 0o600],
+                                             ofItemAtPath: tmpURL.path(percentEncoded: false))
+                    } catch {
+                        try? fm.removeItem(at: tmpURL)
+                        throw FileTokenStoreError.chmodFailed(alias, error)
+                    }
+                    do {
+                        _ = try fm.replaceItemAt(dest, withItemAt: tmpURL)
+                    } catch {
+                        try? fm.removeItem(at: tmpURL)
+                        throw FileTokenStoreError.renameFailed(alias, error)
+                    }
                 } catch {
-                    try? fm.removeItem(at: tmpURL)
-                    throw FileTokenStoreError.chmodFailed(alias, error)
+                    outerError = error
                 }
-                do {
-                    _ = try fm.replaceItemAt(dest, withItemAt: tmpURL)
-                } catch {
-                    try? fm.removeItem(at: tmpURL)
-                    throw FileTokenStoreError.renameFailed(alias, error)
-                }
-            } catch {
-                outerError = error
             }
+            if let e = outerError {
+                outcome = .failure(e)
+            } else {
+                outcome = .success(())
+            }
+        } catch {
+            outcome = .failure(error)
         }
-        if let e = outerError { throw e }
+        await AsyncPathMutex.shared.release(path: mutexKey)
+        try outcome.get()
     }
 
     /// Reads the opaque byte blob previously stored for `alias`.
@@ -216,49 +251,66 @@ public final class FileTokenStore: Sendable {
         }
 
         let dest = tokenURL(for: alias)
+        let mutexKey = aliasMutexKey(alias: alias)
 
-        // Acquire the cross-process lock asynchronously (F_SETLKW on dedicated thread).
-        let lockFD = try await acquireAliasLockAsync(alias: alias)
-        defer { releaseAliasLock(lockFD) }
+        // F12: serialise in-process callers BEFORE acquiring the
+        // cross-process fcntl lock — see `AsyncPathMutex` for why the
+        // ordering here is load-bearing. `outcome` guarantees exactly one
+        // `release(path:)` call regardless of success or failure.
+        await AsyncPathMutex.shared.acquire(path: mutexKey)
+        let outcome: Result<Void, Error>
+        do {
+            // Acquire the cross-process lock asynchronously (F_SETLKW on dedicated thread).
+            let lockFD = try await acquireAliasLockAsync(alias: alias)
+            defer { releaseAliasLock(lockFD) }
 
-        // Intra-process serialisation: the per-path serial queue ensures
-        // at most one write is in flight per process for this tokens dir.
-        var writeError: Error?
-        serialQueue.sync {
-            do {
-                let tmpURL = root.appending(
-                    path: ".tmp-\(ProcessInfo.processInfo.globallyUniqueString).bin",
-                    directoryHint: .notDirectory
-                )
-                let fm = FileManager.default
-
+            // Intra-process serialisation: the per-path serial queue ensures
+            // at most one write is in flight per process for this tokens dir.
+            var writeError: Error?
+            serialQueue.sync {
                 do {
-                    try data.write(to: tmpURL)
-                } catch {
-                    throw FileTokenStoreError.writeFailed(alias, error)
-                }
-
-                do {
-                    try fm.setAttributes(
-                        [.posixPermissions: 0o600],
-                        ofItemAtPath: tmpURL.path(percentEncoded: false)
+                    let tmpURL = root.appending(
+                        path: ".tmp-\(ProcessInfo.processInfo.globallyUniqueString).bin",
+                        directoryHint: .notDirectory
                     )
-                } catch {
-                    try? fm.removeItem(at: tmpURL)
-                    throw FileTokenStoreError.chmodFailed(alias, error)
-                }
+                    let fm = FileManager.default
 
-                do {
-                    _ = try fm.replaceItemAt(dest, withItemAt: tmpURL)
+                    do {
+                        try data.write(to: tmpURL)
+                    } catch {
+                        throw FileTokenStoreError.writeFailed(alias, error)
+                    }
+
+                    do {
+                        try fm.setAttributes(
+                            [.posixPermissions: 0o600],
+                            ofItemAtPath: tmpURL.path(percentEncoded: false)
+                        )
+                    } catch {
+                        try? fm.removeItem(at: tmpURL)
+                        throw FileTokenStoreError.chmodFailed(alias, error)
+                    }
+
+                    do {
+                        _ = try fm.replaceItemAt(dest, withItemAt: tmpURL)
+                    } catch {
+                        try? fm.removeItem(at: tmpURL)
+                        throw FileTokenStoreError.renameFailed(alias, error)
+                    }
                 } catch {
-                    try? fm.removeItem(at: tmpURL)
-                    throw FileTokenStoreError.renameFailed(alias, error)
+                    writeError = error
                 }
-            } catch {
-                writeError = error
             }
+            if let e = writeError {
+                outcome = .failure(e)
+            } else {
+                outcome = .success(())
+            }
+        } catch {
+            outcome = .failure(error)
         }
-        if let e = writeError { throw e }
+        await AsyncPathMutex.shared.release(path: mutexKey)
+        try outcome.get()
     }
 
     /// Removes the stored entry for `alias`. Deleting a missing entry is a
@@ -279,26 +331,43 @@ public final class FileTokenStore: Sendable {
     ///   I/O errors.
     public func delete(alias: String) async throws {
         let url = tokenURL(for: alias)
+        let mutexKey = aliasMutexKey(alias: alias)
 
-        // Acquire the cross-process lock asynchronously (F_SETLKW on dedicated thread).
-        let lockFD = try await acquireAliasLockAsync(alias: alias)
-        defer { releaseAliasLock(lockFD) }
+        // F12: serialise in-process callers BEFORE acquiring the
+        // cross-process fcntl lock — see `AsyncPathMutex` for why the
+        // ordering here is load-bearing. `outcome` guarantees exactly one
+        // `release(path:)` call regardless of success or failure.
+        await AsyncPathMutex.shared.acquire(path: mutexKey)
+        let outcome: Result<Void, Error>
+        do {
+            // Acquire the cross-process lock asynchronously (F_SETLKW on dedicated thread).
+            let lockFD = try await acquireAliasLockAsync(alias: alias)
+            defer { releaseAliasLock(lockFD) }
 
-        var deleteError: Error?
-        serialQueue.sync {
-            do {
+            var deleteError: Error?
+            serialQueue.sync {
                 do {
-                    try FileManager.default.removeItem(at: url)
-                } catch let error as CocoaError where error.code == .fileNoSuchFile {
-                    // Missing entry — no-op.
+                    do {
+                        try FileManager.default.removeItem(at: url)
+                    } catch let error as CocoaError where error.code == .fileNoSuchFile {
+                        // Missing entry — no-op.
+                    } catch {
+                        throw FileTokenStoreError.deleteFailed(alias, error)
+                    }
                 } catch {
-                    throw FileTokenStoreError.deleteFailed(alias, error)
+                    deleteError = error
                 }
-            } catch {
-                deleteError = error
             }
+            if let e = deleteError {
+                outcome = .failure(e)
+            } else {
+                outcome = .success(())
+            }
+        } catch {
+            outcome = .failure(error)
         }
-        if let e = deleteError { throw e }
+        await AsyncPathMutex.shared.release(path: mutexKey)
+        try outcome.get()
     }
 
     // MARK: - Cross-process alias lock
@@ -309,6 +378,15 @@ public final class FileTokenStore: Sendable {
     /// Returns the URL of the per-alias lock sidecar file.
     private func aliasLockURL(alias: String) -> URL {
         root.appending(path: "\(Self.hexStem(alias: alias)).lock", directoryHint: .notDirectory)
+    }
+
+    /// Returns the canonical ``AsyncPathMutex`` key for `alias` — the
+    /// resolved path of the same `.lock` sidecar file that
+    /// `acquireAliasLockAsync` opens (F12). Using this as the mutex key
+    /// ensures the in-process mutex and the cross-process fcntl lock always
+    /// agree on which resource they're protecting.
+    private func aliasMutexKey(alias: String) -> String {
+        aliasLockURL(alias: alias).resolvingSymlinksInPath().path(percentEncoded: false)
     }
 
     /// Acquires an exclusive POSIX advisory `fcntl` record lock on the

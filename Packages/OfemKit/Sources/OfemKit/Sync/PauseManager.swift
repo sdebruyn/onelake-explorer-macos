@@ -119,7 +119,7 @@ actor PauseManager {
             workspaceID: workspaceID,
             state: .paused,
             reason: "capacity_paused",
-            detectedAtNs: Int64(now.timeIntervalSince1970 * 1_000_000_000)
+            detectedAtNs: dateToNs(now)
         )
         do {
             try await cache.setWorkspaceStatus(status)
@@ -191,8 +191,8 @@ actor PauseManager {
                 accountAlias: alias,
                 workspaceID: workspaceID,
                 state: .active,
-                detectedAtNs: Int64(now.timeIntervalSince1970 * 1_000_000_000),
-                probedAtNs: Int64(now.timeIntervalSince1970 * 1_000_000_000)
+                detectedAtNs: dateToNs(now),
+                probedAtNs: dateToNs(now)
             )
             try? await cache.setWorkspaceStatus(recovered)
             Self.log.info("PauseManager: workspace recovered alias=\(alias, privacy: .public) ws=\(workspaceID, privacy: .public)")
@@ -205,7 +205,7 @@ actor PauseManager {
                 state: .paused,
                 reason: current.reason,
                 detectedAtNs: current.detectedAtNs,
-                probedAtNs: Int64(now.timeIntervalSince1970 * 1_000_000_000)
+                probedAtNs: dateToNs(now)
             )
             try? await cache.setWorkspaceStatus(stillPaused)
             return false

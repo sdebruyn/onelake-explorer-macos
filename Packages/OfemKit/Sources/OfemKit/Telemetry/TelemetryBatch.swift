@@ -17,8 +17,11 @@ actor TelemetryBatch {
 
     // MARK: - Init
 
+    /// `maxSize` is clamped to at least `1` so a misconfigured (zero or
+    /// negative) value can never make `enqueue` call `removeFirst()` on an
+    /// empty buffer.
     init(maxSize: Int) {
-        self.maxSize = maxSize
+        self.maxSize = max(1, maxSize)
     }
 
     // MARK: - Enqueue

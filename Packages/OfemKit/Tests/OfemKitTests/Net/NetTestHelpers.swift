@@ -41,6 +41,17 @@ final class MockURLProtocol: URLProtocol {
         }
     }
 
+    /// A request observed by a stub queue, recorded in arrival order.
+    ///
+    /// Lets tests assert on the exact sequence of calls a client made (e.g.
+    /// that an upload created a staging path rather than the live
+    /// destination) without teaching `StubResponse` anything about it.
+    struct RecordedRequest {
+        let method: String
+        let url: String
+        let headers: [String: String]
+    }
+
     // MARK: - Per-queue registry
 
     private static let lock = NSLock()
@@ -48,15 +59,28 @@ final class MockURLProtocol: URLProtocol {
     static let queueIDHeader = "X-Mock-Queue-ID"
     // nonisolated(unsafe): serialised by `lock`.
     private nonisolated(unsafe) static var _queues: [String: [StubResponse]] = [:]
+    // nonisolated(unsafe): serialised by `lock`.
+    private nonisolated(unsafe) static var _recorded: [String: [RecordedRequest]] = [:]
 
     /// Registers a stub queue for the given identifier.
     static func registerQueue(id: String, stubs: [StubResponse]) {
-        lock.withLock { _queues[id] = stubs }
+        lock.withLock {
+            _queues[id] = stubs
+            _recorded[id] = []
+        }
     }
 
     /// Removes a stub queue (call in `defer` to clean up after a test).
     static func clearQueue(id: String) {
-        lock.withLock { _ = _queues.removeValue(forKey: id) }
+        lock.withLock {
+            _ = _queues.removeValue(forKey: id)
+            _ = _recorded.removeValue(forKey: id)
+        }
+    }
+
+    /// Returns every request this queue has received so far, in arrival order.
+    static func recordedRequests(id: String) -> [RecordedRequest] {
+        lock.withLock { _recorded[id] ?? [] }
     }
 
     /// Legacy global queue — used by tests that do not need per-session isolation.
@@ -81,6 +105,12 @@ final class MockURLProtocol: URLProtocol {
     override func startLoading() {
         let queueID = request.value(forHTTPHeaderField: Self.queueIDHeader) ?? "global"
         let stub = Self.lock.withLock { () -> StubResponse? in
+            let recorded = RecordedRequest(
+                method: request.httpMethod ?? "GET",
+                url: request.url?.absoluteString ?? "",
+                headers: request.allHTTPHeaderFields ?? [:]
+            )
+            Self._recorded[queueID, default: []].append(recorded)
             guard var q = Self._queues[queueID], !q.isEmpty else { return nil }
             let first = q.removeFirst()
             Self._queues[queueID] = q
@@ -151,7 +181,11 @@ func makeMockSession(
 }
 
 /// Request adapter that stamps the `X-Mock-Queue-ID` header on every request.
-private struct QueueIDAdapter: RequestAdapter {
+///
+/// Internal (not `private`) so tests that need a custom `Interceptor` (e.g. to
+/// exercise a specific `RequestRetrier` chain) can reuse it instead of
+/// duplicating queue-routing logic.
+struct QueueIDAdapter: RequestAdapter {
     let queueID: String
     func adapt(
         _ urlRequest: URLRequest,
