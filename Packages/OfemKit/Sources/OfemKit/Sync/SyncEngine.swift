@@ -506,7 +506,122 @@ public actor SyncEngine {
 
     /// Unconditionally fetches folder contents from OneLake and reconciles the
     /// local cache.
+    ///
+    /// The work runs as six ordered phases whose sequence is load-bearing and
+    /// must be preserved:
+    ///
+    /// 1. ``fetchRemoteChildren(key:)`` — pause/offline-guarded listing plus the
+    ///    direct-child / macOS-metadata filter. Any throw here leaves the cache
+    ///    untouched, so a paused or offline folder is never torn on a partial
+    ///    result.
+    /// 2. ``resolveFolderItemType(key:)`` — the Fabric item type stamped on rows.
+    /// 3. ``buildUpsertBatch(key:remoteChildren:cachedByPath:folderItemType:nowNs:)``
+    ///    — the conditional-upsert core (pure).
+    /// 4. ``harvestSubtreeEtags(key:remoteChildren:cachedByPath:upsertBatch:)`` —
+    ///    keeps each directory child's #380 skip-gate token current WITHOUT a
+    ///    `synced_at_ns` bump.
+    /// 5. ``buildDeleteBatch(key:remoteChildren:cachedByPath:)`` (pure) — tombstones
+    ///    cached children absent from the FULL remote listing (never from the
+    ///    upsert batch, which deliberately omits unchanged-but-present children).
+    /// 6. ``stampParentRow(key:diff:folderItemType:nowNs:)`` — the conditional
+    ///    parent freshness marker.
     public func refreshFolder(key: CacheKey) async throws -> Diff {
+        // Phase 1: pause/offline-guarded listing. Rethrows before any cache
+        // mutation, so a paused/offline folder leaves the cache intact.
+        let remoteChildren = try await fetchRemoteChildren(key: key)
+
+        // Capture the reconcile timestamps once the (now filtered) listing is in
+        // hand. Every row written this pass shares this syncedAtNs, and
+        // elapsed_ms is measured from here. (The pre-refactor code captured
+        // `now` a few microseconds earlier — before the child filter — so the
+        // logged elapsed_ms no longer includes that filter span; immaterial, and
+        // it affects the debug log only.)
+        let nowNs = currentNowNs()
+        let now = Date()
+
+        // Phase 2: resolve the Fabric item type for capability computation.
+        let folderItemType = await resolveFolderItemType(key: key)
+
+        // Load existing cached children once (sync-05: surface the error — a
+        // failed children read could otherwise lead to deleting all cached rows
+        // on the next reconcile, which is worse than throwing here).
+        let cachedByPath = Self.indexByPath(try await cache.children(of: key))
+
+        var diff = Diff()
+
+        // Phase 3: build the conditional upsert batch (pure). Only new and
+        // actually-changed rows are written back; unchanged rows are left out so
+        // their syncedAtNs is not bumped — bumping it on every poll would shift
+        // the working-set delta baseline forward and produce phantom deltas.
+        let (upsertBatch, added, updated) = Self.buildUpsertBatch(
+            key: key,
+            remoteChildren: remoteChildren,
+            cachedByPath: cachedByPath,
+            folderItemType: folderItemType,
+            nowNs: nowNs
+        )
+        diff.added += added
+        diff.updated += updated
+        await batchUpsert(upsertBatch, context: "refreshFolder upsert")
+
+        // Phase 4: #380 subtree-etag harvest (only updateSubtreeEtag, never a
+        // synced_at_ns bump).
+        await harvestSubtreeEtags(
+            key: key,
+            remoteChildren: remoteChildren,
+            cachedByPath: cachedByPath,
+            upsertBatch: upsertBatch
+        )
+
+        // Phase 5: delete cached children that disappeared remotely, in one
+        // batch. The reference set is the FULL remote listing (`remoteChildren`),
+        // NEVER the upsert batch — a child skipped from the batch because it is
+        // unchanged is still present remotely and must not be tombstoned. Each
+        // removed row (and any descendants of a vanished directory) is tombstoned
+        // so enumerateChanges delivers the removal incrementally.
+        let deleteBatch = Self.buildDeleteBatch(
+            key: key,
+            remoteChildren: remoteChildren,
+            cachedByPath: cachedByPath
+        )
+        diff.removed += deleteBatch.count
+        await batchDelete(deleteBatch, recordTombstones: true, context: "refreshFolder delete")
+
+        // Phase 6: stamp the parent freshness-marker row (conditionally).
+        await stampParentRow(key: key, diff: diff, folderItemType: folderItemType, nowNs: nowNs)
+
+        if diff.total > 0 {
+            await track(TelemetryEvent(
+                name: "sync_pulled",
+                accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
+                itemsChanged: diff.total
+            ))
+        }
+        logger.debug("folder refreshed",
+                     metadata: [
+                         "account": key.accountAlias,
+                         "workspace": key.workspaceID,
+                         "item": key.itemID,
+                         "path": key.path,
+                         "added": "\(diff.added)",
+                         "updated": "\(diff.updated)",
+                         "removed": "\(diff.removed)",
+                         "elapsed_ms": "\(elapsedMs(since: now))",
+                     ])
+        return diff
+    }
+
+    // MARK: - refreshFolder phases
+
+    /// Phase 1 of ``refreshFolder(key:)``: lists the folder's remote children and
+    /// returns them keyed by item-relative path, filtered to direct, non-metadata
+    /// entries.
+    ///
+    /// The pause/offline guards are preserved exactly: a paused workspace throws
+    /// ``SyncError/workspacePaused`` and an offline `listPath` rethrows the
+    /// underlying error. Both happen BEFORE the caller performs any cache
+    /// mutation. INVARIANT: any throw from here leaves the cache untouched.
+    private func fetchRemoteChildren(key: CacheKey) async throws -> [String: PathEntry] {
         try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)
 
         let result: ListResult
@@ -529,25 +644,9 @@ public actor SyncEngine {
         }
         await offlineTracker.observe(nil)
 
-        let nowNs = currentNowNs()
-        let now = Date()
-
-        // Resolve the Fabric item type for this folder so every path row can
-        // carry it for capability computation. The discovery row written by
-        // listItems uses VirtualIDs.itemID as its itemID and stores the actual
-        // item GUID as `path`. An empty string means "unknown / not yet
-        // enumerated" and is treated as read-only by computeCapabilities.
-        let itemTypeKey = CacheKey(
-            accountAlias: key.accountAlias,
-            workspaceID: key.workspaceID,
-            itemID: VirtualIDs.itemID,
-            path: key.itemID
-        )
-        let folderItemType = (try? await cache.fetch(key: itemTypeKey))?.itemType ?? ""
-
-        // Build remote children set, filtering macOS metadata artefacts at emit
-        // time so that remote .DS_Store / ._* files never appear in listings and
-        // cannot resurrect after a local-only delete.
+        // Build the remote children set, filtering macOS metadata artefacts at
+        // emit time so that remote .DS_Store / ._* files never appear in listings
+        // and cannot resurrect after a local-only delete.
         //
         // onelake-12: listPath() returns PathEntry.name values that are already
         // item-relative (convertRawEntry stripped the "<itemGUID>/" prefix before
@@ -565,89 +664,44 @@ public actor SyncEngine {
             else { continue }
             remoteChildren[rel] = entry
         }
+        return remoteChildren
+    }
 
-        // Load existing cached children (sync-05: surface the error — a failed
-        // children read could lead to deleting all cached rows on the next
-        // reconcile, which is worse than throwing here).
-        let cachedChildren = try await cache.children(of: key)
-        var cachedByPath: [String: MetadataRecord] = [:]
-        for c in cachedChildren {
-            cachedByPath[c.path] = c
-        }
+    /// Phase 2 of ``refreshFolder(key:)``: resolves the Fabric item type for this
+    /// folder so every path row can carry it for capability computation.
+    ///
+    /// The discovery row written by `listItems` uses ``VirtualIDs/itemID`` as its
+    /// itemID and stores the actual item GUID as `path`. An empty string means
+    /// "unknown / not yet enumerated" and is treated as read-only by
+    /// `computeCapabilities`.
+    private func resolveFolderItemType(key: CacheKey) async -> String {
+        let itemTypeKey = CacheKey(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: VirtualIDs.itemID,
+            path: key.itemID
+        )
+        return (try? await cache.fetch(key: itemTypeKey))?.itemType ?? ""
+    }
 
-        var diff = Diff()
-
-        // Build the upsert batch for remote children.
-        //
-        // Upsert is CONDITIONAL: only new entries (cur == nil) and actually
-        // changed entries (entryChanged) are written back to the cache. Unchanged
-        // entries are skipped so their syncedAtNs is not bumped — bumping it for
-        // every poll would shift the working-set delta baseline forward even when
-        // nothing changed, producing phantom enumerateChanges deltas.
-        //
-        // IMPORTANT: the deletion reconcile below uses `remoteChildren` (the full
-        // fresh listing) as its reference set, not `upsertBatch`. A child that was
-        // skipped here because it is unchanged is still "present remotely" and
-        // must NOT be tombstoned. Rows that genuinely disappeared are removed via
-        // batchDelete(recordTombstones: true), which writes a deletion tombstone
-        // per removed path so the removal reaches Finder incrementally.
-        var candidates: [MetadataRecord] = []
-        candidates.reserveCapacity(remoteChildren.count)
-        for (relPath, entry) in remoteChildren {
-            let name = Enumerator.baseName(relPath)
-            let cur = cachedByPath[relPath]
-            var next = MetadataRecord(
-                accountAlias: key.accountAlias,
-                workspaceID: key.workspaceID,
-                itemID: key.itemID,
-                path: relPath,
-                parentPath: key.path,
-                name: name,
-                isDir: entry.isDirectory,
-                contentLength: entry.contentLength,
-                etag: entry.eTag,
-                lastModifiedNs: dateToNs(entry.lastModified) ?? 0,
-                lastAccessedNs: cur?.lastAccessedNs ?? nowNs,
-                syncedAtNs: nowNs,
-                childrenSyncedAtNs: cur?.childrenSyncedAtNs ?? 0,
-                itemType: folderItemType,
-                createdNs: dateToNs(entry.creationDate) ?? cur?.createdNs ?? 0,
-                // #380 skip-gate harvest: a directory child's etag is its subtree
-                // token (advances on any descendant write). Stamp it on the child
-                // container's own row so the next refreshMaterialized can compare
-                // it. Files carry "". When this row IS rewritten below (e.g. its
-                // itemType changed) the freshest harvested value is persisted;
-                // when it is NOT rewritten — the common case, since entryChanged
-                // ignores directory etag (#379) — the targeted updateSubtreeEtag
-                // pass after the batch keeps the token current without a
-                // synced_at_ns bump.
-                subtreeEtag: entry.isDirectory ? entry.eTag : ""
-            )
-            // Carry blob linkage when etag still matches.
-            if let c = cur, !c.etag.isEmpty, c.etag == entry.eTag {
-                next.blobSHA256 = c.blobSHA256
-                next.blobSize = c.blobSize
-                next.contentType = c.contentType
-            }
-            if next.lastAccessedNs == 0 { next.lastAccessedNs = nowNs }
-            candidates.append(next)
-        }
-        // Classify via the shared new-or-changed predicate: only new (cur == nil)
-        // and actually-changed (entryChanged) rows are written back; unchanged
-        // rows are left out so their syncedAtNs is not bumped. diff starts at
-        // zero, so `+=` here is the count.
-        let (upsertBatch, added, updated) = Self.classifyUpserts(candidates: candidates, cachedByPath: cachedByPath)
-        diff.added += added
-        diff.updated += updated
-        await batchUpsert(upsertBatch, context: "refreshFolder upsert")
-
-        // #380 subtree-etag harvest: keep each directory child's skip-gate token
-        // current WITHOUT bumping synced_at_ns. A dir child that exists but was
-        // not re-upserted (the common case — entryChanged ignores directory etag
-        // per #379) would otherwise freeze its subtree_etag at first-sight, so
-        // the skip-gate would never see the token advance. Stamp only the rows
-        // whose harvested etag actually differs from the cached value; rows in
-        // upsertBatch already carry the fresh value, so skip those.
+    /// Phase 4 of ``refreshFolder(key:)``: keeps each directory child's #380
+    /// skip-gate token (`subtree_etag`) current WITHOUT bumping `synced_at_ns`.
+    ///
+    /// A dir child that exists but was not re-upserted (the common case —
+    /// `entryChanged` ignores directory etag per #379) would otherwise freeze its
+    /// `subtree_etag` at first-sight, so the skip-gate would never see the token
+    /// advance. Rows already in `upsertBatch` carry the fresh value, so they are
+    /// skipped; only rows whose harvested etag actually differs from the cached
+    /// value are stamped via the targeted
+    /// ``CacheStore/updateSubtreeEtag(key:etag:)``, which never touches
+    /// `synced_at_ns` (pinned by the "writing subtreeEtag produces zero
+    /// working-set delta" test).
+    private func harvestSubtreeEtags(
+        key: CacheKey,
+        remoteChildren: [String: PathEntry],
+        cachedByPath: [String: MetadataRecord],
+        upsertBatch: [MetadataRecord]
+    ) async {
         let upsertedPaths = Set(upsertBatch.map(\.path))
         for (relPath, entry) in remoteChildren where entry.isDirectory {
             guard !upsertedPaths.contains(relPath) else { continue }
@@ -665,92 +719,62 @@ public actor SyncEngine {
                 Self.log.warning("refreshFolder: updateSubtreeEtag failed err=\(error, privacy: .public)")
             }
         }
+    }
 
-        // Delete cached children that disappeared remotely in one batch. Each
-        // removed row (and any descendants of a vanished directory) is tombstoned
-        // by batchDelete so enumerateChanges delivers the removal incrementally.
-        var deleteBatch: [CacheKey] = []
-        for (relPath, _) in cachedByPath {
-            guard remoteChildren[relPath] == nil else { continue }
-            deleteBatch.append(CacheKey(
-                accountAlias: key.accountAlias,
-                workspaceID: key.workspaceID,
-                itemID: key.itemID,
-                path: relPath
-            ))
-            diff.removed += 1
-        }
-        await batchDelete(deleteBatch, recordTombstones: true, context: "refreshFolder delete")
-
-        // Stamp parent row.
-        //
-        // Only write the parent row when something actually changed (or the row
-        // does not exist yet). An unconditional re-upsert on every poll bumps
-        // syncedAtNs even when diff.total == 0, which makes itemsChangedAfter
-        // return the parent row on every poll — producing phantom working-set
-        // deltas (fpe-18).
-        //
-        // Name for the item-root row (path == ""): baseName("") == "", which
-        // would produce an empty-filename cache row — a landmine even though
-        // DomainItem.from(record:) now rejects it. Use the itemID as a
-        // non-displayable but non-empty sentinel instead. This row is an internal
-        // freshness marker, never emitted as a delta item (fpe-18).
+    /// Phase 6 of ``refreshFolder(key:)``: writes the parent freshness-marker row,
+    /// but only when something actually changed (or the row does not yet exist).
+    ///
+    /// An unconditional re-upsert on every poll bumps `synced_at_ns` even when
+    /// `diff.total == 0`, which makes `itemsChangedAfter` return the parent row on
+    /// every poll — producing phantom working-set deltas (fpe-18).
+    ///
+    /// Name for the item-root row (path == ""): `baseName("") == ""`, which would
+    /// produce an empty-filename cache row — a landmine even though
+    /// `DomainItem.from(record:)` now rejects it. Use the itemID as a
+    /// non-displayable but non-empty sentinel instead. This row is an internal
+    /// freshness marker, never emitted as a delta item (fpe-18).
+    private func stampParentRow(
+        key: CacheKey,
+        diff: Diff,
+        folderItemType: String,
+        nowNs: Int64
+    ) async {
         let existingParent = try? await cache.fetch(key: key)
         let needsWrite = existingParent == nil
             || diff.total > 0
             || existingParent?.childrenSyncedAtNs == 0
             || existingParent?.itemType != folderItemType
-        if needsWrite {
-            let parentName: String
-            if let existing = existingParent, !existing.name.isEmpty {
-                parentName = existing.name
-            } else {
-                let computed = Enumerator.baseName(key.path)
-                parentName = computed.isEmpty ? key.itemID : computed
-            }
-            let existingParentLastAccessed = existingParent?.lastAccessedNs ?? nowNs
-            let parent = MetadataRecord(
-                accountAlias: key.accountAlias,
-                workspaceID: key.workspaceID,
-                itemID: key.itemID,
-                path: key.path,
-                parentPath: Enumerator.parentPath(key.path),
-                name: parentName,
-                isDir: true,
-                lastAccessedNs: existingParentLastAccessed == 0 ? nowNs : existingParentLastAccessed,
-                syncedAtNs: nowNs,
-                childrenSyncedAtNs: nowNs,
-                itemType: folderItemType,
-                // Carry the container's own subtree etag (harvested by ITS parent
-                // listing, #380) forward. A full re-upsert here must never reset
-                // it to "" — that would erase the skip-gate token a parent wave
-                // just stamped and make refreshMaterialized always re-list.
-                subtreeEtag: existingParent?.subtreeEtag ?? ""
-            )
-            do { try await cache.upsert(parent) } catch {
-                Self.log.warning("refreshFolder: upsert parent failed err=\(error, privacy: .public)")
-            }
-        }
+        guard needsWrite else { return }
 
-        if diff.total > 0 {
-            await track(TelemetryEvent(
-                name: "sync_pulled",
-                accountAliasHash: TelemetryRedaction.hashAlias(key.accountAlias),
-                itemsChanged: diff.total
-            ))
+        let parentName: String
+        if let existing = existingParent, !existing.name.isEmpty {
+            parentName = existing.name
+        } else {
+            let computed = Enumerator.baseName(key.path)
+            parentName = computed.isEmpty ? key.itemID : computed
         }
-        logger.debug("folder refreshed",
-                     metadata: [
-                         "account": key.accountAlias,
-                         "workspace": key.workspaceID,
-                         "item": key.itemID,
-                         "path": key.path,
-                         "added": "\(diff.added)",
-                         "updated": "\(diff.updated)",
-                         "removed": "\(diff.removed)",
-                         "elapsed_ms": "\(elapsedMs(since: now))",
-                     ])
-        return diff
+        let existingParentLastAccessed = existingParent?.lastAccessedNs ?? nowNs
+        let parent = MetadataRecord(
+            accountAlias: key.accountAlias,
+            workspaceID: key.workspaceID,
+            itemID: key.itemID,
+            path: key.path,
+            parentPath: Enumerator.parentPath(key.path),
+            name: parentName,
+            isDir: true,
+            lastAccessedNs: existingParentLastAccessed == 0 ? nowNs : existingParentLastAccessed,
+            syncedAtNs: nowNs,
+            childrenSyncedAtNs: nowNs,
+            itemType: folderItemType,
+            // Carry the container's own subtree etag (harvested by ITS parent
+            // listing, #380) forward. A full re-upsert here must never reset it to
+            // "" — that would erase the skip-gate token a parent wave just stamped
+            // and make refreshMaterialized always re-list.
+            subtreeEtag: existingParent?.subtreeEtag ?? ""
+        )
+        do { try await cache.upsert(parent) } catch {
+            Self.log.warning("refreshFolder: upsert parent failed err=\(error, privacy: .public)")
+        }
     }
 
     // MARK: - Materialized-set refresh
@@ -2034,6 +2058,115 @@ public actor SyncEngine {
             }
         }
         return (batch, added, updated)
+    }
+
+    /// Phase 3 of ``refreshFolder(key:)`` (pure): builds the conditional upsert
+    /// batch for `remoteChildren`, returning it plus the added/updated counts.
+    ///
+    /// A candidate row is materialised for every remote child (carrying forward
+    /// the cached blob linkage when the etag still matches, and the harvested
+    /// directory subtree etag on directory children), then
+    /// ``classifyUpserts(candidates:cachedByPath:)`` keeps only new
+    /// (`cur == nil`) and actually-changed
+    /// (``Enumerator/entryChanged(current:next:)``) rows. Unchanged rows are
+    /// dropped so their `syncedAtNs` is not bumped — bumping it on every poll
+    /// would shift the working-set delta baseline forward and produce a phantom
+    /// `didUpdate` for every unchanged entry.
+    ///
+    /// Pure and side-effect free: the orchestrator performs the `batchUpsert`.
+    static func buildUpsertBatch(
+        key: CacheKey,
+        remoteChildren: [String: PathEntry],
+        cachedByPath: [String: MetadataRecord],
+        folderItemType: String,
+        nowNs: Int64
+    ) -> (batch: [MetadataRecord], added: Int, updated: Int) {
+        var candidates: [MetadataRecord] = []
+        candidates.reserveCapacity(remoteChildren.count)
+
+        // `dateToNs` is overloaded by return type: the file-private
+        // `(Date?) -> Int64?` in this file (keeps `nil` for a nil / out-of-range
+        // date) and the global `CacheModels.dateToNs` `(Date?) -> Int64` (folds
+        // both to `0`). In this `static` context the bare name resolves to the
+        // global — which would reset `createdNs` to `0` on every row instead of
+        // carrying the cached value forward. DFS listings never return a
+        // creationDate, so `entry.creationDate` is always `nil`; the global's
+        // `nil -> 0` fold short-circuits the `?? cur?.createdNs` fallback and
+        // silently drops the creation time captured earlier via HEAD/GET (#371).
+        // Bind explicitly to the nil-preserving overload so that fallback keeps
+        // working (this also drops the non-optional `?? 0` warning below).
+        let toNs: (Date?) -> Int64? = dateToNs
+
+        for (relPath, entry) in remoteChildren {
+            let name = Enumerator.baseName(relPath)
+            let cur = cachedByPath[relPath]
+            var next = MetadataRecord(
+                accountAlias: key.accountAlias,
+                workspaceID: key.workspaceID,
+                itemID: key.itemID,
+                path: relPath,
+                parentPath: key.path,
+                name: name,
+                isDir: entry.isDirectory,
+                contentLength: entry.contentLength,
+                etag: entry.eTag,
+                lastModifiedNs: toNs(entry.lastModified) ?? 0,
+                lastAccessedNs: cur?.lastAccessedNs ?? nowNs,
+                syncedAtNs: nowNs,
+                childrenSyncedAtNs: cur?.childrenSyncedAtNs ?? 0,
+                itemType: folderItemType,
+                createdNs: toNs(entry.creationDate) ?? cur?.createdNs ?? 0,
+                // #380 skip-gate harvest: a directory child's etag is its subtree
+                // token (advances on any descendant write). Stamp it on the child
+                // container's own row so the next refreshMaterialized can compare
+                // it. Files carry "". When this row IS rewritten (e.g. its
+                // itemType changed) the freshest harvested value is persisted;
+                // when it is NOT — the common case, since entryChanged ignores
+                // directory etag (#379) — the targeted updateSubtreeEtag pass
+                // after the batch keeps the token current without a synced_at_ns
+                // bump.
+                subtreeEtag: entry.isDirectory ? entry.eTag : ""
+            )
+            // Carry blob linkage forward when the etag still matches.
+            if let c = cur, !c.etag.isEmpty, c.etag == entry.eTag {
+                next.blobSHA256 = c.blobSHA256
+                next.blobSize = c.blobSize
+                next.contentType = c.contentType
+            }
+            if next.lastAccessedNs == 0 { next.lastAccessedNs = nowNs }
+            candidates.append(next)
+        }
+        return classifyUpserts(candidates: candidates, cachedByPath: cachedByPath)
+    }
+
+    /// Phase 5 of ``refreshFolder(key:)`` (pure): returns the cache keys of
+    /// children that disappeared remotely — every cached child whose path is
+    /// absent from `remoteChildren`.
+    ///
+    /// CRITICAL INVARIANT: the reference set is `remoteChildren` (the full fresh
+    /// listing), NEVER the upsert batch. A child skipped from the upsert batch
+    /// because it is unchanged is still present remotely; deleting based on the
+    /// batch would tombstone every unchanged file (the F1 mass-spurious-delete
+    /// trap). Only genuinely vanished rows are returned here.
+    ///
+    /// Pure and side-effect free: the orchestrator performs the tombstoning
+    /// `batchDelete`. `diff.removed` is the returned count.
+    static func buildDeleteBatch(
+        key: CacheKey,
+        remoteChildren: [String: PathEntry],
+        cachedByPath: [String: MetadataRecord]
+    ) -> [CacheKey] {
+        var deleteBatch: [CacheKey] = []
+        for (relPath, _) in cachedByPath {
+            guard remoteChildren[relPath] == nil else { continue }
+            deleteBatch.append(CacheKey(
+                accountAlias: key.accountAlias,
+                workspaceID: key.workspaceID,
+                itemID: key.itemID,
+                path: relPath
+            ))
+        }
+        return deleteBatch
     }
 
     /// Deletes discovery `children` that are absent from `seen`, returning the

@@ -15,6 +15,7 @@
 //   - setConfig(key:value:reply:)     — write a single config field and notify FPE
 //   - clearCache(reply:)              — wipe all cached blobs
 //   - pollMaterialized(alias:reply:)  — refresh materialized containers for alias, return whether any changed
+//   - reloadEngine(alias:reply:)      — reload the engine for alias (e.g. after re-authentication)
 
 import Foundation
 
@@ -101,6 +102,28 @@ import Foundation
     ///   - reply: Called with `true` (delta) or `false` (no delta) on success,
     ///     or `false` + an `Error` when the engine is unavailable.
     func pollMaterialized(alias: String, reply: @escaping (Bool, Error?) -> Void)
+
+    // MARK: - Engine reload
+
+    /// Reloads the engine for `alias`.
+    ///
+    /// Shuts down the current engine and clears the FPE's internal
+    /// `needsSignIn` flag, so the next enumeration rebuilds the engine
+    /// lazily and picks up freshly cached tokens/config. Call this after a
+    /// successful interactive re-authentication.
+    ///
+    /// A first-class verb (xpc-11) — previously the host triggered a reload by
+    /// sending a no-op `setConfig(log.level, <current value>)`, relying on
+    /// `setConfig` always calling `reloadEngine()` as a side effect. That
+    /// coupling was fragile: a future "skip setConfig when the value is
+    /// unchanged" optimization would have silently broken post-reauth
+    /// recovery. This verb makes the intent explicit and independent of
+    /// `setConfig`'s implementation.
+    ///
+    /// - Parameters:
+    ///   - alias: Account alias identifying which engine to reload.
+    ///   - reply: Called with nil on success, or an error.
+    func reloadEngine(alias: String, reply: @escaping (Error?) -> Void)
 }
 
 // MARK: - Service name constant
@@ -116,4 +139,6 @@ public let ofemControlServiceName = "dev.debruyn.ofem.control"
 /// The FPE reports its version via `getProtocolVersion(reply:)`.
 /// The host compares this value to the FPE's report on every new connection;
 /// a mismatch is surfaced as a user-visible error.
-public let ofemControlProtocolVersion: Int = 3
+///
+/// Bumped to 4: added `reloadEngine(alias:reply:)` (xpc-11).
+public let ofemControlProtocolVersion: Int = 4
