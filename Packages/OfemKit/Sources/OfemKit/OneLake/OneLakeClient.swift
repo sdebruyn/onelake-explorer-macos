@@ -852,7 +852,10 @@ public final class OneLakeClient: Sendable {
     ///
     /// Injects the `x-ms-version` header and `Content-Length: 0` on bodyless
     /// mutating requests (onelake-07). Authentication, retry, and back-off are
-    /// handled transparently by the session's interceptor stack.
+    /// handled transparently by the session's interceptor stack. Request
+    /// execution and error mapping are shared with `FabricClient` via
+    /// ``executeDataRequest(sessionPool:alias:scope:method:url:headers:body:onFailure:mapError:)``
+    /// (http-02).
     @discardableResult
     private func doRequest(
         alias: String,
@@ -873,44 +876,16 @@ public final class OneLakeClient: Sendable {
         }
         extraHeaders?.forEach { headers.add(name: $0, value: $1) }
 
-        let session = await sessionPool.session(alias: alias, scope: .oneLake)
-        let httpMethod = HTTPMethod(rawValue: method)
-        do {
-            let req = session.request(url, method: httpMethod, headers: headers) { urlRequest in
-                urlRequest.httpBody = body
-            }
-            .validate()
-            // OneLake/ADLS Gen2 returns empty bodies on successful mutating calls
-            // (PUT create-directory/file, PATCH flush, DELETE) and on 0-byte
-            // reads (GET).  Allow empty bodies for all methods used by this
-            // client so Alamofire yields Data() rather than an error.
-            // .validate() above already rejects non-2xx.
-            let dataResponse = await req.serializingData(
-                emptyRequestMethods: [.get, .put, .patch, .delete, .post, .head]
-            ).response
-            switch dataResponse.result {
-            case let .success(data):
-                guard let httpResponse = dataResponse.response else {
-                    throw HTTPClientError.transport(URLError(.badServerResponse))
-                }
-                return (data, httpResponse)
-            case let .failure(afError):
-                let mapped = HTTPClientError(
-                    afError: afError,
-                    response: dataResponse.response,
-                    body: dataResponse.data,
-                    retryCount: req.retryCount
-                )
-                throw OneLakeError.from(mapped)
-            }
-        } catch let oneLakeError as OneLakeError {
-            throw oneLakeError
-        } catch let afError as AFError {
-            let mapped = HTTPClientError(afError: afError, response: nil, retryCount: 0)
-            throw OneLakeError.from(mapped)
-        } catch {
-            throw OneLakeError.from(error)
-        }
+        return try await executeDataRequest(
+            sessionPool: sessionPool,
+            alias: alias,
+            scope: .oneLake,
+            method: method,
+            url: url,
+            headers: headers,
+            body: body,
+            mapError: OneLakeError.from
+        )
     }
 
     /// Downloads a DFS resource to a `FileHandle` without buffering all bytes
