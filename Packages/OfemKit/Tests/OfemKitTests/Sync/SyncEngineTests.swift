@@ -163,6 +163,39 @@ struct SyncEngineTests {
         #expect(!paths.contains("._real.csv"))
     }
 
+    // MARK: - F11: OneLakeClient upload-staging files filtered at enumeration
+
+    @Test("refreshFolder does not surface OneLakeClient upload-staging entries")
+    func uploadStagingFilteredInEnumeration() async throws {
+        // A staging file (finding F11) can be caught mid-flight by a
+        // concurrent listing, or left behind entirely if the process is
+        // killed between a successful flush and the terminal rename. Either
+        // way it must never surface as an ordinary visible file — the same
+        // guarantee refreshFolder already gives .DS_Store / ._* junk via
+        // isMacOSMetadata.
+        let ol = MockOneLakeClient()
+        let fabric = MockFabricClient()
+        let (engine, store) = try makeEngine(onelake: ol, fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
+        let stagingName = "\(ofemUploadStagingPrefix)\(UUID().uuidString)-real.csv"
+        let listing = ListResult(entries: [
+            PathEntry(name: "real.csv", isDirectory: false, contentLength: 10, eTag: "e1", lastModified: Date(timeIntervalSince1970: 0)),
+            PathEntry(name: stagingName, isDirectory: false, contentLength: 10, eTag: "e2", lastModified: Date(timeIntervalSince1970: 0)),
+        ])
+        ol.listPathResults.append(.success(listing))
+
+        let diff = try await engine.refreshFolder(key: key)
+
+        // Only real.csv should be added; the staging entry must be filtered.
+        #expect(diff.added == 1)
+        let children = try await store.children(of: key)
+        let paths = children.map(\.name)
+        #expect(paths.contains("real.csv"))
+        #expect(!paths.contains(stagingName))
+    }
+
     // MARK: - sync-22: enumerate throws wrongItemKind for files
 
     @Test("enumerate() throws wrongItemKind when key is a file")
@@ -578,6 +611,32 @@ struct SyncEngineTests {
         }
         let status = try? await store.workspaceStatus(accountAlias: Self.alias, workspaceID: Self.wsID)
         #expect(status?.state == .paused)
+    }
+
+    // MARK: - F14: a replayed DELETE that 404s is treated as success
+
+    @Test("delete() treats a notFound error as success (replayed DELETE already committed)")
+    func deleteTreatsNotFoundAsSuccess() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Seed a cache row so we can assert it is cleared on the success path.
+        let key = Self.baseKey
+        try await store.upsert(MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: Self.path, parentPath: "Files", name: "data.csv", isDir: false
+        ))
+
+        // DELETE is retryable in SessionPool; if the delete already committed
+        // server-side and the ack was lost, the replay 404s. The row is gone
+        // either way, so this must not surface as delete_failed.
+        ol.deleteResults.append(.failure(OneLakeError.notFound))
+
+        try await engine.delete(key: key)
+
+        let cached = try? await store.fetch(key: key)
+        #expect(cached == nil)
     }
 
     // MARK: - macOS metadata: put and delete with .DS_Store / ._* paths

@@ -457,9 +457,14 @@ func nsToDate(_ ns: Int64) -> Date? {
 ///
 /// Out-of-range dates (e.g. `.distantPast`, `.distantFuture`) are clamped to `0`
 /// so that a container carrying `.distantPast` never causes an `Int64` overflow trap.
+///
+/// The upper bound is a strict `<`, not `<=`: `Double(Int64.max)` rounds up to
+/// exactly `2^63` (the nearest representable `Double`), one past `Int64.max`.
+/// Admitting that value would let `Int64(ns)` trap on dates right at the
+/// boundary (e.g. some far-future/year-2262 timestamps).
 func dateToNs(_ date: Date?) -> Int64 {
     guard let d = date else { return 0 }
     let ns = d.timeIntervalSince1970 * 1_000_000_000
-    guard ns >= Double(Int64.min), ns <= Double(Int64.max) else { return 0 }
+    guard ns >= Double(Int64.min), ns < Double(Int64.max) else { return 0 }
     return Int64(ns)
 }

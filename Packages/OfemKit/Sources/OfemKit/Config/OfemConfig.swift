@@ -31,6 +31,20 @@ import TOMLKit
 /// a process-wide serial ``DispatchQueue`` registry (keyed by canonical
 /// config-file path) serialises all `updateAndSave` calls for the same file
 /// within one process, while `fcntl` handles cross-process exclusion.
+///
+/// **Lock acquisition order — in-process mutex before fcntl (F12)**: the
+/// `DispatchQueue` above is only entered *after* `ConfigFileLock.acquire()`
+/// has already been granted. Because `fcntl` locks are per-process, a second
+/// same-process caller is granted the lock immediately too — and `close()`
+/// on *any* fd for that file drops *every* lock the process holds on it. If
+/// two same-process `updateAndSave` calls both "acquired" the fcntl lock
+/// this way, the first caller's `lock.release()` would silently drop the
+/// lock for the whole process while the second caller was still mid-write,
+/// leaving that write unprotected against the peer process. To prevent
+/// this, `updateAndSave` acquires a per-path in-process async mutex
+/// (``AsyncPathMutex``) *before* calling `ConfigFileLock.acquire()`, so at
+/// most one in-process caller ever holds an open lock fd for `config.toml`
+/// at a time. See ``AsyncPathMutex`` for the full explanation.
 public final class OfemConfigStore: Sendable {
     private let paths: OfemPaths
     /// Per-path process-wide serial queue (see ``sharedQueue(for:)``).
@@ -147,30 +161,74 @@ public final class OfemConfigStore: Sendable {
     public func updateAndSave(_ mutator: @escaping @Sendable (inout OfemConfig) throws -> Void) async throws -> OfemConfig {
         let paths = self.paths
         let queue = self.serialQueue
+        let mutexKey = Self.configMutexKey(paths: paths)
 
-        // Step 1: acquire the cross-process file lock.
-        // ConfigFileLock.acquire() suspends this Task (via a continuation +
-        // dedicated OS thread for F_SETLKW) — no GCD thread is blocked.
-        let lock = try await ConfigFileLock.acquire(paths: paths)
+        // F12: serialise in-process callers BEFORE acquiring the
+        // cross-process fcntl lock — see the type doc for why the ordering
+        // here is load-bearing. `outcome` guarantees exactly one
+        // `release(path:)` call regardless of success or failure —
+        // releasing twice for a single `acquire` would hand the turn to a
+        // waiter prematurely.
+        await AsyncPathMutex.shared.acquire(path: mutexKey)
+        let outcome: Result<OfemConfig, Error>
+        do {
+            // Step 1: acquire the cross-process file lock.
+            // ConfigFileLock.acquire() suspends this Task (via a continuation +
+            // dedicated OS thread for F_SETLKW) — no GCD thread is blocked.
+            let lock = try await ConfigFileLock.acquire(paths: paths)
 
-        // Step 2: hold the lock; run read-modify-write on the serial queue.
-        // queue.sync is fast (just I/O, no sleeping) so blocking this thread
-        // briefly is acceptable. The serial queue ensures intra-process
-        // callers don't interleave their own read-modify-write cycles.
-        return try await withCheckedThrowingContinuation { continuation in
-            queue.async {
-                defer { lock.release() }
-                do {
-                    var fresh = try Self.load(from: paths)
-                    try mutator(&fresh)
-                    try Self.save(fresh, to: paths)
-                    self.config = fresh
-                    continuation.resume(returning: fresh)
-                } catch {
-                    continuation.resume(throwing: error)
+            // Step 2: hold the lock; run read-modify-write on the serial queue.
+            // queue.sync is fast (just I/O, no sleeping) so blocking this thread
+            // briefly is acceptable. The serial queue ensures intra-process
+            // callers don't interleave their own read-modify-write cycles.
+            // NOTE: `lock.release()` is called explicitly on both branches
+            // below, immediately before `continuation.resume(...)` — NOT via
+            // `defer`. `continuation.resume()` only *schedules* the awaiting
+            // Task; it does not wait for the rest of this closure to finish.
+            // A `defer { lock.release() }` placed after `resume()` would race
+            // the resumed Task against this GCD thread: the resumed Task
+            // could reach `AsyncPathMutex.shared.release(path:)` below and
+            // free the mutex for a second in-process caller — which would
+            // then acquire the (per-process) fcntl lock immediately — before
+            // this thread's deferred `lock.release()` actually closes the
+            // fd, reintroducing the exact F12 clobber this mutex exists to
+            // prevent, just in a narrower window. Releasing the fcntl lock
+            // *before* resuming establishes a genuine happens-before: the fd
+            // is guaranteed closed before the resumed Task can possibly call
+            // `AsyncPathMutex.shared.release(path:)`.
+            let fresh: OfemConfig = try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    do {
+                        var fresh = try Self.load(from: paths)
+                        try mutator(&fresh)
+                        try Self.save(fresh, to: paths)
+                        self.config = fresh
+                        lock.release()
+                        continuation.resume(returning: fresh)
+                    } catch {
+                        lock.release()
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+            outcome = .success(fresh)
+        } catch {
+            outcome = .failure(error)
         }
+        await AsyncPathMutex.shared.release(path: mutexKey)
+        return try outcome.get()
+    }
+
+    /// Returns the canonical ``AsyncPathMutex`` key for this store's config
+    /// file — the resolved path of the same `.config.lock` sidecar that
+    /// ``ConfigFileLock/acquire(paths:timeoutNs:)`` opens (F12). Using this
+    /// as the mutex key ensures the in-process mutex and the cross-process
+    /// fcntl lock always agree on which resource they're protecting.
+    private static func configMutexKey(paths: OfemPaths) -> String {
+        paths.configDir
+            .appending(path: ".config.lock", directoryHint: .notDirectory)
+            .resolvingSymlinksInPath()
+            .path(percentEncoded: false)
     }
 
     // MARK: - Private helpers

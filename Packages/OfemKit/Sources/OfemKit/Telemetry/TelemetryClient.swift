@@ -88,11 +88,25 @@ public struct TelemetryConfiguration: Sendable {
 /// ### Opt-out
 ///
 /// Telemetry is disabled when:
-/// - `TelemetryConfiguration.optOut == true`, **or**
-/// - The environment variable `OFEM_TELEMETRY` is set to `0` or `false`.
+/// - `TelemetryConfiguration.optOut == true` at construction, **or**
+/// - The environment variable `OFEM_TELEMETRY` is set to `0` or `false`, **or**
+/// - ``setOptOut(_:)`` was last called with `true`.
 ///
-/// When disabled the client uses `NoopTelemetrySink`, which silently discards
-/// every event.  The background flush timer is not started.
+/// When disabled at construction time the client uses `NoopTelemetrySink`,
+/// which silently discards every event. ``setOptOut(_:)`` additionally gates
+/// every subsequent ``track(_:)`` call on a live, actor-isolated flag so a
+/// runtime opt-out (e.g. via the host app's `setConfig`) takes effect
+/// immediately — with no process restart — even though `sink` itself is
+/// fixed at construction.
+///
+/// **Precise guarantee**: no event *enqueued at or after* `setOptOut(true)`
+/// returns is ever transmitted. An event whose `send()` was already
+/// in flight at the moment of the call is cancelled best-effort (see
+/// ``setOptOut(_:)``) — this actor is reentrant at `await` points, so a
+/// `flush()` that has already drained the buffer and started `sink.send`
+/// cannot be synchronously blocked by `setOptOut`. Do not read this as "an
+/// in-flight HTTP request is guaranteed to be aborted before any byte
+/// reaches the wire" — cancellation is cooperative, not instantaneous.
 public actor TelemetryClient {
     // MARK: - State
 
@@ -100,6 +114,18 @@ public actor TelemetryClient {
     private let batch: TelemetryBatch
     private let commonProps: [String: String]
     private let configuration: TelemetryConfiguration
+
+    /// Live opt-out flag, consulted on every ``track(_:)`` call. Seeded from
+    /// `configuration.optOut` (plus the `OFEM_TELEMETRY` env override) at
+    /// construction and updatable afterwards via ``setOptOut(_:)``.
+    private var optOut: Bool
+
+    /// The `sink.send(events)` call currently in flight inside ``flush()``,
+    /// if any. Tracked so ``setOptOut(_:)`` can cancel it best-effort when
+    /// opt-out lands while a flush is already mid-send — actor reentrancy
+    /// means that window exists even though `optOut` is re-checked
+    /// immediately after `batch.drain()`. `nil` whenever no flush is sending.
+    private var inFlightSendTask: Task<Void, Error>?
 
     private var flushTask: Task<Void, Never>?
     private var isClosed = false
@@ -133,6 +159,7 @@ public actor TelemetryClient {
 
         self.sink = effectiveSink
         self.configuration = configuration
+        self.optOut = effectiveOptOut
         self.batch = TelemetryBatch(maxSize: configuration.maxBatchSize)
 
         let platform = configuration.platform.isEmpty ? "darwin" : configuration.platform
@@ -189,8 +216,12 @@ public actor TelemetryClient {
     /// Enqueues `event`. Common properties are merged in; `time` defaults to
     /// `Date()` when absent. Non-blocking from the caller; the actor
     /// serialises access internally.
+    ///
+    /// A no-op when ``setOptOut(_:)`` most recently set the live opt-out flag
+    /// to `true` — checked on every call so a runtime opt-out takes effect
+    /// immediately, not just the opt-out state at construction time.
     public func track(_ event: TelemetryEvent) async {
-        guard !isClosed else { return }
+        guard !isClosed, !optOut else { return }
 
         var ev = event
         if ev.time == nil { ev.time = Date() }
@@ -210,6 +241,39 @@ public actor TelemetryClient {
         let bufferFull = await batch.enqueue(ev)
         if bufferFull {
             await flush()
+        }
+    }
+
+    // MARK: - Live opt-out
+
+    /// Updates the opt-out flag live, without requiring a new `TelemetryClient`.
+    ///
+    /// Actor isolation serialises this against concurrent `track()` calls —
+    /// there is no torn read, no separate lock needed. Every ``track(_:)``
+    /// call made after `setOptOut(true)` returns is a no-op, so no event
+    /// enqueued from this point on is ever transmitted.
+    ///
+    /// Closes two windows for events that were enqueued *before* the call:
+    ///   1. Still-buffered, not yet drained by a `flush()` — discarded here
+    ///      via `batch.drain()`.
+    ///   2. Already drained and mid-`sink.send()` inside a concurrently
+    ///      running `flush()` — `TelemetryClient` is a reentrant actor, so a
+    ///      `flush()` suspended inside `await sink.send(events)` does not
+    ///      block this call from running. `inFlightSendTask.cancel()` cancels
+    ///      that send best-effort: cooperative cancellation propagates into
+    ///      `AppInsightsSink.send`'s `URLSession` call (Foundation's async
+    ///      `URLSession` APIs abort the underlying request on Task
+    ///      cancellation), but cannot retroactively un-send bytes already on
+    ///      the wire — see the class-level doc for the precise guarantee.
+    ///
+    /// Called by `FPEEngineHost.reloadEngine()` after a `setConfig(telemetry:)`
+    /// XPC call so the opt-out takes effect immediately — the shared
+    /// `TelemetryClient` singleton is not rebuilt on reload.
+    public func setOptOut(_ value: Bool) async {
+        optOut = value
+        if value {
+            inFlightSendTask?.cancel()
+            _ = await batch.drain()
         }
     }
 
@@ -244,18 +308,45 @@ public actor TelemetryClient {
     public func flush() async {
         let events = await batch.drain()
         guard !events.isEmpty else { return }
+
+        // Re-check the live opt-out flag immediately after drain. There is
+        // no `await` between this check and the point below where the send
+        // Task starts, so a concurrent `setOptOut(true)` cannot land in that
+        // gap — this closes the "drained but send not yet started" window.
+        // The "already inside send" window (setOptOut racing a send that has
+        // already started) is closed separately via `inFlightSendTask`.
+        guard !optOut else { return }
+
+        // Wrap the send in its own Task so `setOptOut(true)` has a handle to
+        // cancel it — an actor method call by itself gives external callers
+        // no way to interrupt a suspended `await`.
+        let sendTask = Task { [sink] in try await sink.send(events) }
+        inFlightSendTask = sendTask
+        defer { inFlightSendTask = nil }
+
         do {
-            try await sink.send(events)
+            try await sendTask.value
+        } catch is CancellationError {
+            // Cancelled by setOptOut(true) mid-send (or the sink itself threw
+            // CancellationError on cancellation, e.g. a test double). Do NOT
+            // requeue — that would let a later flush ship post-opt-out.
+            log.debug(
+                "telemetry flush cancelled by opt-out; \(events.count, privacy: .public) events dropped"
+            )
         } catch let AppInsightsSinkError.partialReject(_, _, retriable) {
-            if !retriable.isEmpty {
+            if !retriable.isEmpty, !optOut {
                 await batch.requeue(retriable)
             }
             log.warning(
                 "telemetry partial flush: \(retriable.count, privacy: .public) events re-queued"
             )
         } catch {
-            // Other errors: re-queue the entire batch.
-            await batch.requeue(events)
+            // Other errors: re-queue the entire batch, unless opt-out landed
+            // while the send was failing — in that case the events must not
+            // survive to a future flush.
+            if !optOut {
+                await batch.requeue(events)
+            }
             // Log only the error category (domain:code), never the localised
             // description which may contain PII from the underlying transport.
             let ns = error as NSError
