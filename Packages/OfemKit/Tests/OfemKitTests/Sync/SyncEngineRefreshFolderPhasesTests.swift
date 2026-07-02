@@ -255,6 +255,63 @@ struct SyncEngineRefreshFolderPhasesTests {
         #expect(Set(batch.map(\.path)) == ["Files/new.txt", "Files/changed.txt"])
     }
 
+    // MARK: - buildUpsertBatch: createdNs handling
+
+    @Test func buildUpsertBatchCarriesForwardCachedCreatedNs() throws {
+        // DFS listings never return a creationDate, so entry.creationDate is nil.
+        // A changed row must PRESERVE the cached createdNs (the creation time
+        // captured earlier via HEAD/GET, #371), not reset it to 0. This is a
+        // regression guard: if the pure static's `dateToNs` were to bind to the
+        // global `(Date?) -> Int64` overload (which folds nil to 0) instead of the
+        // nil-preserving `(Date?) -> Int64?`, the `?? cur?.createdNs` fallback
+        // would be short-circuited and createdNs would come back as 0.
+        let entry = Self.fileEntry(name: "Files/a.txt", etag: "e2")
+        #expect(entry.creationDate == nil, "precondition: DFS entries carry no creationDate")
+        let cached = Self.cachedFile(path: "Files/a.txt", etag: "e1", createdNs: 987_654_321)
+        let (batch, _, updated) = SyncEngine.buildUpsertBatch(
+            key: Self.key,
+            remoteChildren: ["Files/a.txt": entry],
+            cachedByPath: ["Files/a.txt": cached],
+            folderItemType: Self.itemType,
+            nowNs: Self.nowNs
+        )
+        #expect(updated == 1)
+        let row = try #require(batch.first)
+        #expect(row.createdNs == 987_654_321)
+    }
+
+    @Test func buildUpsertBatchNewRowWithoutCreatedNsIsZero() throws {
+        // No cached predecessor and a nil creationDate → createdNs is the 0
+        // "unset" sentinel (nil falls through to `?? 0`).
+        let entry = Self.fileEntry(name: "Files/new.txt")
+        let (batch, _, _) = SyncEngine.buildUpsertBatch(
+            key: Self.key,
+            remoteChildren: ["Files/new.txt": entry],
+            cachedByPath: [:],
+            folderItemType: Self.itemType,
+            nowNs: Self.nowNs
+        )
+        let row = try #require(batch.first)
+        #expect(row.createdNs == 0)
+    }
+
+    @Test func buildUpsertBatchClampsOutOfRangeLastModified() throws {
+        // A hostile / out-of-range remote timestamp must clamp to 0 rather than
+        // trapping in Int64(_:) — buildUpsertBatch feeds attacker-influenced DFS
+        // timestamps, so it must tolerate one far beyond Int64 nanoseconds.
+        let entry = Self.fileEntry(name: "Files/a.txt", lastModified: Date(timeIntervalSince1970: 1e30))
+        let (batch, added, _) = SyncEngine.buildUpsertBatch(
+            key: Self.key,
+            remoteChildren: ["Files/a.txt": entry],
+            cachedByPath: [:],
+            folderItemType: Self.itemType,
+            nowNs: Self.nowNs
+        )
+        #expect(added == 1)
+        let row = try #require(batch.first)
+        #expect(row.lastModifiedNs == 0)
+    }
+
     // MARK: - buildDeleteBatch
 
     @Test func buildDeleteBatchTombstonesVanishedChild() throws {

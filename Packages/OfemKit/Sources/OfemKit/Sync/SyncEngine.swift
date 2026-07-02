@@ -530,9 +530,12 @@ public actor SyncEngine {
         // mutation, so a paused/offline folder leaves the cache intact.
         let remoteChildren = try await fetchRemoteChildren(key: key)
 
-        // Capture the reconcile timestamps AFTER the list succeeds, matching the
-        // original ordering: the syncedAtNs stamped on every row and the
-        // elapsed-time log are both measured from this point.
+        // Capture the reconcile timestamps once the (now filtered) listing is in
+        // hand. Every row written this pass shares this syncedAtNs, and
+        // elapsed_ms is measured from here. (The pre-refactor code captured
+        // `now` a few microseconds earlier — before the child filter — so the
+        // logged elapsed_ms no longer includes that filter span; immaterial, and
+        // it affects the debug log only.)
         let nowNs = currentNowNs()
         let now = Date()
 
@@ -2029,6 +2032,20 @@ public actor SyncEngine {
     ) -> (batch: [MetadataRecord], added: Int, updated: Int) {
         var candidates: [MetadataRecord] = []
         candidates.reserveCapacity(remoteChildren.count)
+
+        // `dateToNs` is overloaded by return type: the file-private
+        // `(Date?) -> Int64?` in this file (keeps `nil` for a nil / out-of-range
+        // date) and the global `CacheModels.dateToNs` `(Date?) -> Int64` (folds
+        // both to `0`). In this `static` context the bare name resolves to the
+        // global — which would reset `createdNs` to `0` on every row instead of
+        // carrying the cached value forward. DFS listings never return a
+        // creationDate, so `entry.creationDate` is always `nil`; the global's
+        // `nil -> 0` fold short-circuits the `?? cur?.createdNs` fallback and
+        // silently drops the creation time captured earlier via HEAD/GET (#371).
+        // Bind explicitly to the nil-preserving overload so that fallback keeps
+        // working (this also drops the non-optional `?? 0` warning below).
+        let toNs: (Date?) -> Int64? = dateToNs
+
         for (relPath, entry) in remoteChildren {
             let name = Enumerator.baseName(relPath)
             let cur = cachedByPath[relPath]
@@ -2042,12 +2059,12 @@ public actor SyncEngine {
                 isDir: entry.isDirectory,
                 contentLength: entry.contentLength,
                 etag: entry.eTag,
-                lastModifiedNs: dateToNs(entry.lastModified) ?? 0,
+                lastModifiedNs: toNs(entry.lastModified) ?? 0,
                 lastAccessedNs: cur?.lastAccessedNs ?? nowNs,
                 syncedAtNs: nowNs,
                 childrenSyncedAtNs: cur?.childrenSyncedAtNs ?? 0,
                 itemType: folderItemType,
-                createdNs: dateToNs(entry.creationDate) ?? cur?.createdNs ?? 0,
+                createdNs: toNs(entry.creationDate) ?? cur?.createdNs ?? 0,
                 // #380 skip-gate harvest: a directory child's etag is its subtree
                 // token (advances on any descendant write). Stamp it on the child
                 // container's own row so the next refreshMaterialized can compare
