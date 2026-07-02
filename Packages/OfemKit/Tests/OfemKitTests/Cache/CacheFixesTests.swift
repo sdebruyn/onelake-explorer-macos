@@ -414,7 +414,7 @@ struct CacheFixesTests {
         }
         try await store.batchUpsert(records)
         // Deleting all keys (large batch) must not throw.
-        try await store.batchDelete(keys)
+        try await store.batchDelete(keys, recordTombstones: false)
 
         // All rows must be gone.
         await #expect(throws: CacheError.notFound("a/w/i/file-0.txt")) {
@@ -438,7 +438,7 @@ struct CacheFixesTests {
         }
 
         let dirKey = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "dir")
-        try await store.batchDelete([dirKey])
+        try await store.batchDelete([dirKey], recordTombstones: false)
 
         // Subtree must be gone.
         for path in ["dir", "dir/a.txt", "dir/b.txt"] {

@@ -443,10 +443,12 @@ public actor SyncEngine {
         // every poll would shift the working-set delta baseline forward even when
         // nothing changed, producing phantom enumerateChanges deltas.
         //
-        // IMPORTANT: the tombstone reconcile below uses `remoteChildren` (the full
+        // IMPORTANT: the deletion reconcile below uses `remoteChildren` (the full
         // fresh listing) as its reference set, not `upsertBatch`. A child that was
         // skipped here because it is unchanged is still "present remotely" and
-        // must NOT be tombstoned.
+        // must NOT be tombstoned. Rows that genuinely disappeared are removed via
+        // batchDelete(recordTombstones: true), which writes a deletion tombstone
+        // per removed path so the removal reaches Finder incrementally.
         var upsertBatch: [MetadataRecord] = []
         for (relPath, entry) in remoteChildren {
             let name = Enumerator.baseName(relPath)
@@ -523,7 +525,9 @@ public actor SyncEngine {
             }
         }
 
-        // Delete cached children that disappeared remotely in one batch.
+        // Delete cached children that disappeared remotely in one batch. Each
+        // removed row (and any descendants of a vanished directory) is tombstoned
+        // by batchDelete so enumerateChanges delivers the removal incrementally.
         var deleteBatch: [CacheKey] = []
         for (relPath, _) in cachedByPath {
             guard remoteChildren[relPath] == nil else { continue }
@@ -535,7 +539,7 @@ public actor SyncEngine {
             ))
             diff.removed += 1
         }
-        await batchDelete(deleteBatch, context: "refreshFolder delete")
+        await batchDelete(deleteBatch, recordTombstones: true, context: "refreshFolder delete")
 
         // Stamp parent row.
         //
@@ -1728,7 +1732,17 @@ public actor SyncEngine {
                     path: k.path
                 )
             }
-        await batchDelete(deleteBatch, context: "expireDiscoveryRows")
+        // Tombstone the expired discovery rows so a removed item disappears from
+        // Finder incrementally. batchDelete's tombstoneIdentifierString translates
+        // item-discovery rows (itemID == VirtualIDs.itemID) to their ".item"
+        // identifier "<workspaceID>/<itemGUID>"; workspace-discovery rows
+        // (workspaceID == VirtualIDs.workspaceID) map to nil and are never
+        // tombstoned because the domain root's container deltas are remount-driven
+        // via the ChangeWatcher (a root signal would force full re-enumeration).
+        // NON-GOAL: this does not purge the orphaned path_metadata rows of a
+        // removed item (the rows keyed by the real item GUID) — a pre-existing gap
+        // tracked as a follow-up, not addressed here.
+        await batchDelete(deleteBatch, recordTombstones: true, context: "expireDiscoveryRows")
     }
 
     // MARK: - Shared remote-operation error handler
@@ -1767,10 +1781,14 @@ public actor SyncEngine {
     }
 
     /// Deletes all keys in one GRDB transaction.
-    private func batchDelete(_ keys: [CacheKey], context: String) async {
+    ///
+    /// `recordTombstones` is passed through to ``CacheStore/batchDelete(_:recordTombstones:)``:
+    /// `true` for remote-reconcile deletes that Finder must see as removals,
+    /// which is every call site in this engine.
+    private func batchDelete(_ keys: [CacheKey], recordTombstones: Bool, context: String) async {
         guard !keys.isEmpty else { return }
         do {
-            try await cache.batchDelete(keys)
+            try await cache.batchDelete(keys, recordTombstones: recordTombstones)
         } catch {
             Self.log.warning("SyncEngine: batchDelete failed context=\(context, privacy: .public) err=\(error, privacy: .public)")
         }

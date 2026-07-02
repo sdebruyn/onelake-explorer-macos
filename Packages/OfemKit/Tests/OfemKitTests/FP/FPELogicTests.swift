@@ -121,32 +121,32 @@ struct FPELogicTests {
         #expect(di1.contentVersion == di2.contentVersion)
     }
 
-    // MARK: - CacheReader.maxSyncedAtNs / itemsChangedAfter
+    // MARK: - CacheReader.syncAnchorNs / itemsChangedAfter
 
-    @Test func maxSyncedAtNsReturnsZeroForEmptyDB() async throws {
+    @Test func syncAnchorNsReturnsZeroForEmptyDB() async throws {
         let store = try makeTempCacheStore()
-        let ns = try await store.maxSyncedAtNs(accountAlias: "dev")
+        let ns = try await store.syncAnchorNs(accountAlias: "dev")
         #expect(ns == 0)
     }
 
-    @Test func maxSyncedAtNsReflectsUpsertedRecord() async throws {
+    @Test func syncAnchorNsReflectsUpsertedRecord() async throws {
         let store = try makeTempCacheStore()
         let record = makeTestRecord(path: "Files/f.txt", syncedAtNs: 1_000_000_000)
         try await store.upsert(record)
-        let ns = try await store.maxSyncedAtNs(accountAlias: "dev")
+        let ns = try await store.syncAnchorNs(accountAlias: "dev")
         // The upsert stamps syncedAtNs with current time when it is 0; since
         // we passed 1_000_000_000 the stored value is >= that.
         #expect(ns >= 1_000_000_000)
     }
 
-    @Test func maxSyncedAtNsOnlyAccountsForGivenAlias() async throws {
+    @Test func syncAnchorNsOnlyAccountsForGivenAlias() async throws {
         let store = try makeTempCacheStore()
         let r1 = makeTestRecord(path: "f.txt", alias: "alice", syncedAtNs: 5_000_000_000)
         let r2 = makeTestRecord(path: "g.txt", alias: "bob", syncedAtNs: 1_000_000_000)
         try await store.upsert(r1)
         try await store.upsert(r2)
-        let nsAlice = try await store.maxSyncedAtNs(accountAlias: "alice")
-        let nsBob = try await store.maxSyncedAtNs(accountAlias: "bob")
+        let nsAlice = try await store.syncAnchorNs(accountAlias: "alice")
+        let nsBob = try await store.syncAnchorNs(accountAlias: "bob")
         #expect(nsAlice >= 5_000_000_000)
         #expect(nsBob >= 1_000_000_000)
         #expect(nsAlice > nsBob)
