@@ -863,6 +863,7 @@ public actor CacheStore {
 
     // MARK: - Blob: blobURL
 
+    // periphery:ignore - only test callers remain; exclude_tests: true hides them from periphery
     /// Returns the on-disk file URL of the cached blob for `key`, or `nil`
     /// when the metadata row has no blob or the blob file is missing.
     ///
@@ -873,15 +874,31 @@ public actor CacheStore {
     /// is advisory only.  A concurrent `evictToLimit`, `delete`, or `wipe`
     /// can remove the file between this call and the caller's open.  Callers
     /// must handle a missing-file error when opening the returned URL.
+    ///
+    /// `SyncEngine`'s own callers now use ``blobURL(record:)`` (they already
+    /// have the record); this key-based entry point remains the minimal
+    /// public API for a caller that only has a `CacheKey`.
     public func blobURL(key: CacheKey) async throws -> URL? {
         try validateKey(key)
         let record = try await fetch(key: key)
+        return blobURL(record: record)
+    }
+
+    /// Like ``blobURL(key:)`` but computed directly from an already-fetched
+    /// `record`, skipping the metadata read.
+    ///
+    /// Callers that just fetched (or built) the row for another reason —
+    /// e.g. `SyncEngine.open`'s freshness check — should use this instead of
+    /// re-fetching via `blobURL(key:)`. Pure path computation, no
+    /// database I/O, so unlike `blobURL(key:)` it cannot throw.
+    public func blobURL(record: MetadataRecord) -> URL? {
         guard !record.blobSHA256.isEmpty else { return nil }
         return blobs.fileURL(sha256: record.blobSHA256)
     }
 
     // MARK: - Blob: handoff (hardlink)
 
+    // periphery:ignore - only test callers remain; exclude_tests: true hides them from periphery
     /// Hands the cached blob for `key` to the caller without a full copy.
     ///
     /// Creates a hard link from the blob file to `destURL`. Because hard links
@@ -902,6 +919,10 @@ public actor CacheStore {
     /// directory entry but the inode survives until all hard links (including
     /// the caller's `destURL`) are released, so the FPE's path remains valid.
     ///
+    /// `FileProviderExtension.fetchContents` now uses ``handoffBlob(record:to:)``
+    /// (it already has the record); this key-based entry point remains the
+    /// minimal public API for a caller that only has a `CacheKey`.
+    ///
     /// - Parameters:
     ///   - key: Identifies the cached blob.
     ///   - destURL: Target path for the link (or copy on fallback). Must not
@@ -913,12 +934,27 @@ public actor CacheStore {
     public func handoffBlob(key: CacheKey, to destURL: URL) async throws -> Bool {
         try validateKey(key)
         let record = try await fetch(key: key)
+        return try await handoffBlob(record: record, to: destURL)
+    }
+
+    /// Like ``handoffBlob(key:to:)`` but takes an already-fetched `record`,
+    /// skipping the metadata read.
+    ///
+    /// Callers that already have the row in hand — e.g. the FPE's
+    /// `fetchContents`, which now gets it from `SyncEngine.openReturningRecord`
+    /// — should use this instead of re-fetching via `handoffBlob(key:to:)`.
+    @discardableResult
+    public func handoffBlob(record: MetadataRecord, to destURL: URL) async throws -> Bool {
         guard !record.blobSHA256.isEmpty else {
-            throw CacheError.notFound("blob for \(key.path)")
+            throw CacheError.notFound("blob for \(record.path)")
         }
         guard let srcURL = blobs.fileURL(sha256: record.blobSHA256) else {
             throw CacheError.notFound("blob file for \(record.blobSHA256)")
         }
+        let key = CacheKey(
+            accountAlias: record.accountAlias, workspaceID: record.workspaceID,
+            itemID: record.itemID, path: record.path
+        )
 
         // Attempt hard link first (zero-copy, same-volume).
         do {
@@ -952,7 +988,12 @@ public actor CacheStore {
     ///
     /// Prefer this over ``storeBlob(key:data:)`` when the bytes are already on
     /// disk — it avoids loading the entire file into memory.
-    public func storeBlobFromURL(_ sourceURL: URL, key: CacheKey) async throws {
+    ///
+    /// - Returns: The `sha256`/`size` just written, so callers that need them
+    ///   (e.g. `SyncEngine.performDownload`, to complete the in-memory record
+    ///   it already holds) don't have to re-fetch the row.
+    @discardableResult
+    public func storeBlobFromURL(_ sourceURL: URL, key: CacheKey) async throws -> (sha256: String, size: Int64) {
         try validateKey(key)
         let nowNs = clock()
         let (sha, size) = try blobs.storeFromURL(sourceURL)
@@ -974,6 +1015,7 @@ public actor CacheStore {
         if maxBlobBytes > 0 {
             _ = try await evictToLimit()
         }
+        return (sha, size)
     }
 
     // MARK: - Blob: blobBytes
