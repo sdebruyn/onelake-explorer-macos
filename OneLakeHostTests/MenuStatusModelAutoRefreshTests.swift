@@ -87,6 +87,14 @@ private func makeAccount(alias: String) -> Account {
 /// Polls `condition` until it returns true or `timeout` elapses. Used
 /// instead of a fixed sleep so tests aren't tied to a specific timing
 /// value (T2) — see the identical helper in MenuStatusModelExtendedTests.swift.
+///
+/// `@MainActor`-isolated (matching every call site, which is always a
+/// `@MainActor` test method) so the non-escaping `condition` closure —
+/// which reads `@MainActor`-isolated model/fake state — never has to
+/// cross an actor boundary. Without this, Swift 6 strict concurrency
+/// rejects the closure as a non-`Sendable` value being "sent" into a
+/// nonisolated `async` function.
+@MainActor
 private func waitUntil(
     timeout: Duration = .seconds(3),
     interval: Duration = .milliseconds(10),
