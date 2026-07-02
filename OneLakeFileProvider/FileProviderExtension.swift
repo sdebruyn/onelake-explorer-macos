@@ -1181,19 +1181,15 @@ private func engineCreateItem(
 
 // MARK: - Domain identifier → alias
 
-/// Identifier prefix every OFEM-owned domain carries.
-/// Mirrored in `DomainSyncManager` in the host app target; the two
-/// targets do not share source files, so it is defined in both.
-private let ofemDomainIdentifierPrefix = "ofem."
-
 extension FileProviderExtension {
     /// Strips the `ofem.` prefix from the domain identifier to recover
     /// the user-chosen account alias (e.g. `"ofem.work"` → `"work"`).
+    ///
+    /// Delegates to the shared `ofemAlias(fromDomainIdentifier:)` helper
+    /// (`Shared/OfemDomainIdentifier.swift`), which is also what
+    /// `DomainSyncManager` uses to compose the identifier on the host side
+    /// (xpc-09) — a single source keeps the alias round-trip in lockstep.
     static func extractAlias(from domain: NSFileProviderDomain) -> String {
-        let raw = domain.identifier.rawValue
-        if raw.hasPrefix(ofemDomainIdentifierPrefix) {
-            return String(raw.dropFirst(ofemDomainIdentifierPrefix.count))
-        }
-        return raw
+        ofemAlias(fromDomainIdentifier: domain.identifier.rawValue)
     }
 }
