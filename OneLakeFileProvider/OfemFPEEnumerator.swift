@@ -51,6 +51,20 @@
 //   (which may arrive on arbitrary queues) do not data-race. `enumerateItems`
 //   only cancels an in-flight task when starting a NEW items enumeration — not
 //   when a change-observation arrives.
+//
+// - Shared decode/delta helpers: `decodeRecords` (the per-record decode loop
+//   + empty-filename guard) and `serveCacheDelta` (the anchor-check → fetch →
+//   decode → deliver → advance-anchor sequence) are file-scope functions used
+//   by every enumeration path that turns `MetadataRecord`s into `OfemFPEItem`s
+//   — both enumerators' `enumerateChanges` and `OfemFPEEnumerator.enumerate`'s
+//   `.item`/`.path` branches. A fix to either guard therefore lives in one
+//   place instead of four copies.
+//
+// - Trash: `.trash` gets `OfemTrashEnumerator`, a real always-empty
+//   enumerator — OneLake has no trash/recycle-bin concept. It must NOT share
+//   `OfemWorkingSetEnumerator`: that type's `enumerateChanges` refreshes the
+//   workspace list and reports alias-wide cache deltas, which have nothing to
+//   do with — and would be misattributed to — the trash container.
 
 @preconcurrency import FileProvider
 import Foundation
@@ -81,9 +95,121 @@ func encodeSyncAnchor(_ ns: Int64) -> NSFileProviderSyncAnchor {
 func decodeSyncAnchor(_ anchor: NSFileProviderSyncAnchor) -> Int64 {
     let data = anchor.rawValue
     guard data.count == 8 else { return 0 }
+    // `Data.withUnsafeBytes` gives no alignment guarantee for the backing
+    // buffer, so a plain `load(as:)` is an unaligned-load trap waiting to
+    // happen (UB in release, a debug-build crash). `loadUnaligned` is the
+    // alignment-safe equivalent.
     return data.withUnsafeBytes { ptr -> Int64 in
-        Int64(bigEndian: ptr.load(as: Int64.self))
+        Int64(bigEndian: ptr.loadUnaligned(as: Int64.self))
     }
+}
+
+// MARK: - Shared change-delta helpers
+
+/// Decodes cache records into `OfemFPEItem`s, skipping any row that fails to
+/// decode or that would produce a blank filename.
+///
+/// Two independent skip conditions, both logged at `.error` (observable, not
+/// silent) rather than failing the whole batch:
+///
+/// 1. `DomainItem.from(record:)` throws — a permanently corrupt or
+///    non-enumerable (sentinel) row.
+/// 2. The decoded item's filename is empty — delivering it would trip
+///    `__FILEPROVIDER_BAD_ITEM_MISSING_FILENAME__` → SIGABRT.
+///
+/// This is the single place both conditions are checked; every enumeration
+/// path that decodes `MetadataRecord`s (`OfemFPEEnumerator.enumerate`'s
+/// `.item`/`.path` branches and both enumerators' `enumerateChanges` via
+/// `serveCacheDelta`) goes through it, so a fix to either guard lives in one
+/// place. Callers that drive a sync anchor off the input batch must still
+/// advance the anchor past any skipped record — see the "Anchor-on-decode-
+/// failure policy" note at the top of this file.
+func decodeRecords(
+    _ records: [MetadataRecord],
+    logPrefix: String,
+    log: Logger
+) -> [OfemFPEItem] {
+    var items: [OfemFPEItem] = []
+    items.reserveCapacity(records.count)
+    for record in records {
+        do {
+            let di = try DomainItem.from(record: record)
+            let item = OfemFPEItem(from: di)
+            // Defensive guard: a blank filename would cause
+            // __FILEPROVIDER_BAD_ITEM_MISSING_FILENAME__ → SIGABRT.
+            guard !item.filename.isEmpty else {
+                log.error(
+                    "\(logPrefix, privacy: .public): skipping empty-filename row (path=\(record.path, privacy: .public))"
+                )
+                continue
+            }
+            items.append(item)
+        } catch {
+            log.error(
+                "\(logPrefix, privacy: .public): skipping un-decodable record (path=\(record.path, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+    return items
+}
+
+/// Computes the cache delta since `previousNs` for `alias` and delivers it to
+/// `observer`, advancing the sync anchor unconditionally to the store's
+/// current `syncAnchorNs` (see the "Anchor-on-decode-failure policy" note at
+/// the top of this file — the anchor tracks `synced_at_ns`, not decode
+/// success, so a permanently corrupt row decoded via `decodeRecords` can
+/// never hold it back).
+///
+/// Shared by `OfemFPEEnumerator.enumerateChanges` (workspace/item/path
+/// containers) and `OfemWorkingSetEnumerator.enumerateChanges` (the working
+/// set, called after its own throttled workspace-list refresh). Each caller
+/// keeps its own outer `do/catch` for `CancellationError` and auth-error
+/// handling (`markNeedsSignIn`), since only the working set also needs to
+/// reset its refresh throttle on an auth failure.
+///
+/// When `previousNs` is ahead of the cache (the DB may have been reset) this
+/// calls `finishEnumeratingWithError(.syncAnchorExpired)` and returns without
+/// touching the delta — the framework must perform a full re-enumeration.
+func serveCacheDelta(
+    engine: OfemEngine,
+    alias: String,
+    previousNs: Int64,
+    observer: NSFileProviderChangeObserver,
+    log: Logger,
+    logPrefix: String
+) async throws {
+    let currentNs = (try? await engine.cache.syncAnchorNs(accountAlias: alias)) ?? 0
+
+    if previousNs > currentNs, previousNs != 0 {
+        log.debug("\(logPrefix, privacy: .public): anchor ahead of cache, expiring")
+        observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+        return
+    }
+
+    // Propagate SQLite errors rather than silently returning an empty delta
+    // with an advanced anchor (which would hide data loss).
+    let (updatedRecords, deletedIdStrings) = try await engine.cache.itemsChangedAfter(
+        accountAlias: alias,
+        ns: previousNs
+    )
+
+    let updatedItems = decodeRecords(updatedRecords, logPrefix: logPrefix, log: log)
+    if !updatedItems.isEmpty {
+        observer.didUpdate(updatedItems)
+    }
+
+    // Report remote deletions so Finder removes the items.
+    if !deletedIdStrings.isEmpty {
+        let deletedIdentifiers = deletedIdStrings.map { NSFileProviderItemIdentifier($0) }
+        observer.didDeleteItems(withIdentifiers: deletedIdentifiers)
+    }
+
+    let newAnchor = encodeSyncAnchor(currentNs)
+    observer.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
+
+    log.debug(
+        "\(logPrefix, privacy: .public): delivered — updates=\(updatedRecords.count, privacy: .public) deletions=\(deletedIdStrings.count, privacy: .public) anchor=\(previousNs, privacy: .public)→\(currentNs, privacy: .public)"
+    )
 }
 
 // MARK: - Engine-backed enumerator
@@ -323,70 +449,13 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
 
             do {
                 let engine = try await hostCopy.engine()
-                let currentNs = (try? await engine.cache.syncAnchorNs(accountAlias: aliasCopy)) ?? 0
-
-                // If the anchor is ahead of the cache the DB may have been
-                // reset (or a new process started). Expire so the framework
-                // performs a full re-enumeration.
-                if previousNs > currentNs, previousNs != 0 {
-                    Self.log.debug(
-                        "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges — anchor ahead of cache, expiring"
-                    )
-                    obs.value.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
-                    return
-                }
-
-                // Compute changed items since the last known anchor.
-                // Propagate SQLite errors rather than silently returning an
-                // empty delta with an advanced anchor (which would hide data loss).
-                let (updatedRecords, deletedIdStrings) = try await engine.cache.itemsChangedAfter(
-                    accountAlias: aliasCopy,
-                    ns: previousNs
-                )
-
-                // Decode each updated record. On failure: log at .error so the
-                // drop is observable, skip the record, and advance the anchor
-                // past it. NOT advancing would cause an infinite retry loop
-                // because the same undecodable record would reappear on every
-                // subsequent call from the same anchor.
-                var updatedItems: [OfemFPEItem] = []
-                for record in updatedRecords {
-                    do {
-                        let di = try DomainItem.from(record: record)
-                        let item = OfemFPEItem(from: di)
-                        // Defensive guard: a blank filename would cause
-                        // __FILEPROVIDER_BAD_ITEM_MISSING_FILENAME__ → SIGABRT.
-                        guard !item.filename.isEmpty else {
-                            Self.log.error(
-                                "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges — skipping empty-filename row (path=\(record.path, privacy: .public))"
-                            )
-                            continue
-                        }
-                        updatedItems.append(item)
-                    } catch {
-                        Self.log.error(
-                            "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges — skipping un-decodable record: \(error.localizedDescription, privacy: .public)"
-                        )
-                    }
-                }
-
-                if !updatedItems.isEmpty {
-                    obs.value.didUpdate(updatedItems)
-                }
-
-                // Report remote deletions so Finder removes the items.
-                if !deletedIdStrings.isEmpty {
-                    let deletedIdentifiers = deletedIdStrings.map {
-                        NSFileProviderItemIdentifier($0)
-                    }
-                    obs.value.didDeleteItems(withIdentifiers: deletedIdentifiers)
-                }
-
-                let newAnchor = encodeSyncAnchor(currentNs)
-                obs.value.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
-
-                Self.log.debug(
-                    "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges delivered — container=\(containerLogID, privacy: .public) updates=\(updatedRecords.count, privacy: .public) deletions=\(deletedIdStrings.count, privacy: .public) anchor=\(previousNs, privacy: .public)→\(currentNs, privacy: .public)"
+                try await serveCacheDelta(
+                    engine: engine,
+                    alias: aliasCopy,
+                    previousNs: previousNs,
+                    observer: obs.value,
+                    log: Self.log,
+                    logPrefix: "OfemFPEEnumerator[\(aliasCopy)] enumerateChanges container=\(containerLogID)"
                 )
             } catch is CancellationError {
                 obs.value.finishEnumeratingWithError(CocoaError(.userCancelled))
@@ -484,26 +553,11 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
             let records = try await engine.sync.enumerate(key: key)
             // Skip-and-continue on any bad row, matching the enumerateChanges
             // policy. A hard throw here would abort the entire folder listing.
-            var items: [OfemFPEItem] = []
-            for record in records {
-                do {
-                    let di = try DomainItem.from(record: record)
-                    let item = OfemFPEItem(from: di)
-                    // Defensive guard: blank filename → FileProvider SIGABRT.
-                    guard !item.filename.isEmpty else {
-                        Self.log.error(
-                            "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.item) — skipping empty-filename row (path=\(record.path, privacy: .public))"
-                        )
-                        continue
-                    }
-                    items.append(item)
-                } catch {
-                    Self.log.error(
-                        "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.item) — skipping un-decodable record (path=\(record.path, privacy: .public)): \(error.localizedDescription, privacy: .public)"
-                    )
-                }
-            }
-            return items
+            return decodeRecords(
+                records,
+                logPrefix: "OfemFPEEnumerator[\(alias)] enumerate(.item)",
+                log: Self.log
+            )
 
         case let .path(workspaceID, itemID, path):
             // List a sub-path inside a Fabric item.
@@ -511,26 +565,11 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
             let records = try await engine.sync.enumerate(key: key)
             // Skip-and-continue on any bad row, matching the enumerateChanges
             // policy. A hard throw here would abort the entire folder listing.
-            var items: [OfemFPEItem] = []
-            for record in records {
-                do {
-                    let di = try DomainItem.from(record: record)
-                    let item = OfemFPEItem(from: di)
-                    // Defensive guard: blank filename → FileProvider SIGABRT.
-                    guard !item.filename.isEmpty else {
-                        Self.log.error(
-                            "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.path) — skipping empty-filename row (path=\(record.path, privacy: .public))"
-                        )
-                        continue
-                    }
-                    items.append(item)
-                } catch {
-                    Self.log.error(
-                        "OfemFPEEnumerator[\(alias, privacy: .public)]: enumerate(.path) — skipping un-decodable record (path=\(record.path, privacy: .public)): \(error.localizedDescription, privacy: .public)"
-                    )
-                }
-            }
-            return items
+            return decodeRecords(
+                records,
+                logPrefix: "OfemFPEEnumerator[\(alias)] enumerate(.path)",
+                log: Self.log
+            )
         }
     }
 }
@@ -752,66 +791,16 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                     }
                 }
 
-                let currentNs = (try? await engine.cache.syncAnchorNs(accountAlias: aliasCopy)) ?? 0
-
-                // If the anchor is ahead of the cache the DB may have been
-                // reset (or a new process started). Expire so the framework
-                // performs a full re-enumeration, mirroring the same guard in
-                // OfemFPEEnumerator.enumerateChanges.
-                if previousNs > currentNs, previousNs != 0 {
-                    Self.log.debug(
-                        "WorkingSet: anchor ahead of cache for \(aliasCopy, privacy: .public) — expiring"
-                    )
-                    obs.value.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
-                    return
-                }
-
-                // Propagate SQLite errors; report deletions.
-                let (updatedRecords, deletedIdStrings) = try await engine.cache.itemsChangedAfter(
-                    accountAlias: aliasCopy,
-                    ns: previousNs
-                )
-
-                // Decode each updated record. On failure: log at .error so the
-                // drop is observable, skip the record, and advance the anchor
-                // past it. The same policy as OfemFPEEnumerator.enumerateChanges —
-                // NOT advancing would cause an infinite retry loop on corrupt data.
-                var updatedItems: [OfemFPEItem] = []
-                for record in updatedRecords {
-                    do {
-                        let di = try DomainItem.from(record: record)
-                        let item = OfemFPEItem(from: di)
-                        // Defensive guard: a blank filename would cause
-                        // __FILEPROVIDER_BAD_ITEM_MISSING_FILENAME__ → SIGABRT.
-                        guard !item.filename.isEmpty else {
-                            Self.log.error(
-                                "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges — skipping empty-filename row (path=\(record.path, privacy: .public))"
-                            )
-                            continue
-                        }
-                        updatedItems.append(item)
-                    } catch {
-                        Self.log.error(
-                            "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges — skipping un-decodable record: \(error.localizedDescription, privacy: .public)"
-                        )
-                    }
-                }
-                if !updatedItems.isEmpty {
-                    obs.value.didUpdate(updatedItems)
-                }
-
-                if !deletedIdStrings.isEmpty {
-                    let deletedIdentifiers = deletedIdStrings.map {
-                        NSFileProviderItemIdentifier($0)
-                    }
-                    obs.value.didDeleteItems(withIdentifiers: deletedIdentifiers)
-                }
-
-                let newAnchor = encodeSyncAnchor(currentNs)
-                obs.value.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
-
-                Self.log.debug(
-                    "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges delivered — updates=\(updatedRecords.count, privacy: .public) deletions=\(deletedIdStrings.count, privacy: .public) anchor=\(previousNs, privacy: .public)→\(currentNs, privacy: .public)"
+                // If the anchor is ahead of the cache, the store's decode/skip
+                // batch is empty, or the delta is delivered — all handled by
+                // serveCacheDelta, mirroring OfemFPEEnumerator.enumerateChanges.
+                try await serveCacheDelta(
+                    engine: engine,
+                    alias: aliasCopy,
+                    previousNs: previousNs,
+                    observer: obs.value,
+                    log: Self.log,
+                    logPrefix: "WorkingSet[\(aliasCopy)] enumerateChanges"
                 )
             } catch is CancellationError {
                 // The enumerator was invalidated while the task was in flight.
@@ -875,5 +864,52 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                 inFlightAnchorTask = anchorTask
             }
         }
+    }
+}
+
+// MARK: - Trash enumerator
+
+/// Enumerator for the `.trashContainer` sentinel.
+///
+/// OneLake has no trash / recycle-bin concept — deletes are permanent DFS
+/// deletes (see `docs/onelake-api.md`). This type is a real, always-empty
+/// enumerator: `enumerateItems` reports zero items and `enumerateChanges`
+/// reports zero changes, both synchronously and without touching the engine.
+///
+/// It exists specifically so `FileProviderExtension.enumerator(for:)` does
+/// NOT fall back to `OfemWorkingSetEnumerator` for the trash container.
+/// Before this type existed, both `.trash` and `.workingSet` shared that one
+/// enumerator instance — but `OfemWorkingSetEnumerator.enumerateChanges` does
+/// a throttled `listWorkspaces` refresh and reports alias-wide cache deltas,
+/// none of which has anything to do with trash. Routing trash through it
+/// meant every working-set-driven delta was also (incorrectly) attributed to
+/// the trash container, and vice versa.
+///
+/// No mutable state, so no task tracking / locking is needed (contrast
+/// `OfemFPEEnumerator` and `OfemWorkingSetEnumerator`, which own in-flight
+/// `Task` handles guarded by an `NSLock`).
+final class OfemTrashEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Sendable {
+    func invalidate() {}
+
+    func enumerateItems(
+        for observer: NSFileProviderEnumerationObserver,
+        startingAt _: NSFileProviderPage
+    ) {
+        observer.didEnumerate([])
+        observer.finishEnumerating(upTo: nil)
+    }
+
+    func enumerateChanges(
+        for observer: NSFileProviderChangeObserver,
+        from anchor: NSFileProviderSyncAnchor
+    ) {
+        // Trash never changes: echo the same anchor back so the framework
+        // sees a stable, empty delta instead of expiring it into a full
+        // re-enumeration on every poll.
+        observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
+    }
+
+    func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
+        completionHandler(encodeSyncAnchor(0))
     }
 }
