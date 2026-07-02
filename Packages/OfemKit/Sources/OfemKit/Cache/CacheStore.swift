@@ -862,6 +862,7 @@ public actor CacheStore {
 
     // MARK: - Blob: blobURL
 
+    // periphery:ignore - only test callers remain; exclude_tests: true hides them from periphery
     /// Returns the on-disk file URL of the cached blob for `key`, or `nil`
     /// when the metadata row has no blob or the blob file is missing.
     ///
@@ -872,6 +873,10 @@ public actor CacheStore {
     /// is advisory only.  A concurrent `evictToLimit`, `delete`, or `wipe`
     /// can remove the file between this call and the caller's open.  Callers
     /// must handle a missing-file error when opening the returned URL.
+    ///
+    /// `SyncEngine`'s own callers now use ``blobURL(record:)`` (they already
+    /// have the record); this key-based entry point remains the minimal
+    /// public API for a caller that only has a `CacheKey`.
     public func blobURL(key: CacheKey) async throws -> URL? {
         try validateKey(key)
         let record = try await fetch(key: key)
@@ -892,6 +897,7 @@ public actor CacheStore {
 
     // MARK: - Blob: handoff (hardlink)
 
+    // periphery:ignore - only test callers remain; exclude_tests: true hides them from periphery
     /// Hands the cached blob for `key` to the caller without a full copy.
     ///
     /// Creates a hard link from the blob file to `destURL`. Because hard links
@@ -911,6 +917,10 @@ public actor CacheStore {
     /// an atomic write-then-rename strategy, and eviction removes the shard
     /// directory entry but the inode survives until all hard links (including
     /// the caller's `destURL`) are released, so the FPE's path remains valid.
+    ///
+    /// `FileProviderExtension.fetchContents` now uses ``handoffBlob(record:to:)``
+    /// (it already has the record); this key-based entry point remains the
+    /// minimal public API for a caller that only has a `CacheKey`.
     ///
     /// - Parameters:
     ///   - key: Identifies the cached blob.

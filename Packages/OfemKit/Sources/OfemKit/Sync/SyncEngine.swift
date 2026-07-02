@@ -49,12 +49,17 @@ public actor SyncEngine {
     public static let defaultSelfHealIntervalMinutes = 30
 
     /// Default freshness window for ``open(key:)``'s cache-hit path: a row
-    /// synced within this long ago is served without a `getProperties`
-    /// HEAD. Aligned with `ChangeWatcher`'s default `materializedPollInterval`
-    /// (60 s) — the background poll loop keeps materialized rows current on
-    /// roughly that cadence, so re-validating a row still inside the window on
-    /// every single open (Quick Look, repeated reads) is a redundant round
-    /// trip. `.zero` disables the fast path (always HEAD, today's behaviour).
+    /// synced within this long ago is served without a `getProperties` HEAD.
+    /// Aligned with `ChangeWatcher`'s default `materializedPollInterval`
+    /// (60 s): `syncedAtNs` is stamped fresh by the initial download and by
+    /// any subsequent `refreshFolder` pass that observes an actual change for
+    /// this row (an unchanged row's `syncedAtNs` is deliberately left alone —
+    /// see `refreshFolder`'s upsert-batch comment). So the window mainly
+    /// covers the common burst case — Quick Look, a re-open shortly after a
+    /// download or a poll-observed change — not an indefinitely-refreshed
+    /// guarantee; a stable file still re-validates with a real HEAD roughly
+    /// once per window. `.zero` disables the fast path (always HEAD, today's
+    /// behaviour).
     public static let defaultBlobFreshnessTTL: Duration = .seconds(60)
 
     // MARK: - Dependencies (private — callers must go through SyncEngine API)
@@ -892,6 +897,7 @@ public actor SyncEngine {
     /// instead of the caller fetching the row again afterward.
     private typealias OpenResult = (url: URL, record: MetadataRecord)
 
+    // periphery:ignore - only test callers remain; exclude_tests: true hides them from periphery
     /// Downloads a file, serving from the local blob cache when fresh.
     ///
     /// Returns a file URL rather than in-memory `Data` so the FPE can write
@@ -905,6 +911,13 @@ public actor SyncEngine {
     ///
     /// The blob cache is checked BEFORE acquiring a download semaphore slot, so
     /// cache hits never consume a slot.
+    ///
+    /// The sole production caller (`FileProviderExtension.fetchContents`) now
+    /// uses ``openReturningRecord(key:)`` instead, so it also needs the served
+    /// record; this URL-only entry point is kept as the minimal public API for
+    /// any caller that only needs the file (matching `blobURL(key:)` /
+    /// `handoffBlob(key:to:)` below) and is exercised extensively by the
+    /// `open()` test suite.
     public func open(key: CacheKey) async throws -> URL {
         try await performOpen(key: key).url
     }
@@ -931,12 +944,15 @@ public actor SyncEngine {
         let cached = try? await cache.fetch(key: key)
 
         if let c = cached, !c.blobSHA256.isEmpty {
-            // A row synced within blobFreshnessTTL is presumed fresh — the
-            // background materialized-refresh poll loop (and the download or
-            // revalidate that last stamped this row) keeps syncedAtNs current,
-            // so re-validating with a getProperties HEAD on every single open
-            // is a redundant round trip. Skip the HEAD entirely inside the
-            // window.
+            // A row synced within blobFreshnessTTL is presumed fresh — it was
+            // stamped either by this file's own last download/revalidate or
+            // by a refreshFolder pass that observed a real change to it, so
+            // re-validating with a getProperties HEAD on every single open
+            // (Quick Look, a burst of re-opens) is a redundant round trip
+            // that closely-spaced opens would otherwise all pay. Skip the
+            // HEAD entirely inside the window; an unchanged row's syncedAtNs
+            // is not refreshed by the poll (see defaultBlobFreshnessTTL), so
+            // it still re-validates with a real HEAD roughly once per window.
             let rowAgeNs = currentNowNs() - c.syncedAtNs
             let ttlNs = Int64(blobFreshnessTTL.seconds * 1_000_000_000)
             if c.syncedAtNs > 0, rowAgeNs >= 0, rowAgeNs < ttlNs,

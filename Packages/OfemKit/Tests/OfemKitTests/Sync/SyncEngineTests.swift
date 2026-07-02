@@ -995,6 +995,54 @@ struct SyncEngineTests {
         #expect(ol.getPropertiesCalls.count == 1, "known-offline open() must not attempt another HEAD")
     }
 
+    @Test("A row invalidated by refreshFolder forces a real download even within the freshness TTL")
+    func refreshFolderInvalidationForcesDownloadWithinTTL() async throws {
+        let ol = MockOneLakeClient()
+        // Production-sized TTL: after refreshFolder re-stamps the row below,
+        // syncedAtNs is "now" and well inside this window — the TTL fast path
+        // must still be skipped because blobSHA256 was cleared.
+        let (engine, store) = try makeEngine(onelake: ol, blobFreshnessTTL: .seconds(60))
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let dirKey = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files")
+        let key = Self.baseKey // "Files/data.csv"
+
+        // Seed a normal cached download at etag v1.
+        let body1 = Data(repeating: 0x01, count: 10)
+        let props1 = PathProperties.make(contentLength: 10, eTag: "v1")
+        ol.readResults.append(.success((body1, props1)))
+        _ = try await engine.open(key: key)
+
+        // The background poll loop's refreshFolder observes a remote etag
+        // change (v2). entryChanged detects the delta, so the upserted row
+        // carries the new etag with blobSHA256 cleared (unlinked from the
+        // stale v1 blob — "Carry blob linkage when etag still matches" does
+        // not apply) and a freshly stamped syncedAtNs.
+        let listing = ListResult(entries: [
+            PathEntry.file(name: "Files/data.csv", size: 20, eTag: "v2", lastModified: Date(timeIntervalSince1970: 0)),
+        ])
+        ol.listPathResults.append(.success(listing))
+        _ = try await engine.refreshFolder(key: dirKey)
+
+        let row = try await store.fetch(key: key)
+        #expect(row.etag == "v2")
+        #expect(row.blobSHA256.isEmpty, "refreshFolder must clear the blob link on an etag change")
+
+        // open() again, immediately — well inside the 60 s TTL window
+        // syncedAtNs was just stamped with. Because blobSHA256 is empty, the
+        // TTL fast path's `!c.blobSHA256.isEmpty` guard must keep this out of
+        // the cache-hit branch entirely: the engine issues a real download
+        // and serves the NEW bytes, not a stale HEAD-free cache hit.
+        let body2 = Data(repeating: 0x02, count: 20)
+        let props2 = PathProperties.make(contentLength: 20, eTag: "v2")
+        ol.readResults.append(.success((body2, props2)))
+
+        let url2 = try await engine.open(key: key)
+        let data2 = try Data(contentsOf: url2)
+        #expect(data2 == body2, "open() within the TTL must still serve the NEW bytes after invalidation")
+        #expect(ol.readCalls.count == 2, "expected a real re-download, not a stale cache hit")
+    }
+
     // MARK: - openReturningRecord
 
     @Test("openReturningRecord returns the record describing the served bytes, not a pre-download snapshot")

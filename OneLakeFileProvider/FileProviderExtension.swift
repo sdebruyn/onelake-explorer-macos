@@ -5,8 +5,8 @@
 // - FPE creates one FPEEngineHost per domain (one per account alias).
 // - Engine-backed enumerators (OfemFPEEnumerator) handle all
 //   list/enumerate operations.
-// - Fetch and write operations call SyncEngine.open / put / delete /
-//   mkdir directly through OfemKit.
+// - Fetch and write operations call SyncEngine.openReturningRecord / put /
+//   delete / mkdir directly through OfemKit.
 //
 // Error mapping: FPError.classify(error) maps any OfemKit error to a
 // stable FPError.Code which nsFileProviderError(for:) (FPErrorMapping.swift)
