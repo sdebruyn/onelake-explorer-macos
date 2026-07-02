@@ -174,8 +174,8 @@ struct FPELogicTests {
     /// Verifies that a cache row is preserved when a metadata-only create
     /// (`.mayAlreadyExist` or no `.contents` in fields) is processed.
     ///
-    /// The fpe-02 fix ensures `engineCreateItem` skips the upload path when
-    /// `fields` does not include `.contents`. At the OfemKit layer the
+    /// The fpe-02 fix ensures `ItemResolution.createItem` skips the upload path
+    /// when `fields` does not include `.contents`. At the OfemKit layer the
     /// invariant is: if the cache row for the key already exists, its content
     /// must survive a metadata-only create path (no upsert with empty content
     /// should overwrite it). We test this by checking that `fetch` returns the
@@ -189,7 +189,7 @@ struct FPELogicTests {
         try await store.upsert(original)
 
         // Simulate a metadata-only re-upsert (no blob, same etag) — as the
-        // .mayAlreadyExist path in engineCreateItem would do.
+        // .mayAlreadyExist path in ItemResolution.createItem would do.
         var metaOnly = original
         metaOnly.blobSHA256 = ""
         metaOnly.blobSize = 0
