@@ -16,6 +16,17 @@
 //   policy between .accessory (no Dock icon, normal background state) and
 //   .regular (Dock icon visible, while an app window is open). This lets
 //   users raise buried windows via the Dock, Cmd-Tab, or Mission Control.
+//
+// Menu status polling (E3):
+//   MenuStatusModel runs two refresh loops. A low-frequency (~75s)
+//   background loop (startBackgroundRefresh) runs for the whole process
+//   lifetime so the ambient menu-bar badge keeps self-healing even while
+//   no UI surface is open. A high-frequency (5s) loop layers on top
+//   whenever a surface is actually visible, via the refcounted
+//   surfaceBecameVisible()/surfaceBecameHidden() pair — MenuVisibilityController
+//   (MenuVisibilityController.swift) drives that for the dropdown from
+//   AppKit menu-tracking notifications; SettingsView drives it for the
+//   Settings window from onAppear/onDisappear.
 
 import AppKit
 import OfemKit
@@ -129,13 +140,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ChangeWatcher.shared.start()
         }
 
-        // Start periodic status polling so the icon + menu reflect engine
-        // state immediately on launch and stay current — MenuBarExtra(.menu)
-        // does not fire SwiftUI.onAppear on menu open, so a timer (not the
-        // menu lifecycle) is what keeps the state fresh and self-healing.
+        // Low-frequency background refresh for the whole process lifetime,
+        // so the ambient badge (no-accounts / paused-workspace state)
+        // keeps self-healing even while no UI surface is open — the app's
+        // normal resting state. The expensive 5 s high-frequency loop only
+        // layers on top while a surface is actually visible (E3); see
+        // MenuVisibilityController for the dropdown side.
         Task { @MainActor in
-            MenuStatusModel.shared.startAutoRefresh()
+            MenuStatusModel.shared.startBackgroundRefresh()
         }
+        MenuVisibilityController.shared.start()
     }
 
     func applicationDidBecomeActive(_: Notification) {
