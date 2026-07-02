@@ -234,7 +234,7 @@ struct RefreshMaterializedIntegrationTests {
             _ = try await engine.refreshMaterializedContainer(key: key)
 
             // Record the sync anchor before the remote mutation.
-            let nsBefore = try await store.maxSyncedAtNs(accountAlias: lake.alias)
+            let nsBefore = try await store.syncAnchorNs(accountAlias: lake.alias)
 
             // Write a second file outside the engine (simulates a remote mutation
             // by another client).
@@ -274,16 +274,14 @@ struct RefreshMaterializedIntegrationTests {
     ///
     /// - The file is gone from ``CacheStore/children(of:)``.
     /// - ``CacheStore/itemsChangedAfter(accountAlias:ns:)`` (anchored before
-    ///   the second refresh) surfaces the deletion via a changed or removed row.
+    ///   the second refresh) surfaces the deletion.
     ///
-    /// Note: ``SyncEngine/refreshFolder(key:)`` performs a hard-delete via
-    /// `batchDelete` when a child disappears from the remote listing. The row
-    /// is removed from `path_metadata` rather than written to
-    /// `deletion_tombstones` (tombstones are written only by the explicit
-    /// ``CacheStore/recordDeletion(accountAlias:identifierString:)`` path
-    /// triggered from the FPE `delete` flow). As a result the deletion is
-    /// surfaced through `itemsChangedAfter` via the reduced `updated` set
-    /// (the child simply disappears) rather than via `deletedIdentifierStrings`.
+    /// Note: ``SyncEngine/refreshFolder(key:)`` hard-deletes the vanished child
+    /// via `batchDelete(recordTombstones: true)`, which writes a
+    /// `deletion_tombstones` row for the removed path before removing it from
+    /// `path_metadata`. The deletion is therefore surfaced through
+    /// `itemsChangedAfter` via `deletedIdentifierStrings`, while `keep.bin`
+    /// (re-upserted by the second refresh) appears in the `updated` set.
     @Test("refreshMaterializedContainer tombstones a remotely-deleted file")
     func remoteDeleteDetected() async throws {
         let lake = try liveLakehouse()
@@ -312,7 +310,7 @@ struct RefreshMaterializedIntegrationTests {
             #expect(kidsBefore.map(\.name).contains("delete.bin"), "delete.bin must be cached initially")
 
             // Record the sync anchor before the remote deletion.
-            let nsBefore = try await store.maxSyncedAtNs(accountAlias: lake.alias)
+            let nsBefore = try await store.syncAnchorNs(accountAlias: lake.alias)
 
             // Delete the file remotely (outside the engine).
             try await lake.client.delete(
@@ -334,13 +332,18 @@ struct RefreshMaterializedIntegrationTests {
             #expect(namesAfter.contains("keep.bin"), "keep.bin must remain in cache")
 
             // itemsChangedAfter reflects the post-deletion cache state: keep.bin
-            // was upserted by the second refresh (synced_at_ns bumped) so it
-            // appears in updated; delete.bin is gone from the cache entirely.
+            // was re-upserted by the second refresh (synced_at_ns bumped) so it
+            // appears in updated; delete.bin surfaces as a deletion tombstone.
             let changes = try await store.itemsChangedAfter(
                 accountAlias: lake.alias,
                 ns: nsBefore
             )
             #expect(!changes.updated.isEmpty, "itemsChangedAfter must surface at least one updated row")
+            let deletedIdentifier = "\(lake.workspace)/\(lake.item)/\(dir)/delete.bin"
+            #expect(
+                changes.deletedIdentifierStrings.contains(deletedIdentifier),
+                "the removed file must surface via deletedIdentifierStrings"
+            )
         } catch {
             await lake.rmBestEffort(dir)
             throw error
@@ -411,7 +414,7 @@ struct RefreshMaterializedIntegrationTests {
             #expect(kidsAfterSeed.map(\.name).contains("update.bin"), "update.bin must be cached after first poll")
 
             // Step 3: record anchor, then mutate the remote state.
-            let nsBefore = try await store.maxSyncedAtNs(accountAlias: lake.alias)
+            let nsBefore = try await store.syncAnchorNs(accountAlias: lake.alias)
 
             // Add a new file.
             try await lake.write("\(dir)/added.bin", Data(repeating: 0xCC, count: 32))

@@ -717,7 +717,7 @@ struct CacheStoreTests {
         let keys = (0 ..< 5).map { i in
             CacheKey(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "f\(i).txt")
         }
-        try await store.batchDelete(keys)
+        try await store.batchDelete(keys, recordTombstones: false)
 
         let parentKey = CacheKey(accountAlias: "a", workspaceID: "ws", itemID: "it", path: "")
         let remaining = try await store.children(of: parentKey)

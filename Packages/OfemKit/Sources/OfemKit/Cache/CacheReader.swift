@@ -150,21 +150,25 @@ public final class CacheReader: Sendable {
 
     // MARK: - Sync anchor
 
-    /// Returns the maximum `synced_at_ns` value across all rows for the given
-    /// `accountAlias`, or `0` when there are no rows.
+    /// Returns the sync anchor for `accountAlias`: the maximum of the newest
+    /// `synced_at_ns` in `path_metadata` and the newest `deleted_at_ns` in
+    /// `deletion_tombstones`, or `0` when neither table has a row.
     ///
-    /// Used to compute a real sync anchor: whenever a new `upsert` bumps
-    /// `syncedAtNs`, this value increases, making the anchor non-constant and
-    /// allowing `enumerateChanges` to return real deltas rather than always
-    /// throwing `.syncAnchorExpired`.
-    public func maxSyncedAtNs(accountAlias: String) async throws -> Int64 {
+    /// Deletions must be part of the anchor. A poll that only removes rows bumps
+    /// no `synced_at_ns`, so an anchor derived from `path_metadata` alone would
+    /// not advance and `enumerateChanges` — which reads changes strictly after
+    /// the caller's anchor — would strand the deletion until the next unrelated
+    /// upsert. Folding `deleted_at_ns` in keeps the anchor moving on a pure
+    /// deletion so the removal is delivered incrementally.
+    public func syncAnchorNs(accountAlias: String) async throws -> Int64 {
         try await db.read { db in
             let sql = """
-            SELECT COALESCE(MAX(synced_at_ns), 0)
-            FROM path_metadata
-            WHERE account_alias = ?
+            SELECT MAX(
+                (SELECT COALESCE(MAX(synced_at_ns), 0) FROM path_metadata WHERE account_alias = ?),
+                (SELECT COALESCE(MAX(deleted_at_ns), 0) FROM deletion_tombstones WHERE account_alias = ?)
+            )
             """
-            return try Int64.fetchOne(db, sql: sql, arguments: [accountAlias]) ?? 0
+            return try Int64.fetchOne(db, sql: sql, arguments: [accountAlias, accountAlias]) ?? 0
         }
     }
 
@@ -176,6 +180,14 @@ public final class CacheReader: Sendable {
     /// - `deletedIdentifierStrings`: identifier strings from `deletion_tombstones`
     ///   whose `deleted_at_ns` is strictly greater than `ns`.
     ///
+    /// The two sets are reconciled by timestamp before returning so a stale
+    /// tombstone and a live row for the same identifier never both surface: if a
+    /// live row is at least as fresh as its tombstone (`syncedAtNs >=
+    /// deletedAtNs` — ties go to the live row), the tombstone is dropped and the
+    /// row is emitted as an update; otherwise the deletion is newer and the row
+    /// is dropped from `updated`. This mirrors the recreate-clears-tombstone
+    /// write path and defends the read side against any residual overlap.
+    ///
     /// Used by `enumerateChanges` so the FPE can call both `didUpdate` and
     /// `didDeleteItems(withIdentifiers:)` in a single delta pass.
     public func itemsChangedAfter(
@@ -183,15 +195,50 @@ public final class CacheReader: Sendable {
         ns: Int64
     ) async throws -> (updated: [MetadataRecord], deletedIdentifierStrings: [String]) {
         let result = try await db.read { db -> (updated: [MetadataRecord], deletedIdentifierStrings: [String]) in
-            let updated = try MetadataRecord
+            let updatedRaw = try MetadataRecord
                 .filter(MetadataRecord.Columns.accountAlias == accountAlias)
                 .filter(MetadataRecord.Columns.syncedAtNs > ns)
                 .fetchAll(db)
 
-            let deleted = try String.fetchAll(db, sql: """
-            SELECT identifier_string FROM deletion_tombstones
+            // Fetch tombstones with their timestamps so we can reconcile against
+            // the live rows. The PK (account_alias, identifier_string) makes each
+            // identifier unique, so one deleted_at_ns per identifier.
+            let tombstoneRows = try Row.fetchAll(db, sql: """
+            SELECT identifier_string, deleted_at_ns FROM deletion_tombstones
             WHERE account_alias = ? AND deleted_at_ns > ?
             """, arguments: [accountAlias, ns])
+            var tombstoneNsByIdent: [String: Int64] = [:]
+            for row in tombstoneRows {
+                let ident: String = row["identifier_string"]
+                let deletedNs: Int64 = row["deleted_at_ns"]
+                tombstoneNsByIdent[ident] = deletedNs
+            }
+
+            var suppressedIdents: Set<String> = []
+            var updated: [MetadataRecord] = []
+            updated.reserveCapacity(updatedRaw.count)
+            for record in updatedRaw {
+                guard let ident = CacheStore.tombstoneIdentifierString(
+                    workspaceID: record.workspaceID,
+                    itemID: record.itemID,
+                    path: record.path
+                ), let deletedNs = tombstoneNsByIdent[ident] else {
+                    // No overlapping tombstone → a genuine update.
+                    updated.append(record)
+                    continue
+                }
+                if record.syncedAtNs >= deletedNs {
+                    // Live row wins (ties included): emit as update, drop the tombstone.
+                    updated.append(record)
+                    suppressedIdents.insert(ident)
+                }
+                // else: the tombstone is newer → the deletion wins; drop the
+                // updated record and let the tombstone surface below.
+            }
+
+            let deleted = tombstoneRows
+                .map { row -> String in row["identifier_string"] }
+                .filter { !suppressedIdents.contains($0) }
 
             return (updated, deleted)
         }

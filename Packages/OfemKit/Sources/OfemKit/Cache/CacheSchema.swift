@@ -17,6 +17,10 @@ import GRDB
 /// - `v6` — adds `subtree_etag` column to `path_metadata`. Only container rows
 ///   carry it (the directory etag harvested from the parent listing); it gates
 ///   the materialized-refresh skip-gate (#380) and never feeds item versions.
+/// - `v7` — one-time purge of legacy stale tombstones: deletes every
+///   `deletion_tombstones` row that is shadowed by a live `path_metadata` row at
+///   least as fresh as the tombstone. Cleans rows left behind before upsert
+///   started clearing tombstones on recreate; adds no schema objects.
 ///
 /// Key indexes:
 /// - `idx_pm_synced_at`: composite on `(account_alias, synced_at_ns)` used
@@ -95,10 +99,13 @@ public enum CacheSchema {
             );
             """)
 
-            // deletion_tombstones: soft-delete log, one row per remote-deleted item
-            // per reconciliation. `refreshFolder` writes here before hard-deleting from
-            // path_metadata so `enumerateChanges` can call `didDeleteItems` and Finder
-            // sees removals.
+            // deletion_tombstones: soft-delete log consumed by itemsChangedAfter →
+            // enumerateChanges → didDeleteItems. Writers: delete(key:),
+            // batchDelete(recordTombstones: true) — the refreshFolder reconcile and
+            // expireDiscoveryRows — and SyncEngine.rename via recordDeletion. A
+            // tombstone is cleared when its identifier is re-created (upsert /
+            // batchUpsert / renamePathPrefix) and reconciled by timestamp in
+            // itemsChangedAfter.
             try db.execute(sql: """
             CREATE TABLE deletion_tombstones (
                 account_alias     TEXT    NOT NULL,
@@ -190,6 +197,28 @@ public enum CacheSchema {
             try db.execute(sql: """
             ALTER TABLE path_metadata
                 ADD COLUMN subtree_etag TEXT NOT NULL DEFAULT '';
+            """)
+        }
+
+        // v7: one-time purge of legacy stale tombstones. Before this release a
+        // re-created path kept the tombstone from its earlier deletion (nothing
+        // cleared it on upsert), so itemsChangedAfter could report a live row as
+        // deleted. Delete every tombstone shadowed by a live path_metadata row at
+        // least as fresh as the tombstone (reconstructing the row's identifier via
+        // the same shape as ItemIdentifier.identifierString); fresh tombstones
+        // with no live row survive. From here on upsert / batchUpsert /
+        // renamePathPrefix clear tombstones inline and itemsChangedAfter reconciles
+        // by timestamp, so this only cleans pre-existing rows.
+        m.registerMigration("v7") { db in
+            try db.execute(sql: """
+            DELETE FROM deletion_tombstones WHERE EXISTS (
+                SELECT 1 FROM path_metadata p
+                WHERE p.account_alias = deletion_tombstones.account_alias
+                  AND p.synced_at_ns >= deletion_tombstones.deleted_at_ns
+                  AND deletion_tombstones.identifier_string =
+                      CASE WHEN p.path = '' THEN p.workspace_id || '/' || p.item_id
+                           ELSE p.workspace_id || '/' || p.item_id || '/' || p.path END
+            );
             """)
         }
 
