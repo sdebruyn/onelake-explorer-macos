@@ -807,13 +807,13 @@ public actor CacheStore {
             )
         }
 
-        // Enforce the byte budget after every successful write.
-        // Measurement and eviction happen in one atomic DB transaction — no
-        // suspension between the total read and the eviction decision, so the
-        // budget cannot be transiently overshot by a concurrent storeBlob on
-        // this actor.  Blob files are deleted *after* the transaction commits;
-        // a crash between commit and file-delete leaves orphaned files that the
-        // next init-time orphan sweep will recover.
+        // Enforce the byte budget after every successful write. Each pass
+        // ``evictToLimit()`` runs measures and selects its candidates inside
+        // one atomic DB transaction — no suspension between the total read
+        // and the eviction decision within a pass, so the budget cannot be
+        // transiently overshot by a concurrent storeBlob on this actor. See
+        // ``evictToLimit()``'s doc comment for how it bounds the on-disk
+        // orphan window when a call spans more than one pass.
         if maxBlobBytes > 0 {
             _ = try await evictToLimit()
         }
@@ -1087,10 +1087,26 @@ public actor CacheStore {
     /// `await` suspension between them, so no concurrent actor task can push
     /// the total higher between the two steps.
     ///
-    /// Blob files are deleted **after** all passes' transactions have
-    /// committed. A crash between commit and file-delete leaves orphaned
-    /// files on disk; the init-time orphan sweep reclaims them on the next
-    /// launch.
+    /// A pass's blob files are deleted **immediately after that pass's
+    /// transaction commits** — not deferred until the whole (possibly
+    /// multi-pass) call finishes. This matters because each pass is its own
+    /// committed transaction: if a *later* pass throws (plausible causes
+    /// include `SQLITE_BUSY` after the busy-timeout under write contention,
+    /// or `SQLITE_FULL` — precisely the condition eviction exists to
+    /// relieve), the `throw` propagates out of `evictToLimit()` immediately,
+    /// but every **earlier** pass already committed its `blob_sha256 = ''`
+    /// clears. Deleting per-pass means those earlier passes' blob files are
+    /// already unlinked by the time the throw happens, bounding the
+    /// file-orphan window to at most the one pass that failed — matching the
+    /// old single-transaction design's guarantee. There is no periodic
+    /// runtime sweep (`sweepOrphanBlobs` only runs from `CacheStore.init`
+    /// and the test-only ``sweepOrphans()``); an FPE process can stay alive
+    /// for a long time, so deferring every pass's deletion to the end would
+    /// let a plain in-process throw (no crash) strand disk space for the
+    /// rest of the process's life — the opposite of what eviction exists to
+    /// do. A crash between a pass's commit and that pass's blob-delete still
+    /// leaves that pass's files orphaned; the init-time orphan sweep
+    /// reclaims them on the next launch, same as before this method existed.
     ///
     /// Note: per arch-04, multiple `CacheStore` instances may share the same
     /// `cacheDir`.  This method enforces the budget for *this* instance only;
@@ -1106,7 +1122,13 @@ public actor CacheStore {
         // call (actor isolation only serialises access from actor-isolated
         // code; it does not extend into a closure handed to another queue).
         // `budget` is a frozen `let` Int64 — trivially `Sendable`, safe to
-        // capture into every pass's closure below.
+        // capture into every pass's closure below. One consequence of
+        // snapshotting once for the whole (possibly multi-pass) call: a
+        // `setMaxBlobBytes()` arriving mid-loop — only reachable when a
+        // single call needs more than `evictionWindowSize` rows evicted —
+        // is not honoured until the *next* `evictToLimit()` call, matching
+        // the already-documented "not retroactive until the next write"
+        // semantics on `setMaxBlobBytes(_:)`.
         let budget = maxBlobBytes
         guard budget > 0 else { return (0, 0) }
 
@@ -1119,7 +1141,8 @@ public actor CacheStore {
             var size: Int64
         }
 
-        var allCandidates: [EvictionCandidate] = []
+        var totalEvicted = 0
+        var totalReclaimed: Int64 = 0
 
         // Loop passes until the deduplicated total is at or below budget, or
         // there is nothing left to scan. Each pass clears at least one
@@ -1153,12 +1176,12 @@ public actor CacheStore {
                 // Every row referencing any of those SHAs — including rows
                 // outside the window — so a shared blob is resolved as one
                 // complete group, never partially (see the C4 note above).
-                let placeholders = shaOrder.map { _ in "?" }.joined(separator: ", ")
+                let (placeholders, arguments) = Self.inClauseBinding(shaOrder)
                 let groupRows = try Row.fetchAll(db, sql: """
                 SELECT account_alias, workspace_id, item_id, path, blob_sha256, blob_size
                 FROM path_metadata
                 WHERE blob_sha256 IN (\(placeholders))
-                """, arguments: StatementArguments(shaOrder))
+                """, arguments: arguments)
 
                 var rowsBySHA: [String: [EvictionCandidate]] = [:]
                 for row in groupRows {
@@ -1195,31 +1218,34 @@ public actor CacheStore {
             }
 
             if candidates.isEmpty { break }
-            allCandidates.append(contentsOf: candidates)
+
+            // Delete THIS PASS's blob files now, right after its transaction
+            // committed — see the doc comment above for why deferring this
+            // to the end of the (possibly multi-pass) loop would reopen a
+            // disk-leak window. Resolve ref-counts in one grouped query, then
+            // check+unlink inside a single write transaction — eliminates
+            // N+1 and closes the TOCTOU window where a concurrent storeBlob
+            // could reference a just-evicted SHA between the ref-count read
+            // and the unlink.
+            let uniqueSHAs = Array(Set(candidates.map(\.sha)))
+            // Every row sharing a SHA was cleared together above, so each SHA
+            // maps to exactly one size; `uniquingKeysWith` never has to pick
+            // between different values.
+            let sizeBySHA = Dictionary(candidates.map { ($0.sha, $0.size) }, uniquingKeysWith: { first, _ in first })
+            await deleteUnreferencedBlobs(shas: uniqueSHAs, onDeleted: { sha in
+                totalReclaimed += sizeBySHA[sha] ?? 0
+            })
+            totalEvicted += candidates.count
         }
 
-        if allCandidates.isEmpty { return (0, 0) }
+        if totalEvicted > 0 {
+            logger.debug("cache eviction", metadata: [
+                "evicted": "\(totalEvicted)",
+                "reclaimed": "\(totalReclaimed)",
+            ])
+        }
 
-        // Delete blob files after all passes' transactions have committed.
-        // Resolve all ref-counts in one grouped query, then check+unlink
-        // inside a single write transaction — eliminates N+1 and closes
-        // the TOCTOU window where a concurrent storeBlob could reference
-        // a just-evicted SHA between the ref-count read and the unlink.
-        let uniqueSHAs = Array(Set(allCandidates.map(\.sha)))
-        var reclaimed: Int64 = 0
-        await deleteUnreferencedBlobs(shas: uniqueSHAs, onDeleted: { sha in
-            // Sum bytes once per SHA — every row sharing a SHA was cleared
-            // together above, so a deleted file always matches one entry here.
-            let candidateSize = allCandidates.first(where: { $0.sha == sha })?.size ?? 0
-            reclaimed += candidateSize
-        })
-
-        logger.debug("cache eviction", metadata: [
-            "evicted": "\(allCandidates.count)",
-            "reclaimed": "\(reclaimed)",
-        ])
-
-        return (allCandidates.count, reclaimed)
+        return (totalEvicted, totalReclaimed)
     }
 
     // MARK: - Workspace status
@@ -1330,6 +1356,21 @@ public actor CacheStore {
         return (key.path, escaped + "/%")
     }
 
+    // MARK: IN-clause helper
+
+    /// Returns `(placeholders, arguments)` for binding `shas` positionally
+    /// into a `blob_sha256 IN (...)` clause.
+    ///
+    /// Shared by every such query in this file (``evictToLimit()``'s
+    /// same-SHA-group lookup and ``deleteUnreferencedBlobs(shas:onDeleted:)``'s
+    /// ref-count check) so the placeholder-building logic can't drift between
+    /// the two copies.
+    ///
+    /// `static` so it can be called from inside `dbPool.write` Sendable closures.
+    private static func inClauseBinding(_ shas: [String]) -> (placeholders: String, arguments: StatementArguments) {
+        (shas.map { _ in "?" }.joined(separator: ", "), StatementArguments(shas))
+    }
+
     // MARK: Set-based blob deletion
 
     /// Deletes blob files for all `shas` that have no surviving DB reference,
@@ -1351,13 +1392,13 @@ public actor CacheStore {
         // no data loss (see CacheStore.swift loadBlob self-heal path).
         let stillReferenced: Set<String>
         do {
-            let placeholders = shas.map { _ in "?" }.joined(separator: ", ")
+            let (placeholders, arguments) = Self.inClauseBinding(shas)
             stillReferenced = try await dbPool.write { db -> Set<String> in
                 let rows = try String.fetchAll(db, sql: """
                 SELECT DISTINCT blob_sha256
                 FROM path_metadata
                 WHERE blob_sha256 IN (\(placeholders))
-                """, arguments: StatementArguments(shas))
+                """, arguments: arguments)
                 return Set(rows)
             }
         } catch {
