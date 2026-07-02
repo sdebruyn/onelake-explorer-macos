@@ -140,7 +140,7 @@ Iceberg REST Catalog and Delta protocols for table metadata. Not needed for file
 - DFS endpoints support parallel reads via `Range` headers — good for large files.
 - For uploads of large files: chunked write through `append` + `flush` is more efficient than a single big `PUT`.
 - Listings are paginated through the `continuation` parameter — implement pagination correctly or you will miss files in large folders.
-- The HTTP client deliberately does NOT set a top-level `Client.Timeout`. A `Read` on a multi-GiB file at modest bandwidth would otherwise be killed mid-stream. We instead cap the response-header wait via `http.Transport.ResponseHeaderTimeout` (default 30 s) and leave the body-streaming budget to the caller's `context`. Callers that want to bound a download should use `context.WithTimeout` or `context.WithDeadline`.
+- HTTP is an Alamofire `Session` over `URLSession` (see `Packages/OfemKit/Sources/OfemKit/HTTP/SessionPool.swift`), pooled per `(alias, scope)` so token refresh and connection limits stay scoped to the right account and audience. `timeoutIntervalForRequest` is 60 s, but `timeoutIntervalForResource` is deliberately `.infinity`: a resource-level wall-clock cap would kill a multi-GiB download or append stream mid-transfer at modest bandwidth. There is no response-header timeout either. Instead, retries are bounded explicitly by `RetryAfterRetrier` (honors `Retry-After` on 429/503) and `RetryPolicy` (retry limit 5, on `408, 425, 429, 500, 502, 503, 504`) — the resource never hangs open on a dead connection, it just isn't killed by a fixed clock.
 
 ## Error handling we must cover explicitly
 

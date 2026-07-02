@@ -202,6 +202,107 @@ struct OfemConfigTests {
         }
     }
 
+    // MARK: - Lenient [accounts] decode (F13)
+
+    @Test("one malformed account entry is skipped; the rest load intact")
+    func malformedAccountEntryIsSkipped() throws {
+        let paths = makePaths()
+        // "bad" has an integer tenant_id (should be a string) — only that
+        // row must be dropped; "work" must still load.
+        let toml = """
+        [accounts.work]
+        alias = "work"
+        tenant_id = "tenant-guid"
+        home_account_id = "user.tenant"
+        username = "user@example.com"
+        added_at = "2026-05-23T12:00:00Z"
+
+        [accounts.bad]
+        alias = "bad"
+        tenant_id = 12345
+        home_account_id = "user2.tenant"
+        username = "user2@example.com"
+        added_at = "2026-05-23T12:00:00Z"
+        """
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        let accounts = store.snapshot().accounts
+        #expect(accounts.count == 1)
+        #expect(accounts["work"]?.tenantID == "tenant-guid")
+        #expect(accounts["bad"] == nil)
+    }
+
+    @Test("an account entry missing a required field is skipped; the rest load intact")
+    func accountEntryMissingRequiredFieldIsSkipped() throws {
+        let paths = makePaths()
+        // "incomplete" omits home_account_id, a required field.
+        let toml = """
+        [accounts.work]
+        alias = "work"
+        tenant_id = "t1"
+        home_account_id = "h1"
+        username = "user@example.com"
+        added_at = "2026-01-01T00:00:00Z"
+
+        [accounts.incomplete]
+        alias = "incomplete"
+        tenant_id = "t2"
+        username = "user2@example.com"
+        added_at = "2026-01-01T00:00:00Z"
+        """
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        let accounts = store.snapshot().accounts
+        #expect(accounts.count == 1)
+        #expect(accounts["work"] != nil)
+        #expect(accounts["incomplete"] == nil)
+    }
+
+    @Test("a structurally malformed [accounts] section still throws parseFailed")
+    func malformedAccountsSectionStillThrowsParseFailed() throws {
+        let paths = makePaths()
+        // `accounts` present but not a table — genuine file corruption, not a
+        // single bad row, so the backup-and-reset path upstream must still apply.
+        try writeFile("accounts = \"not-a-table\"\n", at: paths.configFile)
+
+        do {
+            _ = try OfemConfigStore(paths: paths)
+            Issue.record("Expected parseFailed error but no error was thrown")
+        } catch OfemConfigError.parseFailed {
+            // Expected — pass.
+        } catch {
+            Issue.record("Expected OfemConfigError.parseFailed, got \(error)")
+        }
+    }
+
+    @Test("all accounts valid: none are skipped")
+    func allValidAccountsSurviveLenientDecode() throws {
+        let paths = makePaths()
+        let toml = """
+        [accounts.work]
+        alias = "work"
+        tenant_id = "t1"
+        home_account_id = "h1"
+        username = "work@example.com"
+        added_at = "2026-01-01T00:00:00Z"
+
+        [accounts.home]
+        alias = "home"
+        tenant_id = "t2"
+        home_account_id = "h2"
+        username = "home@example.com"
+        added_at = "2026-01-01T00:00:00Z"
+        """
+        try writeFile(toml, at: paths.configFile)
+
+        let store = try OfemConfigStore(paths: paths)
+        let accounts = store.snapshot().accounts
+        #expect(accounts.count == 2)
+        #expect(accounts.keys.sorted() == ["home", "work"])
+    }
+
     // MARK: - Snapshot isolation
 
     @Test("snapshot returns an independent copy")
