@@ -139,6 +139,26 @@ public actor SyncEngine {
     /// pass already covers this poll's freshness.
     private var refreshInFlightAliases: Set<String> = []
 
+    /// Minimum gap between Fabric item-listing refreshes for a single
+    /// materialized workspace container (F6/C16). A workspace container is
+    /// depth-0 with no subtree etag, so the #380 skip-gate can never elide it;
+    /// without this throttle ``refreshMaterialized`` would issue one Fabric REST
+    /// call per materialized workspace on every poll. 60 s mirrors the host
+    /// working-set poll cadence (`OfemWorkingSetEnumerator.workspaceRefreshInterval`).
+    private static let itemListThrottleNs: Int64 = 60 * 1_000_000_000
+
+    /// Unix-nanosecond timestamp of the last SUCCESSFUL Fabric item-listing
+    /// refresh per `(alias, workspaceID)`, gating ``refreshItemListing`` by
+    /// ``itemListThrottleNs``. Keyed by ``itemListKey(alias:workspaceID:)``.
+    /// Stamped only after a successful list so a thrown attempt stays due.
+    private var lastItemListNs: [String: Int64] = [:]
+
+    /// `(alias, workspaceID)` pairs with a ``refreshItemListing`` in flight, so
+    /// overlapping poll-path refreshes for the same workspace coalesce instead
+    /// of each reading pre-upsert discovery state and double-writing. Mirrors
+    /// ``refreshInFlightAliases``. Keyed by ``itemListKey(alias:workspaceID:)``.
+    private var itemListInFlight: Set<String> = []
+
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "SyncEngine")
 
     // MARK: - Init
@@ -255,7 +275,11 @@ public actor SyncEngine {
         }
 
         let seen = Set(ws.map(\.id))
-        let cachedByPath = await discoveryChildrenByPath(parent: parentKey)
+        // Fetch the cached children ONCE and reuse the array for both the
+        // new-or-changed classification and the expiry reconcile below, instead
+        // of querying `cache.children` twice per pass.
+        let cachedChildren = (try? await cache.children(of: parentKey)) ?? []
+        let cachedByPath = Self.indexByPath(cachedChildren)
         let candidates = ws.map { w in
             MetadataRecord(
                 accountAlias: alias,
@@ -269,21 +293,97 @@ public actor SyncEngine {
                 syncedAtNs: nowNs
             )
         }
-        let rows = Self.buildDiscoveryUpsertBatch(candidates: candidates, cachedByPath: cachedByPath)
+        let rows = Self.classifyUpserts(candidates: candidates, cachedByPath: cachedByPath).batch
         await batchUpsert(rows, context: "listWorkspaces")
         // The parent of the workspaces listing is the domain root — root must
         // never be signalled (a root signal forces `.syncAnchorExpired` →
         // full re-enumeration). Root stays remount-driven via ChangeWatcher.
         // Container freshness for sub-containers is surfaced by the host
         // working-set poll loop rather than any per-container signal.
-        await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
+        await expireDiscoveryRows(children: cachedChildren, seen: seen, alias: alias)
 
         await track(eventName: "workspace_list", alias: alias, start: start, outcome: .success())
         return ws
     }
 
     /// Returns all items inside `workspaceID`, reconciling the local cache.
+    ///
+    /// On-demand entry point (navigation / `item(for:)` cache-miss fallback):
+    /// always lists — it is NOT throttled, so a first-mount cache miss still
+    /// populates the cache immediately. The periodic poll path uses the
+    /// throttled ``refreshItemListing(alias:workspaceID:)`` instead.
     public func listItems(alias: String, workspaceID: String) async throws -> [Item] {
+        let start = Date()
+        let (items, _) = try await reconcileItemListing(alias: alias, workspaceID: workspaceID)
+        await track(eventName: "item_list", alias: alias, start: start, outcome: .success())
+        return items
+    }
+
+    /// Refreshes a materialized workspace's Fabric item listing on the poll
+    /// path, returning the reconcile ``Diff``.
+    ///
+    /// A workspace container is materialized under the ``VirtualIDs/itemID``
+    /// sentinel (see ``CacheReader/materializedContainers(alias:)``); routing it
+    /// through ``refreshFolder(key:)`` would call `onelake.listPath` with
+    /// `itemGUID == "__items__"` — a guaranteed DFS error — so it is handled
+    /// here via the Fabric item listing instead (F6/C16).
+    ///
+    /// Two guards keep the poll cheap and consistent:
+    /// - **Coalesce**: a second call while one is in flight for the same
+    ///   workspace returns an empty ``Diff`` — the in-flight pass covers this
+    ///   poll and both must not read pre-upsert state and double-write.
+    /// - **Throttle**: within ``itemListThrottleNs`` of the last successful
+    ///   list, returns an empty ``Diff`` WITHOUT listing. Depth-0 workspace
+    ///   containers have no subtree etag, so the #380 skip-gate can never elide
+    ///   them; this is their throttle. The clock is only stamped on success, so
+    ///   a thrown (offline/paused) attempt stays due next poll.
+    func refreshItemListing(alias: String, workspaceID: String) async throws -> Diff {
+        let throttleKey = Self.itemListKey(alias: alias, workspaceID: workspaceID)
+
+        // Coalesce overlapping poll-path refreshes for the same workspace.
+        guard !itemListInFlight.contains(throttleKey) else { return Diff() }
+
+        // Throttle: serve an empty diff inside the window. A backward clock step
+        // (nowNs < last) fails toward refreshing rather than silently freezing.
+        let nowNs = nowNsProvider()
+        if let last = lastItemListNs[throttleKey], nowNs >= last, nowNs - last < Self.itemListThrottleNs {
+            return Diff()
+        }
+
+        itemListInFlight.insert(throttleKey)
+        defer { itemListInFlight.remove(throttleKey) }
+
+        let (_, diff) = try await reconcileItemListing(alias: alias, workspaceID: workspaceID)
+
+        // Stamp only after a successful list (reconcileItemListing rethrows on
+        // offline/paused BEFORE returning), so an offline poll stays due.
+        lastItemListNs[throttleKey] = nowNs
+
+        if diff.total > 0 {
+            await track(TelemetryEvent(
+                name: "sync_pulled",
+                accountAliasHash: TelemetryRedaction.hashAlias(alias),
+                itemsChanged: diff.total
+            ))
+        }
+        return diff
+    }
+
+    /// The shared reconcile-core for a workspace's Fabric item listing, used by
+    /// both the on-demand ``listItems(alias:workspaceID:)`` and the poll-path
+    /// ``refreshItemListing(alias:workspaceID:)``.
+    ///
+    /// Fetches the Fabric items (with the pause/offline guards), applies the
+    /// storage-type allowlist, upserts the item-listing root marker, writes the
+    /// conditional discovery-row batch, expires vanished rows (tombstoning each
+    /// removed item's `.item` identifier), and returns both the storage-backed
+    /// items and the reconcile ``Diff``. Emits the paused/failed telemetry on a
+    /// thrown Fabric call; the SUCCESS telemetry is left to the callers so the
+    /// on-demand and poll paths report distinct events.
+    private func reconcileItemListing(
+        alias: String,
+        workspaceID: String
+    ) async throws -> (items: [Item], diff: Diff) {
         let start = Date()
         let items: [Item]
         do {
@@ -329,11 +429,14 @@ public actor SyncEngine {
             syncedAtNs: nowNs
         )
         do { try await cache.upsert(root) } catch {
-            Self.log.warning("listItems: upsert root failed err=\(error, privacy: .public)")
+            Self.log.warning("reconcileItemListing: upsert root failed err=\(error, privacy: .public)")
         }
 
         let seen = Set(storageItems.map(\.id))
-        let cachedByPath = await discoveryChildrenByPath(parent: parentKey)
+        // Fetch the cached children ONCE and thread the array into both the
+        // classification and the expiry reconcile (avoids a second query).
+        let cachedChildren = (try? await cache.children(of: parentKey)) ?? []
+        let cachedByPath = Self.indexByPath(cachedChildren)
         let candidates = storageItems.map { it in
             MetadataRecord(
                 accountAlias: alias,
@@ -348,12 +451,21 @@ public actor SyncEngine {
                 itemType: it.type
             )
         }
-        let rows = Self.buildDiscoveryUpsertBatch(candidates: candidates, cachedByPath: cachedByPath)
+        let (rows, added, updated) = Self.classifyUpserts(candidates: candidates, cachedByPath: cachedByPath)
         await batchUpsert(rows, context: "listItems")
-        await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
+        let removed = await expireDiscoveryRows(children: cachedChildren, seen: seen, alias: alias)
 
-        await track(eventName: "item_list", alias: alias, start: start, outcome: .success())
-        return storageItems
+        var diff = Diff()
+        diff.added = added
+        diff.updated = updated
+        diff.removed = removed
+        return (storageItems, diff)
+    }
+
+    /// The throttle/coalesce map key for a `(alias, workspaceID)` pair.
+    /// A NUL separator keeps the two components unambiguous.
+    private static func itemListKey(alias: String, workspaceID: String) -> String {
+        "\(alias)\u{0}\(workspaceID)"
     }
 
     // MARK: - Enumerate
@@ -479,7 +591,8 @@ public actor SyncEngine {
         // must NOT be tombstoned. Rows that genuinely disappeared are removed via
         // batchDelete(recordTombstones: true), which writes a deletion tombstone
         // per removed path so the removal reaches Finder incrementally.
-        var upsertBatch: [MetadataRecord] = []
+        var candidates: [MetadataRecord] = []
+        candidates.reserveCapacity(remoteChildren.count)
         for (relPath, entry) in remoteChildren {
             let name = Enumerator.baseName(relPath)
             let cur = cachedByPath[relPath]
@@ -517,17 +630,15 @@ public actor SyncEngine {
                 next.contentType = c.contentType
             }
             if next.lastAccessedNs == 0 { next.lastAccessedNs = nowNs }
-
-            if cur == nil {
-                diff.added += 1
-                upsertBatch.append(next)
-            } else if let c = cur, Enumerator.entryChanged(current: c, next: next) {
-                diff.updated += 1
-                upsertBatch.append(next)
-            }
-            // Unchanged entries: counted in neither added nor updated, and not
-            // appended to upsertBatch — their cached row stays exactly as-is.
+            candidates.append(next)
         }
+        // Classify via the shared new-or-changed predicate: only new (cur == nil)
+        // and actually-changed (entryChanged) rows are written back; unchanged
+        // rows are left out so their syncedAtNs is not bumped. diff starts at
+        // zero, so `+=` here is the count.
+        let (upsertBatch, added, updated) = Self.classifyUpserts(candidates: candidates, cachedByPath: cachedByPath)
+        diff.added += added
+        diff.updated += updated
         await batchUpsert(upsertBatch, context: "refreshFolder upsert")
 
         // #380 subtree-etag harvest: keep each directory child's skip-gate token
@@ -658,9 +769,21 @@ public actor SyncEngine {
     /// `listPath` rethrows BEFORE the destructive reconcile, so the cache is
     /// never torn on a partial result.
     ///
-    /// - Returns: The ``Diff`` produced by ``refreshFolder(key:)``.
+    /// A workspace's item listing is materialized under the ``VirtualIDs/itemID``
+    /// sentinel (``CacheReader/materializedContainers(alias:)`` maps a
+    /// `.workspace` container to `CacheKey(ws, VirtualIDs.itemID, "")`). Its
+    /// children are Fabric items, not DFS paths, so it is routed to the Fabric
+    /// item-listing refresh instead of `refreshFolder`, which would call
+    /// `onelake.listPath(itemGUID: "__items__")` — a guaranteed DFS error that
+    /// the refresh wave would silently swallow, leaving new items in an open
+    /// workspace invisible until re-navigation (F6/C16).
+    ///
+    /// - Returns: The ``Diff`` produced by the appropriate refresh path.
     public func refreshMaterializedContainer(key: CacheKey) async throws -> Diff {
-        try await refreshFolder(key: key)
+        if key.itemID == VirtualIDs.itemID {
+            return try await refreshItemListing(alias: key.accountAlias, workspaceID: key.workspaceID)
+        }
+        return try await refreshFolder(key: key)
     }
 
     /// Refreshes a set of materialized containers, parent-driven, with a
@@ -1818,47 +1941,62 @@ public actor SyncEngine {
         return (false, props)
     }
 
-    /// Returns the cached discovery rows under `parent`, keyed by `path`
-    /// (the workspace or item GUID). Used by ``listWorkspaces(alias:)`` and
-    /// ``listItems(alias:workspaceID:)`` to look up each freshly discovered
-    /// row's prior state before deciding whether to upsert it.
-    private func discoveryChildrenByPath(parent: CacheKey) async -> [String: MetadataRecord] {
-        let kids = (try? await cache.children(of: parent)) ?? []
+    /// Indexes cache rows by their `path` (the workspace/item GUID for discovery
+    /// rows, or the relative path for folder children). Used to look up each
+    /// freshly-listed candidate's prior state before deciding whether to upsert.
+    private static func indexByPath(_ rows: [MetadataRecord]) -> [String: MetadataRecord] {
         var byPath: [String: MetadataRecord] = [:]
-        for k in kids {
-            byPath[k.path] = k
+        byPath.reserveCapacity(rows.count)
+        for r in rows {
+            byPath[r.path] = r
         }
         return byPath
     }
 
-    /// Builds the conditional upsert batch for a discovery listing (workspaces
-    /// or items), mirroring ``refreshFolder(key:)``'s conditional-upsert
-    /// discipline (#361/#379): a `candidate` is written back only when it is
-    /// new (absent from `cachedByPath`) or ``Enumerator/entryChanged(current:next:)``
-    /// reports a real change (displayName or itemType — the only fields that
-    /// vary for discovery rows, since they carry no etag/lastModified).
+    /// Classifies listing candidates against their cached counterparts, returning
+    /// the conditional upsert batch plus the added/updated counts.
     ///
-    /// An unchanged candidate is left out of the result entirely, so its
-    /// cached row (and `syncedAtNs`) stays exactly as-is. Bumping `syncedAtNs`
-    /// on every discovery poll — even when nothing changed — would shift the
-    /// working-set delta baseline forward every pass, producing a phantom
-    /// `didUpdate` for every workspace/item on every poll.
-    private static func buildDiscoveryUpsertBatch(
+    /// Shared new-or-changed predicate for ``refreshFolder(key:)`` and the
+    /// discovery/item-listing reconciles (#361/#379), so the rule lives in one
+    /// place: a candidate is written back only when it is new (absent from
+    /// `cachedByPath`) or ``Enumerator/entryChanged(current:next:)`` reports a
+    /// real change. An unchanged candidate is left out entirely, so its cached
+    /// row (and `syncedAtNs`) stays exactly as-is — bumping it on every poll
+    /// would shift the working-set delta baseline forward and produce a phantom
+    /// `didUpdate` for every unchanged entry.
+    private static func classifyUpserts(
         candidates: [MetadataRecord],
         cachedByPath: [String: MetadataRecord]
-    ) -> [MetadataRecord] {
-        candidates.filter { next in
-            guard let cur = cachedByPath[next.path] else { return true }
-            return Enumerator.entryChanged(current: cur, next: next)
+    ) -> (batch: [MetadataRecord], added: Int, updated: Int) {
+        var batch: [MetadataRecord] = []
+        var added = 0
+        var updated = 0
+        for next in candidates {
+            guard let cur = cachedByPath[next.path] else {
+                added += 1
+                batch.append(next)
+                continue
+            }
+            if Enumerator.entryChanged(current: cur, next: next) {
+                updated += 1
+                batch.append(next)
+            }
         }
+        return (batch, added, updated)
     }
 
-    /// Deletes discovery rows for `parent` that are absent from `seen`.
+    /// Deletes discovery `children` that are absent from `seen`, returning the
+    /// number expired.
     ///
-    /// Uses the authoritative `seen` set from the current listing: any row
-    /// not in `seen` was not returned by the remote and should be expired,
+    /// Uses the authoritative `seen` set from the current listing: any cached
+    /// child not in `seen` was not returned by the remote and should be expired,
     /// regardless of its `syncedAt` timestamp (sync-25 fix: removes the
     /// time-window guard that coupled folder-content TTL with discovery expiry).
+    ///
+    /// `children` are the rows the caller already fetched for the classification
+    /// step, threaded through here to avoid a second `cache.children` query per
+    /// discovery pass. Every row genuinely exists in the cache, so each key built
+    /// here targets a present row that gets deleted.
     ///
     /// Evicted rows surface to Finder via two paths depending on whether the
     /// container is materialized:
@@ -1869,15 +2007,13 @@ public actor SyncEngine {
     ///
     /// (The former per-container `signalEnumerator(for:)` call was removed in
     /// #344 — it is a no-op on a replicated `NSFileProviderReplicatedExtension`.)
-    private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String) async {
-        guard let kids = try? await cache.children(of: parent) else {
-            Self.log.warning("expireDiscoveryRows: cache.children failed, stale rows may persist")
-            return
-        }
-        // `kids` are rows that currently EXIST in the cache (from
-        // cache.children), so every key built here targets a present row that
-        // gets deleted.
-        let deleteBatch = kids
+    @discardableResult
+    private func expireDiscoveryRows(
+        children: [MetadataRecord],
+        seen: Set<String>,
+        alias: String
+    ) async -> Int {
+        let deleteBatch = children
             .filter { !seen.contains($0.path) }
             .map { k in
                 CacheKey(
@@ -1898,6 +2034,7 @@ public actor SyncEngine {
         // removed item (the rows keyed by the real item GUID) — a pre-existing gap
         // tracked as a follow-up, not addressed here.
         await batchDelete(deleteBatch, recordTombstones: true, context: "expireDiscoveryRows")
+        return deleteBatch.count
     }
 
     // MARK: - Shared remote-operation error handler
