@@ -120,7 +120,7 @@ public actor SessionPool {
             adapters: [],
             retriers: [
                 RetryAfterRetrier(),
-                RetryPolicy(
+                JitteredRetryPolicy(
                     retryLimit: 5,
                     retryableHTTPMethods: [
                         .get, .head, .put, .delete, .options,
@@ -135,5 +135,47 @@ public actor SessionPool {
         )
 
         return Session(configuration: config, interceptor: interceptor)
+    }
+}
+
+// MARK: - JitteredRetryPolicy
+
+/// A `RetryPolicy` subclass that applies full jitter to the exponential
+/// backoff delay.
+///
+/// Alamofire's stock `RetryPolicy` computes a deterministic delay per
+/// `request.retryCount` (`base ^ retryCount * scale`). With up to
+/// ``SessionPool/oneLakeMaxConnections`` concurrent requests throttled at
+/// once, every one of them computes the identical delay and retries in the
+/// same synchronized wave, re-triggering the same throttling response. Full
+/// jitter (a uniform random delay in `[0, computedDelay]`) spreads retries
+/// out so the waves de-correlate.
+///
+/// Only the delay computation changes; retry eligibility (`shouldRetry`,
+/// `retryLimit`) is inherited unmodified from `RetryPolicy`.
+///
+/// See: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
+final class JitteredRetryPolicy: RetryPolicy, @unchecked Sendable {
+    override func retry(
+        _ request: Request,
+        for _: Session,
+        dueTo error: Error,
+        completion: @escaping @Sendable (RetryResult) -> Void
+    ) {
+        guard request.retryCount < retryLimit, shouldRetry(request: request, dueTo: error) else {
+            completion(.doNotRetry)
+            return
+        }
+        completion(.retryWithDelay(jitteredDelay(forRetryCount: request.retryCount)))
+    }
+
+    /// Computes the full-jitter backoff delay for a given retry count.
+    ///
+    /// Split out from ``retry(_:for:dueTo:completion:)`` so tests can sample
+    /// the delay distribution directly, without needing to drive a live
+    /// `Request` through several failed round-trips to observe `retryCount`.
+    func jitteredDelay(forRetryCount retryCount: Int) -> TimeInterval {
+        let delay = pow(Double(exponentialBackoffBase), Double(retryCount)) * exponentialBackoffScale
+        return delay > 0 ? Double.random(in: 0 ... delay) : delay
     }
 }

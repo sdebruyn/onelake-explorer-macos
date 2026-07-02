@@ -580,6 +580,32 @@ struct SyncEngineTests {
         #expect(status?.state == .paused)
     }
 
+    // MARK: - F14: a replayed DELETE that 404s is treated as success
+
+    @Test("delete() treats a notFound error as success (replayed DELETE already committed)")
+    func deleteTreatsNotFoundAsSuccess() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Seed a cache row so we can assert it is cleared on the success path.
+        let key = Self.baseKey
+        try await store.upsert(MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: Self.path, parentPath: "Files", name: "data.csv", isDir: false
+        ))
+
+        // DELETE is retryable in SessionPool; if the delete already committed
+        // server-side and the ack was lost, the replay 404s. The row is gone
+        // either way, so this must not surface as delete_failed.
+        ol.deleteResults.append(.failure(OneLakeError.notFound))
+
+        try await engine.delete(key: key)
+
+        let cached = try? await store.fetch(key: key)
+        #expect(cached == nil)
+    }
+
     // MARK: - macOS metadata: put and delete with .DS_Store / ._* paths
 
     @Test("put() silently ignores .DS_Store uploads (no network call)")
