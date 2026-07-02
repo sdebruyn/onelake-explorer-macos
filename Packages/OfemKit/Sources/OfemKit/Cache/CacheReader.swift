@@ -103,17 +103,36 @@ public final class CacheReader: Sendable {
     /// uses it once for the pre-pass prior snapshot and once per depth wave for
     /// the post-parent-stamp current values (#380).
     ///
-    /// Keys with no row are omitted from the result; the caller treats an absent
-    /// key as an empty token (`""`), matching how the previous per-key `fetch`
-    /// plus `try?` path behaved for a missing row. Invalid keys simply match no
-    /// row rather than throwing, so one bad key never voids the whole snapshot.
+    /// A key is omitted from the result when it has no row, or when its
+    /// `subtree_etag` is SQL NULL (`String.fetchOne` returns `nil` for NULL). A
+    /// present, non-NULL value is returned as-is. The caller treats an absent key
+    /// as an empty token (`""`), matching the previous per-key `fetch` plus `try?`
+    /// path.
+    ///
+    /// Each lookup is wrapped in its own `try?` inside the shared read
+    /// transaction so that a per-row DRIVER-level read failure (a corrupt page or
+    /// an I/O fault — not a missing row) is isolated to that one key, dropped like
+    /// a missing row rather than aborting the whole snapshot. This preserves the
+    /// old per-key failure isolation while still using a single transaction. Such
+    /// a fault cannot be provoked with crafted data — `String.fetchOne` resolves
+    /// to the `sqlite3_column_text()` fast path, which coerces every non-NULL
+    /// storage class (INTEGER/REAL/TEXT/BLOB) to text and only NULL yields `nil`,
+    /// never a throw — so the `try?` has no dedicated regression test; it is
+    /// purely defensive.
+    ///
+    /// ``validateKey(_:)`` is intentionally skipped: a malformed key simply
+    /// matches no row here (there are no rows with empty key components), and
+    /// throwing on one bad key would defeat the per-key isolation above.
     public func subtreeEtags(for keys: [CacheKey]) async throws -> [String: String] {
         guard !keys.isEmpty else { return [:] }
         return try await db.read { db in
             var result: [String: String] = [:]
             result.reserveCapacity(keys.count)
             for key in keys {
-                if let etag = try String.fetchOne(db, sql: """
+                // Per-key `try?`: a missing row or a NULL etag yields nil (this key
+                // is omitted), and a per-row driver-level read failure is isolated
+                // to this key rather than aborting the batch (see the method doc).
+                if let etag = try? String.fetchOne(db, sql: """
                 SELECT subtree_etag FROM path_metadata
                 WHERE account_alias = ? AND workspace_id = ? AND item_id = ? AND path = ?
                 """, arguments: [key.accountAlias, key.workspaceID, key.itemID, key.path]) {

@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 @testable import OfemKit
 import Testing
 
@@ -75,5 +76,49 @@ struct SubtreeEtagsBulkReadTests {
         defer { try? FileManager.default.removeItem(at: store.root) }
         let result = try await store.subtreeEtags(for: [])
         #expect(result.isEmpty)
+    }
+
+    @Test("A row whose subtree_etag is SQL NULL is omitted (distinct from empty string)")
+    func nullSubtreeEtagRowIsOmitted() async throws {
+        // The store API always writes a non-optional subtree_etag, so a genuine
+        // SQL NULL (which `MetadataRecord.init(row:)` tolerates via `?? ""`) can
+        // only be produced with raw SQL. Build a minimal path_metadata directly.
+        // A NULL value makes `String.fetchOne` return nil, so the key is omitted —
+        // distinct from an empty-string token, which is returned as "" (covered by
+        // `returnsPresentOmitsMissing`).
+        let dbQueue = try DatabaseQueue()
+        try await dbQueue.write { db in
+            try db.execute(sql: """
+            CREATE TABLE path_metadata (
+                account_alias TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                subtree_etag TEXT,
+                PRIMARY KEY (account_alias, workspace_id, item_id, path)
+            )
+            """)
+            try db.execute(
+                sql: "INSERT INTO path_metadata VALUES (?, ?, ?, ?, ?)",
+                arguments: ["a", "w", "i", "hasEtag", "st-1"]
+            )
+            // Explicit SQL NULL subtree_etag on a row that otherwise exists.
+            try db.execute(
+                sql: "INSERT INTO path_metadata VALUES (?, ?, ?, ?, NULL)",
+                arguments: ["a", "w", "i", "nullEtag"]
+            )
+        }
+
+        let reader = CacheReader(db: dbQueue)
+        let hasEtag = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "hasEtag")
+        let nullEtag = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "nullEtag")
+
+        let result = try await reader.subtreeEtags(for: [hasEtag, nullEtag])
+
+        // The present token is returned unchanged; the NULL-token row is omitted
+        // (the caller reads an absent key as ""). The call does not throw.
+        #expect(result[hasEtag.stableKeyString] == "st-1")
+        #expect(result[nullEtag.stableKeyString] == nil)
+        #expect(result.count == 1)
     }
 }

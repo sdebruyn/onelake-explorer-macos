@@ -895,7 +895,13 @@ public actor SyncEngine {
             // per-wave, not one global pre-read: the parent wave overwrites these
             // rows, so a global pre-read would compare the child against its own
             // pre-pass value and never skip.
-            let currentSubtreeEtag = (try? await cache.subtreeEtags(for: wave)) ?? [:]
+            //
+            // Depth-0 containers (item roots, path == "") have no parent key, so
+            // parentVouched is always false and shouldSkip can never fire for them
+            // — the current etag is never consulted. Skip the read entirely for
+            // that wave to avoid a wasted query.
+            let waveIsRoot = wave.first.map { Self.containerDepth(of: $0) == 0 } ?? false
+            let currentSubtreeEtag = waveIsRoot ? [:] : (try? await cache.subtreeEtags(for: wave)) ?? [:]
 
             // Compute each key's skip decision on the actor BEFORE spawning, so the
             // decision reads consistent actor state (lastSelfHealNs) and the
