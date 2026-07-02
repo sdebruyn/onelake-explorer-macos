@@ -53,6 +53,26 @@ final class FPEEngineHostTests: XCTestCase {
         }
     }
 
+    // MARK: - invalidateSynchronously() marks the host invalidated immediately
+
+    /// `invalidateSynchronously()` must make `engine()` fail fast the instant
+    /// it returns — with no intervening `await` and, critically, WITHOUT ever
+    /// calling `shutdown()`. This is the guarantee `FileProviderExtension
+    /// .invalidate()` relies on: it calls this synchronously before spawning
+    /// the async `shutdown()` Task, so a racing `engine()` call must not be
+    /// able to observe a window where the host still looks alive.
+    func testInvalidateSynchronouslyMarksInvalidatedImmediately() async throws {
+        let host = FPEEngineHost(alias: "sync-invalidate", domain: makeDomain("sync-invalidate"))
+        host.invalidateSynchronously()
+        do {
+            _ = try await host.engine()
+            XCTFail("Expected engine() to throw immediately after invalidateSynchronously()")
+        } catch let err as NSError {
+            XCTAssertEqual(err.domain, NSFileProviderErrorDomain)
+            XCTAssertEqual(err.code, NSFileProviderError.cannotSynchronize.rawValue)
+        }
+    }
+
     // MARK: - double shutdown does not underflow _activeHostCount (fpe-14)
 
     func testDoubleShutdownIsIdempotent() async {

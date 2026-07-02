@@ -76,6 +76,16 @@ protocol EngineProviding: AnyObject, Sendable {
     /// Permanently shuts the engine down. Subsequent `engine()` calls throw.
     func shutdown() async
 
+    /// Synchronously marks the host invalidated, ahead of the async
+    /// `shutdown()` teardown.
+    ///
+    /// Called from `FileProviderExtension.invalidate()` — itself a
+    /// synchronous framework callback — so that an `engine()` call racing
+    /// teardown (including one already in flight) observes the invalidated
+    /// state immediately, rather than only after the async `shutdown()` Task
+    /// happens to be scheduled and reach its own lock acquisition.
+    func invalidateSynchronously()
+
     /// True when a recent enumeration failed with `notAuthenticated`, meaning
     /// the account's token can no longer be acquired silently. Cleared
     /// automatically by `reloadEngine()` (which is called after a successful
@@ -601,6 +611,18 @@ final class FPEEngineHost: EngineProviding {
         guard let cfg = try? Self.sharedConfigStore().snapshot() else { return }
         await telemetry?.setOptOut(!cfg.telemetry)
         await cache?.setMaxBlobBytes(cfg.cache.maxBytes)
+    }
+
+    /// Synchronously marks the host invalidated.
+    ///
+    /// `_invalidated` is guarded by `lock`, and `NSLock.withLock` is a
+    /// synchronous critical section, so this is visible to any subsequent
+    /// `engine()` call — including one from a Task already in flight that
+    /// has not yet reached its own lock acquisition — the instant this
+    /// method returns. `shutdown()` sets the same flag under the same lock;
+    /// calling both is idempotent.
+    func invalidateSynchronously() {
+        lock.withLock { _invalidated = true }
     }
 
     /// Shuts down the engine permanently.
