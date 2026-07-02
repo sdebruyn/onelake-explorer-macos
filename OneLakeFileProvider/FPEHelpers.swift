@@ -87,21 +87,3 @@ func isMaterializablePathContainer(_ path: String) -> Bool {
     guard components.count <= 3 else { return false }
     return !components.contains("_delta_log")
 }
-
-// MARK: - Parent path arithmetic
-
-/// Derives the parent-path string for `path`.
-///
-/// - `"Files/raw/2024/sales.csv"` → `"Files/raw/2024"`
-/// - `"Files"` → `""`
-/// - `""` → `""`
-///
-/// This is the single implementation of parent-path arithmetic for the FPE;
-/// ``ItemIdentifier/parentIdentifier`` (OfemKit) and the legacy
-/// `buildParentIdentifier` free function in `DomainItem.swift` are the only
-/// other copies — this function exists at the FPE level so callers don't
-/// need to use the full ``ItemIdentifier`` type.
-func parentPath(of path: String) -> String {
-    guard let slashIdx = path.lastIndex(of: "/") else { return "" }
-    return String(path[path.startIndex ..< slashIdx])
-}

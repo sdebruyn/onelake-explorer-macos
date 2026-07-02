@@ -1223,6 +1223,29 @@ public actor SyncEngine {
         }
     }
 
+    // MARK: - Item type resolution
+
+    /// Resolves the Fabric item type to stamp on a row for `key`.
+    ///
+    /// Returns the cached row's own `itemType` when non-empty, else the parent
+    /// directory row's `itemType`, else `""`. An empty string is treated as
+    /// "unknown" by `computeCapabilities`, which yields read-only capabilities.
+    ///
+    /// This is the single derivation used by the write paths (`put`, `mkdir`,
+    /// `performDownload`) and by `ItemResolution.createItem`'s synthetic
+    /// fallback so a freshly created/uploaded file under a Lakehouse `Files/`
+    /// subtree keeps writable capabilities without waiting for the next
+    /// refreshFolder (fp-05).
+    public func resolveItemType(for key: CacheKey) async -> String {
+        let own = (try? await cache.fetch(key: key))?.itemType ?? ""
+        if !own.isEmpty { return own }
+        let parentKey = CacheKey(
+            accountAlias: key.accountAlias, workspaceID: key.workspaceID,
+            itemID: key.itemID, path: Enumerator.parentPath(key.path)
+        )
+        return (try? await cache.fetch(key: parentKey))?.itemType ?? ""
+    }
+
     // MARK: - Put (upload)
 
     /// Uploads the file at `sourceURL` to OneLake and mirrors it in the blob
@@ -1273,14 +1296,7 @@ public actor SyncEngine {
         // Files/ subtree keeps writable capabilities without waiting for the
         // next refreshFolder (fp-05).
         let cached = try? await cache.fetch(key: key)
-        var existingItemType = cached?.itemType ?? ""
-        if existingItemType.isEmpty {
-            let parentKey = CacheKey(
-                accountAlias: key.accountAlias, workspaceID: key.workspaceID,
-                itemID: key.itemID, path: Enumerator.parentPath(key.path)
-            )
-            existingItemType = (try? await cache.fetch(key: parentKey))?.itemType ?? ""
-        }
+        let existingItemType = await resolveItemType(for: key)
         var row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -1436,11 +1452,7 @@ public actor SyncEngine {
         // Carry the item type from the parent directory row so that a newly
         // created folder under a Lakehouse Files/ subtree keeps writable
         // capabilities without waiting for the next refreshFolder (fp-05).
-        let parentKeyMkdir = CacheKey(
-            accountAlias: key.accountAlias, workspaceID: key.workspaceID,
-            itemID: key.itemID, path: Enumerator.parentPath(key.path)
-        )
-        let mkdirItemType = (try? await cache.fetch(key: parentKeyMkdir))?.itemType ?? ""
+        let mkdirItemType = await resolveItemType(for: key)
         let row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,
@@ -1748,14 +1760,13 @@ public actor SyncEngine {
         // Carry the item type from the cached row (or the parent directory)
         // so that a downloaded file under a Lakehouse Files/ subtree keeps
         // writable capabilities without waiting for the next refreshFolder (fp-05).
-        var downloadItemType = cached?.itemType ?? ""
-        if downloadItemType.isEmpty {
-            let parentKeyDl = CacheKey(
-                accountAlias: key.accountAlias, workspaceID: key.workspaceID,
-                itemID: key.itemID, path: Enumerator.parentPath(key.path)
-            )
-            downloadItemType = (try? await cache.fetch(key: parentKeyDl))?.itemType ?? ""
-        }
+        // This is an INTENTIONAL fresh cache read, not the pre-download `cached`
+        // snapshot: `itemType` is immutable per item, so it can never flip to a
+        // different non-empty type here; the worst case is a momentary "" if a
+        // concurrent refreshFolder transiently evicted the item-discovery row,
+        // which self-corrects on the next poll. Do NOT "optimize" this back to
+        // `cached?.itemType` — the snapshot buys nothing and drops that recovery.
+        let downloadItemType = await resolveItemType(for: key)
         var row = MetadataRecord(
             accountAlias: key.accountAlias,
             workspaceID: key.workspaceID,

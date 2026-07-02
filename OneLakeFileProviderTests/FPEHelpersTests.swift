@@ -45,28 +45,6 @@ final class FPEHelpersTests: XCTestCase {
         XCTAssertThrowsError(try cacheKey(alias: "work", identifier: .workspace(workspaceID: "ws")))
     }
 
-    // MARK: - parentPath
-
-    func testParentPathDeepFile() {
-        XCTAssertEqual(parentPath(of: "Files/raw/2024/sales.csv"), "Files/raw/2024")
-    }
-
-    func testParentPathTopLevelFile() {
-        XCTAssertEqual(parentPath(of: "Files"), "")
-    }
-
-    func testParentPathEmpty() {
-        XCTAssertEqual(parentPath(of: ""), "")
-    }
-
-    func testParentPathSingleSlash() {
-        XCTAssertEqual(parentPath(of: "a/b"), "a")
-    }
-
-    func testParentPathMultipleSegments() {
-        XCTAssertEqual(parentPath(of: "a/b/c/d"), "a/b/c")
-    }
-
     // MARK: - isMaterializablePathContainer — Delta-depth filter
 
     // Admitted: depth 1 (top-level virtual dirs)
