@@ -843,6 +843,31 @@ private func enumerateMaterializedIdentifiers(
 
 // MARK: - Engine helper functions
 
+/// Fetches `key` cache-first, returning the row on a hit or `nil` on a
+/// definitive `CacheError.notFound` miss (the caller then runs its remote
+/// listing fallback).
+///
+/// Any OTHER cache error is an infrastructure failure re-thrown as
+/// `FPError.invalidRecord` (→ cannotSynchronize), never `noSuchItem`: a
+/// transient DB blip must not be mistaken for a deletion signal. This mirrors
+/// the discrimination the `.path` branch of ``engineFetchItem`` open-codes.
+private func cacheFirstRecord(
+    key: CacheKey,
+    engine: OfemEngine,
+    context: String
+) async throws -> MetadataRecord? {
+    do {
+        return try await engine.cache.fetch(key: key)
+    } catch let cacheError as CacheError {
+        guard case .notFound = cacheError else {
+            throw FPError.invalidRecord("cache DB error for \(context): \(cacheError)")
+        }
+        return nil
+    } catch {
+        throw FPError.invalidRecord("unexpected cache error for \(context): \(error)")
+    }
+}
+
 /// Fetches a single item's metadata from the engine.
 ///
 /// Returns `.noSuchItem` for unknown workspace/item identifiers instead of
@@ -864,7 +889,23 @@ private func engineFetchItem(
         throw FPError.noSuchItem("synthetic container: \(identifier.identifierString)")
 
     case let .workspace(workspaceID):
-        // Look up workspace display name from the cache / discovery.
+        // Cache-first: the workspace-sentinel row is written by listWorkspaces,
+        // keyed by (VirtualIDs.workspaceID, VirtualIDs.workspaceID, path: <wsGUID>).
+        // A hit resolves without a Fabric round-trip (DomainItem.from delegates
+        // sentinel rows to from(workspace:)); a definitive miss falls through to
+        // the listWorkspaces fallback below.
+        let key = cacheKey(
+            alias: alias, workspaceID: VirtualIDs.workspaceID,
+            itemID: VirtualIDs.workspaceID, path: workspaceID
+        )
+        if let record = try await cacheFirstRecord(key: key, engine: engine, context: "workspace \(workspaceID)") {
+            do {
+                return OfemFPEItem(from: try DomainItem.from(record: record))
+            } catch {
+                throw FPError.invalidRecord("DomainItem.from failed for workspace \(workspaceID): \(error)")
+            }
+        }
+        // Cache miss → look up workspace display name from the discovery listing.
         let workspaces = try await engine.sync.listWorkspaces(alias: alias)
         if let ws = workspaces.first(where: { $0.id == workspaceID }) {
             return OfemFPEItem(from: DomainItem.from(workspace: ws))
@@ -873,6 +914,22 @@ private func engineFetchItem(
         throw FPError.noSuchItem("workspace \(workspaceID) not in listing for alias \(alias)")
 
     case let .item(workspaceID, itemID):
+        // Cache-first: the item-discovery row is written by the item-listing
+        // reconcile, keyed by (workspaceID, VirtualIDs.itemID, path: <itemGUID>);
+        // DomainItem.from maps it to the ".item" identifier via its
+        // item-discovery branch. A definitive miss falls through to listItems.
+        let key = cacheKey(
+            alias: alias, workspaceID: workspaceID,
+            itemID: VirtualIDs.itemID, path: itemID
+        )
+        if let record = try await cacheFirstRecord(key: key, engine: engine, context: "item \(itemID)") {
+            do {
+                return OfemFPEItem(from: try DomainItem.from(record: record))
+            } catch {
+                throw FPError.invalidRecord("DomainItem.from failed for item \(itemID): \(error)")
+            }
+        }
+        // Cache miss → populate from the Fabric item listing.
         let items = try await engine.sync.listItems(alias: alias, workspaceID: workspaceID)
         if let fi = items.first(where: { $0.id == itemID }) {
             return OfemFPEItem(from: DomainItem.from(fabricItem: fi, workspaceID: workspaceID))

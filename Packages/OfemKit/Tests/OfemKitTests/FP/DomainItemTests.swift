@@ -980,6 +980,84 @@ struct DomainItemTests {
         }
     }
 
+    // MARK: - F6/C2: item-discovery-row mapping in from(record:)
+
+    /// An item-discovery row (itemID == VirtualIDs.itemID, path == <item GUID>)
+    /// must map to the `.item` identifier "<workspaceID>/<itemGUID>" — NOT the
+    /// generic ".path" form, which would embed the "__items__" sentinel.
+    @Test func itemDiscoveryRowMapsToItemIdentifier() throws {
+        let wsGUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        let itemGUID = "11111111-2222-3333-4444-555555555555"
+
+        // Row exactly as SyncEngine's item-listing reconcile constructs it.
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: wsGUID,
+            itemID: VirtualIDs.itemID,
+            path: itemGUID,
+            parentPath: "",
+            name: "My Lakehouse",
+            isDir: true,
+            itemType: "Lakehouse"
+        )
+
+        let item = try DomainItem.from(record: record)
+        #expect(item.identifier == ItemIdentifier.item(workspaceID: wsGUID, itemID: itemGUID))
+        #expect(item.parentIdentifier == ItemIdentifier.workspace(workspaceID: wsGUID))
+        #expect(item.filename == "My Lakehouse")
+        #expect(item.isDirectory)
+        // The produced identifier string is "<ws>/<guid>" and never contains
+        // the "__items__" sentinel.
+        #expect(item.identifier.identifierString == "\(wsGUID)/\(itemGUID)")
+        #expect(!item.identifier.identifierString.contains(VirtualIDs.itemID))
+    }
+
+    /// SYMMETRY: the identifier from(record:) mints for an item-discovery row MUST
+    /// equal the identifier CacheStore.tombstoneIdentifierString derives for the
+    /// same row — otherwise the #394 reconcile in itemsChangedAfter cannot match
+    /// an update to its shadowing delete.
+    @Test func itemDiscoveryRowIdentifierMatchesTombstoneIdentifier() throws {
+        let wsGUID = "ws-guid"
+        let itemGUID = "item-guid"
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: wsGUID,
+            itemID: VirtualIDs.itemID,
+            path: itemGUID,
+            parentPath: "",
+            name: "Warehouse One",
+            isDir: true,
+            itemType: "Warehouse"
+        )
+
+        let tombstoneID = CacheStore.tombstoneIdentifierString(
+            workspaceID: record.workspaceID,
+            itemID: record.itemID,
+            path: record.path
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(tombstoneID == item.identifier.identifierString)
+        #expect(tombstoneID == "\(wsGUID)/\(itemGUID)")
+    }
+
+    /// The row's itemType flows through to the produced item (capabilities are
+    /// read-only for a Fabric item container regardless, but the type must not be
+    /// dropped on the way through from(fabricItem:)).
+    @Test func itemDiscoveryRowIsReadOnlyContainer() throws {
+        let record = MetadataRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1",
+            itemID: VirtualIDs.itemID,
+            path: "item-2",
+            parentPath: "",
+            name: "Lake",
+            isDir: true,
+            itemType: "Lakehouse"
+        )
+        let item = try DomainItem.from(record: record)
+        #expect(item.capabilities == DomainItem.CapabilitySet.readOnly)
+    }
+
     /// Regression: real item-root rows (path == "") are rejected (fpe-18).
     @Test func normalItemRowWithEmptyPathThrows() {
         // from(record:) is only the delta-child path; item-root containers are

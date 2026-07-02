@@ -283,6 +283,9 @@ final class MockFabricClient: FabricClientProtocol, @unchecked Sendable {
 
     private let lock = NSLock()
 
+    /// Recorded call count so throttle tests can assert "no Fabric call was made".
+    private(set) var listAllItemsCallCount = 0
+
     func listAllWorkspaces(alias _: String) async throws -> [Workspace] {
         let result: Result<[Workspace], any Error> = lock.withLock {
             guard !listWorkspacesResults.isEmpty else {
@@ -295,6 +298,7 @@ final class MockFabricClient: FabricClientProtocol, @unchecked Sendable {
 
     func listAllItems(alias _: String, workspaceID _: String) async throws -> [Item] {
         let result: Result<[Item], any Error> = lock.withLock {
+            listAllItemsCallCount += 1
             guard !listItemsResults.isEmpty else {
                 return .failure(MockError.stubsExhausted("listAllItems"))
             }
