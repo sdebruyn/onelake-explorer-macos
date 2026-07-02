@@ -16,11 +16,10 @@
 //   - setConfig(key:value:reply:) — write one config field, persist and trigger engine reload
 //   - clearCache(reply:)          — wipe all cached blobs; reply carries freed byte count
 //
-// NSXPCInterface setup notes:
-//   - XPCEngineStatus must be listed for the getEngineStatus reply.
-//   - The "reply" closures in the protocol are ObjC blocks; they
-//     must be listed as reply blocks in the XPC interface via
-//     setClasses(_:for:argumentIndex:ofReply:).
+// NSXPCInterface setup: the secure-coding class wiring for getEngineStatus's
+// reply lives in the single `OfemControlInterface.make()` factory in
+// Shared/ (xpc-09) — both this file's `exportedInterface` and the host's
+// `remoteObjectInterface` call the same factory.
 
 @preconcurrency import FileProvider
 import Foundation
@@ -163,35 +162,10 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate, @u
         // Peer validation is lazy and happens on the first message; this call
         // only records the requirement — the ObjC method is non-throwing.
         newConnection.setCodeSigningRequirement(ofemXPCPeerRequirement)
-        newConnection.exportedInterface = makeInterface()
+        newConnection.exportedInterface = OfemControlInterface.make()
         newConnection.exportedObject = OfemControlXPCHandler(engineHost: engineHost)
         newConnection.resume()
         return true
-    }
-
-    private func makeInterface() -> NSXPCInterface {
-        let iface = NSXPCInterface(with: OfemClientControlProtocol.self)
-
-        // getEngineStatus reply: (XPCEngineStatus?, Error?)
-        // Argument index 0 is XPCEngineStatus (which contains an NSArray of
-        // XPCPausedWorkspace). All three types must be listed so XPC's
-        // secure-coding policy allows them to cross the boundary.
-        //
-        // Build the Set<AnyHashable> via NSSet with explicit bridging.
-        // NSSet(array:) bridges AnyObject (class metatypes) to AnyHashable safely;
-        // the cast is guaranteed to succeed because all elements are ObjC class metatypes
-        // which bridge to AnyHashable via NSObjectProtocol.
-        let classArray: [AnyObject] = [XPCEngineStatus.self, NSArray.self, XPCPausedWorkspace.self]
-        // swiftlint:disable:next force_cast
-        let replyClasses = NSSet(array: classArray) as! Set<AnyHashable> // safe: AnyObject metatypes
-        iface.setClasses(
-            replyClasses,
-            for: #selector(OfemClientControlProtocol.getEngineStatus(reply:)),
-            argumentIndex: 0,
-            ofReply: true
-        )
-
-        return iface
     }
 }
 
@@ -315,16 +289,20 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             case syncSelfHealIntervalM(Int)
         }
 
+        // Switch on the shared `OfemConfigKey` constants (rather than raw
+        // string literals) so a key added to that enum without a matching
+        // case here fails at compile time instead of silently falling
+        // through to `.unknownKey` at runtime (xpc-10).
         let result: Result<ValidatedConfig, SetConfigError>
         switch key {
-        case "telemetry":
+        case OfemConfigKey.telemetry:
             guard value == "on" || value == "off" else {
                 result = .failure(.invalidValue(key: key, value: value,
                                                 reason: "expected \"on\" or \"off\""))
                 break
             }
             result = .success(.telemetry(value == "on"))
-        case "cache.max_size_gb":
+        case OfemConfigKey.cacheMaxSizeGB:
             guard let gb = Int(value) else {
                 result = .failure(.invalidValue(key: key, value: value,
                                                 reason: "expected an integer"))
@@ -334,7 +312,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             // clamped to [minSizeGB, maxSizeGB].
             let clamped = gb == 0 ? 0 : min(max(gb, CacheConfig.minSizeGB), CacheConfig.maxSizeGB)
             result = .success(.cacheMaxSizeGB(clamped))
-        case "net.max_concurrent_uploads_per_account":
+        case OfemConfigKey.netMaxUploads:
             guard let n = Int(value) else {
                 result = .failure(.invalidValue(key: key, value: value,
                                                 reason: "expected an integer"))
@@ -346,7 +324,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             // for any concurrency field — the XPC protocol caps
             // uploads more tightly to avoid swamping the endpoint.
             result = .success(.netMaxUploads(min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxUploadsPerAccount)))
-        case "net.max_concurrent_downloads_per_account":
+        case OfemConfigKey.netMaxDownloads:
             guard let n = Int(value) else {
                 result = .failure(.invalidValue(key: key, value: value,
                                                 reason: "expected an integer"))
@@ -354,7 +332,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             }
             // xpc-08: use named constants from NetConfig.
             result = .success(.netMaxDownloads(min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxDownloadsPerAccount)))
-        case "log.level":
+        case OfemConfigKey.logLevel:
             let allowed = ["debug", "info", "warn", "error"]
             guard allowed.contains(value) else {
                 result = .failure(.invalidValue(key: key, value: value,
@@ -362,7 +340,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                 break
             }
             result = .success(.logLevel(value))
-        case "sync.materialized_poll_interval_s":
+        case OfemConfigKey.syncMaterializedPollIntervalS:
             guard let n = Int(value) else {
                 result = .failure(.invalidValue(key: key, value: value,
                                                 reason: "expected an integer"))
@@ -371,7 +349,7 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
             let clamped = max(SyncConfig.minMaterializedPollIntervalS,
                               min(SyncConfig.maxMaterializedPollIntervalS, n))
             result = .success(.syncMaterializedPollIntervalS(clamped))
-        case "sync.self_heal_interval_m":
+        case OfemConfigKey.syncSelfHealIntervalM:
             guard let n = Int(value) else {
                 result = .failure(.invalidValue(key: key, value: value,
                                                 reason: "expected an integer"))

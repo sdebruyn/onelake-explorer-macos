@@ -574,6 +574,8 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(OfemConfigKey.netMaxUploads, "net.max_concurrent_uploads_per_account")
         XCTAssertEqual(OfemConfigKey.netMaxDownloads, "net.max_concurrent_downloads_per_account")
         XCTAssertEqual(OfemConfigKey.logLevel, "log.level")
+        XCTAssertEqual(OfemConfigKey.syncMaterializedPollIntervalS, "sync.materialized_poll_interval_s")
+        XCTAssertEqual(OfemConfigKey.syncSelfHealIntervalM, "sync.self_heal_interval_m")
     }
 }
 

@@ -452,8 +452,11 @@ final class OfemFPEClient {
         }
         let connection = connBox.connection
 
-        // Configure the connection interface.
-        connection.remoteObjectInterface = makeInterface()
+        // Configure the connection interface. OfemControlInterface.make() is
+        // the single factory shared with the FPE's exportedInterface (xpc-09) —
+        // a class added to one side's copy but not the other's used to fail
+        // silently at decode time.
+        connection.remoteObjectInterface = OfemControlInterface.make()
 
         // The invalidation and interruption handlers are the single canonical
         // place for connection cache eviction. The per-call proxy error handler
@@ -487,26 +490,6 @@ final class OfemFPEClient {
             throw OfemFPEClientError.domainNotFound(identifier)
         }
         return domain
-    }
-
-    private func makeInterface() -> NSXPCInterface {
-        let iface = NSXPCInterface(with: OfemClientControlProtocol.self)
-        // getEngineStatus reply: (XPCEngineStatus?, Error?)
-        // XPCEngineStatus carries an NSArray of XPCPausedWorkspace; all three
-        // types must be listed so XPC's secure-coding policy allows them.
-        //
-        // `setClasses(_:for:argumentIndex:ofReply:)` requires `Set<AnyHashable>`.
-        // NSObject subclasses bridge to AnyHashable through ObjC, so the
-        // NSSet(array:) bridge is the idiomatic Swift way to construct this set.
-        // The force-cast is safe: ObjC class objects always bridge to AnyHashable.
-        iface.setClasses(
-            // swiftlint:disable:next force_cast
-            NSSet(array: [XPCEngineStatus.self, NSArray.self, XPCPausedWorkspace.self]) as! Set<AnyHashable>,
-            for: #selector(OfemClientControlProtocol.getEngineStatus(reply:)),
-            argumentIndex: 0,
-            ofReply: true
-        )
-        return iface
     }
 }
 
