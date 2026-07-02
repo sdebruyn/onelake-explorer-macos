@@ -140,17 +140,17 @@ Iceberg REST Catalog and Delta protocols for table metadata. Not needed for file
 - DFS endpoints support parallel reads via `Range` headers — good for large files.
 - For uploads of large files: chunked write through `append` + `flush` is more efficient than a single big `PUT`.
 - Listings are paginated through the `continuation` parameter — implement pagination correctly or you will miss files in large folders.
-- HTTP is an Alamofire `Session` over `URLSession` (see `Packages/OfemKit/Sources/OfemKit/HTTP/SessionPool.swift`), pooled per `(alias, scope)` so token refresh and connection limits stay scoped to the right account and audience. `timeoutIntervalForRequest` is 60 s, but `timeoutIntervalForResource` is deliberately `.infinity`: a resource-level wall-clock cap would kill a multi-GiB download or append stream mid-transfer at modest bandwidth. There is no response-header timeout either. Instead, retries are bounded explicitly by `RetryAfterRetrier` (honors `Retry-After` on 429/503) and `RetryPolicy` (retry limit 5, on `408, 425, 429, 500, 502, 503, 504`) — the resource never hangs open on a dead connection, it just isn't killed by a fixed clock.
+- HTTP is an Alamofire `Session` over `URLSession` (see `Packages/OfemKit/Sources/OfemKit/HTTP/SessionPool.swift`), pooled per `(alias, scope)` so token refresh and connection limits stay scoped to the right account and audience. `timeoutIntervalForRequest` is 60 s, but `timeoutIntervalForResource` is deliberately `.infinity`: a resource-level wall-clock cap would kill a multi-GiB download or append stream mid-transfer at modest bandwidth. There is no response-header timeout either. Instead, retries are bounded explicitly by `RetryAfterRetrier` (honors `Retry-After` on 429/5xx, capped at `maxDelay = 30s`) ahead of `JitteredRetryPolicy` (full-jitter backoff, on `408, 425, 429, 500, 502, 503, 504`) — both share a combined budget of `maxRetries = 5` attempts, so a repeatedly-throttled request cannot retry indefinitely; the resource never hangs open on a dead connection, it just isn't killed by a fixed clock.
 
 ## Error handling we must cover explicitly
 
 | Status | Meaning | Reaction |
 |---|---|---|
 | `401` | Token expired or no access | Refresh token; if that fails, re-authenticate |
-| `403` | Authenticated but no permission on the item | Display clearly; do not retry |
-| `404` | Path does not exist | Standard |
+| `403` | Authenticated but no permission on the item, **or** a paused/suspended Fabric capacity | `PauseManager.isPausedCapacityError` inspects the response body to tell the two apart; either way it maps to `.cannotSynchronize`, never `.notAuthenticated` — a 403 must never trigger re-authentication |
+| `404` | Path does not exist | Standard; a `DELETE` that 404s is treated as success (the row is already gone, e.g. a replayed retry of an already-committed delete) — see `SyncEngine.delete` |
 | `409` | Conflict (e.g. directory already exists) | On upload-with-overwrite, retry |
 | `412` / `If-Match` | Etag conflict | Surface "remote was changed; refresh first" |
-| `429` | Throttling | Exponential backoff, honor `Retry-After` |
+| `429` | Throttling | Exponential backoff with full jitter, honor `Retry-After`; capped at 5 combined retries and a 30 s `Retry-After` ceiling — see "Throughput considerations" above |
 | `503` | Backend temporarily unavailable | Same retry pattern |
 | `x-ms-rejected-headers` in the response | OneLake ignored a header | Log it, do not fail |

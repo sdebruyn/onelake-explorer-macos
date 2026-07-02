@@ -19,8 +19,14 @@ the File Provider Extension.
   calls, pooled per `(alias, scope)`
   (`Packages/OfemKit/Sources/OfemKit/HTTP/SessionPool.swift`):
   - Token injection via `AuthenticationInterceptor` / `OfemAuthenticator`.
-  - `RetryAfterRetrier` (honors `Retry-After` on 429 / 503) and `RetryPolicy`
-    (retry limit 5) as request retriers.
+  - `RetryAfterRetrier` (honors `Retry-After` on 429 / 5xx, bounded to
+    `maxRetries = 5` and `maxDelay = 30s`) ahead of `JitteredRetryPolicy`
+    (a `RetryPolicy` subclass adding full jitter to the exponential
+    backoff Alamofire would otherwise compute deterministically) in the
+    interceptor chain. Both share `request.retryCount` /
+    `RetryAfterRetrier.maxRetries` as the single source of truth for the
+    combined retry budget, so a 429 that keeps re-triggering `Retry-After`
+    cannot retry indefinitely.
   - Per-host connection cap, scoped per audience: 16 for OneLake DFS,
     8 for Fabric REST.
 
@@ -63,8 +69,16 @@ the File Provider Extension.
 
 - `OfemClientControlProtocol` — the `@objc` XPC protocol shared between host
   and FPE.
-- `XPCAccountInfo`, `XPCEngineStatus` — `NSSecureCoding` wrappers for XPC
-  transport.
+- `OfemControlInterface` — single factory building the `NSXPCInterface` for
+  that protocol (including its secure-coding class registrations), so both
+  sides always wire the exact same interface.
+- `OfemConfigKey` — canonical `String`-backed enum of `setConfig` dotted keys;
+  the FPE's `setConfig` switches exhaustively over it (no `default:` arm), so
+  a key added here without a matching FPE arm fails to compile.
+- `OfemDomainIdentifier` — composes/decomposes the `ofem.<alias>` File
+  Provider domain identifier string.
+- `XPCAccountInfo`, `XPCEngineStatus`, `XPCPausedWorkspace` — `NSSecureCoding`
+  wrappers for XPC transport.
 
 ## Swift language versions
 
