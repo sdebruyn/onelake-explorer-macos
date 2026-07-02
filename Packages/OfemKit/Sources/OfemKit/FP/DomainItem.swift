@@ -318,6 +318,29 @@ public extension DomainItem {
             throw FPError.invalidRecord("item-root row (path empty, real workspaceID/itemID) is not an enumerable item")
         }
 
+        // Item-discovery row: itemID is the VirtualIDs.itemID sentinel and `path`
+        // holds the Fabric item GUID (written by SyncEngine's item-listing
+        // reconcile). Delegate to from(fabricItem:) so the produced identifier is
+        // the canonical ".item" form "<workspaceID>/<itemGUID>". Without this
+        // branch the generic .path fallthrough below would mint a bogus
+        // "<ws>/__items__/<guid>" identifier that never matches the ".item"
+        // identifier CacheStore.tombstoneIdentifierString derives for these rows,
+        // breaking the reconcile in itemsChangedAfter (updates would not shadow
+        // the matching delete). The empty-path guard above already caught the
+        // discovery-parent row (ws, __items__, ""), so `path` is non-empty here.
+        if record.itemID == VirtualIDs.itemID {
+            return DomainItem.from(
+                fabricItem: Item(
+                    id: record.path,
+                    displayName: record.name,
+                    type: record.itemType,
+                    workspaceID: record.workspaceID
+                ),
+                workspaceID: record.workspaceID,
+                syncedAt: record.syncedAt ?? Date()
+            )
+        }
+
         // Construct the identifier first; derive the parent from it so the
         // path-splitting logic is owned in exactly one place: ItemIdentifier
         // (fp-03). The record.path.isEmpty branch is unreachable here — the

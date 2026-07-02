@@ -5,8 +5,8 @@
 // - FPE creates one FPEEngineHost per domain (one per account alias).
 // - Engine-backed enumerators (OfemFPEEnumerator) handle all
 //   list/enumerate operations.
-// - Fetch and write operations call SyncEngine.open / put / delete /
-//   mkdir directly through OfemKit.
+// - Fetch and write operations call SyncEngine.openReturningRecord / put /
+//   delete / mkdir directly through OfemKit.
 //
 // Error mapping: FPError.classify(error) maps any OfemKit error to a
 // stable FPError.Code which nsFileProviderError(for:) (FPErrorMapping.swift)
@@ -213,33 +213,40 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let task = Task {
             do {
                 let engine = try await hostCopy.engine()
-                let domainItem = try await engineFetchItem(
-                    identifier: ofemID,
-                    alias: aliasCopy,
-                    engine: engine
-                )
 
-                // Seed the progress with the known size so Finder shows
-                // a determinate progress bar when the size is known.
-                let knownSize = domainItem.documentSize?.int64Value ?? 0
-                if knownSize > 0 {
-                    progress.totalUnitCount = knownSize
+                // Download (or serve from cache) first, then build the
+                // returned item from the SAME record that describes what was
+                // just served — not a snapshot fetched before the download
+                // ran. The old order fetched the item, then downloaded, then
+                // handed back the pre-download version alongside the
+                // post-download bytes, so the framework recorded a stale
+                // contentVersion and re-downloaded the "changed" file on the
+                // next cycle. openReturningRecord also folds what used to be
+                // several separate metadata reads (item lookup, freshness
+                // check, blob link) into the single read/write `open()`
+                // already performs.
+                let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
+                let (_, record) = try await engine.sync.openReturningRecord(key: key)
+                let domainItem: OfemFPEItem
+                do {
+                    domainItem = OfemFPEItem(from: try DomainItem.from(record: record))
+                } catch {
+                    throw FPError.invalidRecord("DomainItem.from failed for \(path): \(error)")
                 }
 
-                // Download via the sync engine and hand the blob to the FPE
-                // without a full copy. open() downloads the blob into the cache
-                // if not already present. handoffBlob then hard-links the cache
-                // file to `dest` so the FPE hands that path to the system
-                // without a second full on-disk copy (fpe-06). Because cache
-                // blobs are immutable content-addressed files, the hard link is
-                // safe: a cache eviction of the entry removes the shard dir
-                // entry but leaves the inode (and `dest`) intact.
-                let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
-                _ = try await engine.sync.open(key: key)
+                if let size = domainItem.documentSize?.int64Value, size > 0 {
+                    progress.totalUnitCount = size
+                }
 
-                // Remove dest first so retries are idempotent.
+                // Remove dest first so retries are idempotent, then hand off
+                // the blob to the FPE without a full copy: handoffBlob hard-
+                // links the cache file to `dest` (fpe-06) using the record we
+                // already have, rather than re-fetching it. Because cache
+                // blobs are immutable content-addressed files, the hard link
+                // is safe: a cache eviction of the entry removes the shard
+                // dir entry but leaves the inode (and `dest`) intact.
                 try? FileManager.default.removeItem(at: dest)
-                try await engine.cache.handoffBlob(key: key, to: dest)
+                try await engine.cache.handoffBlob(record: record, to: dest)
 
                 // Update progress from the file size on disk.
                 let actualBytes: Int64 = if let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path),
@@ -247,7 +254,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 {
                     sz.int64Value
                 } else {
-                    knownSize
+                    domainItem.documentSize?.int64Value ?? 0
                 }
                 if progress.totalUnitCount < actualBytes {
                     progress.totalUnitCount = actualBytes
@@ -836,6 +843,31 @@ private func enumerateMaterializedIdentifiers(
 
 // MARK: - Engine helper functions
 
+/// Fetches `key` cache-first, returning the row on a hit or `nil` on a
+/// definitive `CacheError.notFound` miss (the caller then runs its remote
+/// listing fallback).
+///
+/// Any OTHER cache error is an infrastructure failure re-thrown as
+/// `FPError.invalidRecord` (→ cannotSynchronize), never `noSuchItem`: a
+/// transient DB blip must not be mistaken for a deletion signal. This mirrors
+/// the discrimination the `.path` branch of ``engineFetchItem`` open-codes.
+private func cacheFirstRecord(
+    key: CacheKey,
+    engine: OfemEngine,
+    context: String
+) async throws -> MetadataRecord? {
+    do {
+        return try await engine.cache.fetch(key: key)
+    } catch let cacheError as CacheError {
+        guard case .notFound = cacheError else {
+            throw FPError.invalidRecord("cache DB error for \(context): \(cacheError)")
+        }
+        return nil
+    } catch {
+        throw FPError.invalidRecord("unexpected cache error for \(context): \(error)")
+    }
+}
+
 /// Fetches a single item's metadata from the engine.
 ///
 /// Returns `.noSuchItem` for unknown workspace/item identifiers instead of
@@ -857,7 +889,23 @@ private func engineFetchItem(
         throw FPError.noSuchItem("synthetic container: \(identifier.identifierString)")
 
     case let .workspace(workspaceID):
-        // Look up workspace display name from the cache / discovery.
+        // Cache-first: the workspace-sentinel row is written by listWorkspaces,
+        // keyed by (VirtualIDs.workspaceID, VirtualIDs.workspaceID, path: <wsGUID>).
+        // A hit resolves without a Fabric round-trip (DomainItem.from delegates
+        // sentinel rows to from(workspace:)); a definitive miss falls through to
+        // the listWorkspaces fallback below.
+        let key = cacheKey(
+            alias: alias, workspaceID: VirtualIDs.workspaceID,
+            itemID: VirtualIDs.workspaceID, path: workspaceID
+        )
+        if let record = try await cacheFirstRecord(key: key, engine: engine, context: "workspace \(workspaceID)") {
+            do {
+                return OfemFPEItem(from: try DomainItem.from(record: record))
+            } catch {
+                throw FPError.invalidRecord("DomainItem.from failed for workspace \(workspaceID): \(error)")
+            }
+        }
+        // Cache miss → look up workspace display name from the discovery listing.
         let workspaces = try await engine.sync.listWorkspaces(alias: alias)
         if let ws = workspaces.first(where: { $0.id == workspaceID }) {
             return OfemFPEItem(from: DomainItem.from(workspace: ws))
@@ -866,6 +914,22 @@ private func engineFetchItem(
         throw FPError.noSuchItem("workspace \(workspaceID) not in listing for alias \(alias)")
 
     case let .item(workspaceID, itemID):
+        // Cache-first: the item-discovery row is written by the item-listing
+        // reconcile, keyed by (workspaceID, VirtualIDs.itemID, path: <itemGUID>);
+        // DomainItem.from maps it to the ".item" identifier via its
+        // item-discovery branch. A definitive miss falls through to listItems.
+        let key = cacheKey(
+            alias: alias, workspaceID: workspaceID,
+            itemID: VirtualIDs.itemID, path: itemID
+        )
+        if let record = try await cacheFirstRecord(key: key, engine: engine, context: "item \(itemID)") {
+            do {
+                return OfemFPEItem(from: try DomainItem.from(record: record))
+            } catch {
+                throw FPError.invalidRecord("DomainItem.from failed for item \(itemID): \(error)")
+            }
+        }
+        // Cache miss → populate from the Fabric item listing.
         let items = try await engine.sync.listItems(alias: alias, workspaceID: workspaceID)
         if let fi = items.first(where: { $0.id == itemID }) {
             return OfemFPEItem(from: DomainItem.from(fabricItem: fi, workspaceID: workspaceID))

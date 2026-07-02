@@ -259,7 +259,11 @@ public final class CacheReader: Sendable {
     /// bearing cases (`.item`, `.path`) to a ``CacheKey``. Workspace-level
     /// identifiers (`.workspace`) map to a ``CacheKey`` with
     /// ``VirtualIDs/itemID`` as the item component so the freshness poller can
-    /// address the workspace's item listing.
+    /// address the workspace's item listing. That container is refreshed via the
+    /// Fabric item listing (``SyncEngine/refreshMaterializedContainer(key:)``
+    /// routes the `VirtualIDs.itemID` sentinel to `refreshItemListing`), so new
+    /// items in an open workspace now appear incrementally rather than only on
+    /// re-navigation.
     ///
     /// Identifiers that cannot be parsed or that are not directory containers
     /// (`.root`, `.trash`, `.workingSet`) are silently skipped — the same

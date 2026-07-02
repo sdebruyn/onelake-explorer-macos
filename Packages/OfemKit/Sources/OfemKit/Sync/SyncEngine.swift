@@ -48,6 +48,20 @@ public actor SyncEngine {
     /// parameter so the behaviour is testable in isolation.
     public static let defaultSelfHealIntervalMinutes = 30
 
+    /// Default freshness window for ``open(key:)``'s cache-hit path: a row
+    /// synced within this long ago is served without a `getProperties` HEAD.
+    /// Aligned with `ChangeWatcher`'s default `materializedPollInterval`
+    /// (60 s): `syncedAtNs` is stamped fresh by the initial download and by
+    /// any subsequent `refreshFolder` pass that observes an actual change for
+    /// this row (an unchanged row's `syncedAtNs` is deliberately left alone —
+    /// see `refreshFolder`'s upsert-batch comment). So the window mainly
+    /// covers the common burst case — Quick Look, a re-open shortly after a
+    /// download or a poll-observed change — not an indefinitely-refreshed
+    /// guarantee; a stable file still re-validates with a real HEAD roughly
+    /// once per window. `.zero` disables the fast path (always HEAD, today's
+    /// behaviour).
+    public static let defaultBlobFreshnessTTL: Duration = .seconds(60)
+
     // MARK: - Dependencies (private — callers must go through SyncEngine API)
 
     //
@@ -90,7 +104,7 @@ public actor SyncEngine {
     /// VALUE is delivered (not when the spawning frame unwinds) so a second
     /// caller that arrives while the task is still running always finds the
     /// entry (sync-24 fix).
-    private var inFlightDownloads: [String: Task<URL, any Error>] = [:]
+    private var inFlightDownloads: [String: Task<OpenResult, any Error>] = [:]
 
     /// Generation counter per key — incremented each time a new download task is
     /// spawned for a key. Used to guard against a stale cleanup (from a previous,
@@ -109,6 +123,12 @@ public actor SyncEngine {
     /// wall clock. Defaults to the real clock.
     private nonisolated let nowNsProvider: @Sendable () -> Int64
 
+    /// ``defaultBlobFreshnessTTL`` (or the constructor-supplied override) used
+    /// to gate ``open(key:)``'s freshness HEAD. Converted to nanoseconds
+    /// inline where compared, mirroring how ``refreshMaterialized`` derives
+    /// its self-heal threshold from `selfHealIntervalMinutes`.
+    private nonisolated let blobFreshnessTTL: Duration
+
     /// Account aliases with a ``refreshMaterialized`` pass currently in flight
     /// (#380). The production caller `pollMaterialized` spawns an unstructured
     /// `Task` per XPC poll with no cross-pass mutual exclusion, and the
@@ -118,6 +138,26 @@ public actor SyncEngine {
     /// A second pass for an alias already in flight returns early: the in-flight
     /// pass already covers this poll's freshness.
     private var refreshInFlightAliases: Set<String> = []
+
+    /// Minimum gap between Fabric item-listing refreshes for a single
+    /// materialized workspace container (F6/C16). A workspace container is
+    /// depth-0 with no subtree etag, so the #380 skip-gate can never elide it;
+    /// without this throttle ``refreshMaterialized`` would issue one Fabric REST
+    /// call per materialized workspace on every poll. 60 s mirrors the host
+    /// working-set poll cadence (`OfemWorkingSetEnumerator.workspaceRefreshInterval`).
+    private static let itemListThrottleNs: Int64 = 60 * 1_000_000_000
+
+    /// Unix-nanosecond timestamp of the last SUCCESSFUL Fabric item-listing
+    /// refresh per `(alias, workspaceID)`, gating ``refreshItemListing`` by
+    /// ``itemListThrottleNs``. Keyed by ``itemListKey(alias:workspaceID:)``.
+    /// Stamped only after a successful list so a thrown attempt stays due.
+    private var lastItemListNs: [String: Int64] = [:]
+
+    /// `(alias, workspaceID)` pairs with a ``refreshItemListing`` in flight, so
+    /// overlapping poll-path refreshes for the same workspace coalesce instead
+    /// of each reading pre-upsert discovery state and double-writing. Mirrors
+    /// ``refreshInFlightAliases``. Keyed by ``itemListKey(alias:workspaceID:)``.
+    private var itemListInFlight: Set<String> = []
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "SyncEngine")
 
@@ -136,6 +176,10 @@ public actor SyncEngine {
     /// - scratchBase: Directory for download spill files. Defaults to
     /// `<tmp>/ofem-download-partials/<pid>`.
     /// - pauseProbeInterval: Minimum gap between workspace-recovery probes.
+    /// - blobFreshnessTTL: Minimum row age below which ``open(key:)`` trusts a
+    ///   cached blob without a `getProperties` HEAD. `.zero` always
+    ///   HEADs (today's behaviour); tests that want to force a HEAD on every
+    ///   open pass `.zero` explicitly.
     /// - nowNsProvider: Injectable Unix-nanosecond clock for the #380 self-heal
     ///   floor. Defaults to the real wall clock; tests pass a controllable
     ///   source to drive elapsed time deterministically.
@@ -149,6 +193,7 @@ public actor SyncEngine {
         maxConcurrentUploads: Int = SyncEngine.defaultMaxConcurrentUploads,
         scratchBase: URL? = nil,
         pauseProbeInterval: Duration = SyncEngine.defaultPauseProbeInterval,
+        blobFreshnessTTL: Duration = SyncEngine.defaultBlobFreshnessTTL,
         nowNsProvider: (@Sendable () -> Int64)? = nil
     ) {
         self.cache = cache
@@ -156,6 +201,7 @@ public actor SyncEngine {
         // expression is evaluated in the caller's scope, where the private
         // global `currentNowNs()` is not visible. `nil` ⇒ real wall clock.
         self.nowNsProvider = nowNsProvider ?? { currentNowNs() }
+        self.blobFreshnessTTL = blobFreshnessTTL
         self.onelake = onelake
         self.fabric = fabric
         self.logger = logger
@@ -229,7 +275,12 @@ public actor SyncEngine {
         }
 
         let seen = Set(ws.map(\.id))
-        let rows = ws.map { w in
+        // Fetch the cached children ONCE and reuse the array for both the
+        // new-or-changed classification and the expiry reconcile below, instead
+        // of querying `cache.children` twice per pass.
+        let cachedChildren = (try? await cache.children(of: parentKey)) ?? []
+        let cachedByPath = Self.indexByPath(cachedChildren)
+        let candidates = ws.map { w in
             MetadataRecord(
                 accountAlias: alias,
                 workspaceID: VirtualIDs.workspaceID,
@@ -238,24 +289,101 @@ public actor SyncEngine {
                 parentPath: "",
                 name: w.displayName,
                 isDir: true,
-                lastAccessedNs: nowNs,
+                lastAccessedNs: cachedByPath[w.id]?.lastAccessedNs ?? nowNs,
                 syncedAtNs: nowNs
             )
         }
+        let rows = Self.classifyUpserts(candidates: candidates, cachedByPath: cachedByPath).batch
         await batchUpsert(rows, context: "listWorkspaces")
         // The parent of the workspaces listing is the domain root — root must
         // never be signalled (a root signal forces `.syncAnchorExpired` →
         // full re-enumeration). Root stays remount-driven via ChangeWatcher.
         // Container freshness for sub-containers is surfaced by the host
         // working-set poll loop rather than any per-container signal.
-        await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
+        await expireDiscoveryRows(children: cachedChildren, seen: seen, alias: alias)
 
         await track(eventName: "workspace_list", alias: alias, start: start, outcome: .success())
         return ws
     }
 
     /// Returns all items inside `workspaceID`, reconciling the local cache.
+    ///
+    /// On-demand entry point (navigation / `item(for:)` cache-miss fallback):
+    /// always lists — it is NOT throttled, so a first-mount cache miss still
+    /// populates the cache immediately. The periodic poll path uses the
+    /// throttled ``refreshItemListing(alias:workspaceID:)`` instead.
     public func listItems(alias: String, workspaceID: String) async throws -> [Item] {
+        let start = Date()
+        let (items, _) = try await reconcileItemListing(alias: alias, workspaceID: workspaceID)
+        await track(eventName: "item_list", alias: alias, start: start, outcome: .success())
+        return items
+    }
+
+    /// Refreshes a materialized workspace's Fabric item listing on the poll
+    /// path, returning the reconcile ``Diff``.
+    ///
+    /// A workspace container is materialized under the ``VirtualIDs/itemID``
+    /// sentinel (see ``CacheReader/materializedContainers(alias:)``); routing it
+    /// through ``refreshFolder(key:)`` would call `onelake.listPath` with
+    /// `itemGUID == "__items__"` — a guaranteed DFS error — so it is handled
+    /// here via the Fabric item listing instead (F6/C16).
+    ///
+    /// Two guards keep the poll cheap and consistent:
+    /// - **Coalesce**: a second call while one is in flight for the same
+    ///   workspace returns an empty ``Diff`` — the in-flight pass covers this
+    ///   poll and both must not read pre-upsert state and double-write.
+    /// - **Throttle**: within ``itemListThrottleNs`` of the last successful
+    ///   list, returns an empty ``Diff`` WITHOUT listing. Depth-0 workspace
+    ///   containers have no subtree etag, so the #380 skip-gate can never elide
+    ///   them; this is their throttle. The clock is only stamped on success, so
+    ///   a thrown (offline/paused) attempt stays due next poll.
+    func refreshItemListing(alias: String, workspaceID: String) async throws -> Diff {
+        let throttleKey = Self.itemListKey(alias: alias, workspaceID: workspaceID)
+
+        // Coalesce overlapping poll-path refreshes for the same workspace.
+        guard !itemListInFlight.contains(throttleKey) else { return Diff() }
+
+        // Throttle: serve an empty diff inside the window. A backward clock step
+        // (nowNs < last) fails toward refreshing rather than silently freezing.
+        let nowNs = nowNsProvider()
+        if let last = lastItemListNs[throttleKey], nowNs >= last, nowNs - last < Self.itemListThrottleNs {
+            return Diff()
+        }
+
+        itemListInFlight.insert(throttleKey)
+        defer { itemListInFlight.remove(throttleKey) }
+
+        let (_, diff) = try await reconcileItemListing(alias: alias, workspaceID: workspaceID)
+
+        // Stamp only after a successful list (reconcileItemListing rethrows on
+        // offline/paused BEFORE returning), so an offline poll stays due.
+        lastItemListNs[throttleKey] = nowNs
+
+        if diff.total > 0 {
+            await track(TelemetryEvent(
+                name: "sync_pulled",
+                accountAliasHash: TelemetryRedaction.hashAlias(alias),
+                itemsChanged: diff.total
+            ))
+        }
+        return diff
+    }
+
+    /// The shared reconcile-core for a workspace's Fabric item listing, used by
+    /// both the on-demand ``listItems(alias:workspaceID:)`` and the poll-path
+    /// ``refreshItemListing(alias:workspaceID:)``.
+    ///
+    /// Fetches the Fabric items (with the pause/offline guards), applies the
+    /// storage-type allowlist, upserts the item-listing root marker, writes the
+    /// conditional discovery-row batch, expires vanished rows (tombstoning each
+    /// removed item's `.item` identifier), and returns both the storage-backed
+    /// items and the reconcile ``Diff``. Emits the paused/failed telemetry on a
+    /// thrown Fabric call; the SUCCESS telemetry is left to the callers so the
+    /// on-demand and poll paths report distinct events.
+    private func reconcileItemListing(
+        alias: String,
+        workspaceID: String
+    ) async throws -> (items: [Item], diff: Diff) {
         let start = Date()
         let items: [Item]
         do {
@@ -301,11 +429,15 @@ public actor SyncEngine {
             syncedAtNs: nowNs
         )
         do { try await cache.upsert(root) } catch {
-            Self.log.warning("listItems: upsert root failed err=\(error, privacy: .public)")
+            Self.log.warning("reconcileItemListing: upsert root failed err=\(error, privacy: .public)")
         }
 
         let seen = Set(storageItems.map(\.id))
-        let rows = storageItems.map { it in
+        // Fetch the cached children ONCE and thread the array into both the
+        // classification and the expiry reconcile (avoids a second query).
+        let cachedChildren = (try? await cache.children(of: parentKey)) ?? []
+        let cachedByPath = Self.indexByPath(cachedChildren)
+        let candidates = storageItems.map { it in
             MetadataRecord(
                 accountAlias: alias,
                 workspaceID: workspaceID,
@@ -314,16 +446,26 @@ public actor SyncEngine {
                 parentPath: "",
                 name: it.displayName,
                 isDir: true,
-                lastAccessedNs: nowNs,
+                lastAccessedNs: cachedByPath[it.id]?.lastAccessedNs ?? nowNs,
                 syncedAtNs: nowNs,
                 itemType: it.type
             )
         }
+        let (rows, added, updated) = Self.classifyUpserts(candidates: candidates, cachedByPath: cachedByPath)
         await batchUpsert(rows, context: "listItems")
-        await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
+        let removed = await expireDiscoveryRows(children: cachedChildren, seen: seen, alias: alias)
 
-        await track(eventName: "item_list", alias: alias, start: start, outcome: .success())
-        return storageItems
+        var diff = Diff()
+        diff.added = added
+        diff.updated = updated
+        diff.removed = removed
+        return (storageItems, diff)
+    }
+
+    /// The throttle/coalesce map key for a `(alias, workspaceID)` pair.
+    /// A NUL separator keeps the two components unambiguous.
+    private static func itemListKey(alias: String, workspaceID: String) -> String {
+        "\(alias)\u{0}\(workspaceID)"
     }
 
     // MARK: - Enumerate
@@ -449,7 +591,8 @@ public actor SyncEngine {
         // must NOT be tombstoned. Rows that genuinely disappeared are removed via
         // batchDelete(recordTombstones: true), which writes a deletion tombstone
         // per removed path so the removal reaches Finder incrementally.
-        var upsertBatch: [MetadataRecord] = []
+        var candidates: [MetadataRecord] = []
+        candidates.reserveCapacity(remoteChildren.count)
         for (relPath, entry) in remoteChildren {
             let name = Enumerator.baseName(relPath)
             let cur = cachedByPath[relPath]
@@ -487,17 +630,15 @@ public actor SyncEngine {
                 next.contentType = c.contentType
             }
             if next.lastAccessedNs == 0 { next.lastAccessedNs = nowNs }
-
-            if cur == nil {
-                diff.added += 1
-                upsertBatch.append(next)
-            } else if let c = cur, Enumerator.entryChanged(current: c, next: next) {
-                diff.updated += 1
-                upsertBatch.append(next)
-            }
-            // Unchanged entries: counted in neither added nor updated, and not
-            // appended to upsertBatch — their cached row stays exactly as-is.
+            candidates.append(next)
         }
+        // Classify via the shared new-or-changed predicate: only new (cur == nil)
+        // and actually-changed (entryChanged) rows are written back; unchanged
+        // rows are left out so their syncedAtNs is not bumped. diff starts at
+        // zero, so `+=` here is the count.
+        let (upsertBatch, added, updated) = Self.classifyUpserts(candidates: candidates, cachedByPath: cachedByPath)
+        diff.added += added
+        diff.updated += updated
         await batchUpsert(upsertBatch, context: "refreshFolder upsert")
 
         // #380 subtree-etag harvest: keep each directory child's skip-gate token
@@ -628,9 +769,21 @@ public actor SyncEngine {
     /// `listPath` rethrows BEFORE the destructive reconcile, so the cache is
     /// never torn on a partial result.
     ///
-    /// - Returns: The ``Diff`` produced by ``refreshFolder(key:)``.
+    /// A workspace's item listing is materialized under the ``VirtualIDs/itemID``
+    /// sentinel (``CacheReader/materializedContainers(alias:)`` maps a
+    /// `.workspace` container to `CacheKey(ws, VirtualIDs.itemID, "")`). Its
+    /// children are Fabric items, not DFS paths, so it is routed to the Fabric
+    /// item-listing refresh instead of `refreshFolder`, which would call
+    /// `onelake.listPath(itemGUID: "__items__")` — a guaranteed DFS error that
+    /// the refresh wave would silently swallow, leaving new items in an open
+    /// workspace invisible until re-navigation (F6/C16).
+    ///
+    /// - Returns: The ``Diff`` produced by the appropriate refresh path.
     public func refreshMaterializedContainer(key: CacheKey) async throws -> Diff {
-        try await refreshFolder(key: key)
+        if key.itemID == VirtualIDs.itemID {
+            return try await refreshItemListing(alias: key.accountAlias, workspaceID: key.workspaceID)
+        }
+        return try await refreshFolder(key: key)
     }
 
     /// Refreshes a set of materialized containers, parent-driven, with a
@@ -864,6 +1017,14 @@ public actor SyncEngine {
 
     // MARK: - Open (download)
 
+    /// Result of a successful ``open(key:)``: the servable file URL plus the
+    /// metadata record describing exactly what it points to.
+    /// Threaded through internally so ``openReturningRecord(key:)`` gets both
+    /// from the single read/write pass ``open(key:)`` already performs,
+    /// instead of the caller fetching the row again afterward.
+    private typealias OpenResult = (url: URL, record: MetadataRecord)
+
+    // periphery:ignore - only test callers remain; exclude_tests: true hides them from periphery
     /// Downloads a file, serving from the local blob cache when fresh.
     ///
     /// Returns a file URL rather than in-memory `Data` so the FPE can write
@@ -877,7 +1038,32 @@ public actor SyncEngine {
     ///
     /// The blob cache is checked BEFORE acquiring a download semaphore slot, so
     /// cache hits never consume a slot.
+    ///
+    /// The sole production caller (`FileProviderExtension.fetchContents`) now
+    /// uses ``openReturningRecord(key:)`` instead, so it also needs the served
+    /// record; this URL-only entry point is kept as the minimal public API for
+    /// any caller that only needs the file (matching `blobURL(key:)` /
+    /// `handoffBlob(key:to:)` below) and is exercised extensively by the
+    /// `open()` test suite.
     public func open(key: CacheKey) async throws -> URL {
+        try await performOpen(key: key).url
+    }
+
+    /// Like ``open(key:)`` but also returns the ``MetadataRecord`` describing
+    /// exactly what was served.
+    ///
+    /// Used by the FPE's `fetchContents`, which needs a version-accurate
+    /// `NSFileProviderItem` for the SAME bytes it hands back: building that
+    /// item from a fetch taken before `open()` ran left its `contentVersion`
+    /// stale relative to a just-completed re-download, causing a redundant
+    /// re-download the next cycle. Re-fetching after `open()` instead would
+    /// fix the staleness but re-read the row a second time; returning the
+    /// record `open()` already has in hand needs neither.
+    public func openReturningRecord(key: CacheKey) async throws -> (url: URL, record: MetadataRecord) {
+        try await performOpen(key: key)
+    }
+
+    private func performOpen(key: CacheKey) async throws -> OpenResult {
         let start = Date()
         try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)
 
@@ -885,18 +1071,50 @@ public actor SyncEngine {
         let cached = try? await cache.fetch(key: key)
 
         if let c = cached, !c.blobSHA256.isEmpty {
+            // A row synced within blobFreshnessTTL is presumed fresh — it was
+            // stamped either by this file's own last download/revalidate or
+            // by a refreshFolder pass that observed a real change to it, so
+            // re-validating with a getProperties HEAD on every single open
+            // (Quick Look, a burst of re-opens) is a redundant round trip
+            // that closely-spaced opens would otherwise all pay. Skip the
+            // HEAD entirely inside the window; an unchanged row's syncedAtNs
+            // is not refreshed by the poll (see defaultBlobFreshnessTTL), so
+            // it still re-validates with a real HEAD roughly once per window.
+            let rowAgeNs = currentNowNs() - c.syncedAtNs
+            let ttlNs = Int64(blobFreshnessTTL.seconds * 1_000_000_000)
+            if c.syncedAtNs > 0, rowAgeNs >= 0, rowAgeNs < ttlNs,
+               let blobURL = await cache.blobURL(record: c)
+            {
+                do { try await cache.touch(key: key) } catch {
+                    Self.log.warning("open: touch failed err=\(error, privacy: .public)")
+                }
+                await track(eventName: "file_download", alias: key.accountAlias, start: start, outcome: .success())
+                return (blobURL, c)
+            }
+
+            // Outside the TTL, a known-offline engine skips the HEAD too:
+            // issuing one would just block until the network timeout before
+            // falling back to the same stale blob the catch-block offline
+            // path below would serve anyway.
+            if await offlineTracker.currentlyOffline(), let blobURL = await cache.blobURL(record: c) {
+                logger.debug("offline; serving stale cached blob without a freshness HEAD", metadata: ["path": key.path])
+                await track(eventName: "file_download", alias: key.accountAlias, start: start,
+                            outcome: .successWithCode("served_stale_offline"))
+                return (blobURL, c)
+            }
+
             // Attempt to serve from blob cache — done BEFORE acquiring a slot
             // so cache hits do not consume download bandwidth.
             do {
                 let (fresh, _) = try await isBlobFresh(key: key, cached: c)
                 if fresh {
                     await offlineTracker.observe(nil)
-                    if let blobURL = try? await cache.blobURL(key: key) {
+                    if let blobURL = await cache.blobURL(record: c) {
                         do { try await cache.touch(key: key) } catch {
                             Self.log.warning("open: touch failed err=\(error, privacy: .public)")
                         }
                         await track(eventName: "file_download", alias: key.accountAlias, start: start, outcome: .success())
-                        return blobURL
+                        return (blobURL, c)
                     }
                 }
                 // Remote moved on — fall through to download.
@@ -911,11 +1129,11 @@ public actor SyncEngine {
                     throw SyncError.workspacePaused
                 }
                 // Offline fallback: serve stale blob when the HEAD failed offline.
-                if await offlineTracker.currentlyOffline(), let blobURL = try? await cache.blobURL(key: key) {
+                if await offlineTracker.currentlyOffline(), let blobURL = await cache.blobURL(record: c) {
                     logger.debug("offline; serving stale cached blob", metadata: ["path": key.path])
                     await track(eventName: "file_download", alias: key.accountAlias, start: start,
                                 outcome: .successWithCode("served_stale_offline"))
-                    return blobURL
+                    return (blobURL, c)
                 }
                 throw error
             }
@@ -959,7 +1177,7 @@ public actor SyncEngine {
         // Snapshot mutable state needed inside the unstructured task so it
         // doesn't capture `self` via actor isolation.
         let gen = myGeneration
-        let task = Task<URL, any Error> { [self] in
+        let task = Task<OpenResult, any Error> { [self] in
             defer {
                 // Remove the map entry after the task value is delivered so
                 // late-arriving joiners always find a live entry (sync-24 fix).
@@ -1409,9 +1627,9 @@ public actor SyncEngine {
     ///
     /// Acquires a semaphore slot, handles the 412-resume-discard-retry path
     /// (using ``ResumePlan`` for clean state representation), and returns a
-    /// file URL. All blocking filesystem I/O runs off the actor via
-    /// `Task.detached` (sync-14).
-    private func performDownload(key: CacheKey, start: Date, cached: MetadataRecord?) async throws -> URL {
+    /// file URL alongside the metadata record just written for it. All
+    /// blocking filesystem I/O runs off the actor via `Task.detached` (sync-14).
+    private func performDownload(key: CacheKey, start: Date, cached: MetadataRecord?) async throws -> OpenResult {
         try await acquireDownloadSlot(alias: key.accountAlias)
         defer { releaseDownloadSlot(alias: key.accountAlias) }
 
@@ -1452,12 +1670,24 @@ public actor SyncEngine {
             }
         }
 
-        // Compute total expected.
+        // Compute total expected. `plan.rangeStart` (local spill file size) and
+        // `props.contentLength` (remote `Content-Length` header) are both
+        // untrusted inputs; a hostile or corrupted header near `Int64.max`
+        // could overflow the plain `+` and trap. Use a reporting add so an
+        // absurd combination surfaces as a handled error instead.
         var expectedTotal = cached?.contentLength ?? 0
         if props.contentLength > 0 {
-            expectedTotal = plan.hasPartial
-                ? plan.rangeStart + props.contentLength
-                : props.contentLength
+            if plan.hasPartial {
+                let (total, overflowed) = plan.rangeStart.addingReportingOverflow(props.contentLength)
+                guard !overflowed else {
+                    throw SyncError.resumeOffsetOverflow(
+                        rangeStart: plan.rangeStart, contentLength: props.contentLength
+                    )
+                }
+                expectedTotal = total
+            } else {
+                expectedTotal = props.contentLength
+            }
         }
 
         // Determine spill file size and verify (off actor — sync-14).
@@ -1536,28 +1766,32 @@ public actor SyncEngine {
             // the cache is inconsistent.
             await track(eventName: "file_download", alias: key.accountAlias, start: start,
                         outcome: .success(bytes: spillSize))
-            return spillURL
+            return (spillURL, downloadRow)
         }
 
-        // Move/copy spill file into the blob cache.
+        // Move/copy spill file into the blob cache. storeBlobFromURL returns
+        // the sha256/size it just computed, so `row` can carry them without a
+        // redundant re-fetch of the record we just upserted.
         do {
-            try await cache.storeBlobFromURL(spillURL, key: key)
+            let (sha, size) = try await cache.storeBlobFromURL(spillURL, key: key)
+            row.blobSHA256 = sha
+            row.blobSize = size
         } catch {
             Self.log.warning("open: storeBlobFromURL failed (blob cache inconsistent) err=\(error, privacy: .public)")
         }
 
         // Return the blob URL when available; fall back to the spill file when
         // the cache store failed.
-        if let blobURL = try? await cache.blobURL(key: key) {
+        if let blobURL = await cache.blobURL(record: row) {
             await track(eventName: "file_download", alias: key.accountAlias, start: start,
                         outcome: .success(bytes: spillSize))
-            return blobURL
+            return (blobURL, row)
         } else {
             logger.warn("open: blob cache unavailable; returning spill file URL",
                         metadata: ["path": key.path])
             await track(eventName: "file_download", alias: key.accountAlias, start: start,
                         outcome: .success(bytes: spillSize))
-            return spillURL
+            return (spillURL, row)
         }
     }
 
@@ -1707,12 +1941,62 @@ public actor SyncEngine {
         return (false, props)
     }
 
-    /// Deletes discovery rows for `parent` that are absent from `seen`.
+    /// Indexes cache rows by their `path` (the workspace/item GUID for discovery
+    /// rows, or the relative path for folder children). Used to look up each
+    /// freshly-listed candidate's prior state before deciding whether to upsert.
+    private static func indexByPath(_ rows: [MetadataRecord]) -> [String: MetadataRecord] {
+        var byPath: [String: MetadataRecord] = [:]
+        byPath.reserveCapacity(rows.count)
+        for r in rows {
+            byPath[r.path] = r
+        }
+        return byPath
+    }
+
+    /// Classifies listing candidates against their cached counterparts, returning
+    /// the conditional upsert batch plus the added/updated counts.
     ///
-    /// Uses the authoritative `seen` set from the current listing: any row
-    /// not in `seen` was not returned by the remote and should be expired,
+    /// Shared new-or-changed predicate for ``refreshFolder(key:)`` and the
+    /// discovery/item-listing reconciles (#361/#379), so the rule lives in one
+    /// place: a candidate is written back only when it is new (absent from
+    /// `cachedByPath`) or ``Enumerator/entryChanged(current:next:)`` reports a
+    /// real change. An unchanged candidate is left out entirely, so its cached
+    /// row (and `syncedAtNs`) stays exactly as-is — bumping it on every poll
+    /// would shift the working-set delta baseline forward and produce a phantom
+    /// `didUpdate` for every unchanged entry.
+    private static func classifyUpserts(
+        candidates: [MetadataRecord],
+        cachedByPath: [String: MetadataRecord]
+    ) -> (batch: [MetadataRecord], added: Int, updated: Int) {
+        var batch: [MetadataRecord] = []
+        var added = 0
+        var updated = 0
+        for next in candidates {
+            guard let cur = cachedByPath[next.path] else {
+                added += 1
+                batch.append(next)
+                continue
+            }
+            if Enumerator.entryChanged(current: cur, next: next) {
+                updated += 1
+                batch.append(next)
+            }
+        }
+        return (batch, added, updated)
+    }
+
+    /// Deletes discovery `children` that are absent from `seen`, returning the
+    /// number expired.
+    ///
+    /// Uses the authoritative `seen` set from the current listing: any cached
+    /// child not in `seen` was not returned by the remote and should be expired,
     /// regardless of its `syncedAt` timestamp (sync-25 fix: removes the
     /// time-window guard that coupled folder-content TTL with discovery expiry).
+    ///
+    /// `children` are the rows the caller already fetched for the classification
+    /// step, threaded through here to avoid a second `cache.children` query per
+    /// discovery pass. Every row genuinely exists in the cache, so each key built
+    /// here targets a present row that gets deleted.
     ///
     /// Evicted rows surface to Finder via two paths depending on whether the
     /// container is materialized:
@@ -1723,15 +2007,13 @@ public actor SyncEngine {
     ///
     /// (The former per-container `signalEnumerator(for:)` call was removed in
     /// #344 — it is a no-op on a replicated `NSFileProviderReplicatedExtension`.)
-    private func expireDiscoveryRows(parent: CacheKey, seen: Set<String>, alias: String) async {
-        guard let kids = try? await cache.children(of: parent) else {
-            Self.log.warning("expireDiscoveryRows: cache.children failed, stale rows may persist")
-            return
-        }
-        // `kids` are rows that currently EXIST in the cache (from
-        // cache.children), so every key built here targets a present row that
-        // gets deleted.
-        let deleteBatch = kids
+    @discardableResult
+    private func expireDiscoveryRows(
+        children: [MetadataRecord],
+        seen: Set<String>,
+        alias: String
+    ) async -> Int {
+        let deleteBatch = children
             .filter { !seen.contains($0.path) }
             .map { k in
                 CacheKey(
@@ -1752,6 +2034,7 @@ public actor SyncEngine {
         // removed item (the rows keyed by the real item GUID) — a pre-existing gap
         // tracked as a follow-up, not addressed here.
         await batchDelete(deleteBatch, recordTombstones: true, context: "expireDiscoveryRows")
+        return deleteBatch.count
     }
 
     // MARK: - Shared remote-operation error handler
@@ -1959,14 +2242,30 @@ private func currentNowNs() -> Int64 {
 
 // MARK: - dateToNs (nonisolated helper)
 
-/// Converts `date` to Unix nanoseconds clamped to `Int64` range.
+/// Converts `date` to Unix nanoseconds, or `nil` if `date` is `nil` or out of
+/// `Int64` range.
+///
+/// This mirrors `CacheModels.dateToNs` but keeps `nil` (rather than folding it
+/// to `0`) so call sites can distinguish "no timestamp in this response" from
+/// "timestamp is genuinely zero" and fall back to a cached value instead of
+/// clobbering it — see the `createdNs` call sites above, which chain
+/// `?? cached?.createdNs ?? 0`. That fallback chain is why this stays a
+/// separate copy rather than routing through the canonical helper.
 ///
 /// `Date.distantPast` has a `timeIntervalSince1970` of roughly `-6.2e10` which,
-/// when multiplied by `1e9`, yields `-6.2e19` — below `Int64.min`. We clamp to
-/// zero (i.e. "unknown") in that case so callers can treat zero as "no timestamp".
+/// when multiplied by `1e9`, yields `-6.2e19` — below `Int64.min`. We return
+/// `nil` in that case (and symmetrically near `Int64.max`) so callers never see
+/// an overflowed value.
+///
+/// The upper-bound check must use `<`, not `<=`: `Double(Int64.max)` rounds
+/// *up* to exactly `2^63` (one past `Int64.max`, since `Int64.max` itself isn't
+/// exactly representable as a `Double`), so a date whose nanosecond value lands
+/// on that rounded boundary would pass an `<=` guard and then trap in
+/// `Int64(ns)`. Several call sites feed this remote, attacker-influenced
+/// timestamps (DFS `lastModified` / `creationDate`), so the boundary matters.
 private func dateToNs(_ date: Date?) -> Int64? {
     guard let d = date else { return nil }
     let ns = d.timeIntervalSince1970 * 1_000_000_000
-    guard ns >= Double(Int64.min), ns <= Double(Int64.max) else { return nil }
+    guard ns >= Double(Int64.min), ns < Double(Int64.max) else { return nil }
     return Int64(ns)
 }

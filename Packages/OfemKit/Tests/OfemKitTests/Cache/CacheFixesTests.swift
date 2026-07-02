@@ -104,8 +104,12 @@ struct CacheFixesTests {
 
     @Test("evictToLimit does not delete a blob still referenced by a surviving row")
     func evictResolvesBlobRefCountsInOneTransaction() async throws {
-        // Two rows referencing the same SHA (identical data).
-        // After evicting one row the blob file must survive because the other row still references it.
+        // Two rows referencing the same SHA (identical data); the budget
+        // exactly fits ONE copy. This only stays a no-op if the over-budget
+        // decision is made with deduplicated accounting (C4) — a plain
+        // SUM(blob_size) over both rows would see 10 > 5 and evict one of
+        // them for zero bytes actually reclaimed (the blob file would
+        // survive via the other row, so nothing is freed on disk).
         let store = try makeTempStore(maxBlobBytes: 5, clock: { 100 })
         defer { try? FileManager.default.removeItem(at: store.root) }
 
@@ -123,26 +127,76 @@ struct CacheFixesTests {
         try await store.storeBlob(key: keyA, data: data)
         try await store.storeBlob(key: keyB, data: data)
 
-        // The budget (5 bytes) is equalled by a single unique blob, so if dedup is
-        // correctly accounted the SUM counts the blob once → 5 ≤ 5 → no eviction.
-        // If dedup is broken (sum counts both rows) it would see 10 > 5 and evict.
-        // Either way, the blob file must remain because at least one row still
-        // references it after any eviction.
-        _ = try await store.evictToLimit()
+        // Deduplicated total is 5 bytes (one unique blob) which equals the
+        // budget, so a correctly-accounted call is a strict no-op.
+        let (evicted, reclaimed) = try await store.evictToLimit()
+        #expect(evicted == 0, "Deduplicated total (5) is within budget (5); nothing should be evicted")
+        #expect(reclaimed == 0)
 
-        // At least one of the rows must still have the blob link (shared SHA).
+        // BOTH rows must still have the blob link — not just "at least one".
         let rA = try await store.fetch(key: keyA)
         let rB = try await store.fetch(key: keyB)
-        let anyLinked = !rA.blobSHA256.isEmpty || !rB.blobSHA256.isEmpty
-        #expect(anyLinked, "At least one row must retain the blob link")
+        #expect(!rA.blobSHA256.isEmpty, "a.txt must retain its blob link")
+        #expect(!rB.blobSHA256.isEmpty, "b.txt must retain its blob link")
+        #expect(rA.blobSHA256 == rB.blobSHA256, "both rows share the same blob")
 
         // And the blob file must still be on disk.
         let blobCache = try BlobShardCache(blobRoot: store.blobRoot)
-        let sha = rA.blobSHA256.isEmpty ? rB.blobSHA256 : rA.blobSHA256
-        if !sha.isEmpty {
-            let fileURL = blobCache.fileURL(sha256: sha)
-            #expect(fileURL != nil, "Blob file must still exist on disk when a row references it")
-        }
+        let fileURL = blobCache.fileURL(sha256: rA.blobSHA256)
+        #expect(fileURL != nil, "Blob file must still exist on disk when both rows reference it")
+    }
+
+    @Test("evictToLimit evicts the oldest row and reclaims real bytes when genuinely over budget")
+    func evictToLimitEvictsOldestAndReclaimsRealBytesWhenOverBudget() async throws {
+        // Two DISTINCT (non-shared) 5-byte blobs; budget fits only one, so
+        // this is genuinely over budget under deduplicated accounting too.
+        // Unlimited at init so the two storeBlob calls below don't trigger
+        // an implicit eviction before the explicit call under test. An
+        // incrementing clock (not a fixed one) is essential here: storeBlob
+        // always stamps last_accessed_ns = clock() on write, so a fixed
+        // clock would give both rows the same timestamp and leave LRU order
+        // to an incidental rowid tie-break instead of testing it directly.
+        let tickBox = ClockBox(value: Int64(100))
+        let store = try makeTempStore(maxBlobBytes: 0, clock: { tickBox.value })
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let keyOld = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "old.bin")
+        let keyNew = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "new.bin")
+
+        try await store.upsert(MetadataRecord(
+            accountAlias: "a", workspaceID: "w", itemID: "i",
+            path: "old.bin", parentPath: "", name: "old.bin", isDir: false
+        ))
+        try await store.storeBlob(key: keyOld, data: Data("AAAAA".utf8)) // 5 distinct bytes, lastAccessedNs = 100
+
+        tickBox.value = 200
+        try await store.upsert(MetadataRecord(
+            accountAlias: "a", workspaceID: "w", itemID: "i",
+            path: "new.bin", parentPath: "", name: "new.bin", isDir: false
+        ))
+        try await store.storeBlob(key: keyNew, data: Data("BBBBB".utf8)) // 5 distinct bytes, lastAccessedNs = 200
+
+        #expect(try await store.blobBytes() == 10, "two distinct 5-byte blobs, unlimited budget so far")
+
+        // Tighten the budget after the fact and evict explicitly.
+        await store.setMaxBlobBytes(5)
+        let (evicted, reclaimed) = try await store.evictToLimit()
+
+        #expect(evicted == 1, "only the older row's blob should be evicted")
+        #expect(reclaimed == 5, "the evicted blob's real, non-shared size must be reclaimed")
+        #expect(try await store.blobBytes() == 5, "deduplicated total must now be at/below budget")
+
+        let oldAfter = try await store.fetch(key: keyOld)
+        let newAfter = try await store.fetch(key: keyNew)
+        #expect(oldAfter.blobSHA256.isEmpty, "LRU blob must have been evicted")
+        #expect(!newAfter.blobSHA256.isEmpty, "MRU blob must survive eviction")
+
+        // The evicted blob's file must actually be gone from disk (real bytes
+        // reclaimed) while the surviving blob's file remains.
+        let blobCache = try BlobShardCache(blobRoot: store.blobRoot)
+        let oldSHA = SHA256.hash(data: Data("AAAAA".utf8)).map { String(format: "%02x", $0) }.joined()
+        #expect(blobCache.fileURL(sha256: oldSHA) == nil, "evicted blob's file must be deleted from disk")
+        #expect(blobCache.fileURL(sha256: newAfter.blobSHA256) != nil, "surviving blob's file must remain on disk")
     }
 
     // MARK: - cache-04: wipe atomicity

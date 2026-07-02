@@ -9,10 +9,18 @@ import Testing
 struct SyncEngineTests {
     // MARK: - Helpers
 
+    /// Defaults to `.zero` (always revalidate with a HEAD), not
+    /// `SyncEngine.defaultBlobFreshnessTTL`. Most of this suite's `open()`
+    /// tests seed the cache row moments before asserting on `getPropertiesCalls`
+    /// — with the production default those rows would land inside the TTL
+    /// window and the HEAD they assert on would never fire. The TTL-skip
+    /// behaviour itself is covered by dedicated tests below that pass a
+    /// non-zero `blobFreshnessTTL` explicitly.
     private func makeEngine(
         onelake: any OneLakeClientProtocol = MockOneLakeClient(),
         fabric: MockFabricClient = MockFabricClient(),
-        store: CacheStore? = nil
+        store: CacheStore? = nil,
+        blobFreshnessTTL: Duration = .zero
     ) throws -> (SyncEngine, CacheStore) {
         let s = try store ?? makeTempStore()
         // tests-07: nest the scratch dir under store.root so the single
@@ -24,7 +32,8 @@ struct SyncEngineTests {
             cache: s,
             onelake: onelake,
             fabric: fabric,
-            scratchBase: scratchDir
+            scratchBase: scratchDir,
+            blobFreshnessTTL: blobFreshnessTTL
         )
         return (engine, s)
     }
@@ -113,7 +122,10 @@ struct SyncEngineTests {
             onelake: ol,
             fabric: fabric,
             maxConcurrentDownloads: 1,
-            scratchBase: scratchDir
+            scratchBase: scratchDir,
+            // Force the second open() below through the HEAD (isBlobFresh)
+            // path this test asserts on, rather than the TTL fast path.
+            blobFreshnessTTL: .zero
         )
 
         let key = Self.baseKey
@@ -919,6 +931,151 @@ struct SyncEngineTests {
         let data = try Data(contentsOf: url)
         #expect(data.count == 10)
         #expect(ol.readCalls.count == 1)
+    }
+
+    // MARK: - TTL-gated freshness HEAD
+
+    @Test("open() within blobFreshnessTTL skips the freshness HEAD entirely")
+    func openWithinTTLSkipsHead() async throws {
+        let ol = MockOneLakeClient()
+        // Production-sized TTL so the second open below lands well inside it.
+        let (engine, store) = try makeEngine(onelake: ol, blobFreshnessTTL: .seconds(60))
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+        let body = Data(repeating: 0x77, count: 12)
+        let props = PathProperties.make(contentLength: 12, eTag: "v1")
+        ol.readResults.append(.success((body, props)))
+
+        // First open: downloads and stamps syncedAtNs to "now".
+        _ = try await engine.open(key: key)
+        #expect(ol.readCalls.count == 1)
+
+        // Second open, immediately after: the row is well inside the 60 s
+        // window, so open() must serve the cached blob without ever calling
+        // getProperties.
+        let url2 = try await engine.open(key: key)
+        let data2 = try Data(contentsOf: url2)
+        #expect(data2 == body)
+        #expect(ol.getPropertiesCalls.count == 0, "expected no HEAD inside the freshness TTL")
+        #expect(ol.readCalls.count == 1, "expected no re-download inside the freshness TTL")
+    }
+
+    @Test("open() past the TTL skips the HEAD when already known offline, serving the stale blob")
+    func openPastTTLKnownOfflineSkipsHead() async throws {
+        let ol = MockOneLakeClient()
+        // TTL disabled so every open below reaches the offline/HEAD branch.
+        let (engine, store) = try makeEngine(onelake: ol, blobFreshnessTTL: .zero)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+        let body = Data(repeating: 0x88, count: 8)
+        let props = PathProperties.make(contentLength: 8, eTag: "v1")
+        ol.readResults.append(.success((body, props)))
+        _ = try await engine.open(key: key)
+        #expect(ol.readCalls.count == 1)
+
+        // Revalidate fails with an offline-class transport error — marks the
+        // engine's OfflineTracker offline and serves the stale blob via the
+        // existing post-HEAD-failure fallback.
+        let offlineTransport = HTTPClientError.transport(URLError(.notConnectedToInternet))
+        ol.getPropertiesResults.append(.failure(OneLakeError.httpError(offlineTransport)))
+        _ = try await engine.open(key: key)
+        #expect(ol.getPropertiesCalls.count == 1)
+        #expect(await engine.currentlyOffline == true)
+
+        // Third open, still offline: must skip the HEAD entirely — issuing
+        // one would just block on the network before falling back to the
+        // same stale blob. No further stub is queued, so a HEAD attempt here
+        // would surface as a second recorded call (and, pre-fix, as
+        // MockError.stubsExhausted).
+        let url3 = try await engine.open(key: key)
+        let data3 = try Data(contentsOf: url3)
+        #expect(data3 == body)
+        #expect(ol.getPropertiesCalls.count == 1, "known-offline open() must not attempt another HEAD")
+    }
+
+    @Test("A row invalidated by refreshFolder forces a real download even within the freshness TTL")
+    func refreshFolderInvalidationForcesDownloadWithinTTL() async throws {
+        let ol = MockOneLakeClient()
+        // Production-sized TTL: after refreshFolder re-stamps the row below,
+        // syncedAtNs is "now" and well inside this window — the TTL fast path
+        // must still be skipped because blobSHA256 was cleared.
+        let (engine, store) = try makeEngine(onelake: ol, blobFreshnessTTL: .seconds(60))
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let dirKey = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "Files")
+        let key = Self.baseKey // "Files/data.csv"
+
+        // Seed a normal cached download at etag v1.
+        let body1 = Data(repeating: 0x01, count: 10)
+        let props1 = PathProperties.make(contentLength: 10, eTag: "v1")
+        ol.readResults.append(.success((body1, props1)))
+        _ = try await engine.open(key: key)
+
+        // The background poll loop's refreshFolder observes a remote etag
+        // change (v2). entryChanged detects the delta, so the upserted row
+        // carries the new etag with blobSHA256 cleared (unlinked from the
+        // stale v1 blob — "Carry blob linkage when etag still matches" does
+        // not apply) and a freshly stamped syncedAtNs.
+        let listing = ListResult(entries: [
+            PathEntry.file(name: "Files/data.csv", size: 20, eTag: "v2", lastModified: Date(timeIntervalSince1970: 0)),
+        ])
+        ol.listPathResults.append(.success(listing))
+        _ = try await engine.refreshFolder(key: dirKey)
+
+        let row = try await store.fetch(key: key)
+        #expect(row.etag == "v2")
+        #expect(row.blobSHA256.isEmpty, "refreshFolder must clear the blob link on an etag change")
+
+        // open() again, immediately — well inside the 60 s TTL window
+        // syncedAtNs was just stamped with. Because blobSHA256 is empty, the
+        // TTL fast path's `!c.blobSHA256.isEmpty` guard must keep this out of
+        // the cache-hit branch entirely: the engine issues a real download
+        // and serves the NEW bytes, not a stale HEAD-free cache hit.
+        let body2 = Data(repeating: 0x02, count: 20)
+        let props2 = PathProperties.make(contentLength: 20, eTag: "v2")
+        ol.readResults.append(.success((body2, props2)))
+
+        let url2 = try await engine.open(key: key)
+        let data2 = try Data(contentsOf: url2)
+        #expect(data2 == body2, "open() within the TTL must still serve the NEW bytes after invalidation")
+        #expect(ol.readCalls.count == 2, "expected a real re-download, not a stale cache hit")
+    }
+
+    // MARK: - openReturningRecord
+
+    @Test("openReturningRecord returns the record describing the served bytes, not a pre-download snapshot")
+    func openReturningRecordReflectsServedBytes() async throws {
+        let ol = MockOneLakeClient()
+        // TTL disabled so the second call below always revalidates via HEAD
+        // instead of trusting the (now stale) first-download row.
+        let (engine, store) = try makeEngine(onelake: ol, blobFreshnessTTL: .zero)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+        let body1 = Data(repeating: 0x01, count: 10)
+        let props1 = PathProperties.make(contentLength: 10, eTag: "v1")
+        ol.readResults.append(.success((body1, props1)))
+
+        // First open (download): the returned record must reflect the bytes
+        // just downloaded.
+        let (url1, record1) = try await engine.openReturningRecord(key: key)
+        #expect(record1.etag == "v1")
+        #expect(!record1.blobSHA256.isEmpty)
+        #expect(try Data(contentsOf: url1) == body1)
+
+        // Remote changed: HEAD reports a new etag, triggering a re-download.
+        ol.getPropertiesResults.append(.success(PathProperties.make(contentLength: 20, eTag: "v2")))
+        let body2 = Data(repeating: 0x02, count: 20)
+        ol.readResults.append(.success((body2, PathProperties.make(contentLength: 20, eTag: "v2"))))
+
+        let (url2, record2) = try await engine.openReturningRecord(key: key)
+        // The record must describe the NEW bytes — a stale pre-download
+        // fetch would still report v1/10 here.
+        #expect(record2.etag == "v2")
+        #expect(record2.contentLength == 20)
+        #expect(try Data(contentsOf: url2) == body2)
     }
 
     // MARK: - refreshFolder: item-relative PathEntry.name (issue-244 regression)
@@ -2015,5 +2172,88 @@ struct SyncEngineTests {
         let row = try await store.fetch(key: key)
         #expect(row.createdNs == knownCreatedNs,
                 "overflow creation date must not clobber a good cached createdNs")
+    }
+
+    // MARK: - dateToNs (private duplicate): exact Int64.max boundary no longer traps
+
+    /// `Double(Int64.max)` rounds *up* to exactly `2^63`, one past the actual
+    /// `Int64.max`. A remote `lastModified` whose nanosecond value lands on that
+    /// rounded boundary must not trap `Int64(ns)` inside `SyncEngine`'s private
+    /// `dateToNs` duplicate — it must clamp to the "unknown" sentinel (`0`),
+    /// same as the canonical helper.
+    @Test("refreshFolder() does not trap on a remote lastModified at the Int64.max rounding boundary")
+    func refreshFolderBoundaryLastModifiedDoesNotTrap() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let dir = "Files"
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: dir)
+
+        let boundaryDate = Date(timeIntervalSince1970: Double(Int64.max) / 1_000_000_000)
+        ol.listPathResults.append(.success(ListResult(entries: [
+            PathEntry(name: "\(dir)/boundary.bin", isDirectory: false, contentLength: 10, eTag: "e1", lastModified: boundaryDate),
+        ])))
+
+        // Must not trap — that's the whole point of the test.
+        let diff = try await engine.refreshFolder(key: key)
+        #expect(diff.added == 1)
+
+        let kids = try await store.children(of: key)
+        let row = kids.first { $0.name == "boundary.bin" }
+        #expect(row != nil)
+        #expect(row?.lastModifiedNs == 0, "out-of-range lastModified must clamp to 0, not trap")
+    }
+
+    // MARK: - C6: resume-download Int64 overflow no longer traps
+
+    /// A resumed download combines a local resume offset (`plan.rangeStart`,
+    /// read off the on-disk spill file) with the remote `Content-Length`
+    /// header (`props.contentLength`) — both untrusted from the resume
+    /// engine's point of view. A hostile/absurd `Content-Length` that would
+    /// overflow `Int64` when added to the resume offset must surface as
+    /// `SyncError.resumeOffsetOverflow` instead of trapping the process.
+    @Test("open() resume with an absurd Content-Length surfaces a handled error instead of trapping")
+    func resumeDownloadOverflowingContentLengthIsHandledNotTrapped() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+
+        // Seed a cached row so PartialManager.rangeStart(for:cachedRecord:)
+        // considers resuming (it requires cachedRecord.contentLength > 0).
+        let existing = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: Self.path, parentPath: "Files", name: "data.csv", isDir: false,
+            contentLength: 1000, etag: "etag-v1"
+        )
+        try await store.upsert(existing)
+
+        // Write a matching partial spill file + etag sidecar directly, using
+        // the same scratch-dir layout SyncEngine computes internally
+        // (scratchBase/<pid>), so PartialManager.rangeStart(for:) reports
+        // hasPartial == true with a known rangeStart.
+        let scratchDir = store.root.appending(path: "scratch", directoryHint: .isDirectory)
+        let partialsDir = scratchDir.appendingPathComponent("\(ProcessInfo.processInfo.processIdentifier)")
+        try FileManager.default.createDirectory(at: partialsDir, withIntermediateDirectories: true)
+        let shadow = PartialManager(scratchDir: partialsDir)
+        try Data(repeating: 0, count: 500).write(to: shadow.partialURL(for: key))
+        try shadow.storeEtag("etag-v1", for: key)
+
+        // Server reports a Content-Length so large that rangeStart (500) plus
+        // it overflows Int64.
+        let hugeProps = PathProperties(
+            isDirectory: false, contentLength: Int64.max - 100, eTag: "etag-v1",
+            lastModified: Date(), contentType: "text/csv"
+        )
+        ol.readResults.append(.success((Data(repeating: 0xAB, count: 1), hugeProps)))
+
+        do {
+            _ = try await engine.open(key: key)
+            Issue.record("Expected SyncError.resumeOffsetOverflow to be thrown")
+        } catch SyncError.resumeOffsetOverflow {
+            // Correct — handled, no trap.
+        }
     }
 }
