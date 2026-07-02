@@ -1,12 +1,22 @@
 // MenuStatusModelAutoRefreshTests.swift
-// Unit tests for the auto-refresh gating and blobBytes throttle introduced
-// for E3 (2026-06-27 code review):
-//   - startAutoRefresh()/stopAutoRefresh() must actually start/stop the
-//     periodic loop, since MenuVisibilityController (OneLakeApp.swift) now
-//     relies on stopAutoRefresh() to keep the timer from running for the
-//     whole process lifetime while the menu is closed.
+// Unit tests for the two-tier auto-refresh design introduced for E3
+// (2026-06-27 code review, revised after review round 2):
+//   - startAutoRefresh()/stopAutoRefresh() (the 5s high-frequency loop)
+//     must actually start/stop, since surfaceBecameVisible()/Hidden() and
+//     MenuVisibilityController now rely on stopAutoRefresh() to keep the
+//     timer from running for the whole process lifetime while nothing is
+//     visible.
+//   - startBackgroundRefresh() (the ~75s low-frequency loop) must keep
+//     ticking regardless of visibility, so the ambient badge self-heals
+//     while the dropdown/Settings are closed.
+//   - surfaceBecameVisible()/surfaceBecameHidden() must refcount correctly
+//     so two concurrently-visible surfaces (dropdown + Settings) don't
+//     stop the high-frequency loop until both report hidden.
 //   - The needsSignIn sweep over accounts 2..N must not round-trip to the
-//     FPE (and its blobBytes() scan) on every single tick.
+//     FPE (and its blobBytes() scan) on every single call to doRefresh(),
+//     using a wall-clock throttle rather than a per-call counter (a
+//     counter doesn't correspond to any predictable cadence now that two
+//     independent loops plus ad-hoc action refreshes all call refresh()).
 //
 // These fakes are redeclared locally rather than reusing the `private`
 // fakes in MenuStatusModelExtendedTests.swift, matching this test target's
@@ -162,10 +172,11 @@ final class MenuStatusModelAutoRefreshTests: XCTestCase, @unchecked Sendable {
             completedRefreshes += 1
         }
 
-        // Five consecutive, fully-sequential refreshes: only the first is
-        // expected to check "second" (the throttle stride is 6). The
-        // remaining four should reuse the last-known membership instead of
-        // round-tripping — and paying blobBytes() — again.
+        // Five consecutive, fully-sequential refreshes, all well within the
+        // 30 s default secondaryAccountCheckInterval: only the first is
+        // expected to check "second". The remaining four should reuse the
+        // last-known membership instead of round-tripping — and paying
+        // blobBytes() — again.
         for i in 0 ..< 5 {
             model.refresh()
             await waitUntil { completedRefreshes == i + 1 }
@@ -181,5 +192,131 @@ final class MenuStatusModelAutoRefreshTests: XCTestCase, @unchecked Sendable {
         // fresh on every tick.
         let firstCallCount = engineProvider.calledAliases.count(where: { $0 == "first" })
         XCTAssertEqual(firstCallCount, 5, "The first account must still be checked on every tick")
+    }
+
+    func testDoRefresh_secondaryAccountRechecked_afterIntervalElapses() async {
+        // A short, injected interval so the "window elapsed" branch is
+        // reachable without waiting out the 30 s production default.
+        let accountProvider = CountingAccountProvider()
+        accountProvider.accounts = [makeAccount(alias: "first"), makeAccount(alias: "second")]
+        let engineProvider = CallLoggingEngineStatusProvider()
+        let model = MenuStatusModel(
+            accountProvider: accountProvider,
+            engineStatusProvider: engineProvider,
+            domainManager: NoOpDomainManager(),
+            secondaryAccountCheckInterval: .milliseconds(30)
+        )
+
+        var completedRefreshes = 0
+        var cancellable: AnyCancellable?
+        cancellable = model.$accountsNeedingSignIn.dropFirst().sink { _ in
+            completedRefreshes += 1
+        }
+
+        model.refresh()
+        await waitUntil { completedRefreshes == 1 }
+        try? await Task.sleep(for: .milliseconds(60)) // > secondaryAccountCheckInterval
+        model.refresh()
+        await waitUntil { completedRefreshes == 2 }
+        cancellable?.cancel()
+
+        let secondCallCount = engineProvider.calledAliases.count(where: { $0 == "second" })
+        XCTAssertEqual(
+            secondCallCount, 2,
+            "getEngineStatus for a secondary account must re-check once the throttle window elapses"
+        )
+    }
+
+    // MARK: - startBackgroundRefresh (E3)
+
+    func testStartBackgroundRefresh_ticksRepeatedly() async {
+        let accountProvider = CountingAccountProvider()
+        let model = MenuStatusModel(
+            accountProvider: accountProvider,
+            engineStatusProvider: CallLoggingEngineStatusProvider(),
+            domainManager: NoOpDomainManager()
+        )
+
+        // Never stopped — the low-frequency loop is meant to run for the
+        // whole process lifetime, independent of visibility.
+        model.startBackgroundRefresh(interval: .milliseconds(15))
+        await waitUntil { accountProvider.listAccountsCallCount >= 3 }
+
+        XCTAssertGreaterThanOrEqual(
+            accountProvider.listAccountsCallCount, 3,
+            "startBackgroundRefresh must keep ticking regardless of dropdown/Settings visibility"
+        )
+    }
+
+    // MARK: - surfaceBecameVisible / surfaceBecameHidden refcounting (E3)
+
+    func testSurfaceBecameVisible_startsHighFrequencyLoop() async {
+        let accountProvider = CountingAccountProvider()
+        let model = MenuStatusModel(
+            accountProvider: accountProvider,
+            engineStatusProvider: CallLoggingEngineStatusProvider(),
+            domainManager: NoOpDomainManager()
+        )
+
+        model.surfaceBecameVisible(interval: .milliseconds(15))
+        await waitUntil { accountProvider.listAccountsCallCount >= 1 }
+        model.surfaceBecameHidden()
+
+        XCTAssertGreaterThanOrEqual(accountProvider.listAccountsCallCount, 1)
+    }
+
+    func testSurfaceBecameHidden_onlyStopsAfterEverySurfaceReleases() async {
+        // Two independently-visible surfaces (e.g. the dropdown and the
+        // Settings window): releasing just one must not stop the shared
+        // high-frequency loop.
+        let accountProvider = CountingAccountProvider()
+        let model = MenuStatusModel(
+            accountProvider: accountProvider,
+            engineStatusProvider: CallLoggingEngineStatusProvider(),
+            domainManager: NoOpDomainManager()
+        )
+
+        model.surfaceBecameVisible(interval: .milliseconds(15)) // dropdown opens
+        model.surfaceBecameVisible(interval: .milliseconds(15)) // Settings opens
+        model.surfaceBecameHidden() // dropdown closes — Settings still open
+        await waitUntil { accountProvider.listAccountsCallCount >= 2 }
+        let countWhileSettingsStillOpen = accountProvider.listAccountsCallCount
+        XCTAssertGreaterThanOrEqual(
+            countWhileSettingsStillOpen, 2,
+            "The high-frequency loop must keep running while any surface is still visible"
+        )
+
+        model.surfaceBecameHidden() // Settings closes — last surface gone
+        try? await Task.sleep(for: .milliseconds(50)) // let any in-flight tick settle
+        let countAtStop = accountProvider.listAccountsCallCount
+        try? await Task.sleep(for: .milliseconds(150))
+
+        XCTAssertEqual(
+            accountProvider.listAccountsCallCount, countAtStop,
+            "The high-frequency loop must stop once the last surface reports hidden"
+        )
+    }
+
+    func testSurfaceBecameHidden_extraCallDoesNotUnderflow() async {
+        // An unpaired surfaceBecameHidden() (defensive symmetry with
+        // MenuVisibilityController's own clamp) must not leave the
+        // refcount negative, which would require two hidden calls before
+        // the loop could ever restart.
+        let accountProvider = CountingAccountProvider()
+        let model = MenuStatusModel(
+            accountProvider: accountProvider,
+            engineStatusProvider: CallLoggingEngineStatusProvider(),
+            domainManager: NoOpDomainManager()
+        )
+
+        model.surfaceBecameHidden() // no matching surfaceBecameVisible()
+        model.surfaceBecameVisible(interval: .milliseconds(15))
+        await waitUntil { accountProvider.listAccountsCallCount >= 1 }
+        model.surfaceBecameHidden()
+
+        XCTAssertGreaterThanOrEqual(
+            accountProvider.listAccountsCallCount, 1,
+            "A single surfaceBecameVisible() must still start the loop after a stray hidden call"
+        )
     }
 }

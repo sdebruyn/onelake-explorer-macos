@@ -38,10 +38,18 @@ struct SettingsView: View {
         // which makes the chrome feel jumpy.
         .frame(width: 520, height: 340)
         .onAppear {
-            // Only refresh the login-item status (the only state genuinely
-            // unknown to the auto-refresh poll loop). The extra model.refresh()
-            // is redundant work on top of the always-on 5-second poll (host-21).
             loginItem.refresh()
+            // The engine-status poll is now gated on visibility (E3): the
+            // low-frequency background loop that used to keep this window's
+            // cache/network/interval values current on its own is coarse
+            // (~75s), so refresh immediately on appear rather than showing
+            // a stale snapshot, and register this window as a high-frequency
+            // surface for as long as it stays open.
+            model.refresh()
+            model.surfaceBecameVisible()
+        }
+        .onDisappear {
+            model.surfaceBecameHidden()
         }
     }
 }

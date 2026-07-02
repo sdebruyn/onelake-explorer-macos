@@ -146,16 +146,24 @@ final class MenuStatusModel: ObservableObject {
 
     /// Production init wires to shared singletons.
     /// Provide non-nil values in tests to inject fakes.
+    ///
+    /// - Parameter secondaryAccountCheckInterval: Minimum wall-clock gap
+    ///   between two needsSignIn sweeps over accounts 2..N (see the
+    ///   throttle in doRefresh()). Overridable so tests can exercise both
+    ///   the "still within the window" and "window elapsed" branches
+    ///   without waiting out the 30 s production default.
     init(
         accountProvider: (any AccountProvider)? = nil,
         engineStatusProvider: (any EngineStatusProvider)? = nil,
         domainManager: (any DomainManager)? = nil,
-        reSignInProvider: (any ReSignInProvider)? = nil
+        reSignInProvider: (any ReSignInProvider)? = nil,
+        secondaryAccountCheckInterval: Duration = .seconds(30)
     ) {
         self.accountProvider = accountProvider ?? SharedOfemAuth.shared.auth
         self.engineStatusProvider = engineStatusProvider ?? OfemFPEClient.shared
         self.domainManager = domainManager ?? DomainSyncManager.shared
         self.reSignInProvider = reSignInProvider ?? SharedOfemAuth.shared
+        self.secondaryAccountCheckInterval = secondaryAccountCheckInterval
     }
 
     // MARK: Published
@@ -285,6 +293,7 @@ final class MenuStatusModel: ObservableObject {
 
     private var refreshTask: Task<Void, Never>?
     private var autoRefreshTask: Task<Void, Never>?
+    private var backgroundRefreshTask: Task<Void, Never>?
     /// In-flight debounce timer for setCacheLimitGB.
     private var setCacheLimitTask: Task<Void, Never>?
     /// In-flight debounce timer for setNetMaxUploads.
@@ -361,10 +370,15 @@ final class MenuStatusModel: ObservableObject {
     /// rather than overwriting fresher state.
     private var refreshGeneration: UInt64 = 0
 
-    /// How often (in refreshes) the needsSignIn sweep over accounts 2..N
-    /// actually round-trips to the FPE, instead of carrying forward the
-    /// last-known membership. See the throttle in doRefresh() (E3).
-    private static let secondaryAccountCheckStride: UInt64 = 6
+    /// Minimum wall-clock gap between two needsSignIn sweeps over accounts
+    /// 2..N. Set via init (defaults to 30 s in production). See the
+    /// throttle in doRefresh() (E3).
+    private let secondaryAccountCheckInterval: Duration
+
+    /// Wall-clock time of the last needsSignIn sweep over accounts 2..N.
+    /// `nil` means "never checked" — the very first doRefresh() always
+    /// checks regardless of `secondaryAccountCheckInterval`.
+    private var lastSecondaryAccountCheckAt: ContinuousClock.Instant?
 
     /// Fetch account list + engine status. Call this on menu open;
     /// safe to call concurrently — a running fetch is cancelled and restarted.
@@ -375,29 +389,89 @@ final class MenuStatusModel: ObservableObject {
         }
     }
 
-    /// Refresh now, then repeatedly every `interval` while `autoRefreshTask` is live.
-    /// Cancel `autoRefreshTask` (or call `stopAutoRefresh()`) to stop the loop.
+    /// Refresh now, then repeatedly every `interval` for the whole process
+    /// lifetime, independent of dropdown/Settings visibility.
     ///
-    /// Called by `MenuVisibilityController` (OneLakeApp.swift) when the
-    /// menu-bar dropdown opens, so the loop only runs while it is visible
-    /// rather than for the whole process lifetime (E3).
-    func startAutoRefresh(interval: Duration = .seconds(5)) {
-        autoRefreshTask?.cancel()
-        autoRefreshTask = Task { @MainActor [weak self] in
+    /// This is the low-frequency half of the E3 fix: the ambient menu-bar
+    /// badge (no-accounts / paused-workspace state) must keep self-healing
+    /// even while no UI surface is open — that's the app's normal resting
+    /// state. `interval` is deliberately much coarser than the 5 s
+    /// high-frequency loop (`startAutoRefresh`) so the per-account
+    /// `getEngineStatus` round trip — and the `blobBytes()` scan it
+    /// triggers on the FPE side — is paid far less often while nobody is
+    /// looking. `surfaceBecameVisible()` layers the 5 s loop on top
+    /// whenever the dropdown or Settings window is actually open.
+    ///
+    /// Call once, at launch; the loop is not meant to be stopped.
+    func startBackgroundRefresh(interval: Duration = .seconds(75)) {
+        backgroundRefreshTask?.cancel()
+        backgroundRefreshTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                self?.refresh()
+                guard let self else { return }
+                self.refresh()
                 try? await Task.sleep(for: interval)
             }
         }
     }
 
-    /// Cancel the auto-refresh loop. Called by `MenuVisibilityController`
-    /// (OneLakeApp.swift) when the menu-bar dropdown closes, so the 5 s
-    /// timer — and the `blobBytes()` scan each tick triggers on the FPE
-    /// side — only runs while the menu is actually on screen (E3).
+    /// Refresh now, then repeatedly every `interval` while `autoRefreshTask` is live.
+    /// Cancel `autoRefreshTask` (or call `stopAutoRefresh()`) to stop the loop.
+    ///
+    /// Callers should generally go through `surfaceBecameVisible()` /
+    /// `surfaceBecameHidden()` rather than calling this directly, so that
+    /// multiple visible surfaces (dropdown + Settings) share one refcounted
+    /// session instead of stepping on each other's start/stop.
+    func startAutoRefresh(interval: Duration = .seconds(5)) {
+        autoRefreshTask?.cancel()
+        autoRefreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                self.refresh()
+                try? await Task.sleep(for: interval)
+            }
+        }
+    }
+
+    /// Cancel the high-frequency auto-refresh loop.
     func stopAutoRefresh() {
         autoRefreshTask?.cancel()
         autoRefreshTask = nil
+    }
+
+    // MARK: - Visible-surface refcounting (E3)
+
+    /// Number of UI surfaces (the dropdown, the Settings window) currently
+    /// asking for high-frequency (5 s) refresh. A refcount rather than a
+    /// boolean because more than one surface can be visible at once (e.g.
+    /// Settings opened from the dropdown while it is still closing) — the
+    /// high-frequency loop should only stop once every surface reports
+    /// hidden, not whichever happens to close first.
+    private var visibleSurfaceCount = 0
+
+    /// Called by a UI surface (`MenuVisibilityController` for the dropdown,
+    /// `SettingsView` for the Settings window) when it becomes visible.
+    /// Starts the high-frequency loop on the first caller; a second
+    /// concurrently-visible surface is a no-op.
+    func surfaceBecameVisible() {
+        surfaceBecameVisible(interval: .seconds(5))
+    }
+
+    /// Overload accepting an explicit `interval`, so tests can exercise the
+    /// refcounting logic without waiting out the 5 s production cadence.
+    /// Production call sites use the parameterless `surfaceBecameVisible()`.
+    func surfaceBecameVisible(interval: Duration) {
+        visibleSurfaceCount += 1
+        guard visibleSurfaceCount == 1 else { return }
+        startAutoRefresh(interval: interval)
+    }
+
+    /// Called by a UI surface when it stops being visible. Stops the
+    /// high-frequency loop once the last surface has reported hidden.
+    /// Clamped at zero so an extra/unpaired call can't underflow the count.
+    func surfaceBecameHidden() {
+        visibleSurfaceCount = max(0, visibleSurfaceCount - 1)
+        guard visibleSurfaceCount == 0 else { return }
+        stopAutoRefresh()
     }
 
     private func doRefresh() async {
@@ -520,10 +594,22 @@ final class MenuStatusModel: ObservableObject {
         // Each call also runs a blobBytes() full-table scan on the FPE side
         // (getEngineStatus always measures cache usage before replying) even
         // though only needsSignIn is used here. Sign-in state doesn't need
-        // 5 s freshness, so this sweep only actually round-trips every
-        // secondaryAccountCheckStride-th refresh; skipped ticks carry
-        // forward the last-known membership instead (E3).
-        if (myGeneration - 1) % MenuStatusModel.secondaryAccountCheckStride == 0 {
+        // high-frequency freshness, so this sweep only actually round-trips
+        // once every `secondaryAccountCheckInterval` of wall-clock time;
+        // skipped calls carry forward the last-known membership instead
+        // (E3). Time-based rather than a per-refresh counter: refresh()
+        // now fires from two independent loops (the always-on low-frequency
+        // background loop and the visibility-gated high-frequency one) plus
+        // ad-hoc action refreshes, so "every Nth call" doesn't correspond to
+        // any predictable wall-clock cadence and could leave a genuinely
+        // stale needsSignIn reading uncorrected across many dropdown opens.
+        // `nil`/expired means "due" — the first-ever doRefresh() and every
+        // call at least `secondaryAccountCheckInterval` after the last
+        // check always re-verify.
+        let now = ContinuousClock.now
+        let secondaryAccountCheckDue = lastSecondaryAccountCheckAt.map { now - $0 >= secondaryAccountCheckInterval } ?? true
+        if secondaryAccountCheckDue {
+            lastSecondaryAccountCheckAt = now
             for acc in nativeAccounts.dropFirst() {
                 guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
                 do {
