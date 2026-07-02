@@ -14,9 +14,18 @@
 // OfemEngine, as that requires MSAL, Keychain, and the account daemon — none of
 // which are available in the test sandbox. Tests that verify build outcomes use
 // MockEngineHost (see FileProviderExtensionTests.swift).
+//
+// The reloadEngine()-propagates-live-config test below is the one exception
+// that DOES construct real CacheStore/TelemetryClient/OfemConfigStore
+// instances — but only ever backed by a disposable temp directory, installed
+// via the `#if DEBUG` *ForTesting seams on FPEEngineHost. It never calls
+// `sharedCache()`/`sharedTelemetry()`/`sharedConfigStore()` directly, which
+// would otherwise resolve the real App Group container (or `$HOME` as a
+// fallback) and touch the developer's or CI runner's actual OFEM state.
 
 @preconcurrency import FileProvider
 import Foundation
+import OfemKit
 import XCTest
 
 final class FPEEngineHostTests: XCTestCase {
@@ -189,6 +198,57 @@ final class FPEEngineHostTests: XCTestCase {
                        "A failed engine() must not prevent subsequent engine() calls")
     }
 
+    // MARK: - reloadEngine() propagates live config to the shared subsystems (F4/A1 follow-up)
+
+    func testReloadEnginePropagatesLiveConfigToSharedSubsystems() async throws {
+        // Everything below is backed by a disposable temp directory, installed
+        // via the `#if DEBUG` *ForTesting seams — never the real App Group
+        // container (see the file-level comment for why that matters here).
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let paths = OfemPaths(root: tmp)
+        try paths.ensureDirectories()
+
+        let configStore = try OfemConfigStore(paths: paths)
+        FPEEngineHost.installSharedConfigStoreForTesting(configStore)
+
+        let sink = RecordingTelemetrySink()
+        let telemetry = TelemetryClient(
+            sink: sink,
+            appVersion: "test",
+            installID: "wiring-test-install",
+            configuration: TelemetryConfiguration(optOut: false, flushInterval: .seconds(3600))
+        )
+        let cache = try CacheStore(root: paths.cacheDir, maxBlobBytes: 999)
+        FPEEngineHost.installSharedSubsystemsForTesting(cache: cache, telemetry: telemetry)
+
+        // Flip both fields directly on the config store — the same read path
+        // `reloadEngine()` itself uses (`sharedConfigStore().snapshot()`), so
+        // this models a `setConfig(telemetry=off)` / `setConfig(cache.max_size_gb=…)`
+        // pair without going through the XPC handler's per-field clamp.
+        _ = try await configStore.updateAndSave { cfg in
+            cfg.telemetry = false
+            cfg.cache.maxSizeGB = 3
+        }
+        let expectedMaxBytes = configStore.snapshot().cache.maxBytes
+
+        let host = FPEEngineHost(alias: "wiring-test", domain: makeDomain("wiring-test"))
+        await host.reloadEngine()
+
+        // Telemetry: the shared TelemetryClient must have live-opted-out —
+        // a track() + flush() after reloadEngine() must deliver nothing.
+        await telemetry.track(TelemetryEvent(name: "should_not_send"))
+        await telemetry.flush()
+        XCTAssertEqual(sink.count, 0,
+                       "reloadEngine() must propagate telemetry=false to the shared TelemetryClient")
+
+        // Cache: the shared CacheStore's eviction budget must reflect the new
+        // cache.max_size_gb, not the value it was constructed with (999).
+        let actualMaxBytes = await cache.maxBlobBytesForTesting
+        XCTAssertEqual(actualMaxBytes, expectedMaxBytes,
+                       "reloadEngine() must propagate cache.max_size_gb to the shared CacheStore")
+    }
+
     // MARK: - Helpers
 
     private func makeDomain(_ alias: String) -> NSFileProviderDomain {
@@ -196,5 +256,23 @@ final class FPEEngineHostTests: XCTestCase {
             identifier: NSFileProviderDomainIdentifier("ofem.\(alias)"),
             displayName: alias
         )
+    }
+}
+
+// MARK: - RecordingTelemetrySink
+
+/// A minimal `TelemetrySink` test double, local to this target (OfemKit's own
+/// `MemoryTelemetrySink` lives in the separate OfemKitTests target and is not
+/// importable here).
+private final class RecordingTelemetrySink: TelemetrySink, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count = 0
+
+    func send(_ events: [TelemetryEvent]) async throws {
+        lock.withLock { _count += events.count }
+    }
+
+    var count: Int {
+        lock.withLock { _count }
     }
 }
