@@ -64,6 +64,9 @@ protocol EngineStatusProvider: Sendable {
     func getEngineStatus(alias: String) async throws -> XPCEngineStatus
     func setConfig(alias: String, key: String, value: String) async throws
     func clearCache(alias: String) async throws -> Int64
+    /// Reloads the FPE's engine for `alias` (e.g. after re-authentication).
+    /// See `OfemFPEClient.reloadEngine(alias:)` (xpc-11).
+    func reloadEngine(alias: String) async throws
 }
 
 /// Provides interactive re-authentication for an existing account.
@@ -698,9 +701,8 @@ final class MenuStatusModel: ObservableObject {
     ///
     /// 1. The optimistic in-memory badge (`accountsNeedingSignIn`) is cleared immediately
     ///    so the menu bar reflects the resolved state without waiting for the next poll.
-    /// 2. A `setConfig` round-trip triggers `reloadEngine()` in the FPE, which clears the
-    ///    FPE's internal `needsSignIn` flag and lets the next enumeration start fresh with
-    ///    the newly cached tokens.
+    /// 2. A `reloadEngine(alias:)` XPC call clears the FPE's internal `needsSignIn` flag
+    ///    and lets the next enumeration start fresh with the newly cached tokens.
     ///
     /// - Parameters:
     ///   - alias:  The existing account alias to re-authenticate.
@@ -714,10 +716,17 @@ final class MenuStatusModel: ObservableObject {
                 Self.log.info(
                     "reSignIn: re-auth succeeded for alias=\(alias, privacy: .public); triggering engine reload"
                 )
-                // Trigger a reloadEngine() in the FPE by sending a no-op setConfig.
-                // The FPE's setConfig handler always calls reloadEngine() on success,
-                // which clears _needsSignIn so the next enumeration uses the fresh tokens.
-                await signalEngineReload(alias: alias)
+                // Trigger reloadEngine() in the FPE via the dedicated protocol verb
+                // (xpc-11). Best-effort: a failure here is logged but does not surface as
+                // a UI error — the FPE's auto-refresh timer will clear needsSignIn on
+                // the next successful enumeration cycle.
+                do {
+                    try await engineStatusProvider.reloadEngine(alias: alias)
+                } catch {
+                    Self.log.warning(
+                        "reSignIn: reloadEngine failed for alias=\(alias, privacy: .public) (non-fatal): \(error.localizedDescription, privacy: .public)"
+                    )
+                }
                 // Clear the badge only after the engine reload has been acknowledged
                 // so a subsequent poll does not re-add the alias before the FPE has
                 // processed the reload (see review thread on state-clear ordering).
@@ -915,41 +924,6 @@ final class MenuStatusModel: ObservableObject {
     }
 
     // MARK: - Private helpers
-
-    /// Sends a `setConfig` call to the FPE to trigger `reloadEngine()`.
-    ///
-    /// The FPE's `setConfig` handler always calls `reloadEngine()` on success, which
-    /// clears `_needsSignIn` so the next enumeration gets fresh Keychain tokens. We
-    /// reuse the existing XPC surface (no new protocol method needed) by sending a
-    /// benign log-level write. If the current `logLevel` is unknown (""), "info" is
-    /// used as a safe default — the FPE accepts any of the four allowed values.
-    ///
-    /// The write is serialised under the `.logLevel` fence (same as `setLogLevel`)
-    /// so a concurrent user-initiated log-level change cannot race against this
-    /// reload signal and clobber the user's chosen level. Unlike the debounced
-    /// setters (which use a Task-based defer for the endWrite), we call endWrite
-    /// directly here because `signalEngineReload` is itself `async` and always
-    /// runs on the main actor — no secondary dispatch is needed.
-    ///
-    /// Best-effort: a failure here is logged but does not surface as a UI error —
-    /// the FPE's auto-refresh timer will clear `needsSignIn` on the next successful
-    /// enumeration cycle.
-    private func signalEngineReload(alias: String) async {
-        let level = logLevel.isEmpty ? "info" : logLevel
-        beginWrite(.logLevel)
-        do {
-            try await engineStatusProvider.setConfig(
-                alias: alias,
-                key: OfemConfigKey.logLevel.rawValue,
-                value: level
-            )
-        } catch {
-            Self.log.warning(
-                "signalEngineReload(\(alias, privacy: .public)) setConfig failed (non-fatal): \(error.localizedDescription, privacy: .public)"
-            )
-        }
-        endWrite(.logLevel)
-    }
 
     /// Writes a config key/value pair through the first available FPE domain.
     ///

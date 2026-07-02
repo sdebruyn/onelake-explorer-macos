@@ -71,6 +71,8 @@ private final class FakeEngineStatusProvider: EngineStatusProvider, @unchecked S
         cacheClearedAliases.append(alias)
         return 0
     }
+
+    func reloadEngine(alias _: String) async throws {}
 }
 
 /// Fake DomainManager for unit tests.
@@ -529,6 +531,8 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
             func clearCache(alias _: String) async throws -> Int64 {
                 0
             }
+
+            func reloadEngine(alias _: String) async throws {}
         }
 
         let perAliasProvider = PerAliasEngineProvider()

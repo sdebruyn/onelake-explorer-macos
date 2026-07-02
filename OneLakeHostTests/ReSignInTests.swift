@@ -3,7 +3,7 @@
 //
 // Verifies:
 //   - reSignIn(alias:window:) clears accountsNeedingSignIn on success.
-//   - reSignIn(alias:window:) sends a setConfig to trigger engine reload.
+//   - reSignIn(alias:window:) calls reloadEngine(alias:) to trigger engine reload.
 //   - reSignIn(alias:window:) surfaces an error in lastActionError on failure.
 //   - reSignIn(alias:window:) calls refresh() after completion.
 //   - reSignIn(alias:window:) keeps the badge set on failure (re-established by refresh).
@@ -64,11 +64,14 @@ private let defaultStatus = XPCEngineStatus(
     needsSignIn: false
 )
 
-/// Fake EngineStatusProvider that records setConfig calls.
+/// Fake EngineStatusProvider that records setConfig and reloadEngine calls.
 @MainActor
 private final class FakeReSignInEngineProvider: EngineStatusProvider, @unchecked Sendable {
     var statusToReturn: XPCEngineStatus = defaultStatus
     var configSets: [(alias: String, key: String, value: String)] = []
+    /// Aliases passed to reloadEngine(alias:), in call order.
+    var reloadEngineCalls: [String] = []
+    var shouldThrowOnReloadEngine = false
 
     func getEngineStatus(alias _: String) async throws -> XPCEngineStatus {
         statusToReturn
@@ -80,6 +83,13 @@ private final class FakeReSignInEngineProvider: EngineStatusProvider, @unchecked
 
     func clearCache(alias _: String) async throws -> Int64 {
         0
+    }
+
+    func reloadEngine(alias: String) async throws {
+        reloadEngineCalls.append(alias)
+        if shouldThrowOnReloadEngine {
+            throw ReSignInFakeError.cancelled
+        }
     }
 }
 
@@ -224,28 +234,68 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(reSignInProvider.calledAliases.first, "work")
     }
 
-    func testReSignIn_success_triggersEngineReloadViaSetConfig() async {
+    func testReSignIn_success_triggersEngineReloadViaReloadEngineVerb() async {
         accountProvider.accounts = [makeTestAccount(alias: "work")]
         reSignInProvider.behaviour = .succeed
         engineProvider.statusToReturn = defaultStatus
 
         // Wait for the post-action refresh to complete. The refresh() call is the last
-        // step in reSignIn, so by the time model.accounts is repopulated, signalEngineReload
-        // (which runs before refresh()) has already sent the setConfig call.
+        // step in reSignIn, so by the time model.accounts is repopulated, reloadEngine
+        // (which runs before refresh()) has already been called.
         // first() auto-cancels after one event to prevent double-fulfill crashes.
         let refreshed = expectation(description: "refresh after reSignIn completes")
         model.$accounts.dropFirst().first().sink { _ in refreshed.fulfill() }.store(in: &cancellables)
         model.reSignIn(alias: "work", window: NSWindow())
         await fulfillment(of: [refreshed], timeout: 3)
 
-        // A setConfig call must have been sent to trigger engine reload.
-        XCTAssertGreaterThanOrEqual(engineProvider.configSets.count, 1,
-                                    "setConfig must be called after reSignIn to trigger engine reload")
-        let reloadCall = engineProvider.configSets.first(where: { $0.alias == "work" })
-        XCTAssertNotNil(reloadCall,
-                        "setConfig must target the re-authed alias")
-        XCTAssertEqual(reloadCall?.key, "log.level",
-                       "reload is triggered via log.level setConfig")
+        // The dedicated reloadEngine(alias:) verb must have been called for the
+        // re-authed alias (xpc-11) — no setConfig side effect is used anymore.
+        XCTAssertEqual(engineProvider.reloadEngineCalls, ["work"],
+                       "reloadEngine(alias:) must be called once for the re-authed alias")
+        XCTAssertTrue(engineProvider.configSets.isEmpty,
+                      "reSignIn must not fall back to a setConfig side effect to trigger reload")
+    }
+
+    func testReSignIn_reloadEngineFailure_isNonFatal_stillClearsBadge() async {
+        // reloadEngine is best-effort: a failure must be logged but must not
+        // prevent the badge from clearing or surface a UI error, since the
+        // FPE's own auto-refresh timer will eventually clear needsSignIn.
+        accountProvider.accounts = [makeTestAccount(alias: "work")]
+
+        // Phase 1: seed the badge via a failed re-auth attempt so phase 2's
+        // clear assertion is meaningful (mirrors
+        // testReSignIn_success_clearsAccountsNeedingSignIn's two-phase setup).
+        engineProvider.statusToReturn = XPCEngineStatus(
+            cacheBytes: 0, cacheMaxBytes: 0, cacheMaxSizeGB: 10,
+            telemetryEnabled: true, netMaxUploads: 4, netMaxDownloads: 8,
+            logLevel: "info", pausedWorkspaces: [], needsSignIn: true
+        )
+        reSignInProvider.behaviour = .fail(ReSignInFakeError.cancelled)
+        let seedRefresh = expectation(description: "seed refresh accounts")
+        model.$accounts.dropFirst().first().sink { _ in seedRefresh.fulfill() }.store(in: &cancellables)
+        model.reSignIn(alias: "work", window: NSWindow())
+        await fulfillment(of: [seedRefresh], timeout: 5)
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(model.accountNeedsSignIn(alias: "work"),
+                      "Pre-condition: badge must be set before testing the clear path")
+
+        // Phase 2: succeed, but make reloadEngine fail.
+        engineProvider.statusToReturn = defaultStatus
+        engineProvider.shouldThrowOnReloadEngine = true
+        reSignInProvider.behaviour = .succeed
+
+        let refreshed = expectation(description: "refresh after reSignIn completes")
+        model.$accounts.dropFirst().first().sink { _ in refreshed.fulfill() }.store(in: &cancellables)
+        model.reSignIn(alias: "work", window: NSWindow())
+        await fulfillment(of: [refreshed], timeout: 3)
+        try? await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(engineProvider.reloadEngineCalls, ["work"],
+                       "reloadEngine must still be attempted even though it will fail")
+        XCTAssertFalse(model.accountNeedsSignIn(alias: "work"),
+                       "A failed reloadEngine must not block clearing the needs-sign-in badge")
+        XCTAssertNil(model.lastActionError,
+                     "A failed reloadEngine must not surface as a user-visible error")
     }
 
     func testReSignIn_success_clearsLastActionError() async {
@@ -361,10 +411,9 @@ final class ReSignInTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(model.lastActionError?.contains("Sign in failed") == true,
                       "Error must surface as a sign-in failure; got: \(model.lastActionError ?? "(nil)")")
 
-        // No setConfig call should have been sent because signalEngineReload
-        // must not fire when re-auth fails.
-        XCTAssertTrue(engineProvider.configSets.isEmpty,
-                      "signalEngineReload must NOT be called when re-auth fails due to identity mismatch")
+        // reloadEngine must not fire when re-auth fails.
+        XCTAssertTrue(engineProvider.reloadEngineCalls.isEmpty,
+                      "reloadEngine must NOT be called when re-auth fails due to identity mismatch")
 
         // Allow accountsNeedingSignIn (published after accounts in doRefresh) to settle.
         try? await Task.sleep(for: .milliseconds(100))

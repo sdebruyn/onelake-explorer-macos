@@ -5,7 +5,8 @@
 // "dev.debruyn.ofem.control". The host app connects to this service
 // via NSFileProviderManager.service(name:for:) and obtains an
 // NSXPCConnection that it uses to call OfemClientControlProtocol
-// methods (getProtocolVersion, getEngineStatus, setConfig, clearCache).
+// methods (getProtocolVersion, getEngineStatus, setConfig, clearCache,
+// pollMaterialized, reloadEngine).
 //
 // Account management (add / remove) is handled in the host process via
 // SharedOfemAuth and DomainSyncManager and does not cross the XPC boundary.
@@ -15,6 +16,7 @@
 //   - getEngineStatus(reply:)     — cache stats + config snapshot
 //   - setConfig(key:value:reply:) — write one config field, persist and trigger engine reload
 //   - clearCache(reply:)          — wipe all cached blobs; reply carries freed byte count
+//   - reloadEngine(alias:reply:)  — reload the engine for alias (e.g. after re-authentication)
 //
 // NSXPCInterface setup: the secure-coding class wiring for getEngineStatus's
 // reply lives in the single `OfemControlInterface.make()` factory in
@@ -470,6 +472,27 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                 )
                 replyOnce.callOnce { rb.fn(false, error) }
             }
+        }
+    }
+
+    // MARK: - reloadEngine
+
+    func reloadEngine(alias: String, reply: @escaping (Error?) -> Void) {
+        // xpc-02: reply-once guard — fires exactly once on every path.
+        //
+        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
+        // @unchecked Sendable so the Task body can capture it safely — the
+        // ReplyOnce guard ensures the closure is called at most once.
+        struct ReplyBox: @unchecked Sendable { let fn: (Error?) -> Void }
+        let rb = ReplyBox(fn: reply)
+        let replyOnce = ReplyOnce()
+        Task { [self] in
+            defer { replyOnce.callOnce { rb.fn(NSFileProviderError(.cannotSynchronize)) } }
+            // engineHost.reloadEngine() shuts down the current engine and
+            // clears _needsSignIn; the next use rebuilds it lazily (xpc-11).
+            await engineHost.reloadEngine()
+            Self.log.info("reloadEngine: alias=\(alias, privacy: .public) reloaded")
+            replyOnce.callOnce { rb.fn(nil) }
         }
     }
 

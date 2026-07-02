@@ -67,6 +67,8 @@ private final class CallLoggingEngineStatusProvider: EngineStatusProvider, @unch
     func clearCache(alias _: String) async throws -> Int64 {
         0
     }
+
+    func reloadEngine(alias _: String) async throws {}
 }
 
 @MainActor
