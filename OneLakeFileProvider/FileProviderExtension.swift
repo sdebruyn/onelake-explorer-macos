@@ -29,16 +29,6 @@ import os.log
 // Identifier parsing uses OfemKit's `ItemIdentifierParser` exclusively, via
 // the `parseOfemItemIdentifier` helper defined in OfemFPEEnumerator.swift.
 
-/// File Provider Extension entry point. Sandboxed; each registered
-/// OneLake account-alias gets its own instance.
-///
-/// `NSFileProviderServicing` is the optional protocol for exposing
-/// `NSFileProviderService` sources to the host app over XPC.
-private let fpeLog = Logger(
-    subsystem: "dev.debruyn.ofem.fileprovider",
-    category: "extension"
-)
-
 /// Boxes a non-`Sendable` value for safe capture across `Task` isolation boundaries.
 ///
 /// `NSFileProviderReplicatedExtension` completion handlers are `@escaping` but not
@@ -59,6 +49,11 @@ private enum RenameOutcome {
     case pending
 }
 
+/// File Provider Extension entry point. Sandboxed; each registered
+/// OneLake account-alias gets its own instance.
+///
+/// `NSFileProviderServicing` is the optional protocol for exposing
+/// `NSFileProviderService` sources to the host app over XPC.
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderServicing {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
@@ -233,7 +228,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             logContext: "item(for:) failed for \(aliasCopy)/\(ofemID.identifierString)",
             work: { host, _ in
                 let engine = try await host.engine()
-                return try await engineFetchItem(identifier: ofemID, alias: aliasCopy, engine: engine)
+                return OfemFPEItem(from: try await ItemResolution.resolveItem(
+                    identifier: ofemID, alias: aliasCopy, sync: engine.sync, cache: engine.cache
+                ))
             },
             complete: { result in
                 switch result {
@@ -379,16 +376,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             logContext: "createItem failed",
             work: { host, _ in
                 let engine = try await host.engine()
-                return try await engineCreateItem(
-                    parentID: parentID,
+                // Collapse the FileProvider create semantics into plain-Swift
+                // parameters before crossing into OfemKit: `.contents` present
+                // AND a source URL → upload; otherwise placeholder-only (nil).
+                return OfemFPEItem(from: try await ItemResolution.createItem(
+                    parent: parentID,
                     filename: filename,
-                    isDir: isDir,
-                    contents: srcURL,
-                    fields: fieldsCopy,
-                    options: optionsCopy,
+                    isDirectory: isDir,
+                    uploadSource: fieldsCopy.contains(.contents) ? srcURL : nil,
+                    mayAlreadyExist: optionsCopy.contains(.mayAlreadyExist),
                     alias: aliasCopy,
-                    engine: engine
-                )
+                    sync: engine.sync,
+                    cache: engine.cache
+                ))
             },
             complete: { result in
                 switch result {
@@ -539,7 +539,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 logContext: "modifyItem(metadata) fetch failed",
                 work: { host, _ in
                     let engine = try await host.engine()
-                    return try await engineFetchItem(identifier: ofemID, alias: aliasCopy, engine: engine)
+                    return OfemFPEItem(from: try await ItemResolution.resolveItem(
+                        identifier: ofemID, alias: aliasCopy, sync: engine.sync, cache: engine.cache
+                    ))
                 },
                 complete: { result in
                     switch result {
@@ -599,7 +601,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 progress.completedUnitCount = progress.totalUnitCount
                 // Re-fetch the item metadata after upload so the returned version
                 // matches what subsequent enumeration produces.
-                return try await engineFetchItem(identifier: ofemID, alias: aliasCopy, engine: engine)
+                return OfemFPEItem(from: try await ItemResolution.resolveItem(
+                    identifier: ofemID, alias: aliasCopy, sync: engine.sync, cache: engine.cache
+                ))
             },
             complete: { result in
                 switch result {
@@ -886,297 +890,6 @@ private func enumerateMaterializedIdentifiers(
         collector.continuation = continuation
         enumerator.enumerateItems(for: collector, startingAt: NSFileProviderPage(Data()))
     }
-}
-
-// MARK: - Engine helper functions
-
-/// Fetches `key` cache-first, returning the row on a hit or `nil` on a
-/// definitive `CacheError.notFound` miss (the caller then runs its remote
-/// listing fallback).
-///
-/// Any OTHER cache error is an infrastructure failure re-thrown as
-/// `FPError.invalidRecord` (→ cannotSynchronize), never `noSuchItem`: a
-/// transient DB blip must not be mistaken for a deletion signal. This is the
-/// single fetch primitive ``cachedRecordOrEnumerate(key:parentKey:engine:context:isValid:)``
-/// composes twice (first fetch, retry-after-enumerate fetch).
-private func cacheFirstRecord(
-    key: CacheKey,
-    engine: OfemEngine,
-    context: String
-) async throws -> MetadataRecord? {
-    do {
-        return try await engine.cache.fetch(key: key)
-    } catch let cacheError as CacheError {
-        guard case .notFound = cacheError else {
-            throw FPError.invalidRecord("cache DB error for \(context): \(cacheError)")
-        }
-        return nil
-    } catch {
-        throw FPError.invalidRecord("unexpected cache error for \(context): \(error)")
-    }
-}
-
-/// Fetches `key` cache-first; on a definitive `CacheError.notFound` miss, OR
-/// on a hit that `isValid` rejects, enumerates `parentKey` to populate the
-/// cache and retries once.
-///
-/// Returns the record from either the first fetch or the retry, whichever
-/// first satisfies `isValid` (defaults to accepting any record — the
-/// ``engineFetchItem`` `.path` case decodes the record itself afterwards and
-/// wants ANY row, decodable or not, to short-circuit the retry so a decode
-/// failure surfaces immediately as `cannotSynchronize` rather than masking
-/// itself behind a redundant enumerate). Returns `nil` only when the retry
-/// ALSO misses — either `CacheError.notFound` or an `isValid`-rejected row —
-/// after a fresh parent enumeration. The caller decides what "still absent"
-/// means: a hard `.noSuchItem` for a metadata lookup, or "proceed to create"
-/// for `createItem`'s `.mayAlreadyExist` path (``engineCreateItem``), which
-/// passes an `isValid` that requires the row to decode — a cached-but-
-/// undecodable row must not be mistaken for "not yet cached" and fall
-/// straight through to an unintended create/overwrite; it gets the same
-/// one enumerate-and-retry chance a genuine cache miss gets.
-///
-/// Any OTHER cache error — on either the first fetch or the retry —
-/// propagates as `FPError.invalidRecord` (→ cannotSynchronize), never as a
-/// definitive-absence `nil`: a transient DB blip must never be mistaken for
-/// "not found", which would read as a deletion to a metadata caller, or
-/// trigger an unwanted create/overwrite here (the safety property both call
-/// sites previously open-coded separately). Enumeration failures (network,
-/// auth) also propagate as-is — they are retriable.
-private func cachedRecordOrEnumerate(
-    key: CacheKey,
-    parentKey: CacheKey,
-    engine: OfemEngine,
-    context: String,
-    isValid: (MetadataRecord) -> Bool = { _ in true }
-) async throws -> MetadataRecord? {
-    if let record = try await cacheFirstRecord(key: key, engine: engine, context: context), isValid(record) {
-        return record
-    }
-    // Cache miss (or an isValid-rejected hit) → enumerate parent to
-    // populate/refresh the cache, then retry once.
-    _ = try await engine.sync.enumerate(key: parentKey)
-    if let record = try await cacheFirstRecord(key: key, engine: engine, context: "\(context) (retry)"), isValid(record) {
-        return record
-    }
-    return nil
-}
-
-/// Fetches a single item's metadata from the engine.
-///
-/// Returns `.noSuchItem` for unknown workspace/item identifiers instead of
-/// fabricating GUID-named stub directories.
-///
-/// Distinguishes `CacheError.notFound` (triggers parent enumerate + retry)
-/// from other cache errors (maps to cannotSynchronize, not noSuchItem) so
-/// a transient DB failure does not trigger local replica deletion.
-private func engineFetchItem(
-    identifier: ItemIdentifier,
-    alias: String,
-    engine: OfemEngine
-) async throws -> OfemFPEItem {
-    switch identifier {
-    case .root:
-        return OfemFPEItem(from: DomainItem.root(alias: alias))
-
-    case .trash, .workingSet:
-        throw FPError.noSuchItem("synthetic container: \(identifier.identifierString)")
-
-    case let .workspace(workspaceID):
-        // Cache-first: the workspace-sentinel row is written by listWorkspaces,
-        // keyed by (VirtualIDs.workspaceID, VirtualIDs.workspaceID, path: <wsGUID>).
-        // A hit resolves without a Fabric round-trip (DomainItem.from delegates
-        // sentinel rows to from(workspace:)); a definitive miss falls through to
-        // the listWorkspaces fallback below.
-        let key = cacheKey(
-            alias: alias, workspaceID: VirtualIDs.workspaceID,
-            itemID: VirtualIDs.workspaceID, path: workspaceID
-        )
-        if let record = try await cacheFirstRecord(key: key, engine: engine, context: "workspace \(workspaceID)") {
-            do {
-                return OfemFPEItem(from: try DomainItem.from(record: record))
-            } catch {
-                throw FPError.invalidRecord("DomainItem.from failed for workspace \(workspaceID): \(error)")
-            }
-        }
-        // Cache miss → look up workspace display name from the discovery listing.
-        let workspaces = try await engine.sync.listWorkspaces(alias: alias)
-        if let ws = workspaces.first(where: { $0.id == workspaceID }) {
-            return OfemFPEItem(from: DomainItem.from(workspace: ws))
-        }
-        // Absence after successful listing = definitive "not found".
-        throw FPError.noSuchItem("workspace \(workspaceID) not in listing for alias \(alias)")
-
-    case let .item(workspaceID, itemID):
-        // Cache-first: the item-discovery row is written by the item-listing
-        // reconcile, keyed by (workspaceID, VirtualIDs.itemID, path: <itemGUID>);
-        // DomainItem.from maps it to the ".item" identifier via its
-        // item-discovery branch. A definitive miss falls through to listItems.
-        let key = cacheKey(
-            alias: alias, workspaceID: workspaceID,
-            itemID: VirtualIDs.itemID, path: itemID
-        )
-        if let record = try await cacheFirstRecord(key: key, engine: engine, context: "item \(itemID)") {
-            do {
-                return OfemFPEItem(from: try DomainItem.from(record: record))
-            } catch {
-                throw FPError.invalidRecord("DomainItem.from failed for item \(itemID): \(error)")
-            }
-        }
-        // Cache miss → populate from the Fabric item listing.
-        let items = try await engine.sync.listItems(alias: alias, workspaceID: workspaceID)
-        if let fi = items.first(where: { $0.id == itemID }) {
-            return OfemFPEItem(from: DomainItem.from(fabricItem: fi, workspaceID: workspaceID))
-        }
-        // Absence after successful listing = definitive "not found".
-        throw FPError.noSuchItem("item \(itemID) not in listing for workspace \(workspaceID)")
-
-    case let .path(workspaceID, itemID, path):
-        let key = cacheKey(alias: alias, workspaceID: workspaceID, itemID: itemID, path: path)
-        let parent = parentPath(of: path)
-        let parentKey = cacheKey(alias: alias, workspaceID: workspaceID, itemID: itemID, path: parent)
-
-        guard let record = try await cachedRecordOrEnumerate(
-            key: key, parentKey: parentKey, engine: engine, context: path
-        ) else {
-            // Still absent after enumeration → definitively gone.
-            throw FPError.noSuchItem(path)
-        }
-        do {
-            return OfemFPEItem(from: try DomainItem.from(record: record))
-        } catch {
-            throw FPError.invalidRecord("DomainItem.from failed for \(path): \(error)")
-        }
-    }
-}
-
-/// Creates a directory or file via the engine.
-///
-/// Honours `fields` and `options`:
-/// - `.mayAlreadyExist`: do not upload content; re-fetch and return the
-///   existing remote item. Cache errors are discriminated — only
-///   `CacheError.notFound` is treated as "not yet cached"; other errors
-///   propagate so a DB failure does not silently trigger an unintended upload.
-/// - `fields` does not contain `.contents`: create a directory or metadata-
-///   only placeholder without uploading `Data()`.
-///
-/// Re-fetches real metadata after upload so the returned item's version/size
-/// matches subsequent enumerations.
-private func engineCreateItem(
-    parentID: ItemIdentifier,
-    filename: String,
-    isDir: Bool,
-    contents: URL?,
-    fields: NSFileProviderItemFields,
-    options: NSFileProviderCreateItemOptions,
-    alias: String,
-    engine: OfemEngine
-) async throws -> OfemFPEItem {
-    // Derive key for the new item based on its parent.
-    let (wsID, itemID, parentPathStr): (String, String, String)
-    switch parentID {
-    case let .item(w, i):
-        wsID = w; itemID = i; parentPathStr = ""
-    case let .path(w, i, p):
-        wsID = w; itemID = i; parentPathStr = p
-    default:
-        throw FPError.invalidIdentifier("createItem: parent must be item or path, got \(parentID)")
-    }
-
-    let newPath = parentPathStr.isEmpty ? filename : "\(parentPathStr)/\(filename)"
-    let key = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: newPath)
-    let newIdentifier = ItemIdentifier.path(workspaceID: wsID, itemID: itemID, path: newPath)
-
-    // Honour .mayAlreadyExist — the system is re-importing items that may
-    // have pre-existing remote content. Don't upload/overwrite.
-    if options.contains(.mayAlreadyExist) {
-        // Discriminate CacheError.notFound (not yet cached — enumerate parent
-        // and retry once, then treat still-missing as "it's new") from real DB
-        // errors, which must propagate rather than silently falling through to
-        // an unintended create. A cached-but-undecodable row is treated the
-        // same as "not yet cached" (via `isValid`) — it also gets the
-        // enumerate-and-retry chance rather than immediately falling through
-        // to create, which would overwrite/recreate an item that DOES exist
-        // but whose cached row just failed to decode.
-        let parentKey = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
-        if let record = try await cachedRecordOrEnumerate(
-            key: key, parentKey: parentKey, engine: engine, context: "createItem mayAlreadyExist \(filename)",
-            isValid: { (try? DomainItem.from(record: $0)) != nil }
-        ), let di = try? DomainItem.from(record: record) {
-            return OfemFPEItem(from: di)
-        }
-        // Still not found (or undecodable) — fall through to normal create path (it's new).
-    }
-
-    if isDir {
-        try await engine.sync.mkdir(key: key)
-    } else {
-        // Only upload if `fields` includes `.contents` AND a URL was provided.
-        // A nil URL or absent `.contents` field means "placeholder only" —
-        // uploading Data() would truncate an existing remote file.
-        let shouldUpload = fields.contains(.contents) && contents != nil
-        if shouldUpload, let url = contents {
-            // Stream from the provided URL — no in-memory Data load.
-            try await engine.sync.put(key: key, sourceURL: url)
-        }
-        // If no upload: we still return an item descriptor; the real content
-        // is on the remote and will be fetched on demand.
-    }
-
-    // Re-fetch real metadata so version/size matches enumeration.
-    // If the cache row is not yet populated (e.g. mkdir with no enumerate),
-    // fall back to a synthetic item but log the situation.
-    let postCreateFetch: Result<MetadataRecord, Error>
-    do {
-        postCreateFetch = .success(try await engine.cache.fetch(key: key))
-    } catch {
-        postCreateFetch = .failure(error)
-    }
-    switch postCreateFetch {
-    case let .success(record):
-        if let di = try? DomainItem.from(record: record) {
-            return OfemFPEItem(from: di)
-        }
-    case let .failure(cacheError as CacheError):
-        guard case .notFound = cacheError else {
-            // A non-notFound cache error is unexpected but not fatal here;
-            // log and fall through to the synthetic fallback.
-            fpeLog.warning(
-                "createItem: cache fetch error for \(filename, privacy: .public): \(cacheError.localizedDescription, privacy: .public)"
-            )
-            break
-        }
-        // .notFound: enumerate parent to populate it, then retry.
-        let parentKey = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
-        _ = try? await engine.sync.enumerate(key: parentKey)
-        if let record = try? await engine.cache.fetch(key: key),
-           let di = try? DomainItem.from(record: record)
-        {
-            return OfemFPEItem(from: di)
-        }
-    case let .failure(other):
-        fpeLog.warning(
-            "createItem: unexpected fetch error for \(filename, privacy: .public): \(other.localizedDescription, privacy: .public)"
-        )
-    }
-
-    // Final fallback: synthetic item. This case should be rare (e.g. mkdir
-    // on a backend that doesn't enumerate immediately), and the version
-    // mismatch will resolve on the next full enumeration of the parent.
-    fpeLog.warning(
-        "createItem: using synthetic fallback for \(filename, privacy: .public) parent=\(parentID.identifierString, privacy: .public)"
-    )
-    // Carry the parent's item type so computeCapabilities returns the correct
-    // caps immediately — without it, a file created under Lakehouse Files/
-    // would appear read-only until the next refreshFolder.
-    let parentKey = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
-    let syntheticItemType = (try? await engine.cache.fetch(key: parentKey))?.itemType ?? ""
-    return OfemFPEItem(from: DomainItem.synthetic(
-        identifier: newIdentifier,
-        parentIdentifier: parentID,
-        name: filename,
-        isDirectory: isDir,
-        itemType: syntheticItemType
-    ))
 }
 
 // MARK: - Domain identifier → alias
