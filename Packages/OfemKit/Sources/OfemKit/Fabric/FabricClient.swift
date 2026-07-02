@@ -285,7 +285,10 @@ public final class FabricClient: Sendable {
     ///
     /// Authentication and retry are handled transparently by the session's
     /// interceptor stack. Maps ``AFError`` → ``HTTPClientError`` →
-    /// ``FabricError`` on failure.
+    /// ``FabricError`` on failure. Request execution and error mapping are
+    /// shared with `OneLakeClient` via
+    /// ``executeDataRequest(sessionPool:alias:scope:method:url:headers:body:onFailure:mapError:)``
+    /// (http-02).
     @discardableResult
     private func doRequest(
         alias: String,
@@ -297,49 +300,35 @@ public final class FabricClient: Sendable {
         Self.log.debug("FabricClient: \(method, privacy: .public) \(url.path, privacy: .public)")
         logger.debug("fabric request", metadata: ["method": method, "endpoint": endpoint])
 
-        let session = await sessionPool.session(alias: alias, scope: .fabric)
-        let httpMethod = HTTPMethod(rawValue: method)
-        let headers = urlRequest.headers
+        let (data, httpResponse) = try await executeDataRequest(
+            sessionPool: sessionPool,
+            alias: alias,
+            scope: .fabric,
+            method: method,
+            url: url,
+            headers: urlRequest.headers,
+            body: nil,
+            onFailure: { afError in self.logRawFailure(alias: alias, afError: afError) },
+            mapError: FabricError.from
+        )
 
-        let req = session
-            .request(url, method: httpMethod, headers: headers)
-            .validate()
-        // Fabric REST can return empty bodies on successful responses (200/201/
-        // 202).  Allow empty bodies for all methods used by this client so
-        // Alamofire yields Data() rather than an error.
-        // .validate() above already rejects non-2xx.
-        let dataResponse = await req.serializingData(
-            emptyRequestMethods: [.get, .put, .patch, .delete, .post, .head]
-        ).response
+        logger.debug("fabric response", metadata: [
+            "method": method,
+            "endpoint": endpoint,
+            "status": "\(httpResponse.statusCode)",
+        ])
+        return (data, httpResponse)
+    }
 
-        switch dataResponse.result {
-        case let .success(data):
-            guard let httpResponse = dataResponse.response else {
-                throw FabricError.from(HTTPClientError.transport(URLError(.badServerResponse)))
-            }
-            logger.debug("fabric response", metadata: [
-                "method": method,
-                "endpoint": endpoint,
-                "status": "\(httpResponse.statusCode)",
-            ])
-            return (data, httpResponse)
-        case let .failure(afError):
-            // fabric-05: log the raw error before classification so a fast failure
-            // (e.g. a 404 without a network round-trip) is observable in unredacted
-            // DEBUG streams.
-            #if DEBUG
-                Self.log.debug(
-                    "FabricClient[D]: raw error before FabricError.from alias=\(alias, privacy: .public) error=\(String(describing: afError), privacy: .public)"
-                )
-            #endif
-            let mapped = HTTPClientError(
-                afError: afError,
-                response: dataResponse.response,
-                body: dataResponse.data,
-                retryCount: req.retryCount
+    /// Logs the raw `AFError` before ``FabricError`` classification (fabric-05),
+    /// so a fast failure (e.g. a 404 without a network round-trip) is
+    /// observable in unredacted DEBUG streams.
+    private func logRawFailure(alias: String, afError: AFError) {
+        #if DEBUG
+            Self.log.debug(
+                "FabricClient[D]: raw error before FabricError.from alias=\(alias, privacy: .public) error=\(String(describing: afError), privacy: .public)"
             )
-            throw FabricError.from(mapped)
-        }
+        #endif
     }
 
     /// Logs a single pagination page's metadata in a canonical way so the

@@ -77,92 +77,36 @@ extension FabricError {
     /// Converts an ``HTTPClientError`` (or any error from the Net layer) to
     /// a ``FabricError``.
     ///
-    /// - First unwraps one level of ``HTTPClientError/apiError(_:)`` to reach
-    ///   the inner sentinel, mirroring `OneLakeError.from` (fabric-01).
-    /// - Maps bare ``CancellationError`` (Swift Concurrency cancellation) to
-    ///   `.cancelled` (fabric-02).
-    /// - Maps ``HTTPClientError/tokenAcquisitionFailed(_:)`` to `.unauthorized`
-    ///   (fabric-03-fix-272): ANY token-acquisition failure means the process
-    ///   cannot authenticate for the Fabric audience and must surface as an auth
-    ///   error, not as a generic sync failure. This covers both MSAL
-    ///   interaction-required responses and local MSAL configuration errors
-    ///   (e.g. FPE bundle-ID mismatch, -42011) that would otherwise produce a
-    ///   silent empty Finder mount with no auth prompt.
+    /// The apiError-unwrap, bare-`CancellationError` mapping,
+    /// `tokenAcquisitionFailed` arm (fabric-03-fix-272), and the
+    /// `retriesExhausted`-unwrap fix (fabric-04, broadened by #272) are shared
+    /// with ``OneLakeError/from(_:)`` via ``HTTPErrorClassification``; see that
+    /// type's doc comment for the full rationale, including the
+    /// transient-outage tradeoff of mapping every `tokenAcquisitionFailed` to
+    /// `.unauthorized`.
     ///
-    ///   Transient-outage tradeoff: by the time an error reaches this mapper as
-    ///   `tokenAcquisitionFailed`, ``OfemAuth`` has already stripped the
-    ///   underlying MSAL error down to ``OfemAuthError/silentTokenFailed(_:)``,
-    ///   which makes transient network failures (Entra DNS timeout, TLS reset
-    ///   during silent refresh) indistinguishable from local config errors
-    ///   (MSAL -42011). Mapping both to `.unauthorized` means a transient outage
-    ///   surfaces a "Sign-in required" indicator in Finder instead of a
-    ///   recoverable "cannot synchronise" state — contradicting the project
-    ///   preference for silent retry. This is a known tradeoff: `.unauthorized`
-    ///   is still strictly better than the previous `.httpError` path that
-    ///   silently emptied the Finder mount with no user-visible signal at all.
-    ///   The correct long-term fix is to distinguish `interactionRequired` from
-    ///   transient failures inside ``OfemAuth`` before the error is stripped
-    ///   (tracked as a follow-up).
+    /// Unlike `OneLakeError`, `FabricError` has no dedicated `.conflict` /
+    /// `.preconditionFailed` case — `.gone` / `.payloadTooLarge` /
+    /// `.rangeNotSatisfiable` were added for symmetry with `OneLakeError`
+    /// (NIT-2), but conflict and precondition-failed were not. Those two
+    /// categories, and anything else `HTTPErrorClassification` does not
+    /// recognise, box the resolved error as `.httpError`, exactly as they did
+    /// before this mapping was shared.
     static func from(_ error: any Error) -> FabricError {
-        // fabric-01: unwrap apiError wrapper to reach the sentinel first,
-        // mirroring OneLakeError.from — without this, a retriesExhausted(last:
-        // apiError(…)) never matches any typed sentinel case and degrades to
-        // httpError.
-        let resolved: any Error = if let httpErr = error as? HTTPClientError,
-                                     case let HTTPClientError.apiError(ae) = httpErr,
-                                     let sentinel = ae.sentinel
-        {
-            sentinel
-        } else {
-            error
-        }
-
-        switch resolved {
-        case HTTPClientError.unauthorized:
-            return .unauthorized
-        case HTTPClientError.forbidden:
-            return .forbidden
-        case HTTPClientError.notFound:
-            return .notFound
-        case HTTPClientError.gone: // NIT-2: symmetry with OneLakeError
-            return .gone
-        case HTTPClientError.payloadTooLarge:
-            return .payloadTooLarge
-        case HTTPClientError.rangeNotSatisfiable:
-            return .rangeNotSatisfiable
-        case HTTPClientError.throttled:
-            return .rateLimited
-        case HTTPClientError.cancelled:
-            return .cancelled
-        case is CancellationError: // fabric-02: bare Swift cancellation
-            return .cancelled
-        case HTTPClientError.tokenAcquisitionFailed:
-            // fabric-03-fix-272: map ALL token-acquisition failures to
-            // .unauthorized. Any failure here means the process could not
-            // obtain a Fabric access token — whether because the refresh token
-            // has expired (.interactionRequired), Conditional Access fired, or
-            // a local MSAL configuration error prevented even the silent call
-            // from starting (e.g. FPE bundle-ID mismatch, MSAL -42011).
-            // In every case the correct surface is .unauthorized →
-            // FPError.notAuthenticated so Finder shows an auth-required
-            // indicator rather than a silent empty folder.
-            return .unauthorized
-        case let HTTPClientError.retriesExhausted(attempts, last):
-            // fabric-04: unwrap the last error so that a retry loop that exits
-            // because token acquisition failed surfaces as .unauthorized rather
-            // than .retriesExhausted. Without this unwrap FPError.fabricCode
-            // maps .retriesExhausted to .serverUnreachable, hiding the auth
-            // failure behind an offline indicator.
-            if let lastHTTP = last as? HTTPClientError,
-               case HTTPClientError.tokenAcquisitionFailed = lastHTTP
-            {
-                return .unauthorized
-            }
-            return .retriesExhausted(attempts: attempts)
-        case let HTTPClientError.serverError(code):
-            return .serverError(code)
-        default:
-            return .httpError(resolved)
+        let classified = HTTPErrorClassification.classify(error)
+        switch classified.category {
+        case .unauthorized: return .unauthorized
+        case .forbidden: return .forbidden
+        case .notFound: return .notFound
+        case .gone: return .gone
+        case .payloadTooLarge: return .payloadTooLarge
+        case .rangeNotSatisfiable: return .rangeNotSatisfiable
+        case .rateLimited: return .rateLimited
+        case let .serverError(code): return .serverError(code)
+        case let .retriesExhausted(attempts): return .retriesExhausted(attempts: attempts)
+        case .cancelled: return .cancelled
+        case .conflict, .preconditionFailed, .unmapped:
+            return .httpError(classified.resolvedError)
         }
     }
 }
