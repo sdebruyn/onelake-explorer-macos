@@ -229,7 +229,8 @@ public actor SyncEngine {
         }
 
         let seen = Set(ws.map(\.id))
-        let rows = ws.map { w in
+        let cachedByPath = await discoveryChildrenByPath(parent: parentKey)
+        let candidates = ws.map { w in
             MetadataRecord(
                 accountAlias: alias,
                 workspaceID: VirtualIDs.workspaceID,
@@ -238,10 +239,11 @@ public actor SyncEngine {
                 parentPath: "",
                 name: w.displayName,
                 isDir: true,
-                lastAccessedNs: nowNs,
+                lastAccessedNs: cachedByPath[w.id]?.lastAccessedNs ?? nowNs,
                 syncedAtNs: nowNs
             )
         }
+        let rows = Self.buildDiscoveryUpsertBatch(candidates: candidates, cachedByPath: cachedByPath)
         await batchUpsert(rows, context: "listWorkspaces")
         // The parent of the workspaces listing is the domain root — root must
         // never be signalled (a root signal forces `.syncAnchorExpired` →
@@ -305,7 +307,8 @@ public actor SyncEngine {
         }
 
         let seen = Set(storageItems.map(\.id))
-        let rows = storageItems.map { it in
+        let cachedByPath = await discoveryChildrenByPath(parent: parentKey)
+        let candidates = storageItems.map { it in
             MetadataRecord(
                 accountAlias: alias,
                 workspaceID: workspaceID,
@@ -314,11 +317,12 @@ public actor SyncEngine {
                 parentPath: "",
                 name: it.displayName,
                 isDir: true,
-                lastAccessedNs: nowNs,
+                lastAccessedNs: cachedByPath[it.id]?.lastAccessedNs ?? nowNs,
                 syncedAtNs: nowNs,
                 itemType: it.type
             )
         }
+        let rows = Self.buildDiscoveryUpsertBatch(candidates: candidates, cachedByPath: cachedByPath)
         await batchUpsert(rows, context: "listItems")
         await expireDiscoveryRows(parent: parentKey, seen: seen, alias: alias)
 
@@ -1696,6 +1700,41 @@ public actor SyncEngine {
         if cached.etag.isEmpty { return (false, props) }
         if !props.eTag.isEmpty, props.eTag == cached.etag { return (true, props) }
         return (false, props)
+    }
+
+    /// Returns the cached discovery rows under `parent`, keyed by `path`
+    /// (the workspace or item GUID). Used by ``listWorkspaces(alias:)`` and
+    /// ``listItems(alias:workspaceID:)`` to look up each freshly discovered
+    /// row's prior state before deciding whether to upsert it.
+    private func discoveryChildrenByPath(parent: CacheKey) async -> [String: MetadataRecord] {
+        let kids = (try? await cache.children(of: parent)) ?? []
+        var byPath: [String: MetadataRecord] = [:]
+        for k in kids {
+            byPath[k.path] = k
+        }
+        return byPath
+    }
+
+    /// Builds the conditional upsert batch for a discovery listing (workspaces
+    /// or items), mirroring ``refreshFolder(key:)``'s conditional-upsert
+    /// discipline (#361/#379): a `candidate` is written back only when it is
+    /// new (absent from `cachedByPath`) or ``Enumerator/entryChanged(current:next:)``
+    /// reports a real change (displayName or itemType — the only fields that
+    /// vary for discovery rows, since they carry no etag/lastModified).
+    ///
+    /// An unchanged candidate is left out of the result entirely, so its
+    /// cached row (and `syncedAtNs`) stays exactly as-is. Bumping `syncedAtNs`
+    /// on every discovery poll — even when nothing changed — would shift the
+    /// working-set delta baseline forward every pass, producing a phantom
+    /// `didUpdate` for every workspace/item on every poll.
+    private static func buildDiscoveryUpsertBatch(
+        candidates: [MetadataRecord],
+        cachedByPath: [String: MetadataRecord]
+    ) -> [MetadataRecord] {
+        candidates.filter { next in
+            guard let cur = cachedByPath[next.path] else { return true }
+            return Enumerator.entryChanged(current: cur, next: next)
+        }
     }
 
     /// Deletes discovery rows for `parent` that are absent from `seen`.
