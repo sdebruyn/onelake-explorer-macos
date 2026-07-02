@@ -875,6 +875,17 @@ public actor CacheStore {
     public func blobURL(key: CacheKey) async throws -> URL? {
         try validateKey(key)
         let record = try await fetch(key: key)
+        return blobURL(record: record)
+    }
+
+    /// Like ``blobURL(key:)`` but computed directly from an already-fetched
+    /// `record`, skipping the metadata read.
+    ///
+    /// Callers that just fetched (or built) the row for another reason —
+    /// e.g. `SyncEngine.open`'s freshness check — should use this instead of
+    /// re-fetching via `blobURL(key:)`. Pure path computation, no
+    /// database I/O, so unlike `blobURL(key:)` it cannot throw.
+    public func blobURL(record: MetadataRecord) -> URL? {
         guard !record.blobSHA256.isEmpty else { return nil }
         return blobs.fileURL(sha256: record.blobSHA256)
     }
@@ -912,12 +923,27 @@ public actor CacheStore {
     public func handoffBlob(key: CacheKey, to destURL: URL) async throws -> Bool {
         try validateKey(key)
         let record = try await fetch(key: key)
+        return try await handoffBlob(record: record, to: destURL)
+    }
+
+    /// Like ``handoffBlob(key:to:)`` but takes an already-fetched `record`,
+    /// skipping the metadata read.
+    ///
+    /// Callers that already have the row in hand — e.g. the FPE's
+    /// `fetchContents`, which now gets it from `SyncEngine.openReturningRecord`
+    /// — should use this instead of re-fetching via `handoffBlob(key:to:)`.
+    @discardableResult
+    public func handoffBlob(record: MetadataRecord, to destURL: URL) async throws -> Bool {
         guard !record.blobSHA256.isEmpty else {
-            throw CacheError.notFound("blob for \(key.path)")
+            throw CacheError.notFound("blob for \(record.path)")
         }
         guard let srcURL = blobs.fileURL(sha256: record.blobSHA256) else {
             throw CacheError.notFound("blob file for \(record.blobSHA256)")
         }
+        let key = CacheKey(
+            accountAlias: record.accountAlias, workspaceID: record.workspaceID,
+            itemID: record.itemID, path: record.path
+        )
 
         // Attempt hard link first (zero-copy, same-volume).
         do {
@@ -951,7 +977,12 @@ public actor CacheStore {
     ///
     /// Prefer this over ``storeBlob(key:data:)`` when the bytes are already on
     /// disk — it avoids loading the entire file into memory.
-    public func storeBlobFromURL(_ sourceURL: URL, key: CacheKey) async throws {
+    ///
+    /// - Returns: The `sha256`/`size` just written, so callers that need them
+    ///   (e.g. `SyncEngine.performDownload`, to complete the in-memory record
+    ///   it already holds) don't have to re-fetch the row.
+    @discardableResult
+    public func storeBlobFromURL(_ sourceURL: URL, key: CacheKey) async throws -> (sha256: String, size: Int64) {
         try validateKey(key)
         let nowNs = clock()
         let (sha, size) = try blobs.storeFromURL(sourceURL)
@@ -973,6 +1004,7 @@ public actor CacheStore {
         if maxBlobBytes > 0 {
             _ = try await evictToLimit()
         }
+        return (sha, size)
     }
 
     // MARK: - Blob: blobBytes

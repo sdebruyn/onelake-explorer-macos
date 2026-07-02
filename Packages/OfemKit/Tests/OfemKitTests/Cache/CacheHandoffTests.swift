@@ -128,6 +128,73 @@ struct CacheHandoffTests {
         }
     }
 
+    // MARK: - record-based overloads (skip the redundant fetch)
+
+    @Test("blobURL(record:) matches blobURL(key:) without a metadata read")
+    func blobURLRecordMatchesBlobURLKey() async throws {
+        let store = try makeStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = CacheKey(accountAlias: "a", workspaceID: "ws", itemID: "item", path: "record.bin")
+        let content = Data("record-based lookup".utf8)
+        try await seedBlob(store: store, key: key, content: content)
+
+        let record = try await store.fetch(key: key)
+        let byKey = try await store.blobURL(key: key)
+        let byRecord = await store.blobURL(record: record)
+        #expect(byRecord != nil)
+        #expect(byRecord == byKey)
+    }
+
+    @Test("blobURL(record:) returns nil for a record with no blob")
+    func blobURLRecordNilWhenNoBlob() async throws {
+        let store = try makeStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "item",
+            path: "no-blob.txt", parentPath: "", name: "no-blob.txt", isDir: false
+        )
+        #expect(await store.blobURL(record: record) == nil)
+    }
+
+    @Test("handoffBlob(record:to:) hard-links using an already-fetched record")
+    func handoffBlobRecordUsesGivenRecord() async throws {
+        let store = try makeStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = CacheKey(accountAlias: "a", workspaceID: "ws", itemID: "item", path: "record-handoff.bin")
+        let content = Data("record handoff".utf8)
+        try await seedBlob(store: store, key: key, content: content)
+        let record = try await store.fetch(key: key)
+
+        let destDir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: destDir) }
+        let dest = destDir.appendingPathComponent("record-handoff-out.bin")
+
+        let usedHardlink = try await store.handoffBlob(record: record, to: dest)
+        #expect(usedHardlink == true)
+        #expect(try Data(contentsOf: dest) == content)
+    }
+
+    @Test("handoffBlob(record:to:) throws notFound when the record has no blob")
+    func handoffBlobRecordThrowsNotFoundWhenNoBlob() async throws {
+        let store = try makeStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let record = MetadataRecord(
+            accountAlias: "a", workspaceID: "ws", itemID: "item",
+            path: "empty-record.txt", parentPath: "", name: "empty-record.txt", isDir: false
+        )
+        let destDir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: destDir) }
+        let dest = destDir.appendingPathComponent("out.bin")
+
+        await #expect(throws: CacheError.self) {
+            try await store.handoffBlob(record: record, to: dest)
+        }
+    }
+
     @Test("handoffBlob falls back to copy when hardlink fails (simulated cross-volume)")
     func fallsBackToCopyWhenHardlinkFails() async throws {
         // We can't trivially force a cross-volume scenario in a unit test.
