@@ -15,10 +15,14 @@ the File Provider Extension.
 
 ### HTTP & OneLake
 
-- `URLSession` for OneLake DFS and Fabric REST calls. Custom wrappers for:
-  - Token injection (`Authorization: Bearer …`).
-  - Retry-After honoring on 429 / 503.
-  - Per-account concurrency limiter (default 4, configurable).
+- Alamofire `Session` over `URLSession` for OneLake DFS and Fabric REST
+  calls, pooled per `(alias, scope)`
+  (`Packages/OfemKit/Sources/OfemKit/HTTP/SessionPool.swift`):
+  - Token injection via `AuthenticationInterceptor` / `OfemAuthenticator`.
+  - `RetryAfterRetrier` (honors `Retry-After` on 429 / 503) and `RetryPolicy`
+    (retry limit 5) as request retriers.
+  - Per-host connection cap, scoped per audience: 16 for OneLake DFS,
+    8 for Fabric REST.
 
 ### Config & data
 
