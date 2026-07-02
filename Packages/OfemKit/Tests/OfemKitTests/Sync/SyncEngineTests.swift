@@ -2016,4 +2016,87 @@ struct SyncEngineTests {
         #expect(row.createdNs == knownCreatedNs,
                 "overflow creation date must not clobber a good cached createdNs")
     }
+
+    // MARK: - dateToNs (private duplicate): exact Int64.max boundary no longer traps
+
+    /// `Double(Int64.max)` rounds *up* to exactly `2^63`, one past the actual
+    /// `Int64.max`. A remote `lastModified` whose nanosecond value lands on that
+    /// rounded boundary must not trap `Int64(ns)` inside `SyncEngine`'s private
+    /// `dateToNs` duplicate — it must clamp to the "unknown" sentinel (`0`),
+    /// same as the canonical helper.
+    @Test("refreshFolder() does not trap on a remote lastModified at the Int64.max rounding boundary")
+    func refreshFolderBoundaryLastModifiedDoesNotTrap() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let dir = "Files"
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: dir)
+
+        let boundaryDate = Date(timeIntervalSince1970: Double(Int64.max) / 1_000_000_000)
+        ol.listPathResults.append(.success(ListResult(entries: [
+            PathEntry(name: "\(dir)/boundary.bin", isDirectory: false, contentLength: 10, eTag: "e1", lastModified: boundaryDate),
+        ])))
+
+        // Must not trap — that's the whole point of the test.
+        let diff = try await engine.refreshFolder(key: key)
+        #expect(diff.added == 1)
+
+        let kids = try await store.children(of: key)
+        let row = kids.first { $0.name == "boundary.bin" }
+        #expect(row != nil)
+        #expect(row?.lastModifiedNs == 0, "out-of-range lastModified must clamp to 0, not trap")
+    }
+
+    // MARK: - C6: resume-download Int64 overflow no longer traps
+
+    /// A resumed download combines a local resume offset (`plan.rangeStart`,
+    /// read off the on-disk spill file) with the remote `Content-Length`
+    /// header (`props.contentLength`) — both untrusted from the resume
+    /// engine's point of view. A hostile/absurd `Content-Length` that would
+    /// overflow `Int64` when added to the resume offset must surface as
+    /// `SyncError.resumeOffsetOverflow` instead of trapping the process.
+    @Test("open() resume with an absurd Content-Length surfaces a handled error instead of trapping")
+    func resumeDownloadOverflowingContentLengthIsHandledNotTrapped() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+
+        // Seed a cached row so PartialManager.rangeStart(for:cachedRecord:)
+        // considers resuming (it requires cachedRecord.contentLength > 0).
+        let existing = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: Self.path, parentPath: "Files", name: "data.csv", isDir: false,
+            contentLength: 1000, etag: "etag-v1"
+        )
+        try await store.upsert(existing)
+
+        // Write a matching partial spill file + etag sidecar directly, using
+        // the same scratch-dir layout SyncEngine computes internally
+        // (scratchBase/<pid>), so PartialManager.rangeStart(for:) reports
+        // hasPartial == true with a known rangeStart.
+        let scratchDir = store.root.appending(path: "scratch", directoryHint: .isDirectory)
+        let partialsDir = scratchDir.appendingPathComponent("\(ProcessInfo.processInfo.processIdentifier)")
+        try FileManager.default.createDirectory(at: partialsDir, withIntermediateDirectories: true)
+        let shadow = PartialManager(scratchDir: partialsDir)
+        try Data(repeating: 0, count: 500).write(to: shadow.partialURL(for: key))
+        try shadow.storeEtag("etag-v1", for: key)
+
+        // Server reports a Content-Length so large that rangeStart (500) plus
+        // it overflows Int64.
+        let hugeProps = PathProperties(
+            isDirectory: false, contentLength: Int64.max - 100, eTag: "etag-v1",
+            lastModified: Date(), contentType: "text/csv"
+        )
+        ol.readResults.append(.success((Data(repeating: 0xAB, count: 1), hugeProps)))
+
+        do {
+            _ = try await engine.open(key: key)
+            Issue.record("Expected SyncError.resumeOffsetOverflow to be thrown")
+        } catch SyncError.resumeOffsetOverflow {
+            // Correct — handled, no trap.
+        }
+    }
 }
