@@ -143,6 +143,48 @@ final class FileProviderExtensionTests: XCTestCase {
                       ".parentItemIdentifier must remain pending when reparent is not supported")
     }
 
+    // MARK: - modifyItem — rename while the engine is unavailable leaves fields pending, no error
+
+    /// The rename branch's failure handling deliberately diverges from every
+    /// other entry point's classify-and-fail behaviour: on failure it leaves
+    /// the changed fields pending (retriable) rather than surfacing an
+    /// error. That must ALSO hold when the failure is the engine itself
+    /// being unavailable (an invalidated host, a build-error back-off
+    /// window, a transient build failure) — an engine hiccup during a
+    /// rename must not be reported as a hard error, or the framework would
+    /// treat a purely transient condition as a permanent failure instead of
+    /// simply retrying.
+    func testModifyItemRenameEngineUnavailableLeavesFieldsPendingNoError() async {
+        let host = MockEngineHost(alias: "test")
+        host.engineResult = .failure(NSFileProviderError(.cannotSynchronize))
+        let ext = makeExtension(host: host)
+        let itemID = "00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002/old.txt"
+        let template = MockFPItem(id: itemID, parentID: NSFileProviderItemIdentifier.rootContainer.rawValue, filename: "new.txt")
+
+        var capturedItem: NSFileProviderItem?
+        var capturedFields: NSFileProviderItemFields = []
+        var capturedError: Error?
+        _ = await withCheckedContinuation { cont in
+            _ = ext.modifyItem(
+                template,
+                baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
+                changedFields: .filename,
+                contents: nil,
+                request: makeRequest()
+            ) { item, fields, _, err in
+                capturedItem = item
+                capturedFields = fields
+                capturedError = err
+                cont.resume(returning: ())
+            }
+        }
+
+        XCTAssertNil(capturedError, "an engine-unavailable rename must NOT surface as an error")
+        XCTAssertNotNil(capturedItem, "the (unrenamed) item should still be handed back while pending")
+        XCTAssertTrue(capturedFields.contains(.filename),
+                      "the filename field must remain pending so the framework retries the rename")
+    }
+
     // MARK: - deleteItem — bad identifier maps to noSuchItem
 
     func testDeleteItemBadIdentifierMapsToNoSuchItem() async throws {

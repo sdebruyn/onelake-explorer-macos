@@ -133,14 +133,27 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
     // MARK: - Shared entry-point scaffolding
 
-    /// Centralizes the scaffolding every FPE entry point below repeats:
-    /// resolve the engine, run `work`, map `CancellationError` to
-    /// `CocoaError(.userCancelled)`, classify any other error via
-    /// `FPError.classify`/`nsFileProviderError(for:)`, log it, and invoke
-    /// `complete` exactly once with the outcome. Returns a fresh `Progress`
-    /// whose `cancellationHandler` cancels the spawned `Task` — the same
-    /// `Progress`/cancellation/classification/completion contract every
-    /// call site previously hand-rolled.
+    /// Centralizes the scaffolding every FPE entry point below repeats: run
+    /// `work`, map `CancellationError` to `CocoaError(.userCancelled)`,
+    /// classify any other error via `FPError.classify`/`nsFileProviderError(for:)`,
+    /// log it, and invoke `complete` exactly once with the outcome. Returns a
+    /// fresh `Progress` whose `cancellationHandler` cancels the spawned
+    /// `Task` — the same `Progress`/cancellation/classification/completion
+    /// contract every call site previously hand-rolled.
+    ///
+    /// `work` receives the engine HOST, not an already-resolved engine — it
+    /// calls `host.engine()` itself as its first step. This is deliberate:
+    /// on `main`, every entry point's `do` block wrapped `engine()`
+    /// resolution together with the rest of the operation, so an
+    /// engine-unavailable failure (invalidated host, build-error back-off, a
+    /// transient build failure) was classified identically to any other
+    /// failure in that operation. Resolving the engine here instead, outside
+    /// `work`, would put engine-resolution failures on a DIFFERENT code path
+    /// than `work`'s own errors — which silently broke `modifyItem`'s rename
+    /// branch (see below) in an earlier version of this helper: its
+    /// leave-fields-pending-on-failure behavior only wrapped `work`'s body,
+    /// so an engine() failure during rename incorrectly surfaced as a hard
+    /// error instead of folding into the pending outcome.
     ///
     /// Callers do their own identifier parsing and pre-engine validation
     /// BEFORE calling this (each entry point's parse-failure mapping
@@ -151,9 +164,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     /// An entry point whose error handling itself diverges from the
     /// standard classify-and-fail shape (`modifyItem`'s rename branch keeps
     /// the changed fields pending instead of failing) catches its own
-    /// non-cancellation errors inside `work` and folds them into its
-    /// `Success` value, letting only `CancellationError` propagate — so the
-    /// standard catch here still applies to cancellation uniformly.
+    /// non-cancellation errors — including from its own `host.engine()` call —
+    /// inside `work` and folds them into its `Success` value, letting only
+    /// `CancellationError` propagate so the standard catch here still
+    /// applies to cancellation uniformly.
     ///
     /// `work` also receives the `Progress` this call returns, so entry
     /// points that report byte-level progress (`fetchContents`, the
@@ -161,7 +175,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     /// `completedUnitCount` on it exactly as before.
     private func runFPEOperation<Success>(
         logContext: String,
-        work: @escaping (OfemEngine, Progress) async throws -> Success,
+        work: @escaping (any EngineProviding, Progress) async throws -> Success,
         complete: @escaping (Result<Success, Error>) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: 0)
@@ -176,8 +190,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let ch = UncheckedSendable(value: complete)
         let task = Task {
             do {
-                let engine = try await hostCopy.engine()
-                let value = try await workBox.value(engine, progress)
+                let value = try await workBox.value(hostCopy, progress)
                 ch.value(.success(value))
             } catch is CancellationError {
                 ch.value(.failure(CocoaError(.userCancelled)))
@@ -218,8 +231,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let aliasCopy = alias
         return runFPEOperation(
             logContext: "item(for:) failed for \(aliasCopy)/\(ofemID.identifierString)",
-            work: { engine, _ in
-                try await engineFetchItem(identifier: ofemID, alias: aliasCopy, engine: engine)
+            work: { host, _ in
+                let engine = try await host.engine()
+                return try await engineFetchItem(identifier: ofemID, alias: aliasCopy, engine: engine)
             },
             complete: { result in
                 switch result {
@@ -269,7 +283,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let aliasCopy = alias
         return runFPEOperation(
             logContext: "fetchContents failed for \(aliasCopy)/\(ofemID.identifierString)",
-            work: { engine, progress -> (URL, OfemFPEItem) in
+            work: { host, progress -> (URL, OfemFPEItem) in
+                let engine = try await host.engine()
                 // Download (or serve from cache) first, then build the
                 // returned item from the SAME record that describes what was
                 // just served — not a snapshot fetched before the download
@@ -362,8 +377,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         return runFPEOperation(
             logContext: "createItem failed",
-            work: { engine, _ in
-                try await engineCreateItem(
+            work: { host, _ in
+                let engine = try await host.engine()
+                return try await engineCreateItem(
                     parentID: parentID,
                     filename: filename,
                     isDir: isDir,
@@ -454,13 +470,18 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             // changed fields pending so the framework retries rather than treating
             // the item as renamed (or, for a co-delivered .contents, as uploaded)
             // locally. That diverges from `runFPEOperation`'s standard
-            // classify-and-fail catch, so non-cancellation errors are caught HERE
-            // and folded into a `.pending` outcome; only `CancellationError`
-            // propagates to the shared catch.
+            // classify-and-fail catch, so non-cancellation errors — INCLUDING a
+            // `host.engine()` failure, resolved inside this same do/catch rather
+            // than left to the shared harness — are caught HERE and folded into
+            // a `.pending` outcome. That covers an invalidated host, a
+            // build-error back-off window, or a transient engine build failure
+            // during a rename; only `CancellationError` propagates to the
+            // shared catch.
             return runFPEOperation(
                 logContext: "modifyItem rename failed",
-                work: { engine, _ -> RenameOutcome in
+                work: { host, _ -> RenameOutcome in
                     do {
+                        let engine = try await host.engine()
                         let key = CacheKey(
                             accountAlias: aliasCopy,
                             workspaceID: wsID,
@@ -516,8 +537,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             let aliasCopy = alias
             return runFPEOperation(
                 logContext: "modifyItem(metadata) fetch failed",
-                work: { engine, _ in
-                    try await engineFetchItem(identifier: ofemID, alias: aliasCopy, engine: engine)
+                work: { host, _ in
+                    let engine = try await host.engine()
+                    return try await engineFetchItem(identifier: ofemID, alias: aliasCopy, engine: engine)
                 },
                 complete: { result in
                     switch result {
@@ -560,7 +582,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         return runFPEOperation(
             logContext: "modifyItem failed",
-            work: { engine, progress -> OfemFPEItem in
+            work: { host, progress -> OfemFPEItem in
+                let engine = try await host.engine()
                 let fileSize: Int64 = if let attrs = try? FileManager.default.attributesOfItem(atPath: contentsURL.path),
                                          let sz = attrs[.size] as? NSNumber
                 {
@@ -615,7 +638,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         return runFPEOperation(
             logContext: "deleteItem failed",
-            work: { engine, _ in
+            work: { host, _ in
+                let engine = try await host.engine()
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
                 try await engine.sync.delete(key: key)
             },
@@ -873,7 +897,7 @@ private func enumerateMaterializedIdentifiers(
 /// Any OTHER cache error is an infrastructure failure re-thrown as
 /// `FPError.invalidRecord` (→ cannotSynchronize), never `noSuchItem`: a
 /// transient DB blip must not be mistaken for a deletion signal. This is the
-/// single fetch primitive ``cachedRecordOrEnumerate(key:parentKey:engine:context:)``
+/// single fetch primitive ``cachedRecordOrEnumerate(key:parentKey:engine:context:isValid:)``
 /// composes twice (first fetch, retry-after-enumerate fetch).
 private func cacheFirstRecord(
     key: CacheKey,
@@ -892,16 +916,24 @@ private func cacheFirstRecord(
     }
 }
 
-/// Fetches `key` cache-first; on a definitive `CacheError.notFound` miss,
-/// enumerates `parentKey` to populate the cache and retries once.
+/// Fetches `key` cache-first; on a definitive `CacheError.notFound` miss, OR
+/// on a hit that `isValid` rejects, enumerates `parentKey` to populate the
+/// cache and retries once.
 ///
-/// Returns the record from either the first fetch or the retry. Returns
-/// `nil` only when the retry ALSO misses with `CacheError.notFound` — the
-/// item is definitively absent even after a fresh parent enumeration. The
-/// caller decides what "still absent" means: a hard `.noSuchItem` for a
-/// metadata lookup (``engineFetchItem``'s `.path` case), or "proceed to
-/// create" for `createItem`'s `.mayAlreadyExist` path
-/// (``engineCreateItem``).
+/// Returns the record from either the first fetch or the retry, whichever
+/// first satisfies `isValid` (defaults to accepting any record — the
+/// ``engineFetchItem`` `.path` case decodes the record itself afterwards and
+/// wants ANY row, decodable or not, to short-circuit the retry so a decode
+/// failure surfaces immediately as `cannotSynchronize` rather than masking
+/// itself behind a redundant enumerate). Returns `nil` only when the retry
+/// ALSO misses — either `CacheError.notFound` or an `isValid`-rejected row —
+/// after a fresh parent enumeration. The caller decides what "still absent"
+/// means: a hard `.noSuchItem` for a metadata lookup, or "proceed to create"
+/// for `createItem`'s `.mayAlreadyExist` path (``engineCreateItem``), which
+/// passes an `isValid` that requires the row to decode — a cached-but-
+/// undecodable row must not be mistaken for "not yet cached" and fall
+/// straight through to an unintended create/overwrite; it gets the same
+/// one enumerate-and-retry chance a genuine cache miss gets.
 ///
 /// Any OTHER cache error — on either the first fetch or the retry —
 /// propagates as `FPError.invalidRecord` (→ cannotSynchronize), never as a
@@ -914,14 +946,19 @@ private func cachedRecordOrEnumerate(
     key: CacheKey,
     parentKey: CacheKey,
     engine: OfemEngine,
-    context: String
+    context: String,
+    isValid: (MetadataRecord) -> Bool = { _ in true }
 ) async throws -> MetadataRecord? {
-    if let record = try await cacheFirstRecord(key: key, engine: engine, context: context) {
+    if let record = try await cacheFirstRecord(key: key, engine: engine, context: context), isValid(record) {
         return record
     }
-    // Cache miss → enumerate parent to populate, then retry once.
+    // Cache miss (or an isValid-rejected hit) → enumerate parent to
+    // populate/refresh the cache, then retry once.
     _ = try await engine.sync.enumerate(key: parentKey)
-    return try await cacheFirstRecord(key: key, engine: engine, context: "\(context) (retry)")
+    if let record = try await cacheFirstRecord(key: key, engine: engine, context: "\(context) (retry)"), isValid(record) {
+        return record
+    }
+    return nil
 }
 
 /// Fetches a single item's metadata from the engine.
@@ -1055,10 +1092,15 @@ private func engineCreateItem(
         // Discriminate CacheError.notFound (not yet cached — enumerate parent
         // and retry once, then treat still-missing as "it's new") from real DB
         // errors, which must propagate rather than silently falling through to
-        // an unintended create.
+        // an unintended create. A cached-but-undecodable row is treated the
+        // same as "not yet cached" (via `isValid`) — it also gets the
+        // enumerate-and-retry chance rather than immediately falling through
+        // to create, which would overwrite/recreate an item that DOES exist
+        // but whose cached row just failed to decode.
         let parentKey = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
         if let record = try await cachedRecordOrEnumerate(
-            key: key, parentKey: parentKey, engine: engine, context: "createItem mayAlreadyExist \(filename)"
+            key: key, parentKey: parentKey, engine: engine, context: "createItem mayAlreadyExist \(filename)",
+            isValid: { (try? DomainItem.from(record: $0)) != nil }
         ), let di = try? DomainItem.from(record: record) {
             return OfemFPEItem(from: di)
         }
