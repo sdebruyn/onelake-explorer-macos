@@ -48,6 +48,17 @@ private let fpeLog = Logger(
 /// in practice the FPE callbacks are called once at the end of each operation.
 private struct UncheckedSendable<T>: @unchecked Sendable { let value: T }
 
+/// Outcome of `modifyItem`'s rename branch, run through `runFPEOperation`.
+///
+/// A rename failure is NOT an error result — it leaves the changed fields
+/// pending so the framework retries — so the branch's `work` closure folds
+/// both outcomes into this type instead of throwing (see the `.pending` case
+/// doc on the call site for why).
+private enum RenameOutcome {
+    case renamed(OfemFPEItem, NSFileProviderItemFields)
+    case pending
+}
+
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderServicing {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
@@ -101,18 +112,85 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
     /// Called when macOS is done with this extension instance.
     ///
-    /// Sets the invalidated flag synchronously before spawning the shutdown
-    /// task so any concurrent `engine()` call fails fast.
+    /// Sets the invalidated flag synchronously — via `invalidateSynchronously()`
+    /// — before spawning the async shutdown task, so an `engine()` call that
+    /// races teardown (including one already in flight) observes the flag
+    /// immediately, rather than only after the shutdown Task happens to be
+    /// scheduled and reach its own lock acquisition.
     func invalidate() {
         FileProviderExtension.log.info(
             "Invalidating extension for domain \(self.domain.identifier.rawValue, privacy: .public)"
         )
+        engineHost.invalidateSynchronously()
+
         // Capture engineHost (Sendable) explicitly so the Task body does not
         // need to capture self, which is not Sendable.
         let hostCopy = engineHost
         Task {
             await hostCopy.shutdown()
         }
+    }
+
+    // MARK: - Shared entry-point scaffolding
+
+    /// Centralizes the scaffolding every FPE entry point below repeats:
+    /// resolve the engine, run `work`, map `CancellationError` to
+    /// `CocoaError(.userCancelled)`, classify any other error via
+    /// `FPError.classify`/`nsFileProviderError(for:)`, log it, and invoke
+    /// `complete` exactly once with the outcome. Returns a fresh `Progress`
+    /// whose `cancellationHandler` cancels the spawned `Task` — the same
+    /// `Progress`/cancellation/classification/completion contract every
+    /// call site previously hand-rolled.
+    ///
+    /// Callers do their own identifier parsing and pre-engine validation
+    /// BEFORE calling this (each entry point's parse-failure mapping
+    /// differs — e.g. an invalid rename filename maps to
+    /// `.filenameCollision`, not `.noSuchItem`) and capture whatever they
+    /// resolved for `work` to use.
+    ///
+    /// An entry point whose error handling itself diverges from the
+    /// standard classify-and-fail shape (`modifyItem`'s rename branch keeps
+    /// the changed fields pending instead of failing) catches its own
+    /// non-cancellation errors inside `work` and folds them into its
+    /// `Success` value, letting only `CancellationError` propagate — so the
+    /// standard catch here still applies to cancellation uniformly.
+    ///
+    /// `work` also receives the `Progress` this call returns, so entry
+    /// points that report byte-level progress (`fetchContents`, the
+    /// content-bearing `modifyItem` branch) can update `totalUnitCount` /
+    /// `completedUnitCount` on it exactly as before.
+    private func runFPEOperation<Success>(
+        logContext: String,
+        work: @escaping (OfemEngine, Progress) async throws -> Success,
+        complete: @escaping (Result<Success, Error>) -> Void
+    ) -> Progress {
+        let progress = Progress(totalUnitCount: 0)
+        let hostCopy = engineHost
+        // `work` and `complete` are @escaping but not necessarily @Sendable —
+        // `complete` in particular typically closes over the framework's own
+        // completionHandler, which is itself @escaping-but-not-@Sendable. Box
+        // both to cross the Task isolation boundary safely, the same
+        // technique every entry point previously applied to its raw
+        // completionHandler directly.
+        let workBox = UncheckedSendable(value: work)
+        let ch = UncheckedSendable(value: complete)
+        let task = Task {
+            do {
+                let engine = try await hostCopy.engine()
+                let value = try await workBox.value(engine, progress)
+                ch.value(.success(value))
+            } catch is CancellationError {
+                ch.value(.failure(CocoaError(.userCancelled)))
+            } catch {
+                let code = FPError.classify(error)
+                FileProviderExtension.log.error(
+                    "\(logContext, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                ch.value(.failure(nsFileProviderError(for: code)))
+            }
+        }
+        progress.cancellationHandler = { task.cancel() }
+        return progress
     }
 
     // MARK: - Item metadata
@@ -122,49 +200,34 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         request _: NSFileProviderRequest,
         completionHandler: @escaping (NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
-        let progress = Progress(totalUnitCount: 0)
-
         // Parse identifier — use OfemKit's parser.
         let ofemID: ItemIdentifier
         do {
             ofemID = try parseOfemItemIdentifier(identifier.rawValue)
         } catch {
             completionHandler(nil, NSFileProviderError(.noSuchItem))
-            return progress
+            return Progress(totalUnitCount: 0)
         }
 
         // Working set / trash are synthetic; return noSuchItem.
         if ofemID == .workingSet || ofemID == .trash {
             completionHandler(nil, NSFileProviderError(.noSuchItem))
-            return progress
+            return Progress(totalUnitCount: 0)
         }
 
         let aliasCopy = alias
-        let hostCopy = engineHost
-        // NSFileProviderReplicatedExtension completion handlers are @escaping but
-        // not @Sendable. Box to cross the Task isolation boundary safely.
-        let ch = UncheckedSendable(value: completionHandler)
-        let task = Task {
-            do {
-                let engine = try await hostCopy.engine()
-                let item = try await engineFetchItem(
-                    identifier: ofemID,
-                    alias: aliasCopy,
-                    engine: engine
-                )
-                ch.value(item, nil)
-            } catch is CancellationError {
-                ch.value(nil, CocoaError(.userCancelled))
-            } catch {
-                let code = FPError.classify(error)
-                FileProviderExtension.log.error(
-                    "item(for:) failed for \(aliasCopy, privacy: .public)/\(ofemID.identifierString, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                )
-                ch.value(nil, nsFileProviderError(for: code))
+        return runFPEOperation(
+            logContext: "item(for:) failed for \(aliasCopy)/\(ofemID.identifierString)",
+            work: { engine, _ in
+                try await engineFetchItem(identifier: ofemID, alias: aliasCopy, engine: engine)
+            },
+            complete: { result in
+                switch result {
+                case let .success(item): completionHandler(item, nil)
+                case let .failure(error): completionHandler(nil, error)
+                }
             }
-        }
-        progress.cancellationHandler = { task.cancel() }
-        return progress
+        )
     }
 
     // MARK: - Content fetch
@@ -175,21 +238,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         request _: NSFileProviderRequest,
         completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
-        let progress = Progress(totalUnitCount: 0)
-
         let ofemID: ItemIdentifier
         do {
             ofemID = try parseOfemItemIdentifier(itemIdentifier.rawValue)
         } catch {
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
-            return progress
+            return Progress(totalUnitCount: 0)
         }
 
         // Only file-level paths make sense for content fetch.
         guard case let .path(wsID, itemID, path) = ofemID else {
             // root / workspace / item root don't have file contents.
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
-            return progress
+            return Progress(totalUnitCount: 0)
         }
 
         let dest: URL
@@ -202,18 +263,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             )
             // Scratch dir failure is a retriable infrastructure error, not noSuchItem.
             completionHandler(nil, nil, nsFileProviderError(for: FPError.classify(error)))
-            return progress
+            return Progress(totalUnitCount: 0)
         }
 
         let aliasCopy = alias
-        let hostCopy = engineHost
-        // NSFileProviderReplicatedExtension completion handlers are @escaping but
-        // not @Sendable. Box to cross the Task isolation boundary safely.
-        let ch = UncheckedSendable(value: completionHandler)
-        let task = Task {
-            do {
-                let engine = try await hostCopy.engine()
-
+        return runFPEOperation(
+            logContext: "fetchContents failed for \(aliasCopy)/\(ofemID.identifierString)",
+            work: { engine, progress -> (URL, OfemFPEItem) in
                 // Download (or serve from cache) first, then build the
                 // returned item from the SAME record that describes what was
                 // just served — not a snapshot fetched before the download
@@ -260,19 +316,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     progress.totalUnitCount = actualBytes
                 }
                 progress.completedUnitCount = actualBytes
-                ch.value(dest, domainItem, nil)
-            } catch is CancellationError {
-                ch.value(nil, nil, CocoaError(.userCancelled))
-            } catch {
-                let code = FPError.classify(error)
-                FileProviderExtension.log.error(
-                    "fetchContents failed for \(aliasCopy, privacy: .public)/\(ofemID.identifierString, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                )
-                ch.value(nil, nil, nsFileProviderError(for: code))
+                return (dest, domainItem)
+            },
+            complete: { result in
+                switch result {
+                case let .success((dest, domainItem)): completionHandler(dest, domainItem, nil)
+                case let .failure(error): completionHandler(nil, nil, error)
+                }
             }
-        }
-        progress.cancellationHandler = { task.cancel() }
-        return progress
+        )
     }
 
     // MARK: - Mutations
@@ -287,8 +339,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?
         ) -> Void
     ) -> Progress {
-        let progress = Progress(totalUnitCount: 0)
-
         let parentID: ItemIdentifier
         do {
             parentID = try parseOfemItemIdentifier(
@@ -296,11 +346,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             )
         } catch {
             completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
-            return progress
+            return Progress(totalUnitCount: 0)
         }
 
         let aliasCopy = alias
-        let hostCopy = engineHost
         let isDir = template.contentType == .folder
         let filename = template.filename
         let srcURL = contents
@@ -311,13 +360,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             "createItem \(filename, privacy: .public) isDir=\(isDir, privacy: .public) parent=\(parentID.identifierString, privacy: .public) fields=\(fieldsCopy.rawValue, privacy: .public) options=\(optionsCopy.rawValue, privacy: .public)"
         )
 
-        // NSFileProviderReplicatedExtension completion handlers are @escaping but
-        // not @Sendable. Box to cross the Task isolation boundary safely.
-        let ch = UncheckedSendable(value: completionHandler)
-        let task = Task {
-            do {
-                let engine = try await hostCopy.engine()
-                let item = try await engineCreateItem(
+        return runFPEOperation(
+            logContext: "createItem failed",
+            work: { engine, _ in
+                try await engineCreateItem(
                     parentID: parentID,
                     filename: filename,
                     isDir: isDir,
@@ -327,19 +373,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     alias: aliasCopy,
                     engine: engine
                 )
-                ch.value(item, [], false, nil)
-            } catch is CancellationError {
-                ch.value(nil, [], false, CocoaError(.userCancelled))
-            } catch {
-                let code = FPError.classify(error)
-                FileProviderExtension.log.error(
-                    "createItem failed: \(error.localizedDescription, privacy: .public)"
-                )
-                ch.value(nil, [], false, nsFileProviderError(for: code))
+            },
+            complete: { result in
+                switch result {
+                case let .success(item): completionHandler(item, [], false, nil)
+                case let .failure(error): completionHandler(nil, [], false, error)
+                }
             }
-        }
-        progress.cancellationHandler = { task.cancel() }
-        return progress
+        )
     }
 
     func modifyItem(
@@ -353,8 +394,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?
         ) -> Void
     ) -> Progress {
-        let progress = Progress(totalUnitCount: 0)
-
         // Detect rename / reparent before anything else.
         // Move/reparent (parentItemIdentifier change) is not yet implemented —
         // leave it as still-pending. Same-directory rename (filename change only)
@@ -368,7 +407,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             var pendingFields: NSFileProviderItemFields = [.parentItemIdentifier]
             if wantsRename { pendingFields.insert(.filename) }
             completionHandler(item, pendingFields, false, nil)
-            return progress
+            return Progress(totalUnitCount: 0)
         }
 
         if wantsRename {
@@ -377,11 +416,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 ofemID = try parseOfemItemIdentifier(item.itemIdentifier.rawValue)
             } catch {
                 completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
-                return progress
+                return Progress(totalUnitCount: 0)
             }
             guard case let .path(wsID, itemID, path) = ofemID else {
                 completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
-                return progress
+                return Progress(totalUnitCount: 0)
             }
             let newFilename = item.filename
             // Reject an empty filename or one containing a path separator before
@@ -395,7 +434,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     "modifyItem \(ofemID.opaqueLogPrefix, privacy: .public) — rejecting invalid rename filename"
                 )
                 completionHandler(nil, [], false, NSFileProviderError(.filenameCollision))
-                return progress
+                return Progress(totalUnitCount: 0)
             }
             // Preserve the original identifier so the success path can return it
             // unchanged; returning a new (path-derived) identifier would make the
@@ -407,42 +446,55 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             // acking [] would tell the framework those changes applied → data loss.
             let nonRenameFields = changedFields.subtracting([.filename])
             let aliasCopy = alias
-            let hostCopy = engineHost
             FileProviderExtension.log.debug(
                 "modifyItem \(ofemID.identifierString, privacy: .public) — rename to \(newFilename, privacy: .public)"
             )
-            let ch = UncheckedSendable(value: completionHandler)
-            let task = Task {
-                do {
-                    let engine = try await hostCopy.engine()
-                    let key = CacheKey(
-                        accountAlias: aliasCopy,
-                        workspaceID: wsID,
-                        itemID: itemID,
-                        path: path
-                    )
-                    let updated = try await engine.sync.rename(key: key, newName: newFilename)
-                    // Return the ORIGINAL identifier with the new filename/size/
-                    // dates so the framework registers a metadata change, not a
-                    // delete+add (see DomainItem.from(record:overridingIdentifier:)).
-                    let fpeItem = OfemFPEItem(
-                        from: try DomainItem.from(record: updated, overridingIdentifier: originalIdentifier)
-                    )
-                    ch.value(fpeItem, nonRenameFields, false, nil)
-                } catch is CancellationError {
-                    ch.value(nil, [], false, CocoaError(.userCancelled))
-                } catch {
-                    // Rename failed: leave ALL changed fields pending so the
-                    // framework retries rather than treating the item as renamed
-                    // (or, for a co-delivered .contents, as uploaded) locally.
-                    FileProviderExtension.log.error(
-                        "modifyItem rename failed: \(error.localizedDescription, privacy: .public)"
-                    )
-                    ch.value(item, changedFields, false, nil)
+
+            // A rename failure does NOT surface as an error result: it leaves ALL
+            // changed fields pending so the framework retries rather than treating
+            // the item as renamed (or, for a co-delivered .contents, as uploaded)
+            // locally. That diverges from `runFPEOperation`'s standard
+            // classify-and-fail catch, so non-cancellation errors are caught HERE
+            // and folded into a `.pending` outcome; only `CancellationError`
+            // propagates to the shared catch.
+            return runFPEOperation(
+                logContext: "modifyItem rename failed",
+                work: { engine, _ -> RenameOutcome in
+                    do {
+                        let key = CacheKey(
+                            accountAlias: aliasCopy,
+                            workspaceID: wsID,
+                            itemID: itemID,
+                            path: path
+                        )
+                        let updated = try await engine.sync.rename(key: key, newName: newFilename)
+                        // Return the ORIGINAL identifier with the new filename/size/
+                        // dates so the framework registers a metadata change, not a
+                        // delete+add (see DomainItem.from(record:overridingIdentifier:)).
+                        let fpeItem = OfemFPEItem(
+                            from: try DomainItem.from(record: updated, overridingIdentifier: originalIdentifier)
+                        )
+                        return .renamed(fpeItem, nonRenameFields)
+                    } catch let cancellationError as CancellationError {
+                        throw cancellationError
+                    } catch {
+                        FileProviderExtension.log.error(
+                            "modifyItem rename failed: \(error.localizedDescription, privacy: .public)"
+                        )
+                        return .pending
+                    }
+                },
+                complete: { result in
+                    switch result {
+                    case let .success(.renamed(fpeItem, fields)):
+                        completionHandler(fpeItem, fields, false, nil)
+                    case .success(.pending):
+                        completionHandler(item, changedFields, false, nil)
+                    case let .failure(error):
+                        completionHandler(nil, [], false, error)
+                    }
                 }
-            }
-            progress.cancellationHandler = { task.cancel() }
-            return progress
+            )
         }
 
         // Metadata-only modifications (mtime, tags, lastUsedDate, favoriteRank).
@@ -458,35 +510,22 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 ofemID = try parseOfemItemIdentifier(item.itemIdentifier.rawValue)
             } catch {
                 completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
-                return progress
+                return Progress(totalUnitCount: 0)
             }
 
             let aliasCopy = alias
-            let hostCopy = engineHost
-            // NSFileProviderReplicatedExtension completion handlers are @escaping
-            // but not @Sendable. Box to cross the Task isolation boundary safely.
-            let ch = UncheckedSendable(value: completionHandler)
-            let task = Task {
-                do {
-                    let engine = try await hostCopy.engine()
-                    let existing = try await engineFetchItem(
-                        identifier: ofemID,
-                        alias: aliasCopy,
-                        engine: engine
-                    )
-                    ch.value(existing, [], false, nil)
-                } catch is CancellationError {
-                    ch.value(nil, [], false, CocoaError(.userCancelled))
-                } catch {
-                    let code = FPError.classify(error)
-                    FileProviderExtension.log.error(
-                        "modifyItem(metadata) fetch failed: \(error.localizedDescription, privacy: .public)"
-                    )
-                    ch.value(nil, [], false, nsFileProviderError(for: code))
+            return runFPEOperation(
+                logContext: "modifyItem(metadata) fetch failed",
+                work: { engine, _ in
+                    try await engineFetchItem(identifier: ofemID, alias: aliasCopy, engine: engine)
+                },
+                complete: { result in
+                    switch result {
+                    case let .success(existing): completionHandler(existing, [], false, nil)
+                    case let .failure(error): completionHandler(nil, [], false, error)
+                    }
                 }
-            }
-            progress.cancellationHandler = { task.cancel() }
-            return progress
+            )
         }
 
         // Content-bearing modification.
@@ -497,7 +536,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — .contents set but URL nil, acknowledging"
             )
             completionHandler(item, [], false, nil)
-            return progress
+            return Progress(totalUnitCount: 0)
         }
 
         let ofemID: ItemIdentifier
@@ -505,27 +544,23 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             ofemID = try parseOfemItemIdentifier(item.itemIdentifier.rawValue)
         } catch {
             completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
-            return progress
+            return Progress(totalUnitCount: 0)
         }
 
         guard case let .path(wsID, itemID, path) = ofemID else {
             completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
-            return progress
+            return Progress(totalUnitCount: 0)
         }
 
         let aliasCopy = alias
-        let hostCopy = engineHost
 
         FileProviderExtension.log.debug(
             "modifyItem \(ofemID.identifierString, privacy: .public)"
         )
 
-        // NSFileProviderReplicatedExtension completion handlers are @escaping but
-        // not @Sendable. Box to cross the Task isolation boundary safely.
-        let ch = UncheckedSendable(value: completionHandler)
-        let task = Task {
-            do {
-                let engine = try await hostCopy.engine()
+        return runFPEOperation(
+            logContext: "modifyItem failed",
+            work: { engine, progress -> OfemFPEItem in
                 let fileSize: Int64 = if let attrs = try? FileManager.default.attributesOfItem(atPath: contentsURL.path),
                                          let sz = attrs[.size] as? NSNumber
                 {
@@ -541,24 +576,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 progress.completedUnitCount = progress.totalUnitCount
                 // Re-fetch the item metadata after upload so the returned version
                 // matches what subsequent enumeration produces.
-                let updated = try await engineFetchItem(
-                    identifier: ofemID,
-                    alias: aliasCopy,
-                    engine: engine
-                )
-                ch.value(updated, [], false, nil)
-            } catch is CancellationError {
-                ch.value(nil, [], false, CocoaError(.userCancelled))
-            } catch {
-                let code = FPError.classify(error)
-                FileProviderExtension.log.error(
-                    "modifyItem failed: \(error.localizedDescription, privacy: .public)"
-                )
-                ch.value(nil, [], false, nsFileProviderError(for: code))
+                return try await engineFetchItem(identifier: ofemID, alias: aliasCopy, engine: engine)
+            },
+            complete: { result in
+                switch result {
+                case let .success(updated): completionHandler(updated, [], false, nil)
+                case let .failure(error): completionHandler(nil, [], false, error)
+                }
             }
-        }
-        progress.cancellationHandler = { task.cancel() }
-        return progress
+        )
     }
 
     func deleteItem(
@@ -568,49 +594,38 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         request _: NSFileProviderRequest,
         completionHandler: @escaping (Error?) -> Void
     ) -> Progress {
-        let progress = Progress(totalUnitCount: 0)
-
         let ofemID: ItemIdentifier
         do {
             ofemID = try parseOfemItemIdentifier(identifier.rawValue)
         } catch {
             completionHandler(NSFileProviderError(.noSuchItem))
-            return progress
+            return Progress(totalUnitCount: 0)
         }
 
         guard case let .path(wsID, itemID, path) = ofemID else {
             completionHandler(NSFileProviderError(.noSuchItem))
-            return progress
+            return Progress(totalUnitCount: 0)
         }
 
         let aliasCopy = alias
-        let hostCopy = engineHost
 
         FileProviderExtension.log.debug(
             "deleteItem \(ofemID.identifierString, privacy: .public)"
         )
 
-        // NSFileProviderReplicatedExtension completion handlers are @escaping but
-        // not @Sendable. Box to cross the Task isolation boundary safely.
-        let ch = UncheckedSendable(value: completionHandler)
-        let task = Task {
-            do {
-                let engine = try await hostCopy.engine()
+        return runFPEOperation(
+            logContext: "deleteItem failed",
+            work: { engine, _ in
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
                 try await engine.sync.delete(key: key)
-                ch.value(nil)
-            } catch is CancellationError {
-                ch.value(CocoaError(.userCancelled))
-            } catch {
-                let code = FPError.classify(error)
-                FileProviderExtension.log.error(
-                    "deleteItem failed: \(error.localizedDescription, privacy: .public)"
-                )
-                ch.value(nsFileProviderError(for: code))
+            },
+            complete: { result in
+                switch result {
+                case .success: completionHandler(nil)
+                case let .failure(error): completionHandler(error)
+                }
             }
-        }
-        progress.cancellationHandler = { task.cancel() }
-        return progress
+        )
     }
 
     // MARK: - NSFileProviderService (XPC for host app)
@@ -744,8 +759,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         for containerItemIdentifier: NSFileProviderItemIdentifier,
         request _: NSFileProviderRequest
     ) throws -> NSFileProviderEnumerator {
-        // Parse first so we can branch on the typed identifier.
-        let ofemID = try parseOfemItemIdentifier(containerItemIdentifier.rawValue)
+        // Parse first so we can branch on the typed identifier. A parse
+        // failure maps to NSFileProviderError(.noSuchItem) — matching every
+        // other entry point's identifier-parsing guard — rather than letting
+        // the raw FPError escape unmapped.
+        let ofemID: ItemIdentifier
+        do {
+            ofemID = try parseOfemItemIdentifier(containerItemIdentifier.rawValue)
+        } catch {
+            throw NSFileProviderError(.noSuchItem)
+        }
 
         // Trash → real always-empty enumerator (no engine needed). OneLake has
         // no trash concept; this must NOT share OfemWorkingSetEnumerator, which
@@ -849,8 +872,9 @@ private func enumerateMaterializedIdentifiers(
 ///
 /// Any OTHER cache error is an infrastructure failure re-thrown as
 /// `FPError.invalidRecord` (→ cannotSynchronize), never `noSuchItem`: a
-/// transient DB blip must not be mistaken for a deletion signal. This mirrors
-/// the discrimination the `.path` branch of ``engineFetchItem`` open-codes.
+/// transient DB blip must not be mistaken for a deletion signal. This is the
+/// single fetch primitive ``cachedRecordOrEnumerate(key:parentKey:engine:context:)``
+/// composes twice (first fetch, retry-after-enumerate fetch).
 private func cacheFirstRecord(
     key: CacheKey,
     engine: OfemEngine,
@@ -866,6 +890,38 @@ private func cacheFirstRecord(
     } catch {
         throw FPError.invalidRecord("unexpected cache error for \(context): \(error)")
     }
+}
+
+/// Fetches `key` cache-first; on a definitive `CacheError.notFound` miss,
+/// enumerates `parentKey` to populate the cache and retries once.
+///
+/// Returns the record from either the first fetch or the retry. Returns
+/// `nil` only when the retry ALSO misses with `CacheError.notFound` — the
+/// item is definitively absent even after a fresh parent enumeration. The
+/// caller decides what "still absent" means: a hard `.noSuchItem` for a
+/// metadata lookup (``engineFetchItem``'s `.path` case), or "proceed to
+/// create" for `createItem`'s `.mayAlreadyExist` path
+/// (``engineCreateItem``).
+///
+/// Any OTHER cache error — on either the first fetch or the retry —
+/// propagates as `FPError.invalidRecord` (→ cannotSynchronize), never as a
+/// definitive-absence `nil`: a transient DB blip must never be mistaken for
+/// "not found", which would read as a deletion to a metadata caller, or
+/// trigger an unwanted create/overwrite here (the safety property both call
+/// sites previously open-coded separately). Enumeration failures (network,
+/// auth) also propagate as-is — they are retriable.
+private func cachedRecordOrEnumerate(
+    key: CacheKey,
+    parentKey: CacheKey,
+    engine: OfemEngine,
+    context: String
+) async throws -> MetadataRecord? {
+    if let record = try await cacheFirstRecord(key: key, engine: engine, context: context) {
+        return record
+    }
+    // Cache miss → enumerate parent to populate, then retry once.
+    _ = try await engine.sync.enumerate(key: parentKey)
+    return try await cacheFirstRecord(key: key, engine: engine, context: "\(context) (retry)")
 }
 
 /// Fetches a single item's metadata from the engine.
@@ -939,57 +995,19 @@ private func engineFetchItem(
 
     case let .path(workspaceID, itemID, path):
         let key = cacheKey(alias: alias, workspaceID: workspaceID, itemID: itemID, path: path)
-
-        // Distinguish CacheError.notFound (trigger parent enumerate)
-        // from real DB failures (cannotSynchronize, not noSuchItem).
-        let firstFetchResult: Result<MetadataRecord, Error>
-        do {
-            firstFetchResult = .success(try await engine.cache.fetch(key: key))
-        } catch {
-            firstFetchResult = .failure(error)
-        }
-
-        switch firstFetchResult {
-        case let .success(record):
-            do {
-                return OfemFPEItem(from: try DomainItem.from(record: record))
-            } catch {
-                throw FPError.invalidRecord("DomainItem.from failed for \(path): \(error)")
-            }
-
-        case let .failure(cacheError as CacheError):
-            // Only .notFound means "not in cache, try enumerating parent".
-            // Any other CacheError is an infrastructure failure — propagate.
-            guard case .notFound = cacheError else {
-                throw FPError.invalidRecord("cache DB error for \(path): \(cacheError)")
-            }
-            // Fall through to parent enumerate.
-
-        case let .failure(other):
-            throw FPError.invalidRecord("unexpected cache error for \(path): \(other)")
-        }
-
-        // Cache miss → enumerate parent to populate, then retry.
         let parent = parentPath(of: path)
         let parentKey = cacheKey(alias: alias, workspaceID: workspaceID, itemID: itemID, path: parent)
-        // Propagate enumeration failures (network, auth) — they are retriable.
-        _ = try await engine.sync.enumerate(key: parentKey)
 
-        // Retry cache lookup with full error discrimination.
+        guard let record = try await cachedRecordOrEnumerate(
+            key: key, parentKey: parentKey, engine: engine, context: path
+        ) else {
+            // Still absent after enumeration → definitively gone.
+            throw FPError.noSuchItem(path)
+        }
         do {
-            let record = try await engine.cache.fetch(key: key)
             return OfemFPEItem(from: try DomainItem.from(record: record))
-        } catch let cacheError as CacheError {
-            switch cacheError {
-            case .notFound:
-                // Still absent after enumeration → definitively gone.
-                throw FPError.noSuchItem(path)
-            default:
-                // DB failure on retry — retriable, not a deletion signal.
-                throw FPError.invalidRecord("cache DB error on retry for \(path): \(cacheError)")
-            }
         } catch {
-            throw FPError.invalidRecord("DomainItem.from failed on retry for \(path): \(error)")
+            throw FPError.invalidRecord("DomainItem.from failed for \(path): \(error)")
         }
     }
 }
@@ -1034,52 +1052,17 @@ private func engineCreateItem(
     // Honour .mayAlreadyExist — the system is re-importing items that may
     // have pre-existing remote content. Don't upload/overwrite.
     if options.contains(.mayAlreadyExist) {
-        // Discriminate CacheError.notFound from real DB errors: only .notFound
-        // means "not yet cached"; other errors must propagate.
-        let cacheResult: Result<MetadataRecord, Error>
-        do {
-            cacheResult = .success(try await engine.cache.fetch(key: key))
-        } catch {
-            cacheResult = .failure(error)
-        }
-        switch cacheResult {
-        case let .success(record):
-            if let di = try? DomainItem.from(record: record) {
-                return OfemFPEItem(from: di)
-            }
-        case let .failure(cacheError as CacheError):
-            guard case .notFound = cacheError else {
-                throw cacheError // Real DB error — propagate
-            }
-        // .notFound: fall through to parent enumerate
-        case let .failure(other):
-            throw other
-        }
-
-        // Not in cache: enumerate parent to populate, then retry.
+        // Discriminate CacheError.notFound (not yet cached — enumerate parent
+        // and retry once, then treat still-missing as "it's new") from real DB
+        // errors, which must propagate rather than silently falling through to
+        // an unintended create.
         let parentKey = cacheKey(alias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
-        _ = try await engine.sync.enumerate(key: parentKey)
-
-        let retryResult: Result<MetadataRecord, Error>
-        do {
-            retryResult = .success(try await engine.cache.fetch(key: key))
-        } catch {
-            retryResult = .failure(error)
+        if let record = try await cachedRecordOrEnumerate(
+            key: key, parentKey: parentKey, engine: engine, context: "createItem mayAlreadyExist \(filename)"
+        ), let di = try? DomainItem.from(record: record) {
+            return OfemFPEItem(from: di)
         }
-        switch retryResult {
-        case let .success(record):
-            if let di = try? DomainItem.from(record: record) {
-                return OfemFPEItem(from: di)
-            }
-        case let .failure(cacheError as CacheError):
-            guard case .notFound = cacheError else {
-                throw cacheError // Real DB error — propagate
-            }
-        // .notFound: still not found — fall through to normal create
-        case let .failure(other):
-            throw other
-        }
-        // Still not found — fall through to normal create path (it's new).
+        // Still not found (or undecodable) — fall through to normal create path (it's new).
     }
 
     if isDir {

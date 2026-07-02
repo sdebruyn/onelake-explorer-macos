@@ -166,6 +166,81 @@ final class FileProviderExtensionTests: XCTestCase {
         XCTAssertEqual(nsErr.code, NSFileProviderError.noSuchItem.rawValue)
     }
 
+    // MARK: - runFPEOperation — shared classification applies uniformly
+
+    /// `deleteItem` previously hand-rolled its own copy of the "resolve the
+    /// engine, classify any failure" scaffolding, now routed through the
+    /// shared `runFPEOperation` helper. Combined with
+    /// `testItemForEngineUnavailableMapsToCannotSynchronize` above, this
+    /// proves the same classification applies uniformly across entry points
+    /// that previously had independent (and divergence-prone) copies.
+    func testDeleteItemEngineUnavailableMapsToCannotSynchronize() async throws {
+        let host = MockEngineHost(alias: "test")
+        host.engineResult = .failure(NSFileProviderError(.cannotSynchronize))
+        let ext = makeExtension(host: host)
+        let itemID = NSFileProviderItemIdentifier("00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002/file.txt")
+
+        let result = await withCheckedContinuation { cont in
+            _ = ext.deleteItem(
+                identifier: itemID,
+                baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
+                options: [],
+                request: makeRequest()
+            ) { err in
+                cont.resume(returning: err)
+            }
+        }
+
+        let nsErr = try XCTUnwrap(result as NSError?)
+        XCTAssertEqual(nsErr.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(nsErr.code, NSFileProviderError.cannotSynchronize.rawValue)
+    }
+
+    /// Same regression guard for `modifyItem`'s metadata-only branch, a third
+    /// independent call site of `runFPEOperation` (distinct from `item(for:)`
+    /// and `deleteItem` above).
+    func testModifyItemMetadataOnlyEngineUnavailableMapsToCannotSynchronize() async throws {
+        let host = MockEngineHost(alias: "test")
+        host.engineResult = .failure(NSFileProviderError(.cannotSynchronize))
+        let ext = makeExtension(host: host)
+        let itemID = "00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002/file.txt"
+        let template = MockFPItem(id: itemID, parentID: NSFileProviderItemIdentifier.rootContainer.rawValue, filename: "file.txt")
+
+        let result = await withCheckedContinuation { cont in
+            _ = ext.modifyItem(
+                template,
+                baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
+                changedFields: [.lastUsedDate],
+                contents: nil,
+                request: makeRequest()
+            ) { _, _, _, err in
+                cont.resume(returning: err)
+            }
+        }
+
+        let nsErr = try XCTUnwrap(result as NSError?)
+        XCTAssertEqual(nsErr.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(nsErr.code, NSFileProviderError.cannotSynchronize.rawValue)
+    }
+
+    // MARK: - invalidate() — sets the host invalidated synchronously
+
+    /// `invalidate()` must mark the engine host invalidated on the SAME
+    /// (synchronous) call, before the async shutdown Task is even scheduled —
+    /// otherwise an operation racing teardown could still build a fresh
+    /// engine after macOS already considers the extension gone.
+    func testInvalidateMarksHostInvalidatedSynchronously() {
+        let host = MockEngineHost(alias: "test")
+        let ext = makeExtension(host: host)
+
+        XCTAssertFalse(host.invalidatedSynchronously, "precondition: not yet invalidated")
+        ext.invalidate()
+        XCTAssertTrue(
+            host.invalidatedSynchronously,
+            "invalidate() must set the flag before returning, not only inside the async shutdown Task"
+        )
+    }
+
     // MARK: - supportedServiceSources — only rootContainer gets the service
 
     func testSupportedServiceSourcesRootContainer() async throws {
@@ -255,6 +330,23 @@ final class FileProviderExtensionTests: XCTestCase {
         let enumerator = try ext.enumerator(for: .workingSet, request: makeRequest())
 
         XCTAssertTrue(enumerator is OfemWorkingSetEnumerator)
+    }
+
+    // MARK: - enumerator(for:) — bad identifier maps to noSuchItem
+
+    /// Before this was fixed, a parse failure let the raw `FPError` escape
+    /// `enumerator(for:)` unmapped instead of the `NSFileProviderError(.noSuchItem)`
+    /// every other entry point's identifier-parsing guard produces.
+    func testEnumeratorForBadIdentifierMapsToNoSuchItem() {
+        let host = MockEngineHost(alias: "test")
+        let ext = makeExtension(host: host)
+        let bad = NSFileProviderItemIdentifier("bad//identifier")
+
+        XCTAssertThrowsError(try ext.enumerator(for: bad, request: makeRequest())) { error in
+            let nsErr = error as NSError
+            XCTAssertEqual(nsErr.domain, NSFileProviderErrorDomain)
+            XCTAssertEqual(nsErr.code, NSFileProviderError.noSuchItem.rawValue)
+        }
     }
 
     // MARK: - Helpers
