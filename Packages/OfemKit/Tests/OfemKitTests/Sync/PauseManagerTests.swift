@@ -227,6 +227,56 @@ struct PauseManagerTests {
         #expect(!mgr.isPausedCapacityError(err))
     }
 
+    // MARK: - Timestamps route through the clamped dateToNs helper (C9)
+
+    @Test("markPausedIfNeeded records a non-zero detectedAtNs")
+    func markPausedRecordsDetectedAtNs() async throws {
+        // Guards against the fix accidentally routing `now` through a helper
+        // that always clamps to zero instead of the intended "clamp only
+        // out-of-range values" behaviour.
+        let (mgr, store) = try makeManager()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let err = makeAPIError(body: #"{"message":"capacity not active"}"#)
+        _ = await mgr.markPausedIfNeeded(workspaceID: "ws-1", alias: "a", error: err)
+        let status = try await store.workspaceStatus(accountAlias: "a", workspaceID: "ws-1")
+        #expect(status.detectedAtNs > 0)
+    }
+
+    @Test("guardPaused recovery records non-zero detectedAtNs and probedAtNs")
+    func guardPausedRecoveryRecordsTimestamps() async throws {
+        let ol = MockOneLakeClient()
+        let (mgr, store) = try makeManager(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        _ = await mgr.markPausedIfNeeded(
+            workspaceID: "ws-1", alias: "a",
+            error: makeAPIError(body: #"{"message":"capacity not active"}"#)
+        )
+        ol.getPropertiesResults.append(.success(PathProperties.make()))
+        try await mgr.guardPaused(workspaceID: "ws-1", alias: "a")
+
+        let status = try await store.workspaceStatus(accountAlias: "a", workspaceID: "ws-1")
+        #expect(status.detectedAtNs > 0)
+        #expect(status.probedAtNs > 0)
+    }
+
+    @Test("guardPaused failed probe records non-zero probedAtNs")
+    func guardPausedFailedProbeRecordsProbedAtNs() async throws {
+        let ol = MockOneLakeClient()
+        let (mgr, store) = try makeManager(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        _ = await mgr.markPausedIfNeeded(
+            workspaceID: "ws-1", alias: "a",
+            error: makeAPIError(body: #"{"message":"capacity not active"}"#)
+        )
+        ol.getPropertiesResults.append(.failure(MockError.intentional("still paused")))
+        _ = try? await mgr.guardPaused(workspaceID: "ws-1", alias: "a")
+
+        let status = try await store.workspaceStatus(accountAlias: "a", workspaceID: "ws-1")
+        #expect(status.probedAtNs > 0)
+    }
+
     // MARK: - Helpers
 
     private func makeAPIError(body: String) -> HTTPClientError {

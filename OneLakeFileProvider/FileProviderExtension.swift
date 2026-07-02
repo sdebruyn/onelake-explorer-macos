@@ -747,12 +747,22 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         // Parse first so we can branch on the typed identifier.
         let ofemID = try parseOfemItemIdentifier(containerItemIdentifier.rawValue)
 
-        // Working set / trash → lightweight empty enumerator (no engine needed).
-        // Trash is not supported; returning an empty enumerator prevents macOS
-        // from retrying indefinitely.
-        if ofemID == .workingSet || ofemID == .trash {
+        // Trash → real always-empty enumerator (no engine needed). OneLake has
+        // no trash concept; this must NOT share OfemWorkingSetEnumerator, which
+        // refreshes workspaces and reports alias-wide deltas that don't belong
+        // to the trash container (see the note in OfemFPEEnumerator.swift).
+        if ofemID == .trash {
             FileProviderExtension.log.debug(
-                "enumerator(for: .workingSet/.trash) for \(self.alias, privacy: .public)"
+                "enumerator(for: .trash) for \(self.alias, privacy: .public)"
+            )
+            return OfemTrashEnumerator()
+        }
+        // Working set → lightweight enumerator that drives real cache deltas
+        // (no items, but enumerateChanges refreshes workspaces and reports
+        // updates/deletions — see OfemWorkingSetEnumerator).
+        if ofemID == .workingSet {
+            FileProviderExtension.log.debug(
+                "enumerator(for: .workingSet) for \(self.alias, privacy: .public)"
             )
             return OfemWorkingSetEnumerator(alias: alias, engineHost: engineHost)
         }

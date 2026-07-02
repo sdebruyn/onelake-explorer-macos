@@ -69,7 +69,7 @@ public enum EntraAuthorityResolver {
     ///   is not a valid GUID or DNS-label sequence.
     public static func validateTenantHint(_ hint: String) throws {
         guard !hint.isEmpty else { return }
-        if isGUID(hint) || isDNSLabelSequence(hint) { return }
+        if Privacy.isGUID(hint) || isDNSLabelSequence(hint) { return }
         throw EntraAuthorityError.invalidTenantHint(hint)
     }
 
@@ -80,13 +80,6 @@ public enum EntraAuthorityResolver {
             return entraTenantHintCommon
         }
         return hint
-    }
-
-    /// Returns `true` for strings matching the RFC 4122 GUID format
-    /// (8-4-4-4-12 hex digits, any case).
-    private static func isGUID(_ s: String) -> Bool {
-        let pattern = #"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"#
-        return s.range(of: pattern, options: .regularExpression) != nil
     }
 
     /// Returns `true` for DNS-label sequences: one or more labels separated

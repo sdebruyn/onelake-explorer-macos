@@ -277,4 +277,17 @@ struct EpochDateTests {
         let result = dateToNs(.distantFuture)
         #expect(result == 0)
     }
+
+    @Test("dateToNs: date at the Int64.max/1e9 rounding boundary does not trap (C9)")
+    func dateToNsBoundaryDoesNotTrap() {
+        // `Double(Int64.max)` rounds UP to exactly 2^63 (one past Int64.max,
+        // which is 2^63 - 1 and not itself representable as a Double). A date
+        // whose nanosecond value lands on that rounded boundary makes
+        // `Int64(ns)` trap under a `ns <= Double(Int64.max)` guard — the fix
+        // requires a strict `<`. This is a real, reachable boundary (roughly
+        // the year 2262), not a synthetic extreme like `.distantFuture`.
+        let boundaryDate = Date(timeIntervalSince1970: Double(Int64.max) / 1_000_000_000)
+        let result = dateToNs(boundaryDate)
+        #expect(result == 0)
+    }
 }
