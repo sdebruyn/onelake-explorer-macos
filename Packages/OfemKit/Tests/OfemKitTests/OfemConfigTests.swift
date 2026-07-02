@@ -2,6 +2,31 @@ import Foundation
 @testable import OfemKit
 import Testing
 
+// MARK: - SyncOverlapTracker
+
+/// Synchronous counterpart to `AsyncPathMutexTests`'s actor-based
+/// `OverlapTracker`, usable from inside `updateAndSave`'s synchronous
+/// `mutator` closure (which cannot `await` an actor). NSLock-guarded,
+/// mirroring the registry-lock pattern used throughout `OfemKit` itself.
+private final class SyncOverlapTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = 0
+    private(set) var maxConcurrent = 0
+    private(set) var totalEntries = 0
+
+    func enter() {
+        lock.withLock {
+            current += 1
+            totalEntries += 1
+            maxConcurrent = max(maxConcurrent, current)
+        }
+    }
+
+    func exit() {
+        lock.withLock { current -= 1 }
+    }
+}
+
 // MARK: - OfemConfigTests
 
 @Suite("OfemConfig + OfemConfigStore")
@@ -338,6 +363,60 @@ struct OfemConfigTests {
         }
 
         // Must not throw.
+        let store2 = try OfemConfigStore(paths: paths)
+        #expect(!store2.snapshot().installID.isEmpty)
+    }
+
+    // MARK: - updateAndSave / AsyncPathMutex integration sanity check
+
+    /// **What this test does *not* prove**: the specific F12 fix — that
+    /// `ConfigFileLock.release()` now happens-before the resumed Task can
+    /// call `AsyncPathMutex.shared.release(path:)` — is *not*, and cannot
+    /// be, verified here. `updateAndSave`'s read-modify-write body always
+    /// runs on `serialQueue`, a single serial `DispatchQueue`; GCD
+    /// guarantees blocks on a serial queue run strictly one at a time
+    /// regardless of what any other synchronisation does or doesn't
+    /// guarantee. So two overlapping `updateAndSave` calls could never let
+    /// their mutator closures truly overlap even *before* this PR's fix —
+    /// this test would pass identically against the old, buggy ordering.
+    /// The F12 fix itself is established by code reasoning, not a test:
+    /// `lock.release()` runs synchronously, on the same GCD thread, before
+    /// each `continuation.resume(...)` call (see the comments at the
+    /// `updateAndSave` call site and in `ConfigFileLock.swift`) — a
+    /// same-process test has no way to observe whether a *peer process*
+    /// could have slipped in during the old, racier ordering.
+    ///
+    /// **What this test *does* prove**: `updateAndSave`'s `AsyncPathMutex`
+    /// integration doesn't deadlock or leak a turn under contention. A
+    /// double-release-style bug (like the one this review caught during
+    /// development) corrupts `AsyncPathMutex`'s internal bookkeeping and
+    /// manifests here as a hang, exactly as it did in the analogous
+    /// `FileTokenStoreTests` regression test. The `maxConcurrent <= 1`
+    /// assertion is a sanity check on the pre-existing `serialQueue`
+    /// invariant, not evidence of the fcntl-ordering fix.
+    @Test("concurrent updateAndSave calls on the same path do not deadlock or overlap their mutator")
+    func concurrentUpdateAndSaveDoesNotDeadlockOrOverlapMutator() async throws {
+        let paths = makePaths()
+        let store = try OfemConfigStore(paths: paths)
+        let tracker = SyncOverlapTracker()
+
+        await withTaskGroup(of: Void.self) { group in
+            for i in 0 ..< 15 {
+                group.addTask {
+                    _ = try? await store.updateAndSave { cfg in
+                        tracker.enter()
+                        cfg.installID = "run-\(i)"
+                        tracker.exit()
+                    }
+                }
+            }
+        }
+
+        #expect(tracker.maxConcurrent <= 1,
+                "updateAndSave's mutator must never run concurrently for the same path")
+        #expect(tracker.totalEntries == 15,
+                "all 15 turns must complete — a hang here means a lost/duplicated release")
+
         let store2 = try OfemConfigStore(paths: paths)
         #expect(!store2.snapshot().installID.isEmpty)
     }

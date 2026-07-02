@@ -1144,6 +1144,15 @@ public actor SyncEngine {
                 path: key.path,
                 recursive: recursive
             )
+        } catch OneLakeError.notFound {
+            // DELETE is in SessionPool's retryable HTTP methods, and the
+            // `idempotent` flag Alamofire exposes is a documented no-op. If the
+            // delete already committed server-side but its ack was lost, the
+            // replayed DELETE 404s. The row is gone either way — that is the
+            // goal of this call — so treat it as success rather than surfacing
+            // `delete_failed`, mirroring the `destinationExists` guard for a
+            // replayed rename PUT below.
+            Self.log.info("delete: remote 404 — already gone, treating as success")
         } catch {
             try await withRemoteOperationError(
                 error: error, key: key, eventName: eventName,
