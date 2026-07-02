@@ -47,7 +47,8 @@ final class DomainSyncManager {
     /// without this prefix is left alone — even if it lives in our
     /// process — to avoid clobbering domains another tool registered.
     ///
-    /// The canonical value lives in `OfemConstants.ofemDomainIdentifierPrefix`.
+    /// The canonical value lives in `Shared/OfemDomainIdentifier.swift`
+    /// (`ofemDomainIdentifierPrefix`), shared with the FPE (xpc-09).
     var identifierPrefix: String {
         ofemDomainIdentifierPrefix
     }
@@ -58,7 +59,7 @@ final class DomainSyncManager {
 
     /// Returns the domain identifier string for `alias`.
     func domainIdentifier(for alias: String) -> String {
-        "\(identifierPrefix)\(alias)"
+        ofemDomainIdentifier(forAlias: alias)
     }
 
     /// Returns an NSFileProviderDomain for `alias`.

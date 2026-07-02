@@ -53,13 +53,20 @@ import Foundation
     /// Persists a single config field and signals the FPE to reload its
     /// in-memory snapshot.
     ///
-    /// Supported keys (matching the TOML schema):
-    ///   - "telemetry"                                 ("on" | "off")
-    ///   - "cache.max_size_gb"                         (integer string, 1–100)
-    ///   - "net.max_concurrent_uploads_per_account"    (integer string, 1–16)
-    ///   - "net.max_concurrent_downloads_per_account"  (integer string, 1–32)
-    ///   - "log.level"                                 ("debug" | "info" | "warn" | "error")
-    ///   - "sync.materialized_poll_interval_s"         (integer string, 30–600)
+    /// The canonical key vocabulary is `OfemConfigKey` (see
+    /// `Shared/OfemConfigKey.swift`); the host's debounced setters send
+    /// `OfemConfigKey.<case>.rawValue` and the FPE's `setConfig` switch is
+    /// exhaustive over `OfemConfigKey` (no `default:` arm), so a case added
+    /// to the enum without a matching FPE arm fails to compile rather than
+    /// falling through to `.unknownKey` at runtime (xpc-10). Supported keys
+    /// and their value formats:
+    ///   - `OfemConfigKey.telemetry`                    ("on" | "off")
+    ///   - `OfemConfigKey.cacheMaxSizeGB`                (integer string, 1–100)
+    ///   - `OfemConfigKey.netMaxUploads`                 (integer string, 1–16)
+    ///   - `OfemConfigKey.netMaxDownloads`               (integer string, 1–32)
+    ///   - `OfemConfigKey.logLevel`                      ("debug" | "info" | "warn" | "error")
+    ///   - `OfemConfigKey.syncMaterializedPollIntervalS` (integer string, 30–600)
+    ///   - `OfemConfigKey.syncSelfHealIntervalM`         (integer string, 0 or 10–60; 0 disables)
     ///
     /// - Parameters:
     ///   - key:   Config key in dot notation (see above).
