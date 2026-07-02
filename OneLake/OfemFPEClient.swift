@@ -188,6 +188,33 @@ final class OfemFPEClient {
         }
     }
 
+    // MARK: - Engine reload
+
+    /// Asks the FPE to reload the engine for `alias`.
+    ///
+    /// Clears the FPE's internal `needsSignIn` flag so the next enumeration
+    /// picks up freshly cached tokens/config, without waiting for the FPE
+    /// process to restart. Call this after a successful interactive
+    /// re-authentication.
+    ///
+    /// xpc-11: replaces a no-op `setConfig(log.level, <current value>)` call that
+    /// relied on `setConfig` always calling `reloadEngine()` as a side
+    /// effect — a first-class protocol verb makes the intent explicit and
+    /// immune to future `setConfig` optimizations.
+    ///
+    /// - Parameter alias: Account alias identifying the domain.
+    func reloadEngine(alias: String) async throws {
+        let _: Void = try await withProxy(alias: alias) { proxy, cont in
+            proxy.reloadEngine(alias: alias) { error in
+                if let error {
+                    cont.resume(throwing: error)
+                } else {
+                    cont.resume(returning: ())
+                }
+            }
+        }
+    }
+
     // MARK: - Materialized poll
 
     /// Asks the FPE to refresh all materialized containers for `alias`.
@@ -243,7 +270,49 @@ final class OfemFPEClient {
                 continuation.resume(returning: version)
             }
         }
+        evaluateVersion(fpeVersion, domainIdentifier: domainIdentifier)
+        return fpeVersion
+    }
 
+    /// Connection-level wrapper: performs the handshake through the shared
+    /// `withProxy(alias:_:)` helper and delegates the comparison to
+    /// `evaluateVersion`.
+    ///
+    /// xpc-12: this used to build its own proxy via
+    /// `remoteObjectProxyWithErrorHandler` with an error handler that only
+    /// logged — on an XPC fault the `getProtocolVersion` reply block would
+    /// never fire and the awaiting continuation hung forever. Routing
+    /// through `withProxy` reuses the same `OneShotContinuation`-backed
+    /// fault handling every other method in this file relies on, so a fault
+    /// resumes with a thrown error instead of hanging.
+    ///
+    /// Called once per new connection in `connection(for:)`, right after the
+    /// connection is cached — `withProxy`'s own `connection(for:)` lookup
+    /// hits that cache immediately rather than racing to build a second one.
+    private func checkProtocolVersion(
+        alias: String,
+        domainIdentifier: String
+    ) async {
+        let fpeVersion: Int
+        do {
+            fpeVersion = try await withProxy(alias: alias) { proxy, cont in
+                proxy.getProtocolVersion { version in
+                    cont.resume(returning: version)
+                }
+            }
+        } catch {
+            // Non-fatal: the connection is already broken (withProxy's own
+            // error handler already logged it); skip the check.
+            return
+        }
+        evaluateVersion(fpeVersion, domainIdentifier: domainIdentifier)
+    }
+
+    /// Compares `fpeVersion` to `ofemControlProtocolVersion` and surfaces a
+    /// mismatch via `MenuStatusModel.lastActionError` (xpc-06). Shared by
+    /// both the proxy-injecting test entry point and the connection-level
+    /// production path so the compare/log/notify logic is defined once.
+    private func evaluateVersion(_ fpeVersion: Int, domainIdentifier: String) {
         if fpeVersion != ofemControlProtocolVersion {
             Self.log.warning(
                 "Protocol version mismatch for \(domainIdentifier, privacy: .public): host=\(ofemControlProtocolVersion) fpe=\(fpeVersion)"
@@ -254,29 +323,6 @@ final class OfemFPEClient {
                 "Protocol version OK for \(domainIdentifier, privacy: .public): v\(fpeVersion)"
             )
         }
-        return fpeVersion
-    }
-
-    /// Connection-level wrapper: obtains a proxy from the connection and
-    /// delegates to `checkProtocolVersion(proxy:domainIdentifier:)`.
-    ///
-    /// Called once per new connection in `connection(for:)` after the
-    /// connection is cached and resumed.
-    private func checkProtocolVersion(
-        connection: NSXPCConnection,
-        domainIdentifier: String
-    ) async {
-        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
-            // Log only; failure here is non-fatal — the connection is already
-            // cached and subsequent method calls will surface their own errors.
-            OfemFPEClient.log.warning(
-                "getProtocolVersion proxy error for \(domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
-            )
-        }) as? any OfemClientControlProtocol else {
-            // Cast failure means the connection is already broken; skip check.
-            return
-        }
-        await checkProtocolVersion(proxy: proxy, domainIdentifier: domainIdentifier)
     }
 
     /// Surfaces a version mismatch to the user via `MenuStatusModel.lastActionError`.
@@ -394,7 +440,7 @@ final class OfemFPEClient {
         // Perform the protocol version handshake on each new connection (xpc-06).
         // Non-fatal: a mismatch is logged and surfaced to the user but does not
         // prevent the connection from being used.
-        await checkProtocolVersion(connection: box.connection, domainIdentifier: domainIdentifier)
+        await checkProtocolVersion(alias: alias, domainIdentifier: domainIdentifier)
 
         return (box.connection, domainIdentifier)
     }

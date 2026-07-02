@@ -44,6 +44,10 @@ import XCTest
     func pollMaterialized(alias _: String, reply: @escaping (Bool, Error?) -> Void) {
         reply(false, nil)
     }
+
+    func reloadEngine(alias _: String, reply: @escaping (Error?) -> Void) {
+        reply(nil)
+    }
 }
 
 // MARK: - Tests
