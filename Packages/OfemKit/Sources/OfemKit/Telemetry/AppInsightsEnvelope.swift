@@ -8,8 +8,9 @@ import Foundation
 // Every property value that enters these structs has already been routed
 // through `TelemetryRedaction.scrubProperty` / `safeErrorCode` /
 // `safeTenantID` in `splitFields(_:)`, making the privacy guarantee
-// structural.  The `tags` and `iKey` fields are also constructed inside
-// `from(event:…)` after that boundary, so the invariant is total.
+// structural.  The `tags`, `iKey`, and `baseData.name` fields are also
+// constructed inside `from(event:…)` after that boundary, so the invariant
+// is total.
 
 // MARK: - Envelope (top-level)
 
@@ -96,7 +97,11 @@ extension AppInsightsEnvelope {
                 baseType: "EventData",
                 baseData: EventBaseData(
                     ver: 2,
-                    name: event.name,
+                    // Scrubbed like the redundant `props["event"]` copy below —
+                    // event names are currently static literals, but this keeps
+                    // the field on the same defence-in-depth footing as every
+                    // other string that reaches the envelope.
+                    name: TelemetryRedaction.scrubProperty(event.name),
                     properties: props.isEmpty ? nil : props,
                     measurements: meas.isEmpty ? nil : meas
                 )
