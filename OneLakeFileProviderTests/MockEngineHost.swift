@@ -31,6 +31,12 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
     /// Whether `reloadEngine()` was called.
     private(set) var didReload = false
 
+    /// Whether `invalidateSynchronously()` was called. Tracked separately
+    /// from `isShutDown` so tests can assert it is set on the SAME
+    /// (synchronous) call as `invalidate()`, not only once the async
+    /// `shutdown()` Task eventually runs.
+    private(set) var invalidatedSynchronously = false
+
     /// Number of times `engine()` was called.
     /// Guarded by a lock so concurrent callers (fpe-10 test) do not data-race.
     private let countLock = NSLock()
@@ -66,6 +72,10 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
 
     func shutdown() async {
         isShutDown = true
+    }
+
+    func invalidateSynchronously() {
+        invalidatedSynchronously = true
     }
 
     // MARK: - Auth-error tracking
