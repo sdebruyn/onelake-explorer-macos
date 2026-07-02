@@ -181,7 +181,11 @@ func makeMockSession(
 }
 
 /// Request adapter that stamps the `X-Mock-Queue-ID` header on every request.
-private struct QueueIDAdapter: RequestAdapter {
+///
+/// Internal (not `private`) so tests that need a custom `Interceptor` (e.g. to
+/// exercise a specific `RequestRetrier` chain) can reuse it instead of
+/// duplicating queue-routing logic.
+struct QueueIDAdapter: RequestAdapter {
     let queueID: String
     func adapt(
         _ urlRequest: URLRequest,

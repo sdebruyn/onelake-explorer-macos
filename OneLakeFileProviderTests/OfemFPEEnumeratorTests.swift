@@ -4,6 +4,7 @@
 @preconcurrency import FileProvider
 import Foundation
 import OfemKit
+import os.log
 import XCTest
 
 final class OfemFPEEnumeratorTests: XCTestCase {
@@ -35,13 +36,14 @@ final class OfemFPEEnumeratorTests: XCTestCase {
 
     // MARK: - OfemWorkingSetEnumerator: enumerateItems returns empty page
 
-    func testWorkingSetEnumerateItemsReturnsEmpty() async throws {
+    func testWorkingSetEnumerateItemsReturnsEmpty() {
         let host = MockEngineHost(alias: "ws-test")
         let enumerator = OfemWorkingSetEnumerator(alias: "ws-test", engineHost: host)
         let observer = SpyEnumerationObserver()
+        // OfemWorkingSetEnumerator.enumerateItems spawns no Task — it calls the
+        // observer synchronously, so no sleep/poll is needed. A fixed sleep here
+        // was flaky on loaded runners for no benefit.
         enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage.initialPageSortedByName as NSFileProviderPage)
-        // Give the synchronous call time to complete (enumerateItems is synchronous for working-set)
-        try await Task.sleep(nanoseconds: 10_000_000) // 10 ms
         XCTAssertTrue(observer.didEnumerateCalled)
         XCTAssertTrue(observer.finishEnumeratingCalled)
         XCTAssertTrue(observer.enumeratedItems.isEmpty)
@@ -91,24 +93,18 @@ final class OfemFPEEnumeratorTests: XCTestCase {
                       "Observer should receive finishEnumeratingWithError when the engine is unavailable")
     }
 
-    // MARK: - enumerateChanges: decode failure is logged, good records still delivered, anchor advances
+    // MARK: - enumerateChanges: engine failure propagates as an error (NOT a decode-failure test)
 
-    func testEnumerateChangesDecodeFailureLogsAndAdvancesAnchor() async throws {
-        // This test pins the anchor-on-decode-failure policy (fpe-16):
-        // when a record fails to decode, the good records are still delivered
-        // via didUpdate and the anchor still advances (finishEnumeratingChanges
-        // is called rather than finishEnumeratingWithError).
-        //
-        // We verify this by checking the spy: if finishEnumeratingChanges was
-        // called the anchor advanced; if finishEnumeratingWithError was called
-        // the implementation broke the policy.
-        //
-        // Note: injecting a corrupt cache record requires a live CacheStore
-        // (unavailable in the test sandbox). Instead we verify that the host
-        // engine error path (engine() throws) correctly maps to
-        // finishEnumeratingWithError — the decode-failure path in production
-        // follows the same structure (error logged, anchor advanced) as
-        // documented in the code comment and guarded by the do/catch loop.
+    /// This test only pins that an `engine()` failure propagates as
+    /// `finishEnumeratingWithError` — it injects an engine-acquisition
+    /// failure, not a corrupt cache record, so it says nothing about the
+    /// decode-skip-then-advance policy. It was previously named
+    /// `testEnumerateChangesDecodeFailureLogsAndAdvancesAnchor`, which
+    /// claimed the opposite of what it checks; see
+    /// `testDecodeRecordsSkipsUndecodableRowAndAnchorStillAdvancesPastIt`
+    /// below for the real decode-failure coverage, now possible because
+    /// `decodeRecords` was extracted as a directly-testable function.
+    func testEnumerateChangesEngineFailurePropagatesAsError() async throws {
         let host = MockEngineHost(alias: "decode-fail-test")
         host.engineResult = .failure(NSFileProviderError(.cannotSynchronize))
 
@@ -131,16 +127,82 @@ final class OfemFPEEnumeratorTests: XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
 
-        // With engine() throwing, the change observer receives an error.
-        // The anchor-on-decode-skip path is enforced by the do/catch loop
-        // documented in enumerateChanges; the log assertion below confirms
-        // the structure (error path is reachable, not silent).
         XCTAssertTrue(changeObserver.finishedWithError,
                       "Engine failure must propagate as finishEnumeratingWithError")
         XCTAssertFalse(changeObserver.finished,
                        "finishEnumeratingChanges must NOT fire when the engine errors")
         XCTAssertGreaterThanOrEqual(host.engineCallCount, 1,
                                     "engine() must be called for workspace-level enumerateChanges")
+    }
+
+    // MARK: - decodeRecords: skip-and-continue on an undecodable row; anchor still advances past it
+
+    /// Pins the anchor-on-decode-failure policy against a REAL `CacheStore`.
+    ///
+    /// `CacheStore` has no auth dependency (unlike `OfemEngine`/
+    /// `EngineProviding`), so unlike the enumerateChanges-level tests above
+    /// this can drive genuine SQLite rows through the exact query
+    /// (`itemsChangedAfter`) and decode function (`decodeRecords`) that
+    /// `serveCacheDelta` composes, instead of stubbing `engine()`.
+    ///
+    /// Writes one decodable record and one permanently undecodable one — a
+    /// row with an empty `path` and real workspace/item GUIDs, which
+    /// `DomainItem.from(record:)` rejects as a non-enumerable item-root row
+    /// (see the guard in `DomainItem.swift`) — then confirms:
+    ///
+    /// 1. `decodeRecords` returns only the good item: the bad row is
+    ///    skipped, not thrown, and does not abort the batch.
+    /// 2. `CacheStore.syncAnchorNs` — the value `serveCacheDelta` reports
+    ///    back via `finishEnumeratingChanges` — reflects BOTH rows,
+    ///    including the undecodable one. The anchor tracks `synced_at_ns`,
+    ///    entirely independent of decode success, which is what prevents the
+    ///    same bad row from being retried forever on every subsequent
+    ///    `enumerateChanges` call from the same anchor.
+    func testDecodeRecordsSkipsUndecodableRowAndAnchorStillAdvancesPastIt() async throws {
+        let store = try makeTempFPECacheStore()
+        let alias = "decode-skip-\(UUID().uuidString)"
+
+        let goodRecord = MetadataRecord(
+            accountAlias: alias,
+            workspaceID: "ws-1",
+            itemID: "lh-1",
+            path: "Files/good.txt",
+            parentPath: "Files",
+            name: "good.txt",
+            isDir: false,
+            contentLength: 42,
+            etag: "\"v1\"",
+            syncedAtNs: 1_000_000_000
+        )
+        // Undecodable: DomainItem.from(record:) rejects an empty-path row
+        // that carries real (non-sentinel) workspace/item GUIDs as a
+        // non-enumerable item-root row (fpe-18) — a real production
+        // possibility (SyncEngine.refreshFolder can write one), not a
+        // synthetic-only edge case.
+        let badRecord = MetadataRecord(
+            accountAlias: alias,
+            workspaceID: "ws-1",
+            itemID: "lh-1",
+            path: "",
+            parentPath: "",
+            name: "",
+            isDir: true,
+            syncedAtNs: 2_000_000_000
+        )
+        try await store.upsert(goodRecord)
+        try await store.upsert(badRecord)
+
+        let (changed, _) = try await store.itemsChangedAfter(accountAlias: alias, ns: 0)
+        XCTAssertEqual(changed.count, 2,
+                       "both rows must be visible to the delta query regardless of decodability")
+
+        let items = decodeRecords(changed, logPrefix: "test", log: Logger(subsystem: "test", category: "test"))
+        XCTAssertEqual(items.map(\.filename), ["good.txt"],
+                       "the undecodable row must be skipped; the good row must still be delivered")
+
+        let anchorNs = try await store.syncAnchorNs(accountAlias: alias)
+        XCTAssertGreaterThanOrEqual(anchorNs, badRecord.syncedAtNs,
+                                    "the anchor must advance past the undecodable row's timestamp, or enumerateChanges would retry it forever")
     }
 
     // MARK: - enumerateChanges: notAuthenticated error sets markNeedsSignIn (OfemFPEEnumerator)
@@ -495,12 +557,29 @@ final class OfemFPEEnumeratorTests: XCTestCase {
     func testParseBadIdentifierThrows() {
         XCTAssertThrowsError(try parseOfemItemIdentifier("//bad"))
     }
+
+    // MARK: - Helpers
+
+    /// Builds a `CacheStore` backed by a fresh temp directory. `CacheStore`
+    /// has no auth dependency, so — unlike `OfemEngine` — it can be driven
+    /// directly in this test sandbox (see `MockEngineHost`'s doc comment for
+    /// why a live `OfemEngine` cannot).
+    private func makeTempFPECacheStore() throws -> CacheStore {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        return try CacheStore(root: tmp)
+    }
 }
 
 // MARK: - Spy observers
 
+//
+// Shared with FileProviderExtensionTests.swift (not `private`): both test
+// files exercise NSFileProviderEnumerator implementations and need the same
+// call-recording doubles.
+
 /// Records calls to NSFileProviderChangeObserver methods.
-private final class SpyChangeObserver: NSObject, NSFileProviderChangeObserver {
+final class SpyChangeObserver: NSObject, NSFileProviderChangeObserver {
     private(set) var updatedItems: [NSFileProviderItem] = []
     private(set) var finished = false
     private(set) var finishedWithError = false
@@ -523,7 +602,7 @@ private final class SpyChangeObserver: NSObject, NSFileProviderChangeObserver {
 }
 
 /// Records calls to NSFileProviderEnumerationObserver methods.
-private final class SpyEnumerationObserver: NSObject, NSFileProviderEnumerationObserver {
+final class SpyEnumerationObserver: NSObject, NSFileProviderEnumerationObserver {
     private(set) var enumeratedItems: [NSFileProviderItem] = []
     private(set) var didEnumerateCalled = false
     private(set) var finishEnumeratingCalled = false

@@ -79,6 +79,29 @@ struct TelemetryBatchTests {
         #expect(events[2].name == "new2")
     }
 
+    @Test("enqueue with maxSize 0 does not trap (C11)")
+    func maxSizeZeroDoesNotTrap() async {
+        // A misconfigured (unvalidated) maxSize of 0 must not make enqueue
+        // call removeFirst() on an empty buffer.
+        let batch = TelemetryBatch(maxSize: 0)
+        await batch.enqueue(TelemetryEvent(name: "ev1"))
+        await batch.enqueue(TelemetryEvent(name: "ev2"))
+        let events = await batch.drain()
+        // Clamped to a capacity of 1: only the most recent event survives.
+        #expect(events.count == 1)
+        #expect(events[0].name == "ev2")
+    }
+
+    @Test("enqueue with negative maxSize does not trap (C11)")
+    func maxSizeNegativeDoesNotTrap() async {
+        let batch = TelemetryBatch(maxSize: -5)
+        await batch.enqueue(TelemetryEvent(name: "ev1"))
+        await batch.enqueue(TelemetryEvent(name: "ev2"))
+        let events = await batch.drain()
+        #expect(events.count == 1)
+        #expect(events[0].name == "ev2")
+    }
+
     @Test("count reflects current buffer size")
     func countReflectsSize() async {
         let batch = TelemetryBatch(maxSize: 10)
