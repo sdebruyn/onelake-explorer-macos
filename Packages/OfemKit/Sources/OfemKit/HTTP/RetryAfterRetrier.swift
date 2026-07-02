@@ -10,9 +10,25 @@ import Foundation
 /// that an explicit `Retry-After` value wins over exponential backoff.  When
 /// no parseable `Retry-After` header is present the retrier returns `.doNotRetry`
 /// so `RetryPolicy` handles the response instead.
+///
+/// `request.retryCount` is shared across the whole interceptor chain (it
+/// counts total retry cycles, not per-retrier attempts), so capping it here at
+/// ``maxRetries`` bounds the combined Retry-After + `RetryPolicy` budget to
+/// ``maxRetries`` attempts — matching `SessionPool`'s `JitteredRetryPolicy`
+/// rather than stacking on top of it. Without this cap, a sustained 429/503
+/// with a valid `Retry-After` (throttling, or a paused Fabric capacity)
+/// retries forever because Alamofire only advances to the next retrier on
+/// `.doNotRetry`, so `RetryPolicy`'s limit never applies.
 struct RetryAfterRetrier: RequestRetrier {
     /// Maximum delay accepted from a `Retry-After` header (seconds).
     static let maxDelay: TimeInterval = 30
+    /// Maximum number of Retry-After-driven retries.
+    ///
+    /// Single source of truth for the combined retry budget: `SessionPool`
+    /// reads this value to configure `JitteredRetryPolicy(retryLimit:)`
+    /// rather than hard-coding its own limit, so the two retriers sharing
+    /// `request.retryCount` cannot drift out of sync.
+    static let maxRetries = 5
 
     func retry(
         _ request: Request,
@@ -20,12 +36,15 @@ struct RetryAfterRetrier: RequestRetrier {
         dueTo _: Error,
         completion: @escaping @Sendable (RetryResult) -> Void
     ) {
-        guard let response = request.response,
+        guard request.retryCount < Self.maxRetries,
+              let response = request.response,
               [429, 503].contains(response.statusCode),
               let header = response.value(forHTTPHeaderField: "Retry-After"),
               let delay = parseRetryAfter(header)
         else {
-            // No header, unparseable, or wrong status — let RetryPolicy decide.
+            // Retry budget exhausted, no header, unparseable, or wrong status —
+            // let RetryPolicy decide (it will also see the same retryCount and
+            // stop immediately once the shared budget is spent).
             completion(.doNotRetry)
             return
         }
