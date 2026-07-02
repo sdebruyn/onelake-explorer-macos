@@ -250,6 +250,7 @@ final class OfemFPEClient {
 
     // MARK: - Protocol version check
 
+    // periphery:ignore - only test callers remain; exclude_tests: true hides them from periphery
     /// Compares an already-obtained FPE-reported version against
     /// `ofemControlProtocolVersion` and surfaces a mismatch via the model.
     ///
