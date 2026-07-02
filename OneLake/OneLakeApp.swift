@@ -16,6 +16,12 @@
 //   policy between .accessory (no Dock icon, normal background state) and
 //   .regular (Dock icon visible, while an app window is open). This lets
 //   users raise buried windows via the Dock, Cmd-Tab, or Mission Control.
+//
+// Menu status polling:
+//   MenuVisibilityController observes AppKit menu-tracking notifications and
+//   starts/stops MenuStatusModel's auto-refresh loop so it only runs while
+//   the dropdown is actually open, instead of for the whole process
+//   lifetime (E3).
 
 import AppKit
 import OfemKit
@@ -90,6 +96,74 @@ final class DockIconManager {
     }
 }
 
+// MARK: - MenuVisibilityController
+
+/// Starts/stops `MenuStatusModel`'s periodic auto-refresh loop based on
+/// whether the menu-bar dropdown is actually on screen (E3).
+///
+/// Before this fix, `startAutoRefresh()` ran unconditionally for the whole
+/// process lifetime: a 5 s timer that calls `getEngineStatus` per account,
+/// which runs an unindexed `blobBytes()` scan on the FPE side — paid
+/// continuously whether or not anyone was looking at the menu.
+///
+/// `MenuBarExtra(.menu)` gives SwiftUI no visibility callback (see the
+/// comment in `MenuBarView`), but the dropdown is still a genuine `NSMenu`
+/// under the hood, so AppKit's global menu-tracking notifications are the
+/// signal used instead. `didBeginTracking`/`didEndTracking` fire for
+/// *every* menu, including submenus opened while navigating the dropdown
+/// (e.g. an account's submenu) — `trackingDepth` collapses those nested
+/// begin/end pairs so the loop only stops once the outermost menu has
+/// actually closed, not every time a submenu closes back to its parent.
+///
+/// This app is `LSUIElement` with no traditional menu bar, so in practice
+/// almost every tracked menu is our own dropdown or one of its submenus;
+/// an incidental false positive (e.g. a text field's right-click menu in
+/// Settings) just costs one extra poll window, not a correctness problem.
+@MainActor
+final class MenuVisibilityController {
+    static let shared = MenuVisibilityController()
+
+    private var observers: [NSObjectProtocol] = []
+    private var trackingDepth = 0
+
+    private init() {}
+
+    /// Begin observing menu tracking. Call once at launch.
+    func start() {
+        let nc = NotificationCenter.default
+
+        observers.append(nc.addObserver(
+            forName: NSMenu.didBeginTrackingNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.trackingBegan() }
+        })
+
+        observers.append(nc.addObserver(
+            forName: NSMenu.didEndTrackingNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.trackingEnded() }
+        })
+    }
+
+    private func trackingBegan() {
+        trackingDepth += 1
+        // Only the outermost begin (the root dropdown, not a submenu
+        // re-entry) should (re)start the loop.
+        guard trackingDepth == 1 else { return }
+        MenuStatusModel.shared.startAutoRefresh()
+    }
+
+    private func trackingEnded() {
+        trackingDepth = max(0, trackingDepth - 1)
+        guard trackingDepth == 0 else { return }
+        MenuStatusModel.shared.stopAutoRefresh()
+    }
+}
+
 // MARK: - AppDelegate
 
 /// AppDelegate kept around to receive lifecycle callbacks that SwiftUI
@@ -129,13 +203,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ChangeWatcher.shared.start()
         }
 
-        // Start periodic status polling so the icon + menu reflect engine
-        // state immediately on launch and stay current — MenuBarExtra(.menu)
-        // does not fire SwiftUI.onAppear on menu open, so a timer (not the
-        // menu lifecycle) is what keeps the state fresh and self-healing.
+        // One-shot refresh so the icon reflects real state as soon as
+        // possible after launch, without waiting for the first menu open.
         Task { @MainActor in
-            MenuStatusModel.shared.startAutoRefresh()
+            MenuStatusModel.shared.refresh()
         }
+
+        // Gate the periodic auto-refresh loop on the dropdown's actual
+        // visibility (E3) rather than running it for the whole process
+        // lifetime — see MenuVisibilityController.
+        MenuVisibilityController.shared.start()
     }
 
     func applicationDidBecomeActive(_: Notification) {
