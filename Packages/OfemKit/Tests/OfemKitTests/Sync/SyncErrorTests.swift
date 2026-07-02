@@ -52,6 +52,15 @@ struct SyncErrorTests {
         #expect(err.description.contains("disk full") || err.description.contains("intentional"))
     }
 
+    // MARK: - description: resumeOffsetOverflow
+
+    @Test("resumeOffsetOverflow description interpolates rangeStart and contentLength")
+    func resumeOffsetOverflowDescription() {
+        let err = SyncError.resumeOffsetOverflow(rangeStart: 500, contentLength: Int64.max - 100)
+        #expect(err.description ==
+            "sync: resume offset overflow: rangeStart 500 + contentLength \(Int64.max - 100) exceeds Int64")
+    }
+
     // MARK: - fpCode mapping
 
     @Test("workspacePaused maps to FPError.Code.serverBusy")
@@ -73,6 +82,11 @@ struct SyncErrorTests {
     func spillFileErrorFPCode() {
         let inner = MockError.intentional("io")
         #expect(SyncError.spillFileError(inner).fpCode == .cannotSynchronize)
+    }
+
+    @Test("resumeOffsetOverflow maps to FPError.Code.cannotSynchronize")
+    func resumeOffsetOverflowFPCode() {
+        #expect(SyncError.resumeOffsetOverflow(rangeStart: 500, contentLength: .max).fpCode == .cannotSynchronize)
     }
 
     // MARK: - SyncError conforms to Error (throwable)
@@ -130,6 +144,24 @@ struct SyncErrorTests {
         }
     }
 
+    @Test("resumeOffsetOverflow preserves associated values through throw/catch")
+    func resumeOffsetOverflowThrowCatch() throws {
+        func throwIt() throws {
+            throw SyncError.resumeOffsetOverflow(rangeStart: 500, contentLength: Int64.max - 100)
+        }
+        do {
+            try throwIt()
+            Issue.record("expected throw")
+        } catch {
+            if case let SyncError.resumeOffsetOverflow(rangeStart, contentLength) = error {
+                #expect(rangeStart == 500)
+                #expect(contentLength == Int64.max - 100)
+            } else {
+                Issue.record("unexpected error: \(error)")
+            }
+        }
+    }
+
     // MARK: - FPError.classify integration
 
     @Test("FPError.classify routes workspacePaused to serverBusy")
@@ -153,6 +185,12 @@ struct SyncErrorTests {
     @Test("FPError.classify routes spillFileError to cannotSynchronize")
     func classifySpillFileError() {
         let code = FPError.classify(SyncError.spillFileError(MockError.intentional("x")))
+        #expect(code == .cannotSynchronize)
+    }
+
+    @Test("FPError.classify routes resumeOffsetOverflow to cannotSynchronize")
+    func classifyResumeOffsetOverflow() {
+        let code = FPError.classify(SyncError.resumeOffsetOverflow(rangeStart: 500, contentLength: .max))
         #expect(code == .cannotSynchronize)
     }
 }

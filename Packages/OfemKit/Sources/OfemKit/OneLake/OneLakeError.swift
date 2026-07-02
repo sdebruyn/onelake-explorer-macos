@@ -79,65 +79,30 @@ extension OneLakeError {
     /// Converts an ``HTTPClientError`` (or any error from the Net layer) to
     /// an ``OneLakeError``.
     ///
-    /// - First unwraps one level of ``HTTPClientError/apiError(_:)`` to reach
-    ///   the inner sentinel, mirroring `FabricError.from`.
-    /// - Maps bare ``CancellationError`` (Swift Concurrency cancellation) to
-    ///   `.cancelled`.
-    /// - Adds an explicit ``HTTPClientError/tokenAcquisitionFailed(_:)`` arm
-    ///   (onelake-01-fix-276): a direct `tokenAcquisitionFailed` previously fell
-    ///   through to `default` → `.httpError(resolved)`, which `FPError.oneLakeCode`
-    ///   then delegated to `FPError.httpCode` — which already mapped
-    ///   `tokenAcquisitionFailed` to `.notAuthenticated`. So the direct path was
-    ///   not a silent sync-failure regression; the explicit arm is a structural
-    ///   clarity improvement that makes the intent unambiguous and prevents any
-    ///   future `oneLakeCode` refactor from accidentally breaking the path.
-    ///   The real behavioral fix is onelake-02 (the `retriesExhausted` unwrap).
-    ///   Mirrors the `fabric-03-fix-272` arm in `FabricError.from`; see that
-    ///   comment for the transient-outage tradeoff.
+    /// The apiError-unwrap, bare-`CancellationError` mapping,
+    /// `tokenAcquisitionFailed` arm, and the `retriesExhausted`-unwrap fix
+    /// (onelake-02-fix-276) are shared with ``FabricError/from(_:)`` via
+    /// ``HTTPErrorClassification``; see that type's doc comment for the full
+    /// rationale, including the transient-outage tradeoff. This switch only
+    /// maps the resulting category onto `OneLakeError`'s own case set, which
+    /// — unlike `FabricError` — has dedicated `.conflict` / `.preconditionFailed`
+    /// cases.
     static func from(_ error: any Error) -> OneLakeError {
-        // Unwrap apiError wrapper to reach the sentinel first.
-        let resolved: any Error = if let httpErr = error as? HTTPClientError,
-                                     case let HTTPClientError.apiError(ae) = httpErr,
-                                     let sentinel = ae.sentinel
-        {
-            sentinel
-        } else {
-            error
-        }
-
-        switch resolved {
-        case HTTPClientError.unauthorized: return .unauthorized
-        case HTTPClientError.forbidden: return .forbidden
-        case HTTPClientError.notFound: return .notFound
-        case HTTPClientError.conflict: return .conflict
-        case HTTPClientError.gone: return .gone
-        case HTTPClientError.preconditionFailed: return .preconditionFailed
-        case HTTPClientError.payloadTooLarge: return .payloadTooLarge
-        case HTTPClientError.rangeNotSatisfiable: return .rangeNotSatisfiable
-        case HTTPClientError.throttled: return .rateLimited
-        case HTTPClientError.cancelled: return .cancelled
-        case is CancellationError: return .cancelled
-        case HTTPClientError.tokenAcquisitionFailed:
-            // onelake-01-fix-276: explicit arm for clarity. The old default path
-            // already reached FPError.notAuthenticated via
-            //   .httpError(resolved) → oneLakeCode → httpCode → .notAuthenticated
-            // but spelling it out removes the dependency on that indirection and
-            // prevents future refactors from silently regressing it.
-            return .unauthorized
-        case let HTTPClientError.serverError(code):
-            return .serverError(code)
-        case let HTTPClientError.retriesExhausted(attempts, last):
-            // onelake-02-fix-276: unwrap the last error so that a retry loop
-            // that exits because token acquisition failed surfaces as
-            // .unauthorized rather than .retriesExhausted. Without this unwrap
-            // FPError.oneLakeCode maps .retriesExhausted to .serverUnreachable,
-            // hiding the auth failure behind an offline indicator.
-            if case HTTPClientError.tokenAcquisitionFailed = last {
-                return .unauthorized
-            }
-            return .retriesExhausted(attempts: attempts)
-        default:
-            return .httpError(resolved)
+        let classified = HTTPErrorClassification.classify(error)
+        switch classified.category {
+        case .unauthorized: return .unauthorized
+        case .forbidden: return .forbidden
+        case .notFound: return .notFound
+        case .conflict: return .conflict
+        case .gone: return .gone
+        case .preconditionFailed: return .preconditionFailed
+        case .payloadTooLarge: return .payloadTooLarge
+        case .rangeNotSatisfiable: return .rangeNotSatisfiable
+        case .rateLimited: return .rateLimited
+        case let .serverError(code): return .serverError(code)
+        case let .retriesExhausted(attempts): return .retriesExhausted(attempts: attempts)
+        case .cancelled: return .cancelled
+        case .unmapped: return .httpError(classified.resolvedError)
         }
     }
 }

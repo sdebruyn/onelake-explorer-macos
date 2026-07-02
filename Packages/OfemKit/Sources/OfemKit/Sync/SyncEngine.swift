@@ -1670,12 +1670,24 @@ public actor SyncEngine {
             }
         }
 
-        // Compute total expected.
+        // Compute total expected. `plan.rangeStart` (local spill file size) and
+        // `props.contentLength` (remote `Content-Length` header) are both
+        // untrusted inputs; a hostile or corrupted header near `Int64.max`
+        // could overflow the plain `+` and trap. Use a reporting add so an
+        // absurd combination surfaces as a handled error instead.
         var expectedTotal = cached?.contentLength ?? 0
         if props.contentLength > 0 {
-            expectedTotal = plan.hasPartial
-                ? plan.rangeStart + props.contentLength
-                : props.contentLength
+            if plan.hasPartial {
+                let (total, overflowed) = plan.rangeStart.addingReportingOverflow(props.contentLength)
+                guard !overflowed else {
+                    throw SyncError.resumeOffsetOverflow(
+                        rangeStart: plan.rangeStart, contentLength: props.contentLength
+                    )
+                }
+                expectedTotal = total
+            } else {
+                expectedTotal = props.contentLength
+            }
         }
 
         // Determine spill file size and verify (off actor — sync-14).
@@ -2230,14 +2242,30 @@ private func currentNowNs() -> Int64 {
 
 // MARK: - dateToNs (nonisolated helper)
 
-/// Converts `date` to Unix nanoseconds clamped to `Int64` range.
+/// Converts `date` to Unix nanoseconds, or `nil` if `date` is `nil` or out of
+/// `Int64` range.
+///
+/// This mirrors `CacheModels.dateToNs` but keeps `nil` (rather than folding it
+/// to `0`) so call sites can distinguish "no timestamp in this response" from
+/// "timestamp is genuinely zero" and fall back to a cached value instead of
+/// clobbering it — see the `createdNs` call sites above, which chain
+/// `?? cached?.createdNs ?? 0`. That fallback chain is why this stays a
+/// separate copy rather than routing through the canonical helper.
 ///
 /// `Date.distantPast` has a `timeIntervalSince1970` of roughly `-6.2e10` which,
-/// when multiplied by `1e9`, yields `-6.2e19` — below `Int64.min`. We clamp to
-/// zero (i.e. "unknown") in that case so callers can treat zero as "no timestamp".
+/// when multiplied by `1e9`, yields `-6.2e19` — below `Int64.min`. We return
+/// `nil` in that case (and symmetrically near `Int64.max`) so callers never see
+/// an overflowed value.
+///
+/// The upper-bound check must use `<`, not `<=`: `Double(Int64.max)` rounds
+/// *up* to exactly `2^63` (one past `Int64.max`, since `Int64.max` itself isn't
+/// exactly representable as a `Double`), so a date whose nanosecond value lands
+/// on that rounded boundary would pass an `<=` guard and then trap in
+/// `Int64(ns)`. Several call sites feed this remote, attacker-influenced
+/// timestamps (DFS `lastModified` / `creationDate`), so the boundary matters.
 private func dateToNs(_ date: Date?) -> Int64? {
     guard let d = date else { return nil }
     let ns = d.timeIntervalSince1970 * 1_000_000_000
-    guard ns >= Double(Int64.min), ns <= Double(Int64.max) else { return nil }
+    guard ns >= Double(Int64.min), ns < Double(Int64.max) else { return nil }
     return Int64(ns)
 }
