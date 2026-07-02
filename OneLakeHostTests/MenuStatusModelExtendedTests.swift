@@ -8,6 +8,9 @@
 //   - host-03: fence release on Task cancellation in debounced setters
 //   - host-09: lastActionError surfaced on removeAccount / cacheClear / setDefaultAccount failures
 //   - host-10: copyrightYear / copyrightString free functions
+//   - T2: the host-03 fence-release tests below poll for the effect
+//     (waitUntil) instead of sleeping a fixed duration tied to the
+//     production debounce value.
 
 import Combine
 import OfemKit
@@ -82,6 +85,31 @@ private final class FakeDomainManager: DomainManager, @unchecked Sendable {
 private enum FakeError: Error { case noStatus, actionFailed }
 
 // MARK: - Helpers
+
+/// Polls `condition` until it returns true or `timeout` elapses.
+///
+/// Used instead of a fixed sleep so tests aren't tied to (and don't
+/// silently stop covering) a specific debounce duration — a fixed sleep
+/// tied to the production debounce value is flaky under load and becomes
+/// vacuous if that value ever changes (T2).
+///
+/// `@MainActor`-isolated (matching every call site, which is always a
+/// `@MainActor` test method) so the non-escaping `condition` closure —
+/// which reads `@MainActor`-isolated model state — never has to cross an
+/// actor boundary. Without this, Swift 6 strict concurrency rejects the
+/// closure as a non-`Sendable` value being "sent" into a nonisolated
+/// `async` function.
+@MainActor
+private func waitUntil(
+    timeout: Duration = .seconds(3),
+    interval: Duration = .milliseconds(20),
+    _ condition: () -> Bool
+) async {
+    let deadline = ContinuousClock.now + timeout
+    while !condition(), ContinuousClock.now < deadline {
+        try? await Task.sleep(for: interval)
+    }
+}
 
 private func makeAccount(alias: String) -> Account {
     Account(
@@ -272,8 +300,9 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         try? await Task.sleep(for: .milliseconds(10))
         // Second call cancels the first.
         model.setCacheLimitGB(6)
-        // Wait for the debounce + some margin.
-        try? await Task.sleep(for: .seconds(1))
+        // Poll for the fence to lift rather than sleeping a fixed duration
+        // tied to the production debounce value (T2).
+        await waitUntil { !model.isFenced(.cacheMaxSize) }
         XCTAssertFalse(model.isFenced(.cacheMaxSize),
                        "Write fence must be released even when the Task is cancelled (host-03)")
     }
@@ -282,7 +311,7 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         model.setNetMaxUploads(2)
         try? await Task.sleep(for: .milliseconds(10))
         model.setNetMaxUploads(3)
-        try? await Task.sleep(for: .seconds(1))
+        await waitUntil { !model.isFenced(.netMaxUploads) }
         XCTAssertFalse(model.isFenced(.netMaxUploads),
                        "Fence must be released on cancel for netMaxUploads")
     }
@@ -291,7 +320,7 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         model.setNetMaxDownloads(4)
         try? await Task.sleep(for: .milliseconds(10))
         model.setNetMaxDownloads(8)
-        try? await Task.sleep(for: .seconds(1))
+        await waitUntil { !model.isFenced(.netMaxDownloads) }
         XCTAssertFalse(model.isFenced(.netMaxDownloads),
                        "Fence must be released on cancel for netMaxDownloads")
     }

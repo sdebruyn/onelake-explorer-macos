@@ -146,16 +146,24 @@ final class MenuStatusModel: ObservableObject {
 
     /// Production init wires to shared singletons.
     /// Provide non-nil values in tests to inject fakes.
+    ///
+    /// - Parameter secondaryAccountCheckInterval: Minimum wall-clock gap
+    ///   between two needsSignIn sweeps over accounts 2..N (see the
+    ///   throttle in doRefresh()). Overridable so tests can exercise both
+    ///   the "still within the window" and "window elapsed" branches
+    ///   without waiting out the 30 s production default.
     init(
         accountProvider: (any AccountProvider)? = nil,
         engineStatusProvider: (any EngineStatusProvider)? = nil,
         domainManager: (any DomainManager)? = nil,
-        reSignInProvider: (any ReSignInProvider)? = nil
+        reSignInProvider: (any ReSignInProvider)? = nil,
+        secondaryAccountCheckInterval: Duration = .seconds(30)
     ) {
         self.accountProvider = accountProvider ?? SharedOfemAuth.shared.auth
         self.engineStatusProvider = engineStatusProvider ?? OfemFPEClient.shared
         self.domainManager = domainManager ?? DomainSyncManager.shared
         self.reSignInProvider = reSignInProvider ?? SharedOfemAuth.shared
+        self.secondaryAccountCheckInterval = secondaryAccountCheckInterval
     }
 
     // MARK: Published
@@ -285,6 +293,7 @@ final class MenuStatusModel: ObservableObject {
 
     private var refreshTask: Task<Void, Never>?
     private var autoRefreshTask: Task<Void, Never>?
+    private var backgroundRefreshTask: Task<Void, Never>?
     /// In-flight debounce timer for setCacheLimitGB.
     private var setCacheLimitTask: Task<Void, Never>?
     /// In-flight debounce timer for setNetMaxUploads.
@@ -361,6 +370,16 @@ final class MenuStatusModel: ObservableObject {
     /// rather than overwriting fresher state.
     private var refreshGeneration: UInt64 = 0
 
+    /// Minimum wall-clock gap between two needsSignIn sweeps over accounts
+    /// 2..N. Set via init (defaults to 30 s in production). See the
+    /// throttle in doRefresh() (E3).
+    private let secondaryAccountCheckInterval: Duration
+
+    /// Wall-clock time of the last needsSignIn sweep over accounts 2..N.
+    /// `nil` means "never checked" — the very first doRefresh() always
+    /// checks regardless of `secondaryAccountCheckInterval`.
+    private var lastSecondaryAccountCheckAt: ContinuousClock.Instant?
+
     /// Fetch account list + engine status. Call this on menu open;
     /// safe to call concurrently — a running fetch is cancelled and restarted.
     func refresh() {
@@ -370,25 +389,89 @@ final class MenuStatusModel: ObservableObject {
         }
     }
 
-    /// Refresh now, then repeatedly every `interval` while `autoRefreshTask` is live.
-    /// Cancel `autoRefreshTask` (or call `stopAutoRefresh()`) to stop the loop.
-    func startAutoRefresh(interval: Duration = .seconds(5)) {
-        autoRefreshTask?.cancel()
-        autoRefreshTask = Task { @MainActor [weak self] in
+    /// Refresh now, then repeatedly every `interval` for the whole process
+    /// lifetime, independent of dropdown/Settings visibility.
+    ///
+    /// This is the low-frequency half of the E3 fix: the ambient menu-bar
+    /// badge (no-accounts / paused-workspace state) must keep self-healing
+    /// even while no UI surface is open — that's the app's normal resting
+    /// state. `interval` is deliberately much coarser than the 5 s
+    /// high-frequency loop (`startAutoRefresh`) so the per-account
+    /// `getEngineStatus` round trip — and the `blobBytes()` scan it
+    /// triggers on the FPE side — is paid far less often while nobody is
+    /// looking. `surfaceBecameVisible()` layers the 5 s loop on top
+    /// whenever the dropdown or Settings window is actually open.
+    ///
+    /// Call once, at launch; the loop is not meant to be stopped.
+    func startBackgroundRefresh(interval: Duration = .seconds(75)) {
+        backgroundRefreshTask?.cancel()
+        backgroundRefreshTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                self?.refresh()
+                guard let self else { return }
+                self.refresh()
                 try? await Task.sleep(for: interval)
             }
         }
     }
 
-    // periphery:ignore
-    /// Cancel the auto-refresh loop. Call this when no surface is visible
-    /// (currently unused — the host keeps the loop alive for the process
-    /// lifetime, but `stopAutoRefresh` is the correct hook if that changes).
+    /// Refresh now, then repeatedly every `interval` while `autoRefreshTask` is live.
+    /// Cancel `autoRefreshTask` (or call `stopAutoRefresh()`) to stop the loop.
+    ///
+    /// Callers should generally go through `surfaceBecameVisible()` /
+    /// `surfaceBecameHidden()` rather than calling this directly, so that
+    /// multiple visible surfaces (dropdown + Settings) share one refcounted
+    /// session instead of stepping on each other's start/stop.
+    func startAutoRefresh(interval: Duration = .seconds(5)) {
+        autoRefreshTask?.cancel()
+        autoRefreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                self.refresh()
+                try? await Task.sleep(for: interval)
+            }
+        }
+    }
+
+    /// Cancel the high-frequency auto-refresh loop.
     func stopAutoRefresh() {
         autoRefreshTask?.cancel()
         autoRefreshTask = nil
+    }
+
+    // MARK: - Visible-surface refcounting (E3)
+
+    /// Number of UI surfaces (the dropdown, the Settings window) currently
+    /// asking for high-frequency (5 s) refresh. A refcount rather than a
+    /// boolean because more than one surface can be visible at once (e.g.
+    /// Settings opened from the dropdown while it is still closing) — the
+    /// high-frequency loop should only stop once every surface reports
+    /// hidden, not whichever happens to close first.
+    private var visibleSurfaceCount = 0
+
+    /// Called by a UI surface (`MenuVisibilityController` for the dropdown,
+    /// `SettingsView` for the Settings window) when it becomes visible.
+    /// Starts the high-frequency loop on the first caller; a second
+    /// concurrently-visible surface is a no-op.
+    func surfaceBecameVisible() {
+        surfaceBecameVisible(interval: .seconds(5))
+    }
+
+    /// Overload accepting an explicit `interval`, so tests can exercise the
+    /// refcounting logic without waiting out the 5 s production cadence.
+    /// Production call sites use the parameterless `surfaceBecameVisible()`.
+    func surfaceBecameVisible(interval: Duration) {
+        visibleSurfaceCount += 1
+        guard visibleSurfaceCount == 1 else { return }
+        startAutoRefresh(interval: interval)
+    }
+
+    /// Called by a UI surface when it stops being visible. Stops the
+    /// high-frequency loop once the last surface has reported hidden.
+    /// Clamped at zero so an extra/unpaired call can't underflow the count.
+    func surfaceBecameHidden() {
+        visibleSurfaceCount = max(0, visibleSurfaceCount - 1)
+        guard visibleSurfaceCount == 0 else { return }
+        stopAutoRefresh()
     }
 
     private func doRefresh() async {
@@ -507,17 +590,42 @@ final class MenuStatusModel: ObservableObject {
         }
 
         // Query remaining accounts for their per-domain auth state.
-        for acc in nativeAccounts.dropFirst() {
-            guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
-            do {
-                let s = try await engineStatusProvider.getEngineStatus(alias: acc.alias)
-                if s.needsSignIn {
-                    needsSignInSet.insert(acc.alias)
+        //
+        // Each call also runs a blobBytes() full-table scan on the FPE side
+        // (getEngineStatus always measures cache usage before replying) even
+        // though only needsSignIn is used here. Sign-in state doesn't need
+        // high-frequency freshness, so this sweep only actually round-trips
+        // once every `secondaryAccountCheckInterval` of wall-clock time;
+        // skipped calls carry forward the last-known membership instead
+        // (E3). Time-based rather than a per-refresh counter: refresh()
+        // now fires from two independent loops (the always-on low-frequency
+        // background loop and the visibility-gated high-frequency one) plus
+        // ad-hoc action refreshes, so "every Nth call" doesn't correspond to
+        // any predictable wall-clock cadence and could leave a genuinely
+        // stale needsSignIn reading uncorrected across many dropdown opens.
+        // `nil`/expired means "due" — the first-ever doRefresh() and every
+        // call at least `secondaryAccountCheckInterval` after the last
+        // check always re-verify.
+        let now = ContinuousClock.now
+        let secondaryAccountCheckDue = lastSecondaryAccountCheckAt.map { now - $0 >= secondaryAccountCheckInterval } ?? true
+        if secondaryAccountCheckDue {
+            lastSecondaryAccountCheckAt = now
+            for acc in nativeAccounts.dropFirst() {
+                guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
+                do {
+                    let s = try await engineStatusProvider.getEngineStatus(alias: acc.alias)
+                    if s.needsSignIn {
+                        needsSignInSet.insert(acc.alias)
+                    }
+                } catch {
+                    Self.log.debug(
+                        "needsSignIn check skipped for \(acc.alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    )
                 }
-            } catch {
-                Self.log.debug(
-                    "needsSignIn check skipped for \(acc.alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                )
+            }
+        } else {
+            for acc in nativeAccounts.dropFirst() where accountsNeedingSignIn.contains(acc.alias) {
+                needsSignInSet.insert(acc.alias)
             }
         }
 
@@ -657,6 +765,50 @@ final class MenuStatusModel: ObservableObject {
         }
     }
 
+    // MARK: - Debounced setter helper (S5)
+
+    /// Shared implementation of the "clamp → fence → optimistic publish →
+    /// cancel prior debounce → write → refresh" dance used by every
+    /// Stepper-backed config field.
+    ///
+    /// Previously each of the five debounced setters hand-rolled this
+    /// sequence, including its own `defer { endWrite(key) }` — a pattern
+    /// that only works if every copy remembers the `defer`. Routing all of
+    /// them through this single implementation means that guarantee only
+    /// has to hold in one place (S5).
+    ///
+    /// Callers are still responsible for cancelling their own dedicated
+    /// `Task?` slot before calling this (each field needs its own slot so a
+    /// second click supersedes the first), and for storing the returned
+    /// `Task` back into it.
+    ///
+    /// - Parameters:
+    ///   - key: The write-fence key for this field.
+    ///   - debounce: How long to wait, after the optimistic publish, before
+    ///     the XPC write actually fires.
+    ///   - publish: Applies the optimistic value to the `@Published`
+    ///     property (and any synchronous side effect, e.g. updating
+    ///     `ChangeWatcher`'s cadence). Runs immediately, before debouncing.
+    ///   - write: The XPC write to perform once the debounce settles.
+    /// - Returns: The `Task` driving the debounce; store it in the caller's
+    ///   own `Task?` slot so a subsequent call can cancel it.
+    private func debouncedSet(
+        _ key: WriteKey,
+        debounce: Duration,
+        publish: () -> Void,
+        write: @escaping @Sendable () async -> Void
+    ) -> Task<Void, Never> {
+        beginWrite(key)
+        publish()
+        return Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.endWrite(key) } }
+            try? await Task.sleep(for: debounce)
+            guard let self, !Task.isCancelled else { return }
+            await write()
+            self.refresh()
+        }
+    }
+
     // MARK: - Debounced config setters
 
     /// Stage a new cache-size limit (in whole gigabytes) for the FPE engine.
@@ -665,17 +817,13 @@ final class MenuStatusModel: ObservableObject {
     /// Stepper visibly tracks every click, then debounces the actual XPC call.
     func setCacheLimitGB(_ gb: Int) {
         let clamped = max(1, min(100, gb))
-        beginWrite(.cacheMaxSize)
-        cacheMaxSizeGB = clamped
-        cacheMaxBytes = Int64(clamped) * 1_073_741_824 // 1 GiB in bytes
         setCacheLimitTask?.cancel()
-        setCacheLimitTask = Task { [weak self] in
-            defer { Task { @MainActor [weak self] in self?.endWrite(.cacheMaxSize) } }
-            try? await Task.sleep(for: MenuStatusModel.setCacheLimitDebounce)
-            guard let self, !Task.isCancelled else { return }
-            await self.writeConfig(key: OfemConfigKey.cacheMaxSizeGB, value: String(clamped))
-            refresh()
-        }
+        setCacheLimitTask = debouncedSet(.cacheMaxSize, debounce: MenuStatusModel.setCacheLimitDebounce, publish: {
+            cacheMaxSizeGB = clamped
+            cacheMaxBytes = Int64(clamped) * 1_073_741_824 // 1 GiB in bytes
+        }, write: { [weak self] in
+            await self?.writeConfig(key: OfemConfigKey.cacheMaxSizeGB, value: String(clamped))
+        })
     }
 
     /// Toggle anonymous telemetry and refresh.
@@ -696,37 +844,23 @@ final class MenuStatusModel: ObservableObject {
     /// Stage a new "max parallel uploads per account" value.
     func setNetMaxUploads(_ n: Int) {
         let clamped = max(1, min(16, n))
-        beginWrite(.netMaxUploads)
-        netMaxUploads = clamped
         setNetUploadsTask?.cancel()
-        setNetUploadsTask = Task { [weak self] in
-            defer { Task { @MainActor [weak self] in self?.endWrite(.netMaxUploads) } }
-            try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
-            guard let self, !Task.isCancelled else { return }
-            await self.writeConfig(
-                key: OfemConfigKey.netMaxUploads,
-                value: String(clamped)
-            )
-            refresh()
-        }
+        setNetUploadsTask = debouncedSet(.netMaxUploads, debounce: MenuStatusModel.setNetConcurrencyDebounce, publish: {
+            netMaxUploads = clamped
+        }, write: { [weak self] in
+            await self?.writeConfig(key: OfemConfigKey.netMaxUploads, value: String(clamped))
+        })
     }
 
     /// Stage a new "max parallel downloads per account" value.
     func setNetMaxDownloads(_ n: Int) {
         let clamped = max(1, min(32, n))
-        beginWrite(.netMaxDownloads)
-        netMaxDownloads = clamped
         setNetDownloadsTask?.cancel()
-        setNetDownloadsTask = Task { [weak self] in
-            defer { Task { @MainActor [weak self] in self?.endWrite(.netMaxDownloads) } }
-            try? await Task.sleep(for: MenuStatusModel.setNetConcurrencyDebounce)
-            guard let self, !Task.isCancelled else { return }
-            await self.writeConfig(
-                key: OfemConfigKey.netMaxDownloads,
-                value: String(clamped)
-            )
-            refresh()
-        }
+        setNetDownloadsTask = debouncedSet(.netMaxDownloads, debounce: MenuStatusModel.setNetConcurrencyDebounce, publish: {
+            netMaxDownloads = clamped
+        }, write: { [weak self] in
+            await self?.writeConfig(key: OfemConfigKey.netMaxDownloads, value: String(clamped))
+        })
     }
 
     /// Stage a new materialized-container poll interval (in seconds).
@@ -739,20 +873,13 @@ final class MenuStatusModel: ObservableObject {
             SyncConfig.minMaterializedPollIntervalS,
             min(SyncConfig.maxMaterializedPollIntervalS, seconds)
         )
-        beginWrite(.materializedPollInterval)
-        materializedPollIntervalS = clamped
-        ChangeWatcher.shared.materializedPollInterval = .seconds(clamped)
         setMaterializedPollTask?.cancel()
-        setMaterializedPollTask = Task { [weak self] in
-            defer { Task { @MainActor [weak self] in self?.endWrite(.materializedPollInterval) } }
-            try? await Task.sleep(for: MenuStatusModel.setPollIntervalDebounce)
-            guard let self, !Task.isCancelled else { return }
-            await self.writeConfig(
-                key: OfemConfigKey.syncMaterializedPollIntervalS,
-                value: String(clamped)
-            )
-            refresh()
-        }
+        setMaterializedPollTask = debouncedSet(.materializedPollInterval, debounce: MenuStatusModel.setPollIntervalDebounce, publish: {
+            materializedPollIntervalS = clamped
+            ChangeWatcher.shared.materializedPollInterval = .seconds(clamped)
+        }, write: { [weak self] in
+            await self?.writeConfig(key: OfemConfigKey.syncMaterializedPollIntervalS, value: String(clamped))
+        })
     }
 
     /// Stage a new self-heal full-refresh interval (in minutes).
@@ -767,19 +894,12 @@ final class MenuStatusModel: ObservableObject {
             SyncConfig.minSelfHealIntervalM,
             min(SyncConfig.maxSelfHealIntervalM, minutes)
         )
-        beginWrite(.selfHealInterval)
-        selfHealIntervalM = clamped
         setSelfHealIntervalTask?.cancel()
-        setSelfHealIntervalTask = Task { [weak self] in
-            defer { Task { @MainActor [weak self] in self?.endWrite(.selfHealInterval) } }
-            try? await Task.sleep(for: MenuStatusModel.setSelfHealIntervalDebounce)
-            guard let self, !Task.isCancelled else { return }
-            await self.writeConfig(
-                key: OfemConfigKey.syncSelfHealIntervalM,
-                value: String(clamped)
-            )
-            refresh()
-        }
+        setSelfHealIntervalTask = debouncedSet(.selfHealInterval, debounce: MenuStatusModel.setSelfHealIntervalDebounce, publish: {
+            selfHealIntervalM = clamped
+        }, write: { [weak self] in
+            await self?.writeConfig(key: OfemConfigKey.syncSelfHealIntervalM, value: String(clamped))
+        })
     }
 
     /// Persist the log level.
