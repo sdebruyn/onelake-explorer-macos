@@ -747,16 +747,23 @@ public actor CacheStore {
     // MARK: - Deletion tombstones: TTL purge
 
     /// Purges deletion tombstones older than ``tombstoneTTLNs`` for `accountAlias`
-    /// and advances the alias's monotonic purge watermark. Returns the number of
-    /// tombstones deleted.
+    /// and advances the alias's monotonic purge watermark to the newest timestamp
+    /// actually reclaimed. Returns the number of tombstones deleted.
     ///
     /// One write transaction:
-    /// 1. `DELETE FROM deletion_tombstones WHERE account_alias = ? AND
-    ///    deleted_at_ns < cutoff` (served by `idx_dt_deleted_at`).
-    /// 2. Upsert `sync_meta.tombstones_purged_through_ns = MAX(existing, cutoff)`
-    ///    — MONOTONIC (a backward clock step can never lower it) and written EVEN
-    ///    WHEN ZERO ROWS WERE DELETED, so the horizon the FPE lagging-client guard
-    ///    reads is always honest about how far tombstones have been reclaimed.
+    /// 1. `SELECT MAX(deleted_at_ns) FROM deletion_tombstones WHERE account_alias
+    ///    = ? AND deleted_at_ns < cutoff` — the newest timestamp among the rows
+    ///    that are ABOUT to be purged (served by `idx_dt_deleted_at`, same
+    ///    predicate as the delete below).
+    /// 2. `DELETE FROM deletion_tombstones WHERE account_alias = ? AND
+    ///    deleted_at_ns < cutoff`.
+    /// 3. Upsert `sync_meta.tombstones_purged_through_ns = MAX(existing,
+    ///    maxPurged)` — but ONLY when at least one row was deleted. A zero-row
+    ///    purge leaves the watermark untouched: nothing was reclaimed, so there
+    ///    is nothing new for the FPE lagging-client guard to be honest about, and
+    ///    jumping the watermark to `cutoff` anyway would trip that guard for a
+    ///    long-idle alias on every purge pass forever. The upsert is still
+    ///    MONOTONIC (a backward clock step can never lower it).
     ///
     /// `cutoff` is derived from the same injectable ``clock`` that stamps every
     /// tombstone's `deleted_at_ns`, so the comparison is against a consistent time
@@ -771,22 +778,34 @@ public actor CacheStore {
         guard !accountAlias.isEmpty else { throw CacheError.missingArgument("accountAlias") }
         let cutoff = clock() - Self.tombstoneTTLNs
         return try await dbPool.write { db -> Int in
+            // Newest deleted_at_ns among the rows this pass is about to purge.
+            // The COALESCE fallback of 0 is never actually read as a watermark
+            // value below — it's only consulted when `deleted > 0`, which by
+            // construction means this same predicate matched at least one row.
+            let maxPurged = try Int64.fetchOne(db, sql: """
+            SELECT COALESCE(MAX(deleted_at_ns), 0) FROM deletion_tombstones
+            WHERE account_alias = ? AND deleted_at_ns < ?
+            """, arguments: [accountAlias, cutoff]) ?? 0
+
             try db.execute(sql: """
             DELETE FROM deletion_tombstones
             WHERE account_alias = ? AND deleted_at_ns < ?
             """, arguments: [accountAlias, cutoff])
             let deleted = db.changesCount
 
-            // Monotonic watermark upsert. Written unconditionally (even when
-            // `deleted == 0`) so the purge horizon advances with every pass; MAX
-            // guards against a backward clock step ever regressing it.
-            try db.execute(sql: """
-            INSERT INTO sync_meta (account_alias, tombstones_purged_through_ns)
-            VALUES (?, ?)
-            ON CONFLICT(account_alias) DO UPDATE SET
-                tombstones_purged_through_ns =
-                    MAX(sync_meta.tombstones_purged_through_ns, excluded.tombstones_purged_through_ns)
-            """, arguments: [accountAlias, cutoff])
+            // Monotonic watermark upsert — skipped entirely on a zero-row purge
+            // so the watermark only ever advances to a timestamp that was
+            // actually reclaimed. MAX guards against a backward clock step ever
+            // regressing it.
+            if deleted > 0 {
+                try db.execute(sql: """
+                INSERT INTO sync_meta (account_alias, tombstones_purged_through_ns)
+                VALUES (?, ?)
+                ON CONFLICT(account_alias) DO UPDATE SET
+                    tombstones_purged_through_ns =
+                        MAX(sync_meta.tombstones_purged_through_ns, excluded.tombstones_purged_through_ns)
+                """, arguments: [accountAlias, maxPurged])
+            }
 
             return deleted
         }
