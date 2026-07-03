@@ -82,14 +82,22 @@ final class PartialRejectSink: TelemetrySink, @unchecked Sendable {
 /// a polling loop this short-lived.
 final class BlockingTelemetrySink: TelemetrySink, @unchecked Sendable {
     private let lock = NSLock()
-    private var _sendStarted = false
+    private var _sendStartedCount = 0
     private var _released = false
     private var _delivered: [TelemetryEvent] = []
-    private var _wasCancelled = false
+    private var _cancelledCount = 0
 
-    /// `true` once `send(_:)` has been called and is parked, waiting.
+    /// `true` once at least one `send(_:)` call has started and is parked,
+    /// waiting.
     var sendStarted: Bool {
-        lock.withLock { _sendStarted }
+        lock.withLock { _sendStartedCount > 0 }
+    }
+
+    /// Number of `send(_:)` calls that have started (parked or since
+    /// unblocked) — lets a test wait for N concurrent flushes to all be
+    /// mid-send, not just "at least one" (#391 regression coverage below).
+    var sendStartedCount: Int {
+        lock.withLock { _sendStartedCount }
     }
 
     /// Events that reached the "delivered" branch (i.e. were NOT cancelled).
@@ -97,21 +105,27 @@ final class BlockingTelemetrySink: TelemetrySink, @unchecked Sendable {
         lock.withLock { _delivered }
     }
 
-    /// `true` if the parked `send(_:)` observed cancellation.
+    /// `true` if at least one parked `send(_:)` observed cancellation.
     var wasCancelled: Bool {
-        lock.withLock { _wasCancelled }
+        lock.withLock { _cancelledCount > 0 }
     }
 
-    /// Unblocks a parked `send(_:)` so it proceeds to "deliver" the events.
+    /// Number of parked `send(_:)` calls that observed cancellation — used to
+    /// prove that ALL concurrent sends were cancelled, not just one (#391).
+    var cancelledCount: Int {
+        lock.withLock { _cancelledCount }
+    }
+
+    /// Unblocks every parked `send(_:)` so each proceeds to "deliver" its events.
     func release() {
         lock.withLock { _released = true }
     }
 
     func send(_ events: [TelemetryEvent]) async throws {
-        lock.withLock { _sendStarted = true }
+        lock.withLock { _sendStartedCount += 1 }
         while true {
             if Task.isCancelled {
-                lock.withLock { _wasCancelled = true }
+                lock.withLock { _cancelledCount += 1 }
                 throw CancellationError()
             }
             if lock.withLock({ _released }) { break }
@@ -276,6 +290,44 @@ struct TelemetryClientTests {
         await client.track(TelemetryEvent(name: "after_opt_out"))
         await client.flush()
         #expect(sink.delivered.isEmpty)
+    }
+
+    @Test("setOptOut(true) cancels ALL concurrently in-flight sends, not just one slot's worth (#391)")
+    func setOptOutCancelsAllConcurrentInFlightSends() async throws {
+        // #391: flush() used to stash its send Task in a single shared slot.
+        // A reentrant second flush() (TelemetryClient is a reentrant actor)
+        // overwrote that slot with its own Task; the FIRST flush's `defer`
+        // then nil'd out the SECOND flush's handle, so setOptOut(true) could
+        // cancel at most one of two concurrently in-flight sends. The fix
+        // keys `inFlightSendTasks` by a per-call generation so each flush
+        // owns its own slot — this proves setOptOut cancels both.
+        let sink = BlockingTelemetrySink()
+        let client = makeClient(sink: sink, flushInterval: .seconds(3600))
+
+        await client.track(TelemetryEvent(name: "batch_a"))
+        let flushA = Task { await client.flush() }
+
+        // Wait for the first flush to be parked in sink.send before starting
+        // the second, so the two sends are provably concurrent, not just
+        // sequential flushes racing ahead of each other.
+        while sink.sendStartedCount < 1 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        await client.track(TelemetryEvent(name: "batch_b"))
+        let flushB = Task { await client.flush() }
+
+        // Wait for both sends to be parked mid-send.
+        while sink.sendStartedCount < 2 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        await client.setOptOut(true)
+        await flushA.value
+        await flushB.value
+
+        #expect(sink.cancelledCount == 2, "both concurrent sends must observe cancellation, not just one")
+        #expect(sink.delivered.isEmpty, "no events from either flush may have been delivered")
     }
 
     @Test("buffer overflow triggers immediate flush so no events are dropped (store-18)")
