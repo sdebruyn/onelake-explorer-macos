@@ -1767,6 +1767,11 @@ public actor SyncEngine {
             if plan.hasPartial {
                 let (total, overflowed) = plan.rangeStart.addingReportingOverflow(props.contentLength)
                 guard !overflowed else {
+                    // Discard the partial + etag sidecar before rethrowing (#413).
+                    // Otherwise the next open() resumes from the same offset, sees
+                    // the same hostile Content-Length, and overflows again forever —
+                    // discarding self-heals into a fresh full download instead.
+                    partials.discard(for: key)
                     throw SyncError.resumeOffsetOverflow(
                         rangeStart: plan.rangeStart, contentLength: props.contentLength
                     )
