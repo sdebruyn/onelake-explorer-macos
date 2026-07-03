@@ -295,4 +295,153 @@ struct DeletionTombstoneTests {
         }
         #expect(ids == ["\(Self.ws)/\(Self.item)/gone.txt"])
     }
+
+    // MARK: - 10. ws/<itemGUID> discovery-vs-real identifier collision (#413)
+
+    // Two structurally different rows alias to the SAME delta identifier
+    // "<workspaceID>/<itemGUID>": the item-DISCOVERY row (ws, VirtualIDs.itemID,
+    // path=itemGUID) via `tombstoneIdentifierString`, and the real item-ROOT row
+    // (ws, itemGUID, path="") — the shape `SyncEngine.stampParentRow` writes —
+    // via `identifierString`. `CacheReader.itemsChangedAfter`'s tombstone
+    // reconcile depends on that equality to shadow a stale root row behind a
+    // fresher discovery tombstone and vice versa. These cases pin the contract
+    // so a future refactor of either identifier-building side can't silently
+    // break it.
+
+    @Test("tombstoneIdentifierString for an item-discovery row equals identifierString for the real item-root row")
+    func discoveryAndRealItemRootShareIdentifier() {
+        let discoveryIdent = CacheStore.tombstoneIdentifierString(
+            workspaceID: Self.ws, itemID: VirtualIDs.itemID, path: Self.item
+        )
+        let realRootIdent = CacheStore.identifierString(
+            workspaceID: Self.ws, itemID: Self.item, path: ""
+        )
+        #expect(discoveryIdent == realRootIdent)
+        #expect(discoveryIdent == "\(Self.ws)/\(Self.item)")
+    }
+
+    @Test("A fresher discovery tombstone shadows a stale real item-root row: deletion wins")
+    func discoveryTombstoneShadowsStaleItemRootRow() async throws {
+        let clock = StepClock(0)
+        let store = try makeTempStore(clock: { clock.now })
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Real item-root row (the stampParentRow shape) at T1.
+        clock.now = 100
+        try await store.upsert(MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.ws, itemID: Self.item,
+            path: "", parentPath: "", name: "Lakehouse", isDir: true
+        ))
+
+        // A discovery tombstone for the SAME item, newer than the root row, at T2.
+        clock.now = 200
+        try await store.recordDeletion(accountAlias: Self.alias, identifierString: "\(Self.ws)/\(Self.item)")
+
+        let changes = try await store.itemsChangedAfter(accountAlias: Self.alias, ns: 0)
+
+        #expect(changes.deletedIdentifierStrings.contains("\(Self.ws)/\(Self.item)"))
+        #expect(!changes.updated.contains {
+            $0.workspaceID == Self.ws && $0.itemID == Self.item && $0.path.isEmpty
+        })
+    }
+
+    @Test("A discovery re-upsert after a tombstone clears it (unconditional write-order match): recreate is reported as an update")
+    func discoveryReupsertAfterTombstoneClearsItAndReportsUpdate() async throws {
+        let clock = StepClock(0)
+        let store = try makeTempStore(clock: { clock.now })
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Discovery tombstone at T2.
+        clock.now = 200
+        try await store.recordDeletion(accountAlias: Self.alias, identifierString: "\(Self.ws)/\(Self.item)")
+
+        // The item reappears in a workspace listing at T3 > T2, written through
+        // batchUpsert — the reconcile path SyncEngine uses for a full listing.
+        //
+        // clearTombstone deletes on an unconditional identifier match at write
+        // time — it does not compare deletedAtNs/syncedAtNs. The tombstone is
+        // gone here because this upsert runs AFTER it (T3 > T2, enforced by this
+        // test's write order), not because CacheStore itself timestamp-gates the
+        // clear. The T2/T3 ordering only matters for the case where a stale row
+        // is already in the DB when a tombstone lands (see the "shadows a stale
+        // real item-root row" case above), where itemsChangedAfter does compare
+        // timestamps.
+        clock.now = 300
+        try await store.batchUpsert([MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.ws, itemID: VirtualIDs.itemID,
+            path: Self.item, parentPath: "", name: "Lakehouse", isDir: true
+        )])
+
+        let changes = try await store.itemsChangedAfter(accountAlias: Self.alias, ns: 0)
+
+        #expect(changes.updated.contains {
+            $0.workspaceID == Self.ws && $0.itemID == VirtualIDs.itemID && $0.path == Self.item
+        })
+        #expect(!changes.deletedIdentifierStrings.contains("\(Self.ws)/\(Self.item)"))
+    }
+
+    @Test("Upserting the real item-root row also clears the discovery tombstone (cross-shape collision, self-healing)")
+    func realItemRootUpsertClearsDiscoveryTombstoneCrossShape() async throws {
+        let clock = StepClock(0)
+        let store = try makeTempStore(clock: { clock.now })
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Discovery tombstone at T2 (e.g. a workspace listing no longer saw the item).
+        clock.now = 200
+        try await store.recordDeletion(accountAlias: Self.alias, identifierString: "\(Self.ws)/\(Self.item)")
+        #expect(try await tombstones(store).map(\.id) == ["\(Self.ws)/\(Self.item)"])
+
+        // A DIFFERENT row shape — the real item-root row `stampParentRow` writes
+        // when a folder refresh stamps its parent container — is upserted at
+        // T3 > T2. Because `identifierString(ws, itemGUID, "")` collides with
+        // `tombstoneIdentifierString(ws, .itemID, itemGUID)` (both "ws/guid", see
+        // the equality test above), `clearTombstone` deletes the SAME tombstone
+        // row even though this write came through a structurally different path.
+        //
+        // This is intended and self-healing, not a bug: if the item is genuinely
+        // still gone, the next workspace-listing reconcile re-tombstones it via
+        // its own discovery-row batchDelete, so the deletion is only delayed by
+        // one poll cycle, never lost.
+        clock.now = 300
+        try await store.upsert(MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.ws, itemID: Self.item,
+            path: "", parentPath: "", name: "Lakehouse", isDir: true
+        ))
+
+        let ids = try await tombstones(store).map(\.id)
+        #expect(ids.isEmpty)
+    }
+
+    @Test("A real path row nested under the item does not collide with or clear the ws/<itemGUID> tombstone")
+    func realPathRowUnderItemDoesNotCollideWithItemRootIdentifier() async throws {
+        let clock = StepClock(0)
+        let store = try makeTempStore(clock: { clock.now })
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Discovery tombstone for the item itself at T2.
+        clock.now = 200
+        try await store.recordDeletion(accountAlias: Self.alias, identifierString: "\(Self.ws)/\(Self.item)")
+
+        // A real path row nested under the SAME item, upserted at T3 > T2.
+        clock.now = 300
+        try await store.upsert(MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.ws, itemID: Self.item,
+            path: "sub/file", parentPath: "sub", name: "file", isDir: false
+        ))
+
+        // Its own identifier is a distinct, longer string — not the item-root one.
+        let pathIdent = CacheStore.tombstoneIdentifierString(
+            workspaceID: Self.ws, itemID: Self.item, path: "sub/file"
+        )
+        #expect(pathIdent == "\(Self.ws)/\(Self.item)/sub/file")
+
+        // clearTombstone deletes by exact identifier_string match, not by prefix,
+        // so a descendant path never clears the item-root tombstone.
+        let ids = try await tombstones(store).map(\.id)
+        #expect(ids == ["\(Self.ws)/\(Self.item)"])
+
+        let changes = try await store.itemsChangedAfter(accountAlias: Self.alias, ns: 0)
+        #expect(changes.deletedIdentifierStrings.contains("\(Self.ws)/\(Self.item)"))
+        #expect(changes.updated.contains { $0.path == "sub/file" })
+    }
 }
