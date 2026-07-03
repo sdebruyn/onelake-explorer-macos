@@ -65,9 +65,11 @@ struct TombstonePurgeTests {
         #expect(deleted == 1)
         #expect(try await tombstoneIDs(store) == ["\(Self.ws)/\(Self.item)/new.txt"])
 
-        // The watermark equals the cutoff (100d − 30d = 70d).
+        // The watermark equals the newest deleted_at_ns actually purged (10d),
+        // NOT the cutoff (70d) — the sole purged tombstone was recorded at 10d,
+        // strictly below the 70d cutoff.
         let watermark = try await store.tombstonesPurgedThroughNs(accountAlias: Self.alias)
-        #expect(watermark == 100 * Self.day - CacheStore.tombstoneTTLNs)
+        #expect(watermark == 10 * Self.day)
     }
 
     // MARK: - 2. Purge is alias-scoped
@@ -98,30 +100,59 @@ struct TombstonePurgeTests {
         #expect(try await store.tombstonesPurgedThroughNs(accountAlias: "other") == 0)
     }
 
-    // MARK: - 3. Watermark advances, is written when zero deleted, and never lowers
+    // MARK: - 3. Watermark advances only on an actual purge, and never regresses
 
-    @Test("watermark is written even with zero deletions, advances, and never regresses")
-    func watermarkMonotonic() async throws {
+    @Test("watermark advances to the newest purged deletion, is untouched by a zero-row purge, and never regresses")
+    func watermarkAdvancesOnPurgeAndNeverRegresses() async throws {
         let clock = StepClock(0)
         let store = try makeTempStore(clock: { clock.now })
         defer { try? FileManager.default.removeItem(at: store.root) }
 
-        // A) No tombstones at all: the purge deletes nothing but STILL writes the
-        //    watermark, so the horizon is honest from the first pass.
+        // A) No tombstones at all: the purge deletes nothing, so the watermark is
+        //    left untouched (stays at its never-purged default of 0). Jumping it
+        //    to the cutoff on every empty pass — the old behavior — is exactly
+        //    the spurious re-enumeration bug this refinement fixes.
         clock.now = 100 * Self.day
         let d0 = try await store.purgeExpiredTombstones(accountAlias: Self.alias)
         #expect(d0 == 0)
-        #expect(try await store.tombstonesPurgedThroughNs(accountAlias: Self.alias) == 100 * Self.day - CacheStore.tombstoneTTLNs)
+        #expect(try await store.tombstonesPurgedThroughNs(accountAlias: Self.alias) == 0)
 
-        // B) Later purge advances the watermark forward.
-        clock.now = 200 * Self.day
-        _ = try await store.purgeExpiredTombstones(accountAlias: Self.alias)
-        #expect(try await store.tombstonesPurgedThroughNs(accountAlias: Self.alias) == 200 * Self.day - CacheStore.tombstoneTTLNs)
+        // B) A tombstone recorded at 20d, purged in a pass whose cutoff (170d) is
+        //    far ahead of it: the watermark advances to the PURGED ROW'S OWN
+        //    timestamp (20d), not the cutoff.
+        clock.now = 20 * Self.day
+        try await store.recordDeletion(accountAlias: Self.alias, identifierString: "\(Self.ws)/\(Self.item)/a.txt")
+        clock.now = 200 * Self.day // cutoff 170d ⇒ the 20d tombstone is expired
+        let d1 = try await store.purgeExpiredTombstones(accountAlias: Self.alias)
+        #expect(d1 == 1)
+        #expect(try await store.tombstonesPurgedThroughNs(accountAlias: Self.alias) == 20 * Self.day)
 
-        // C) A backward clock step must NOT lower the watermark (MAX guard).
-        clock.now = 50 * Self.day
-        _ = try await store.purgeExpiredTombstones(accountAlias: Self.alias)
-        #expect(try await store.tombstonesPurgedThroughNs(accountAlias: Self.alias) == 200 * Self.day - CacheStore.tombstoneTTLNs)
+        // C) Another empty pass (nothing left to purge): the watermark stays at
+        //    20d — it is not bumped forward to this pass's (much later) cutoff.
+        clock.now = 250 * Self.day
+        let d2 = try await store.purgeExpiredTombstones(accountAlias: Self.alias)
+        #expect(d2 == 0)
+        #expect(try await store.tombstonesPurgedThroughNs(accountAlias: Self.alias) == 20 * Self.day)
+
+        // D) A backward clock step, then a tombstone recorded and purged whose
+        //    own timestamp (5d) is BELOW the existing watermark (20d): the
+        //    MAX(existing, maxPurged) guard keeps the watermark at 20d rather
+        //    than regressing it to 5d, even though a real purge just happened.
+        clock.now = 5 * Self.day
+        try await store.recordDeletion(accountAlias: Self.alias, identifierString: "\(Self.ws)/\(Self.item)/b.txt")
+        clock.now = 40 * Self.day // cutoff 10d ⇒ the 5d tombstone is expired
+        let d3 = try await store.purgeExpiredTombstones(accountAlias: Self.alias)
+        #expect(d3 == 1)
+        #expect(try await store.tombstonesPurgedThroughNs(accountAlias: Self.alias) == 20 * Self.day)
+
+        // E) A later tombstone purged past the existing watermark advances it
+        //    forward again, to ITS OWN timestamp.
+        clock.now = 90 * Self.day
+        try await store.recordDeletion(accountAlias: Self.alias, identifierString: "\(Self.ws)/\(Self.item)/c.txt")
+        clock.now = 300 * Self.day // cutoff 270d ⇒ the 90d tombstone is expired
+        let d4 = try await store.purgeExpiredTombstones(accountAlias: Self.alias)
+        #expect(d4 == 1)
+        #expect(try await store.tombstonesPurgedThroughNs(accountAlias: Self.alias) == 90 * Self.day)
     }
 
     // MARK: - 4. Watermark of an un-purged alias is zero
