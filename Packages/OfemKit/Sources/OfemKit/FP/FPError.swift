@@ -117,10 +117,12 @@ private func httpCode(for error: HTTPClientError) -> FPError.Code {
         .noSuchItem
     case .throttled:
         .serverBusy
-    // `.retriesExhausted`'s `last` is typed `any Error` (HTTPClientError+Alamofire.swift's
-    // RetryAfterRetrier exhaustion path constructs it from whatever the last attempt threw),
-    // so there is no safe concrete case to force-unwrap or recurse into here — it maps to
-    // the generic retry-exhausted code below (#402).
+    // `.retriesExhausted`'s `last` is typed `any Error` — constructed by
+    // `HTTPClientError+Alamofire.swift`'s `init(afError:)` on Alamofire's
+    // `.requestRetryFailed` (the retry budget is shared between
+    // `RetryAfterRetrier` and `JitteredRetryPolicy`, see docs/onelake-api.md),
+    // so there is no safe concrete case to force-unwrap or recurse into here —
+    // it maps to the generic retry-exhausted code below (#402).
     case .transport, .retriesExhausted, .cancelled:
         .serverUnreachable
     case let .sentinelWithBody(s, _):

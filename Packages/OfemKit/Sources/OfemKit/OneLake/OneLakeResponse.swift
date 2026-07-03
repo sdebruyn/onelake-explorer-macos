@@ -177,6 +177,11 @@ func propertiesFromHeaders(_ headers: [AnyHashable: Any]) -> PathProperties {
 /// header value (C8). Returns `nil` when the header is absent, malformed, or
 /// the total is the `*` (unknown) placeholder — the caller must then fall
 /// back to another source for the full size.
+///
+/// No status-code gate is needed: per RFC 7233 §4.2, `Content-Range` only
+/// appears on a 206 (or 416) response, and ADLS Gen2 never sends it on a 200 —
+/// `propertiesFromHeaders` doesn't receive the status code, so this parses
+/// unconditionally and simply finds nothing to parse on a full response.
 private func totalLengthFromContentRange(_ headerValue: String?) -> Int64? {
     guard let value = headerValue, let slashIndex = value.lastIndex(of: "/") else { return nil }
     return Int64(value[value.index(after: slashIndex)...])
