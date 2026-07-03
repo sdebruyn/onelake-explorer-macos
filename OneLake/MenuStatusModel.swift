@@ -651,21 +651,29 @@ final class MenuStatusModel: ObservableObject {
                     )
                 }
             }
-            // Stamp only after the sweep has actually run to completion. Stamping
-            // up front (the previous behaviour) recorded a "checked" timestamp
-            // even when the guard above aborted the sweep partway through (a
-            // newer refresh superseded this one) — freezing accountsNeedingSignIn
-            // at a stale value for a full secondaryAccountCheckInterval window,
-            // since the next refresh would see the sweep as not due yet even
-            // though it never actually reached every account.
-            lastSecondaryAccountCheckAt = now
         } else {
             for acc in nativeAccounts.dropFirst() where accountsNeedingSignIn.contains(acc.alias) {
                 needsSignInSet.insert(acc.alias)
             }
         }
 
+        // Stamp (when due) and publish together, both gated by the SAME final
+        // guard as `accountsNeedingSignIn` below — not by the per-iteration
+        // guard inside the loop above, which only re-checks *before* each
+        // iteration's await. A task superseded while awaiting the LAST
+        // account has no further iteration left to catch that: it would
+        // fall through the loop and reach an unconditional stamp write with
+        // a `now` captured before the sweep started, potentially clobbering
+        // a fresher stamp already written by the task that superseded it.
+        // Gating here instead means a superseded task can write neither the
+        // stamp nor accountsNeedingSignIn — matching the earlier stamp-
+        // after-sweep fix's intent (a sweep that didn't finish under this
+        // task's own generation must count as "didn't happen"), but now
+        // covering the tail-of-loop case too, not just the mid-loop one.
         guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
+        if secondaryAccountCheckDue {
+            lastSecondaryAccountCheckAt = now
+        }
         accountsNeedingSignIn = needsSignInSet
     }
 

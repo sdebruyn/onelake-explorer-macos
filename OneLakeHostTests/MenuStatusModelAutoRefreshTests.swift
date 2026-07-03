@@ -306,6 +306,20 @@ final class MenuStatusModelAutoRefreshTests: XCTestCase, @unchecked Sendable {
         // "checked" timestamp — freezing accountsNeedingSignIn at a stale
         // value for a full secondaryAccountCheckInterval window even though
         // some accounts were never actually re-verified.
+        //
+        // This exercises the MID-loop abort (gated on the first secondary
+        // call, caught by the per-iteration guard). A second review round
+        // flagged that the tail-of-loop case — superseded while awaiting the
+        // LAST account, which the per-iteration guard never gets a chance to
+        // re-check — needed covering too: the fix moves both the stamp write
+        // and `accountsNeedingSignIn = needsSignInSet` behind the SAME final
+        // `guard myGeneration == refreshGeneration, !Task.isCancelled` at the
+        // end of doRefresh(), so there is now exactly one code path deciding
+        // whether a superseded task may write either value — the mid-loop
+        // and tail-of-loop cases can no longer diverge by construction, so a
+        // second timing-dependent test exercising the tail case specifically
+        // would be redundant coverage of the same guard, not a genuinely
+        // independent check.
         let accountProvider = CountingAccountProvider()
         accountProvider.accounts = [
             makeAccount(alias: "first"), makeAccount(alias: "second"), makeAccount(alias: "third"),

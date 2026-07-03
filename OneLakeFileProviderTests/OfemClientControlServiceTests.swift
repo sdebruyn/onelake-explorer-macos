@@ -3,6 +3,7 @@
 
 @preconcurrency import FileProvider
 import Foundation
+import OfemKit
 import XCTest
 
 final class OfemClientControlServiceTests: XCTestCase {
@@ -124,5 +125,59 @@ final class OfemControlXPCHandlerGetBadgeStatusTests: XCTestCase {
             exp.fulfill()
         }
         wait(for: [exp], timeout: 2)
+
+        // configStoreError alone doesn't prove configStore() was never called
+        // (try? would silently swallow it too) — assert the call count directly
+        // so a future regression that reads-and-discards the config store
+        // can't slip past this test.
+        XCTAssertEqual(host.configStoreCallCount, 0,
+                       "getBadgeStatus must never call configStore(), not even under a try?")
+    }
+
+    // MARK: - getBadgeStatus with a warm engine (steady-state path)
+
+    func testGetBadgeStatus_engineWarm_returnsPausedWorkspacesFromCache() async throws {
+        // The tests above only exercise the engine-optional (cold) branch.
+        // The actual steady-state scenario this verb optimizes is the WARM
+        // branch: an engine already built, paused workspaces already
+        // recorded in the cache — verify that path populates
+        // pausedWorkspaces correctly and, being backed by a real CacheStore
+        // (via a real OfemEngine) rather than the mock, never touches
+        // configStore() here either.
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ofem-badge-status-warm-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let paths = OfemPaths(root: tmp)
+        try paths.ensureDirectories()
+        let configStore = try OfemConfigStore(paths: paths)
+        let engine = try OfemEngine(configStore: configStore, paths: paths)
+
+        try await engine.cache.setWorkspaceStatus(WorkspaceStatusRecord(
+            accountAlias: "work",
+            workspaceID: "ws-1111",
+            state: .paused,
+            reason: "capacity_paused",
+            detectedAtNs: 1_700_000_000_000_000_000
+        ))
+
+        let host = MockEngineHost(alias: "badge-test")
+        host.engineResult = .success(engine)
+        let handler = OfemControlXPCHandler(engineHost: host)
+
+        let exp = expectation(description: "getBadgeStatus replies")
+        handler.getBadgeStatus { status, error in
+            XCTAssertNil(error)
+            XCTAssertEqual(status?.pausedWorkspaces.count, 1)
+            XCTAssertEqual(status?.pausedWorkspaces.first?.accountAlias, "work")
+            XCTAssertEqual(status?.pausedWorkspaces.first?.workspaceID, "ws-1111")
+            XCTAssertEqual(status?.pausedWorkspaces.first?.reason, "capacity_paused")
+            exp.fulfill()
+        }
+        await fulfillment(of: [exp], timeout: 5)
+
+        XCTAssertEqual(host.configStoreCallCount, 0,
+                       "getBadgeStatus must never call configStore(), warm engine or not")
+
+        await engine.shutdown()
     }
 }
