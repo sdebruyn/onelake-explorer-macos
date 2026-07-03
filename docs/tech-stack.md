@@ -19,14 +19,16 @@ the File Provider Extension.
   calls, pooled per `(alias, scope)`
   (`Packages/OfemKit/Sources/OfemKit/HTTP/SessionPool.swift`):
   - Token injection via `AuthenticationInterceptor` / `OfemAuthenticator`.
-  - `RetryAfterRetrier` (honors `Retry-After` on 429 / 5xx, bounded to
-    `maxRetries = 5` and `maxDelay = 30s`) ahead of `JitteredRetryPolicy`
-    (a `RetryPolicy` subclass adding full jitter to the exponential
-    backoff Alamofire would otherwise compute deterministically) in the
-    interceptor chain. Both share `request.retryCount` /
-    `RetryAfterRetrier.maxRetries` as the single source of truth for the
-    combined retry budget, so a 429 that keeps re-triggering `Retry-After`
-    cannot retry indefinitely.
+  - `RetryAfterRetrier` (honors `Retry-After`, but only on 429 / 503,
+    bounded to `maxRetries = 5` and `maxDelay = 30s`) ahead of
+    `JitteredRetryPolicy` (a `RetryPolicy` subclass adding full jitter to
+    the exponential backoff Alamofire would otherwise compute
+    deterministically) in the interceptor chain. Other 5xx statuses
+    (500/502/504) never have `Retry-After` read — they fall through to
+    `JitteredRetryPolicy`'s jittered backoff alone. Both retriers share
+    `request.retryCount` / `RetryAfterRetrier.maxRetries` as the single
+    source of truth for the combined retry budget, so a 429 that keeps
+    re-triggering `Retry-After` cannot retry indefinitely.
   - Per-host connection cap, scoped per audience: 16 for OneLake DFS,
     8 for Fabric REST.
 

@@ -117,12 +117,12 @@ On `AADSTS50076` / `AADSTS50079` / `interaction_required`, the FPE engine silent
 
 ## Logout / account removal
 
-Signing out via the menu bar (account submenu -> **Sign Out…**) triggers the FPE's `removeAccount` XPC method, which:
+Signing out via the menu bar (account submenu -> **Sign Out…**) runs entirely in the **host app**, not over XPC — there is no `removeAccount` method on `OfemClientControlProtocol`. The menu bar confirms before invoking it, then:
 
-1. Removes the Keychain item.
-2. Removes the account from the registry config.
-3. Optionally calls Microsoft's `/oauth2/v2.0/logout` (best effort, no error if it fails).
-4. Removes the account's File Provider domain from Finder (and the sidebar entry `OneLake — <alias>`). The menu bar confirms before invoking it.
+1. `MenuStatusModel.removeAccount(alias:)` calls `SharedOfemAuth.shared.auth.removeAccount(alias:)` — `OfemAuth`, running in-process in the host — which purges the account's refresh token from the shared MSAL Keychain and removes the account entry from `config.toml`. There is no separate call to Microsoft's `/oauth2/v2.0/logout` endpoint; removal is local (Keychain + config) only.
+2. On success, `DomainSyncManager.shared.removeDomain(alias:)` calls `NSFileProviderManager.remove(domain, mode: .preserveDownloadedUserData)` directly, removing the account's File Provider domain from Finder (and the sidebar entry `OneLake — <alias>`) while keeping any locally downloaded files on disk.
+
+See `docs/file-provider.md` "Sign-out / domain removal" for the full flow, including what is and is not cleaned up.
 
 ## Two-audience scope model
 
