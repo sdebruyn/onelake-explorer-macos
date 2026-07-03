@@ -149,6 +149,33 @@ final class OfemFPEClient {
         }
     }
 
+    // MARK: - Badge status
+
+    /// Fetches the slim badge status (`needsSignIn` + `pausedWorkspaces`) via XPC.
+    ///
+    /// Skips the FPE's blobBytes() cache scan and config snapshot that
+    /// `getEngineStatus` always pays for — use this for high-frequency /
+    /// always-on callers (the ambient menu-bar badge poll) that only ever
+    /// consume those two fields (#397).
+    ///
+    /// - Parameter alias: Account alias identifying the domain.
+    /// - Returns: `XPCBadgeStatus` on success.
+    func getBadgeStatus(alias: String) async throws -> XPCBadgeStatus {
+        try await withProxy(alias: alias) { proxy, cont in
+            proxy.getBadgeStatus { status, error in
+                if let error {
+                    cont.resume(throwing: error)
+                } else if let status {
+                    cont.resume(returning: status)
+                } else {
+                    cont.resume(throwing: OfemFPEClientError.connectionFailed(
+                        "getBadgeStatus returned nil status for alias \(alias)"
+                    ))
+                }
+            }
+        }
+    }
+
     // MARK: - Config mutation
 
     /// Writes a config key/value pair through the FPE.

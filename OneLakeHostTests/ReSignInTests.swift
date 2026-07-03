@@ -77,6 +77,10 @@ private final class FakeReSignInEngineProvider: EngineStatusProvider, @unchecked
         statusToReturn
     }
 
+    func getBadgeStatus(alias _: String) async throws -> XPCBadgeStatus {
+        XPCBadgeStatus(needsSignIn: statusToReturn.needsSignIn, pausedWorkspaces: statusToReturn.pausedWorkspaces)
+    }
+
     func setConfig(alias: String, key: String, value: String) async throws {
         configSets.append((alias: alias, key: key, value: value))
     }
