@@ -468,12 +468,16 @@ public actor SyncEngine {
         }
         let (rows, added, updated) = Self.classifyUpserts(candidates: candidates, cachedByPath: cachedByPath)
         await batchUpsert(rows, context: "listItems")
-        let removed = await expireDiscoveryRows(children: cachedChildren, seen: seen, alias: alias)
+        let removedGUIDs = await expireDiscoveryRows(children: cachedChildren, seen: seen, alias: alias)
+        // Purge each removed item's orphaned real `path_metadata` rows and
+        // materialized-container entries so a vanished item leaves no residue and
+        // the freshness poll loop stops DFS-404ing its dead containers every tick.
+        await purgeRemovedItems(alias: alias, workspaceID: workspaceID, itemGUIDs: removedGUIDs)
 
         var diff = Diff()
         diff.added = added
         diff.updated = updated
-        diff.removed = removed
+        diff.removed = removedGUIDs.count
         return (storageItems, diff)
     }
 
@@ -2245,7 +2249,15 @@ public actor SyncEngine {
     }
 
     /// Deletes discovery `children` that are absent from `seen`, returning the
-    /// number expired.
+    /// `path` of each expired row — the removed item GUIDs for the item caller
+    /// (`reconcileItemListing`, where a discovery row's `path` is the item GUID)
+    /// or workspace GUIDs for the workspace caller (`listWorkspaces`, which
+    /// discards the result).
+    ///
+    /// This method only TOMBSTONES the discovery rows. `reconcileItemListing`
+    /// feeds the returned GUIDs into ``purgeRemovedItems(alias:workspaceID:itemGUIDs:)``
+    /// to purge each removed item's orphaned real `path_metadata` rows and
+    /// materialized-container entries.
     ///
     /// Uses the authoritative `seen` set from the current listing: any cached
     /// child not in `seen` was not returned by the remote and should be expired,
@@ -2271,17 +2283,16 @@ public actor SyncEngine {
         children: [MetadataRecord],
         seen: Set<String>,
         alias: String
-    ) async -> Int {
-        let deleteBatch = children
-            .filter { !seen.contains($0.path) }
-            .map { k in
-                CacheKey(
-                    accountAlias: alias,
-                    workspaceID: k.workspaceID,
-                    itemID: k.itemID,
-                    path: k.path
-                )
-            }
+    ) async -> [String] {
+        let expired = children.filter { !seen.contains($0.path) }
+        let deleteBatch = expired.map { k in
+            CacheKey(
+                accountAlias: alias,
+                workspaceID: k.workspaceID,
+                itemID: k.itemID,
+                path: k.path
+            )
+        }
         // Tombstone the expired discovery rows so a removed item disappears from
         // Finder incrementally. batchDelete's tombstoneIdentifierString translates
         // item-discovery rows (itemID == VirtualIDs.itemID) to their ".item"
@@ -2289,11 +2300,50 @@ public actor SyncEngine {
         // (workspaceID == VirtualIDs.workspaceID) map to nil and are never
         // tombstoned because the domain root's container deltas are remount-driven
         // via the ChangeWatcher (a root signal would force full re-enumeration).
-        // NON-GOAL: this does not purge the orphaned path_metadata rows of a
-        // removed item (the rows keyed by the real item GUID) — a pre-existing gap
-        // tracked as a follow-up, not addressed here.
+        // The removed items' orphaned real rows + materialized entries are purged
+        // by reconcileItemListing via the returned GUIDs (purgeRemovedItems).
         await batchDelete(deleteBatch, recordTombstones: true, context: "expireDiscoveryRows")
-        return deleteBatch.count
+        return expired.map(\.path)
+    }
+
+    /// Purges the orphaned residue of items that just vanished from the Fabric
+    /// listing (their discovery rows were tombstoned by ``expireDiscoveryRows``).
+    ///
+    /// For each removed item GUID:
+    /// - Wipe every real `path_metadata` row keyed by the item GUID —
+    ///   `CacheKey(alias, ws, guid, "")`, empty path = whole item — with
+    ///   `recordTombstones: false`. The `"ws/guid"` tombstone was already written
+    ///   by the discovery-row delete; the item-root row shares that same identifier
+    ///   (so re-tombstoning is redundant), and tombstoning every descendant would
+    ///   flood `didDeleteItems` when the single parent removal already tells Finder
+    ///   the item is gone. Blob files orphaned by the wipe are reclaimed by the
+    ///   existing orphan sweep — this uses `batchDelete`, NOT `delete(key:)` (which
+    ///   would unconditionally write per-row tombstones).
+    /// - Drop the item's `materialized_containers` rows (`removeMaterialized`) so
+    ///   the freshness poll loop stops refreshing — and DFS-404ing — the dead
+    ///   item's containers on every tick.
+    ///
+    /// Race-safe by eventual consistency (no locking): if a concurrent
+    /// `refreshFolder` re-upsert or a stale re-listing repopulates the item after
+    /// this runs, the next reconcile finds the item still absent and purges again.
+    private func purgeRemovedItems(alias: String, workspaceID: String, itemGUIDs: [String]) async {
+        guard !itemGUIDs.isEmpty else { return }
+        let itemKeys = itemGUIDs.map {
+            CacheKey(accountAlias: alias, workspaceID: workspaceID, itemID: $0, path: "")
+        }
+        await batchDelete(itemKeys, recordTombstones: false, context: "purgeRemovedItems")
+        for guid in itemGUIDs {
+            let identifierPrefix = CacheStore.identifierString(
+                workspaceID: workspaceID, itemID: guid, path: ""
+            )
+            do {
+                try await cache.removeMaterialized(alias: alias, identifierPrefix: identifierPrefix)
+            } catch {
+                Self.log.warning(
+                    "purgeRemovedItems: removeMaterialized failed prefix=\(identifierPrefix, privacy: .public) err=\(error, privacy: .public)"
+                )
+            }
+        }
     }
 
     // MARK: - Shared remote-operation error handler

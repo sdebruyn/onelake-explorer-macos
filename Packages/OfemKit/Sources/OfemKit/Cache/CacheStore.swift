@@ -840,6 +840,32 @@ public actor CacheStore {
         try await reader().materializedContainers(alias: alias)
     }
 
+    /// Removes the `materialized_containers` rows for one removed item:
+    /// `identifierPrefix` itself (the item-root container identifier `"ws/guid"`)
+    /// and every descendant container (`"ws/guid/…"`).
+    ///
+    /// Called when a Fabric item vanishes from a workspace listing so the
+    /// freshness poll loop stops trying to refresh — and DFS-404ing — the dead
+    /// item's containers on every tick. A no-op when no rows match.
+    ///
+    /// Prefix match is anchored: the exact `identifierPrefix` OR
+    /// `identifierPrefix + "/…"`, so a sibling whose identifier merely shares this
+    /// string as a prefix without the `/` boundary (there is none for GUIDs, but
+    /// the anchoring is defensive) is never removed. Race-safe by eventual
+    /// consistency — no locking; if a concurrent refresh re-materializes a
+    /// container after this deletes, the next reconcile removes it again.
+    public func removeMaterialized(alias: String, identifierPrefix: String) async throws {
+        guard !alias.isEmpty else { throw CacheError.missingArgument("alias") }
+        guard !identifierPrefix.isEmpty else { throw CacheError.missingArgument("identifierPrefix") }
+        try await dbPool.write { db in
+            try db.execute(sql: """
+            DELETE FROM materialized_containers
+            WHERE account_alias = ?
+              AND (identifier_string = ? OR identifier_string LIKE ? ESCAPE '\\')
+            """, arguments: [alias, identifierPrefix, Self.escapeLike(identifierPrefix) + "/%"])
+        }
+    }
+
     // MARK: - Blob: store
 
     /// Writes `data` to the blob store and updates the `blob_sha256` /
