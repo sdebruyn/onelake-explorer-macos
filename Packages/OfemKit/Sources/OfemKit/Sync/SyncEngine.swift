@@ -1757,13 +1757,21 @@ public actor SyncEngine {
             }
         }
 
-        // Compute total expected. `plan.rangeStart` (local spill file size) and
-        // `props.contentLength` (remote `Content-Length` header) are both
-        // untrusted inputs; a hostile or corrupted header near `Int64.max`
-        // could overflow the plain `+` and trap. Use a reporting add so an
-        // absurd combination surfaces as a handled error instead.
+        // Compute total expected. Prefer the server-authoritative total from
+        // the `Content-Range` header (`props.totalLength`, C8) when present —
+        // it needs no client-side arithmetic and so cannot overflow. Fall back
+        // to `plan.rangeStart` (local spill file size) + `props.contentLength`
+        // (remote `Content-Length` header, which on a 206 response is only the
+        // size of the returned range, not the full file) when the header was
+        // absent, e.g. a full 200 response or an older/non-conformant server.
+        // Both fallback inputs are untrusted; a hostile or corrupted header
+        // near `Int64.max` could overflow the plain `+` and trap. Use a
+        // reporting add so an absurd combination surfaces as a handled error
+        // instead.
         var expectedTotal = cached?.contentLength ?? 0
-        if props.contentLength > 0 {
+        if let totalLength = props.totalLength, totalLength > 0 {
+            expectedTotal = totalLength
+        } else if props.contentLength > 0 {
             if plan.hasPartial {
                 let (total, overflowed) = plan.rangeStart.addingReportingOverflow(props.contentLength)
                 guard !overflowed else {
