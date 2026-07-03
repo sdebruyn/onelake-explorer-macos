@@ -171,4 +171,44 @@ struct SyncEngineOrphanedItemCleanupTests {
         #expect(try await realRowCount(store, itemID: "it-a") == 0)
         #expect(try await materializedIdentifiers(store).isEmpty)
     }
+
+    // MARK: - 4. The vanished item's deletion tombstone survives the purge
+
+    /// The `"<ws>/<guid>"` deletion tombstone written by `expireDiscoveryRows`
+    /// (`recordTombstones: true` on the discovery row) MUST survive
+    /// `purgeRemovedItems`' `recordTombstones: false` wipe of the real item rows —
+    /// it is what `enumerateChanges` delivers to the client so Finder drops the
+    /// item. This is the PR's most important safety property; asserting it directly
+    /// makes it regression-proof against a future reorder that wiped the item
+    /// before its tombstone landed.
+    @Test("a vanished item's deletion tombstone survives the purge (deletion stays deliverable)")
+    func vanishedItemDeletionTombstoneSurvivesPurge() async throws {
+        let fabric = MockFabricClient()
+        fabric.listItemsResults.append(.success([item("it-a")])) // pass 1: present
+        fabric.listItemsResults.append(.success([])) // pass 2: gone
+
+        let (engine, store) = try makeEngine(fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        _ = try await engine.listItems(alias: Self.alias, workspaceID: Self.ws)
+        // Seed real rows (incl. the item-root row, whose identifier is "ws/guid")
+        // so purgeRemovedItems' recordTombstones:false wipe actually runs over them.
+        try await seedRealItemRows(store, itemID: "it-a", paths: ["", "Files/data.txt"])
+
+        // Pass 2: it-a vanished → discovery-row tombstone written, then real rows wiped.
+        _ = try await engine.listItems(alias: Self.alias, workspaceID: Self.ws)
+
+        // The "ws/it-a" tombstone is present post-reconcile (delivered as a deletion)...
+        let tombstones = try await store.dbPool.read { db in
+            try String.fetchAll(db, sql: """
+            SELECT identifier_string FROM deletion_tombstones WHERE account_alias = ?
+            """, arguments: [Self.alias])
+        }
+        #expect(tombstones.contains("\(Self.ws)/it-a"))
+        // ...and it also surfaces through the delta read the FPE consumes.
+        let (_, deleted) = try await store.itemsChangedAfter(accountAlias: Self.alias, ns: 0)
+        #expect(deleted.contains("\(Self.ws)/it-a"))
+        // The recordTombstones:false wipe did run (real rows gone).
+        #expect(try await realRowCount(store, itemID: "it-a") == 0)
+    }
 }
