@@ -34,6 +34,14 @@ public actor CacheStore {
     /// SQLite busy-wait timeout in milliseconds.
     private static let busyTimeoutMs: Int = 5000
 
+    /// Time-to-live for deletion tombstones. A tombstone older than this is
+    /// eligible for TTL purge (``purgeExpiredTombstones(accountAlias:)``), which
+    /// bounds otherwise-unbounded tombstone growth. A hardcoded constant, not a
+    /// config knob: 30 days comfortably exceeds any realistic client offline
+    /// window, and the safety of the purge rests on the FPE lagging-client guard,
+    /// not on tuning this value.
+    public static let tombstoneTTLNs: Int64 = 30 * 24 * 60 * 60 * 1_000_000_000
+
     // MARK: - Private state
 
     // Internal so test targets can run direct SQL assertions.
@@ -734,6 +742,60 @@ public actor CacheStore {
         try await dbPool.write { db in
             try tombstone.save(db)
         }
+    }
+
+    // MARK: - Deletion tombstones: TTL purge
+
+    /// Purges deletion tombstones older than ``tombstoneTTLNs`` for `accountAlias`
+    /// and advances the alias's monotonic purge watermark. Returns the number of
+    /// tombstones deleted.
+    ///
+    /// One write transaction:
+    /// 1. `DELETE FROM deletion_tombstones WHERE account_alias = ? AND
+    ///    deleted_at_ns < cutoff` (served by `idx_dt_deleted_at`).
+    /// 2. Upsert `sync_meta.tombstones_purged_through_ns = MAX(existing, cutoff)`
+    ///    — MONOTONIC (a backward clock step can never lower it) and written EVEN
+    ///    WHEN ZERO ROWS WERE DELETED, so the horizon the FPE lagging-client guard
+    ///    reads is always honest about how far tombstones have been reclaimed.
+    ///
+    /// `cutoff` is derived from the same injectable ``clock`` that stamps every
+    /// tombstone's `deleted_at_ns`, so the comparison is against a consistent time
+    /// basis (tests drive both through one injected clock).
+    ///
+    /// The FPE is the single writer; this is called (throttled) from
+    /// `SyncEngine.refreshMaterialized`. Because it runs inside the actor's write
+    /// serialiser it never races the tombstone writers (`delete`, `batchDelete`,
+    /// `recordDeletion`).
+    @discardableResult
+    public func purgeExpiredTombstones(accountAlias: String) async throws -> Int {
+        guard !accountAlias.isEmpty else { throw CacheError.missingArgument("accountAlias") }
+        let cutoff = clock() - Self.tombstoneTTLNs
+        return try await dbPool.write { db -> Int in
+            try db.execute(sql: """
+            DELETE FROM deletion_tombstones
+            WHERE account_alias = ? AND deleted_at_ns < ?
+            """, arguments: [accountAlias, cutoff])
+            let deleted = db.changesCount
+
+            // Monotonic watermark upsert. Written unconditionally (even when
+            // `deleted == 0`) so the purge horizon advances with every pass; MAX
+            // guards against a backward clock step ever regressing it.
+            try db.execute(sql: """
+            INSERT INTO sync_meta (account_alias, tombstones_purged_through_ns)
+            VALUES (?, ?)
+            ON CONFLICT(account_alias) DO UPDATE SET
+                tombstones_purged_through_ns =
+                    MAX(sync_meta.tombstones_purged_through_ns, excluded.tombstones_purged_through_ns)
+            """, arguments: [accountAlias, cutoff])
+
+            return deleted
+        }
+    }
+
+    /// Returns the tombstone-purge watermark for `accountAlias` (0 if never
+    /// purged). Delegates to ``CacheReader/tombstonesPurgedThroughNs(accountAlias:)``.
+    public func tombstonesPurgedThroughNs(accountAlias: String) async throws -> Int64 {
+        try await reader().tombstonesPurgedThroughNs(accountAlias: accountAlias)
     }
 
     // MARK: - Materialized containers

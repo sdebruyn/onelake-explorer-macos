@@ -223,6 +223,25 @@ public final class CacheReader: Sendable {
         }
     }
 
+    // MARK: - Tombstone purge watermark
+
+    /// Returns the tombstone-purge watermark for `accountAlias` — the monotonic
+    /// horizon (Unix ns) below which expired deletion tombstones have been
+    /// TTL-purged by ``CacheStore/purgeExpiredTombstones(accountAlias:)`` — or `0`
+    /// when the alias has no `sync_meta` row (never purged).
+    ///
+    /// The FPE lagging-client guard compares an incoming sync anchor against this
+    /// value: a client whose anchor predates the horizon may have deletions that
+    /// were purged and are now invisible in an incremental delta, so it must be
+    /// forced into a full re-enumeration (`.syncAnchorExpired`).
+    public func tombstonesPurgedThroughNs(accountAlias: String) async throws -> Int64 {
+        try await db.read { db in
+            try Int64.fetchOne(db, sql: """
+            SELECT tombstones_purged_through_ns FROM sync_meta WHERE account_alias = ?
+            """, arguments: [accountAlias]) ?? 0
+        }
+    }
+
     // MARK: - Changed items since anchor
 
     /// Returns items changed and deletions recorded after `ns` for `accountAlias`.

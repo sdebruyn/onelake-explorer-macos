@@ -22,7 +22,11 @@
 //   all records changed since that anchor instead of unconditionally throwing
 //   `.syncAnchorExpired`. The anchor value advances with every `upsert`, so
 //   the system can request incremental deltas rather than performing a full
-//   re-enumeration on every poll.
+//   re-enumeration on every poll. Every vended anchor is clamped up to the
+//   tombstone-purge horizon (`tombstonesPurgedThroughNs`); a client whose anchor
+//   predates that horizon is expired (the lagging-client guard), since deletions
+//   before the horizon may have been TTL-purged and would be missing from a
+//   delta. See `syncAnchorDecision` / `effectiveAnchorNs`.
 //
 // - Anchor-on-decode-failure policy: when a cache record fails to decode
 //   (permanently corrupt), the anchor still advances past it. Holding the
@@ -153,12 +157,87 @@ func decodeRecords(
     return items
 }
 
+// MARK: - Sync-anchor expiry decision
+
+/// The outcome of evaluating an incoming sync anchor against the cache.
+enum SyncAnchorDecision: Equatable {
+    /// Force a full re-enumeration (`.syncAnchorExpired`).
+    case expire
+    /// Serve an incremental delta and advance the anchor to `effectiveNs`.
+    case serve(effectiveNs: Int64)
+}
+
+/// Decides how to handle an incoming sync anchor `previousNs`, given the store's
+/// current sync anchor `currentNs` (newest `synced_at_ns`/`deleted_at_ns`) and
+/// the tombstone-purge horizon `purgedThroughNs`.
+///
+/// Pure and total so the whole anchor-window policy is unit-testable without a
+/// live `OfemEngine` (which carries an auth dependency).
+///
+/// The anchor a client may hold lives in the window `[purgedThroughNs,
+/// effectiveNs]` where `effectiveNs = max(currentNs, purgedThroughNs)`:
+///
+///   - `previousNs == 0` — first mount: a full enumeration already happens, so
+///     always serve. (Never expire on a zero anchor.)
+///   - `previousNs < purgedThroughNs` — LAGGING-CLIENT GUARD (safety-critical):
+///     the client last synced before the purge horizon, so deletions between its
+///     anchor and the horizon may have been TTL-purged and are now invisible in
+///     an incremental delta. Expire → the framework reconciles those deletions
+///     by absence during the forced full re-enumeration. This is the one guard a
+///     purge can trip; the anchor-ahead check below can NEVER catch a purge,
+///     because purging old tombstones only removes rows — it never raises
+///     `currentNs` above `previousNs`.
+///   - `previousNs > effectiveNs` — anchor ahead of everything we can serve (the
+///     DB was reset/rebuilt): expire so the client rebases.
+///   - otherwise — serve an incremental delta.
+///
+/// Every served/handed-out anchor is `effectiveNs`, i.e. clamped UP to the purge
+/// horizon. Without that clamp, an alias idle longer than the tombstone TTL
+/// (whose newest `synced_at_ns` has fallen below the horizon — unchanged rows
+/// are never re-stamped, see `SyncEngine.refreshFolder`) would hand back an
+/// anchor below `purgedThroughNs`, and the very next `enumerateChanges` would
+/// re-trip the lagging-client guard forever — a tight re-enumeration loop.
+/// Clamping to the horizon turns that into at most one forced re-enumeration per
+/// 24 h purge step.
+func syncAnchorDecision(previousNs: Int64, currentNs: Int64, purgedThroughNs: Int64) -> SyncAnchorDecision {
+    let effectiveNs = max(currentNs, purgedThroughNs)
+    // First mount → full enum already happened; never expire a zero anchor.
+    if previousNs == 0 { return .serve(effectiveNs: effectiveNs) }
+    // Lagging past the purge horizon → purged deletions may be missing.
+    if previousNs < purgedThroughNs { return .expire }
+    // Anchor ahead of the cache (DB reset) → rebase.
+    if previousNs > effectiveNs { return .expire }
+    return .serve(effectiveNs: effectiveNs)
+}
+
+/// Anchor floor for `alias`: `max(syncAnchorNs, tombstonesPurgedThroughNs)`.
+///
+/// Every anchor the FPE vends (from `serveCacheDelta` and both enumerators'
+/// `currentSyncAnchor`) is clamped up to the tombstone-purge horizon so it never
+/// sits below `purgedThroughNs` — see `syncAnchorDecision` for why an anchor
+/// below the horizon would cause an infinite re-enumeration loop.
+///
+/// Both reads are independently `try?`-defaulted to `0`, so the result is:
+/// - both reads succeed → `max(syncAnchorNs, purgedThroughNs)` (the intended floor);
+/// - only the watermark read fails → an UNCLAMPED `syncAnchorNs` (which may sit
+///   below the horizon → at most a transient extra re-enumeration next poll,
+///   self-healing once the read recovers, never a silent skip);
+/// - both reads fail → `0`, forcing a full diff on the next poll.
+/// A degraded read therefore only ever costs a spurious full re-enumeration; it
+/// can never drop an event. (The lagging-client GUARD in `serveCacheDelta`
+/// deliberately does NOT tolerate a failed watermark read — see the `try` there.)
+func effectiveAnchorNs(engine: OfemEngine, alias: String) async -> Int64 {
+    let currentNs = (try? await engine.cache.syncAnchorNs(accountAlias: alias)) ?? 0
+    let purgedThroughNs = (try? await engine.cache.tombstonesPurgedThroughNs(accountAlias: alias)) ?? 0
+    return max(currentNs, purgedThroughNs)
+}
+
 /// Computes the cache delta since `previousNs` for `alias` and delivers it to
-/// `observer`, advancing the sync anchor unconditionally to the store's
-/// current `syncAnchorNs` (see the "Anchor-on-decode-failure policy" note at
-/// the top of this file — the anchor tracks `synced_at_ns`, not decode
-/// success, so a permanently corrupt row decoded via `decodeRecords` can
-/// never hold it back).
+/// `observer`, advancing the sync anchor to the store's anchor floor
+/// (`max(syncAnchorNs, tombstonesPurgedThroughNs)`; see the "Anchor-on-decode-
+/// failure policy" note at the top of this file — the anchor tracks
+/// `synced_at_ns`, not decode success, so a permanently corrupt row decoded via
+/// `decodeRecords` can never hold it back).
 ///
 /// Shared by `OfemFPEEnumerator.enumerateChanges` (workspace/item/path
 /// containers) and `OfemWorkingSetEnumerator.enumerateChanges` (the working
@@ -167,9 +246,11 @@ func decodeRecords(
 /// handling (`markNeedsSignIn`), since only the working set also needs to
 /// reset its refresh throttle on an auth failure.
 ///
-/// When `previousNs` is ahead of the cache (the DB may have been reset) this
-/// calls `finishEnumeratingWithError(.syncAnchorExpired)` and returns without
-/// touching the delta — the framework must perform a full re-enumeration.
+/// The incoming anchor is evaluated by ``syncAnchorDecision(previousNs:currentNs:purgedThroughNs:)``.
+/// When it returns `.expire` — the anchor is ahead of the cache (DB reset) OR it
+/// predates the tombstone-purge horizon (lagging-client guard) — this calls
+/// `finishEnumeratingWithError(.syncAnchorExpired)` and returns without touching
+/// the delta, so the framework performs a full re-enumeration.
 func serveCacheDelta(
     engine: OfemEngine,
     alias: String,
@@ -178,12 +259,25 @@ func serveCacheDelta(
     log: Logger,
     logPrefix: String
 ) async throws {
+    // INTENTIONAL asymmetry between these two reads — do not "unify" them:
+    // `currentNs` is `try?`-defaulted to 0 because a failed/stale anchor read
+    // only costs a spurious re-enumeration (safe). The watermark read below
+    // deliberately PROPAGATES via `try`: silently defaulting the horizon to 0
+    // would disable the lagging-client guard and could serve a delta missing
+    // purged deletions — the exact silent loss this guards against.
     let currentNs = (try? await engine.cache.syncAnchorNs(accountAlias: alias)) ?? 0
+    let purgedThroughNs = try await engine.cache.tombstonesPurgedThroughNs(accountAlias: alias)
 
-    if previousNs > currentNs, previousNs != 0 {
-        log.debug("\(logPrefix, privacy: .public): anchor ahead of cache, expiring")
+    let effectiveNs: Int64
+    switch syncAnchorDecision(previousNs: previousNs, currentNs: currentNs, purgedThroughNs: purgedThroughNs) {
+    case .expire:
+        log.debug(
+            "\(logPrefix, privacy: .public): expiring anchor (previous=\(previousNs, privacy: .public) purgedThrough=\(purgedThroughNs, privacy: .public))"
+        )
         observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
         return
+    case let .serve(ns):
+        effectiveNs = ns
     }
 
     // Propagate SQLite errors rather than silently returning an empty delta
@@ -204,11 +298,11 @@ func serveCacheDelta(
         observer.didDeleteItems(withIdentifiers: deletedIdentifiers)
     }
 
-    let newAnchor = encodeSyncAnchor(currentNs)
+    let newAnchor = encodeSyncAnchor(effectiveNs)
     observer.finishEnumeratingChanges(upTo: newAnchor, moreComing: false)
 
     log.debug(
-        "\(logPrefix, privacy: .public): delivered — updates=\(updatedRecords.count, privacy: .public) deletions=\(deletedIdStrings.count, privacy: .public) anchor=\(previousNs, privacy: .public)→\(currentNs, privacy: .public)"
+        "\(logPrefix, privacy: .public): delivered — updates=\(updatedRecords.count, privacy: .public) deletions=\(deletedIdStrings.count, privacy: .public) anchor=\(previousNs, privacy: .public)→\(effectiveNs, privacy: .public)"
     )
 }
 
@@ -495,7 +589,11 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
         let anchorTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
-                let ns = (try? await engine.cache.syncAnchorNs(accountAlias: aliasCopy)) ?? 0
+                // Clamp to the tombstone-purge horizon so the baseline anchor the
+                // framework adopts after a full (re-)enumeration never sits below
+                // the horizon — otherwise the next enumerateChanges would re-trip
+                // the lagging-client guard forever (see effectiveAnchorNs).
+                let ns = await effectiveAnchorNs(engine: engine, alias: aliasCopy)
                 ch.fn(encodeSyncAnchor(ns))
             } catch is CancellationError {
                 // Task was cancelled (enumerator invalidated); do not call the
@@ -847,7 +945,10 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
         let anchorTask = Task<Void, Never> {
             do {
                 let engine = try await hostCopy.engine()
-                let ns = (try? await engine.cache.syncAnchorNs(accountAlias: aliasCopy)) ?? 0
+                // Clamp to the tombstone-purge horizon (see effectiveAnchorNs and
+                // OfemFPEEnumerator.currentSyncAnchor) so the working-set baseline
+                // anchor never sits below the horizon and re-trips the guard.
+                let ns = await effectiveAnchorNs(engine: engine, alias: aliasCopy)
                 ch.fn(encodeSyncAnchor(ns))
             } catch is CancellationError {
                 // Task was cancelled (enumerator invalidated); do not call the

@@ -15,7 +15,17 @@ struct CacheSchemaTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let applied = try await store.appliedMigrations()
-        #expect(applied == ["v1", "v2", "v3", "v4", "v5", "v6", "v7"])
+        #expect(applied == ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"])
+    }
+
+    @Test("Fresh database creates sync_meta table")
+    func freshDatabaseCreatesSyncMeta() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        #expect(try await store.tableExists("sync_meta"))
+        let columns = try await store.readColumns(in: "sync_meta")
+        #expect(columns.contains("account_alias"))
+        #expect(columns.contains("tombstones_purged_through_ns"))
     }
 
     @Test("Fresh database creates path_metadata table")

@@ -558,16 +558,170 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         XCTAssertThrowsError(try parseOfemItemIdentifier("//bad"))
     }
 
+    // MARK: - syncAnchorDecision: lagging-client guard + anchor-window policy
+
+    /// Guard FIRES: an anchor strictly between 0 and the purge horizon must
+    /// expire — deletions before the horizon may have been TTL-purged and would
+    /// be invisible in an incremental delta.
+    func testSyncAnchorDecision_laggingClientPastPurgeHorizon_expires() {
+        XCTAssertEqual(
+            syncAnchorDecision(previousNs: 500, currentNs: 2000, purgedThroughNs: 1000),
+            .expire,
+            "0 < previousNs < purgedThroughNs must force a full re-enumeration"
+        )
+    }
+
+    /// Guard does NOT fire: an anchor at or above the horizon (and within the
+    /// servable window) is served an incremental delta. The low boundary is
+    /// inclusive — exactly at the horizon still serves.
+    func testSyncAnchorDecision_anchorWithinWindow_serves() {
+        XCTAssertEqual(
+            syncAnchorDecision(previousNs: 1500, currentNs: 2000, purgedThroughNs: 1000),
+            .serve(effectiveNs: 2000)
+        )
+        XCTAssertEqual(
+            syncAnchorDecision(previousNs: 1000, currentNs: 2000, purgedThroughNs: 1000),
+            .serve(effectiveNs: 2000),
+            "an anchor exactly at the horizon must be served, not expired"
+        )
+    }
+
+    /// First mount (`previousNs == 0`) always serves — a full enumeration already
+    /// happens — even when a purge horizon exists.
+    func testSyncAnchorDecision_firstMount_neverExpires() {
+        XCTAssertEqual(
+            syncAnchorDecision(previousNs: 0, currentNs: 0, purgedThroughNs: 1000),
+            .serve(effectiveNs: 1000)
+        )
+    }
+
+    /// Regression: an anchor ahead of everything the cache can serve (DB reset)
+    /// still expires, independent of the new purge guard.
+    func testSyncAnchorDecision_anchorAheadOfCache_expires() {
+        XCTAssertEqual(
+            syncAnchorDecision(previousNs: 5000, currentNs: 1000, purgedThroughNs: 0),
+            .expire
+        )
+    }
+
+    /// NO-LOOP property: an alias idle longer than the TTL has `currentNs` (its
+    /// newest change) BELOW the purge horizon. A client already rebased to the
+    /// horizon (`previousNs == purgedThroughNs`) must be SERVED — and the served
+    /// anchor clamped back up to the horizon — not expired. Otherwise every poll
+    /// would re-trip the guard in a tight re-enumeration loop.
+    func testSyncAnchorDecision_idleClientAtHorizon_doesNotLoop() {
+        let horizon: Int64 = 1000
+        let currentNs: Int64 = 400 // newest change is older than the horizon
+        XCTAssertEqual(
+            syncAnchorDecision(previousNs: horizon, currentNs: currentNs, purgedThroughNs: horizon),
+            .serve(effectiveNs: horizon),
+            "a client at the horizon must be served with the anchor clamped to the horizon (no loop)"
+        )
+    }
+
+    // MARK: - End-to-end: idle alias whose newest event was a purged deletion
+
+    /// Drives the real cache: an alias whose newest event is a DELETION older than
+    /// the TTL. After the purge, the tombstone is gone (so the deletion is
+    /// invisible to an incremental delta) and a client whose anchor predates the
+    /// horizon is expired by `syncAnchorDecision` — the guard is what saves it
+    /// from silently keeping a ghost entry.
+    func testEndToEnd_idleAliasWithPurgedDeletion_expiresLaggingClient() async throws {
+        let day: Int64 = 86400 * 1_000_000_000
+        let clock = FPEStepClock(0)
+        let store = try makeTempFPECacheStore(clock: { clock.now })
+        let alias = "e2e-purge-\(UUID().uuidString)"
+
+        // Newest event: a deletion at 10d, older than the 30-day TTL at purge time.
+        clock.now = 10 * day
+        try await store.recordDeletion(accountAlias: alias, identifierString: "ws-1/lh-1/gone.txt")
+
+        clock.now = 100 * day // cutoff 70d ⇒ the 10d tombstone is expired
+        let purged = try await store.purgeExpiredTombstones(accountAlias: alias)
+        XCTAssertEqual(purged, 1, "the expired deletion tombstone must be purged")
+
+        let watermark = try await store.tombstonesPurgedThroughNs(accountAlias: alias)
+        XCTAssertEqual(watermark, 100 * day - CacheStore.tombstoneTTLNs)
+
+        // A client last synced before the horizon (20d): its anchor predates the
+        // purge horizon (70d), so it must be expired into a full re-enumeration.
+        let currentNs = try await store.syncAnchorNs(accountAlias: alias)
+        let decision = syncAnchorDecision(previousNs: 20 * day, currentNs: currentNs, purgedThroughNs: watermark)
+        XCTAssertEqual(decision, .expire, "a client whose anchor predates the purge horizon must be expired")
+
+        try? FileManager.default.removeItem(at: store.root)
+    }
+
+    /// Post-clamp flow: a client already rebased to the horizon
+    /// (`previousNs == watermark`) is SERVED (not expired), and a deletion that
+    /// lands AFTER the horizon is delivered as a normal incremental delta — the
+    /// clamp raising the served anchor to the horizon never blocks a genuine
+    /// post-horizon change, because the delta's lower bound stays `previousNs`.
+    func testPostClamp_clientAtHorizon_receivesNewDeletionAsIncrementalDelta() async throws {
+        let day: Int64 = 86400 * 1_000_000_000
+        let clock = FPEStepClock(0)
+        let store = try makeTempFPECacheStore(clock: { clock.now })
+        let alias = "post-clamp-\(UUID().uuidString)"
+
+        // Establish a purge horizon W = 70d (100d − 30d TTL).
+        clock.now = 100 * day
+        _ = try await store.purgeExpiredTombstones(accountAlias: alias)
+        let watermark = try await store.tombstonesPurgedThroughNs(accountAlias: alias)
+        XCTAssertEqual(watermark, 100 * day - CacheStore.tombstoneTTLNs)
+
+        // A NEW deletion strictly after the horizon (deleted_at = 100d > W = 70d).
+        clock.now = 100 * day
+        try await store.recordDeletion(accountAlias: alias, identifierString: "ws-1/lh-1/newdel.txt")
+
+        // A client whose anchor is exactly at the horizon must be SERVED, not expired.
+        let currentNs = try await store.syncAnchorNs(accountAlias: alias)
+        let decision = syncAnchorDecision(previousNs: watermark, currentNs: currentNs, purgedThroughNs: watermark)
+        XCTAssertEqual(
+            decision, .serve(effectiveNs: currentNs),
+            "a client at the horizon must be served an incremental delta, not expired"
+        )
+
+        // ...and the post-horizon deletion is delivered by the incremental query,
+        // whose lower bound is the client's own anchor (== the horizon here).
+        let changes = try await store.itemsChangedAfter(accountAlias: alias, ns: watermark)
+        XCTAssertTrue(
+            changes.deletedIdentifierStrings.contains("ws-1/lh-1/newdel.txt"),
+            "a deletion after the horizon must reach a client sitting at the horizon"
+        )
+
+        try? FileManager.default.removeItem(at: store.root)
+    }
+
     // MARK: - Helpers
 
     /// Builds a `CacheStore` backed by a fresh temp directory. `CacheStore`
     /// has no auth dependency, so — unlike `OfemEngine` — it can be driven
     /// directly in this test sandbox (see `MockEngineHost`'s doc comment for
     /// why a live `OfemEngine` cannot).
-    private func makeTempFPECacheStore() throws -> CacheStore {
+    private func makeTempFPECacheStore(
+        clock: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000_000_000) }
+    ) throws -> CacheStore {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        return try CacheStore(root: tmp)
+        return try CacheStore(root: tmp, clock: clock)
+    }
+}
+
+// MARK: - Test clock
+
+/// A settable Unix-nanosecond clock for driving `CacheStore`'s injected clock
+/// deterministically. Thread-safe: the store reads it off its actor executor
+/// while the test body mutates it.
+final class FPEStepClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Int64
+    init(_ v: Int64) {
+        value = v
+    }
+
+    var now: Int64 {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
     }
 }
 

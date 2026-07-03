@@ -21,6 +21,12 @@ import GRDB
 ///   `deletion_tombstones` row that is shadowed by a live `path_metadata` row at
 ///   least as fresh as the tombstone. Cleans rows left behind before upsert
 ///   started clearing tombstones on recreate; adds no schema objects.
+/// - `v8` — adds `sync_meta(account_alias PK, tombstones_purged_through_ns)` to
+///   record the monotonic per-alias watermark below which expired deletion
+///   tombstones have been TTL-purged (``CacheStore/purgeExpiredTombstones``).
+///   The FPE's lagging-client guard expires a client whose sync anchor predates
+///   this watermark, forcing a full re-enumeration so purged deletions are
+///   reconciled by absence rather than silently lost.
 ///
 /// Key indexes:
 /// - `idx_pm_synced_at`: composite on `(account_alias, synced_at_ns)` used
@@ -218,6 +224,27 @@ public enum CacheSchema {
                   AND deletion_tombstones.identifier_string =
                       CASE WHEN p.path = '' THEN p.workspace_id || '/' || p.item_id
                            ELSE p.workspace_id || '/' || p.item_id || '/' || p.path END
+            );
+            """)
+        }
+
+        // v8: add sync_meta to persist the per-alias tombstone-purge watermark.
+        // `tombstones_purged_through_ns` is the monotonic horizon below which
+        // expired deletion tombstones have been TTL-purged
+        // (CacheStore.purgeExpiredTombstones advances it, never lowers it, and
+        // writes it even when zero rows are deleted so the horizon is always
+        // honest). The FPE reads it via CacheReader.tombstonesPurgedThroughNs to
+        // expire any client whose sync anchor predates the horizon, forcing a
+        // full re-enumeration so purged deletions are reconciled by absence.
+        //
+        // Plain additive migration (mirrors v3/v5/v6): the project is pre-go-live,
+        // so a cache rebuild on upgrade is acceptable and no data-migration
+        // ceremony is needed.
+        m.registerMigration("v8") { db in
+            try db.execute(sql: """
+            CREATE TABLE sync_meta (
+                account_alias                TEXT    PRIMARY KEY,
+                tombstones_purged_through_ns INTEGER NOT NULL DEFAULT 0
             );
             """)
         }
