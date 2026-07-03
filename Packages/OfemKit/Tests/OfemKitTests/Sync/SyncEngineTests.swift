@@ -2256,4 +2256,68 @@ struct SyncEngineTests {
             // Correct — handled, no trap.
         }
     }
+
+    /// A persistently-hostile `Content-Length` must not make `open()` loop
+    /// forever: hitting `SyncError.resumeOffsetOverflow` has to discard the
+    /// partial spill + etag sidecar so the NEXT attempt no longer has anything
+    /// to resume from, and instead performs a full (non-`Range`) download
+    /// (#413).
+    @Test("open() discards the partial after a resume overflow so the retry self-heals into a full download")
+    func resumeOverflowDiscardsPartialAndSelfHeals() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+
+        let existing = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: Self.path, parentPath: "Files", name: "data.csv", isDir: false,
+            contentLength: 1000, etag: "etag-v1"
+        )
+        try await store.upsert(existing)
+
+        // Same partial spill + etag sidecar setup as the overflow test above.
+        let scratchDir = store.root.appending(path: "scratch", directoryHint: .isDirectory)
+        let partialsDir = scratchDir.appendingPathComponent("\(ProcessInfo.processInfo.processIdentifier)")
+        try FileManager.default.createDirectory(at: partialsDir, withIntermediateDirectories: true)
+        let shadow = PartialManager(scratchDir: partialsDir)
+        try Data(repeating: 0, count: 500).write(to: shadow.partialURL(for: key))
+        try shadow.storeEtag("etag-v1", for: key)
+
+        let hugeProps = PathProperties(
+            isDirectory: false, contentLength: Int64.max - 100, eTag: "etag-v1",
+            lastModified: Date(), contentType: "text/csv"
+        )
+        ol.readResults.append(.success((Data(repeating: 0xAB, count: 1), hugeProps)))
+
+        do {
+            _ = try await engine.open(key: key)
+            Issue.record("Expected SyncError.resumeOffsetOverflow to be thrown")
+        } catch SyncError.resumeOffsetOverflow {
+            // Correct — handled, no trap.
+        }
+
+        // The overflowing attempt must have wiped the partial + sidecar; a
+        // dangling pair here is exactly what re-triggers the same overflow.
+        #expect(!FileManager.default.fileExists(atPath: shadow.partialURL(for: key).path))
+        #expect(!FileManager.default.fileExists(atPath: shadow.etagURL(for: key).path))
+
+        // Retry with a sane response. If the discard above didn't happen,
+        // PartialManager.rangeStart(for:) would still see the 500-byte spill
+        // and resume with the SAME huge Content-Length, overflowing again.
+        let freshBody = Data("hello".utf8)
+        let freshProps = PathProperties(
+            isDirectory: false, contentLength: Int64(freshBody.count), eTag: "etag-v2",
+            lastModified: Date(), contentType: "text/csv"
+        )
+        ol.readResults.append(.success((freshBody, freshProps)))
+
+        let fileURL = try await engine.open(key: key)
+        #expect(try Data(contentsOf: fileURL) == freshBody)
+
+        let retryCall = try #require(ol.readCalls.last)
+        #expect(retryCall.range == nil, "self-healed retry must be a full download, not a resume")
+        #expect(retryCall.ifMatch.isEmpty, "self-healed retry must not pin to the stale etag")
+    }
 }
