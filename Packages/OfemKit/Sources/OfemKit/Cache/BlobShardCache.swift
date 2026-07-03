@@ -87,14 +87,13 @@ public struct BlobShardCache: Sendable {
         }
 
         // Write to a temp file then rename atomically.
-        try FileManager.default.createDirectory(at: shardDir, withIntermediateDirectories: true)
         let tmpURL = blobRoot.appendingPathComponent("blob-\(UUID().uuidString).tmp")
         defer { try? FileManager.default.removeItem(at: tmpURL) }
         try data.write(to: tmpURL, options: .atomic)
 
         // Move to canonical path.
         do {
-            try FileManager.default.moveItem(at: tmpURL, to: destURL)
+            try moveIntoShard(from: tmpURL, to: destURL, shardDir: shardDir)
         } catch CocoaError.fileWriteFileExists {
             // Race: another writer arrived first — deduplicate.
             // Verify the winning file is actually present before claiming success.
@@ -171,11 +170,9 @@ public struct BlobShardCache: Sendable {
             return (sha, size)
         }
 
-        try FileManager.default.createDirectory(at: shardDir, withIntermediateDirectories: true)
-
         // Try atomic move first (same-volume, zero-copy).
         do {
-            try FileManager.default.moveItem(at: sourceURL, to: destURL)
+            try moveIntoShard(from: sourceURL, to: destURL, shardDir: shardDir)
         } catch CocoaError.fileWriteFileExists {
             // Race: another writer arrived first — deduplicate.
         } catch let err as NSError
@@ -190,7 +187,7 @@ public struct BlobShardCache: Sendable {
             defer { try? FileManager.default.removeItem(at: tmpURL) }
             try FileManager.default.copyItem(at: sourceURL, to: tmpURL)
             do {
-                try FileManager.default.moveItem(at: tmpURL, to: destURL)
+                try moveIntoShard(from: tmpURL, to: destURL, shardDir: shardDir)
             } catch CocoaError.fileWriteFileExists {
                 // Race during fallback — deduplicate.
             }
@@ -230,8 +227,13 @@ public struct BlobShardCache: Sendable {
         }
         // Best-effort: prune the shard directory when it is now empty.
         // Darwin.rmdir(2) is atomic and returns ENOTEMPTY when the directory
-        // still has siblings — so this can never delete a non-empty directory
-        // and is not subject to a TOCTOU race with a concurrent store(_:) call.
+        // still has siblings — so this can never delete a non-empty directory.
+        // It CAN, however, race a concurrent store(_:)/storeFromURL(_:) that has
+        // just createDirectory'd the same (now-empty) shard dir but has not yet
+        // moved its file into it — recreating the directory immediately before
+        // the move (`moveIntoShard`) narrows that window to two back-to-back
+        // syscalls; its bounded retry on `NSFileNoSuchFileError` is what
+        // actually closes it (a plain recreate-before-move alone would not).
         _ = Darwin.rmdir(shardDir.path)
     }
 
@@ -291,6 +293,39 @@ public struct BlobShardCache: Sendable {
     }
 
     // MARK: - Private helpers
+
+    /// Moves `source` to `dest` inside `shardDir`, guaranteeing `shardDir`
+    /// exists immediately beforehand.
+    ///
+    /// `store(_:)` and `storeFromURL(_:)` route every move-into-shard through
+    /// here rather than calling `createDirectory` earlier in the function and
+    /// `moveItem` later: a concurrent `delete(sha256:)` — e.g. from the orphan
+    /// sweep, which is not serialized against this call (`CacheStore.init`
+    /// kicks the sweep off as a nonisolated `Task`, and arch-04 allows several
+    /// `CacheStore` instances to share one `cacheDir` with zero cross-instance
+    /// mediation) — can `rmdir` a shard directory the instant it observes it
+    /// empty, including one just created for an in-flight store whose file
+    /// hasn't landed yet.
+    ///
+    /// Creating right before the move (idempotent, cheap —
+    /// `withIntermediateDirectories: true` is a no-op when the directory
+    /// already exists) narrows that window to two back-to-back syscalls, but
+    /// does not close it — an `rmdir` can still land between this method's own
+    /// `createDirectory` and `moveItem`. So on the specific failure that race
+    /// produces (`moveItem` throwing `NSFileNoSuchFileError` because the
+    /// directory vanished under it), recreate and retry once: that turns "must
+    /// land in a ~2-syscall window" into "must land twice back-to-back",
+    /// closing the race in practice. Matches the project's documented
+    /// preference for silent retry over surfacing transient races.
+    private func moveIntoShard(from source: URL, to dest: URL, shardDir: URL) throws {
+        try FileManager.default.createDirectory(at: shardDir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.moveItem(at: source, to: dest)
+        } catch let err as NSError where err.code == NSFileNoSuchFileError {
+            try FileManager.default.createDirectory(at: shardDir, withIntermediateDirectories: true)
+            try FileManager.default.moveItem(at: source, to: dest)
+        }
+    }
 
     /// Returns `(shardDirectory, blobFileURL)` for the given SHA-256 digest.
     func shardPath(for sha256: String) -> (dir: URL, file: URL) {

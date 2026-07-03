@@ -559,6 +559,57 @@ struct BlobShardCacheTests {
         #expect(bytes == Int64(content.count))
     }
 
+    // MARK: - store() racing delete() on a colliding shard (moveIntoShard retry regression)
+
+    /// Regression test for the `moveIntoShard` shard-directory race: `delete(sha256:)`
+    /// prunes a shard directory via `rmdir` as soon as it observes it empty, which can
+    /// land between a concurrent `store(_:)`'s own `createDirectory` and `moveItem` for
+    /// a *different* blob in the *same* shard. Without the bounded retry in
+    /// `moveIntoShard`, that surfaces as `moveItem` throwing `NSFileNoSuchFileError`
+    /// (see #413 / CI run 28590288854, where this exact race hit `CacheHandoffTests`
+    /// via `storeBlob`).
+    ///
+    /// A single race attempt does not reliably land in the narrow window, so this
+    /// repeats across many colliding-shard blob pairs — a regression to the old
+    /// "recreate once, no retry" shape would make this test flake.
+    @Test("store() racing delete() on a colliding shard never throws and lands the blob correctly")
+    func storeRacesDeleteOnCollidingShard() async throws {
+        let (cache, tmp) = try makeBlobCache()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let iterations = 50
+        let contents = collidingShardContents(count: iterations + 1)
+        #expect(contents.count == iterations + 1)
+
+        for i in 0 ..< iterations {
+            let a = contents[i]
+            let b = contents[i + 1]
+            let shaA = sha256Hex(a)
+            let shaB = sha256Hex(b)
+
+            // Seed A so its shard directory exists with exactly one file in it —
+            // the delete below can therefore empty (and rmdir) that directory.
+            _ = try cache.store(a)
+
+            // Race delete(A) — which can rmdir the shard the instant A's file is
+            // gone — against store(B), which is moving a different file into the
+            // very same shard directory.
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask { try cache.delete(sha256: shaA) }
+                group.addTask { _ = try cache.store(b) }
+                try await group.waitForAll()
+            }
+
+            // B must land correctly regardless of how the race resolved.
+            let loaded = try cache.load(sha256: shaB)
+            #expect(loaded == b, "iteration \(i): stored blob content mismatch")
+
+            // Empty the shard again so the next iteration's store(a) exercises a
+            // fresh move rather than a dedup no-op.
+            try? cache.delete(sha256: shaB)
+        }
+    }
+
     // MARK: - Wipe
 
     @Test("Wipe clears all blobs and metadata links")
@@ -599,4 +650,30 @@ private func makeBlobCache() throws -> (BlobShardCache, URL) {
 /// Returns the lowercase hex SHA-256 of `data` using CryptoKit directly.
 private func sha256Hex(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
+
+/// Returns `count` distinct `Data` blobs whose SHA-256 digests all share the
+/// same 2-hex-char shard prefix (i.e. land in the same `BlobShardCache` shard
+/// directory).
+///
+/// Brute-forces increasing candidates until `count` of them collide on the
+/// prefix of the first candidate found. With a uniform hash and a 1-in-256
+/// chance per candidate, collecting `count` matches takes ~256×`count`
+/// candidates on average — fast even for `count` in the dozens.
+private func collidingShardContents(count: Int) -> [Data] {
+    var target: String?
+    var results: [Data] = []
+    var i = 0
+    while results.count < count {
+        let candidate = Data("shard-race-\(i)".utf8)
+        let prefix = String(sha256Hex(candidate).prefix(2))
+        if target == nil {
+            target = prefix
+            results.append(candidate)
+        } else if prefix == target {
+            results.append(candidate)
+        }
+        i += 1
+    }
+    return results
 }
