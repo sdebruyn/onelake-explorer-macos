@@ -159,6 +159,21 @@ public actor SyncEngine {
     /// ``refreshInFlightAliases``. Keyed by ``itemListKey(alias:workspaceID:)``.
     private var itemListInFlight: Set<String> = []
 
+    /// Minimum gap between tombstone TTL purges for a single account alias.
+    /// `refreshMaterialized` is the throttle host (the poll tick already fires
+    /// ~every 60 s per alias), so the purge rides that cadence at most once per
+    /// day instead of adding its own loop. 24 h is far tighter than the 30-day
+    /// tombstone TTL, so the purge horizon never lags materially behind the TTL.
+    private static let tombstonePurgeThrottleNs: Int64 = 24 * 60 * 60 * 1_000_000_000
+
+    /// Unix-nanosecond timestamp of the last SUCCESSFUL tombstone purge per
+    /// account alias, gating ``purgeExpiredTombstonesThrottled(alias:)`` by
+    /// ``tombstonePurgeThrottleNs``. Stamped only after a successful purge so a
+    /// thrown attempt (e.g. a transient SQLite error) stays due next poll —
+    /// mirrors the stamp-after-success policy of ``lastItemListNs`` /
+    /// ``lastSelfHealNs``.
+    private var lastTombstonePurgeNs: [String: Int64] = [:]
+
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "SyncEngine")
 
     // MARK: - Init
@@ -869,6 +884,12 @@ public actor SyncEngine {
         refreshInFlightAliases.insert(alias)
         defer { refreshInFlightAliases.remove(alias) }
 
+        // Bound tombstone growth: TTL-purge expired tombstones for this alias,
+        // throttled to at most once per 24 h. Runs at the top of the pass (inside
+        // the re-entrancy guard, so overlapping polls never double-purge) before
+        // any listing I/O. Non-fatal — a purge failure never aborts the refresh.
+        await purgeExpiredTombstonesThrottled(alias: alias)
+
         let semaphore = refreshSemaphore(for: alias, cap: concurrencyCap)
 
         // 0. ONE snapshot of every key's prior subtree etag, before anything
@@ -986,6 +1007,36 @@ public actor SyncEngine {
         }
 
         return await counter.total > 0
+    }
+
+    /// TTL-purges expired deletion tombstones for `alias`, throttled to at most
+    /// once per ``tombstonePurgeThrottleNs``.
+    ///
+    /// Mirrors the ``refreshItemListing`` throttle: skip inside the window; stamp
+    /// ``lastTombstonePurgeNs`` only AFTER a successful purge so a thrown attempt
+    /// stays due next poll. A backward clock step (`nowNs < last`) fails toward
+    /// purging rather than freezing. The purge is best-effort maintenance — a
+    /// failure is logged and swallowed so it can never abort the enclosing
+    /// materialized refresh.
+    private func purgeExpiredTombstonesThrottled(alias: String) async {
+        let nowNs = nowNsProvider()
+        if let last = lastTombstonePurgeNs[alias], nowNs >= last, nowNs - last < Self.tombstonePurgeThrottleNs {
+            return
+        }
+        do {
+            let purged = try await cache.purgeExpiredTombstones(accountAlias: alias)
+            lastTombstonePurgeNs[alias] = nowNs
+            if purged > 0 {
+                logger.debug("tombstone purge", metadata: [
+                    "alias": alias,
+                    "purged": "\(purged)",
+                ])
+            }
+        } catch {
+            Self.log.warning(
+                "refreshMaterialized: tombstone purge failed alias=\(alias, privacy: .public) err=\(error, privacy: .public)"
+            )
+        }
     }
 
     /// Number of path segments in a container key's path; the item-root
