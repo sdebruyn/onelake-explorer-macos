@@ -42,7 +42,7 @@ Settled during product discovery and unchanged since:
 What each process does:
 
 - The **host app** holds the account-management UI, registers File Provider domains, and shows the menu bar status icon. It communicates with the FPE via `NSFileProviderManager.service(name:for:)` + XPC (protocol `OfemClientControlProtocol`). The host app also registers itself as a login item via `SMAppService.mainApp`.
-- The **File Provider Extension** is sandboxed and macOS launches it on demand when Finder needs files. It implements the `NSFileProvider*` classes and owns all engine logic: auth (MSAL Swift), OneLake DFS, Fabric REST, cache (SQLite + blobs), sync, and telemetry.
+- The **File Provider Extension** is sandboxed and macOS launches it on demand when Finder needs files. It implements the `NSFileProvider*` classes and owns all engine logic: auth (MSAL Swift), OneLake DFS, Fabric REST, cache (SQLite + blobs), sync, and telemetry. The XPC contract itself (protocol, `NSXPCInterface` factory, config-key vocabulary) lives in `Shared/` so it can't drift between the two processes — see [File Provider](../file-provider.md).
 
 Both processes share state through a macOS App Group (`6D79CUWZ4J.group.dev.debruyn.ofem`, team-prefixed for both Developer ID and Mac App Store): config TOML, the SQLite metadata cache, the cached blob shards, and the per-account Keychain entries.
 

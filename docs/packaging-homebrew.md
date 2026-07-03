@@ -212,7 +212,22 @@ The `uninstall quit:` directive terminates the running OneLake app. The `app` di
 
 ## Local development distribution
 
-For pre-release dogfooding, build the app manually:
+For pre-release dogfooding, the fastest path is:
+
+```bash
+make install   # build + install Debug app into /Applications, then relaunch
+```
+
+Under the hood, that runs `make build`, quits the running host app and FPE
+(polling for each to fully exit before touching the bundle, since
+`fileproviderd` can fault the domain if the `.appex` disappears mid-shutdown),
+copies the fresh `.app` into `/Applications` via a staged `.new` sibling (so a
+failed copy never clobbers the existing install), unregisters the DerivedData
+build path from LaunchServices (avoids a duplicate `dev.debruyn.ofem`
+registration causing `providerNotFound`), and relaunches so the host
+re-registers its File Provider domains against the new binary.
+
+The manual steps `make install` automates:
 
 ```bash
 # Generate the Xcode project from project.yml

@@ -23,6 +23,7 @@ OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fa
 - Auth: `docs/auth.md` — MSAL for Apple Platforms, own multi-tenant Entra App Registration, Keychain-backed cache, per-account `MSALPublicClientApplication`.
 - OneLake API: `docs/onelake-api.md` — ADLS Gen2 DFS endpoint for I/O (audience `https://storage.azure.com/`), Fabric REST for discovery (Power BI Service audience `https://analysis.windows.net/powerbi/api`). Two distinct audiences — a single one returns 401 on Fabric REST. See `docs/auth.md`.
 - Tech stack: `docs/tech-stack.md` — OfemKit is the engine; host app and FPE are thin Swift targets.
+- Materialized-folder refresh: `docs/file-provider.md` "Materialized refresh" — subtree-etag skip-gate so an unchanged folder subtree is never re-listed, plus a configurable self-heal floor (`sync.self_heal_interval_m`, default 30 min, `0` disables, clamped 10–60) that forces a periodic non-gated re-list as insurance.
 - Telemetry: `docs/telemetry.md` — opt-out, App Insights free tier, tenant IDs collected but never UPN / workspace / file names.
 - Packaging: `docs/packaging-homebrew.md` — xcodebuild + notarytool, DMG via Homebrew cask.
 - Prerequisites: `docs/prerequisites.md` — splits local dev vs publishing/signing.
@@ -43,7 +44,7 @@ OFEM — OneLake Explorer for macOS. Native Finder integration with Microsoft Fa
 - `Packages/OfemKit/` — local Swift Package: auth (MSAL), OneLake DFS + Fabric REST clients, SQLite metadata cache, sync engine, telemetry. Linked into both the host app and the FPE.
 - `OneLake/` — host app (Swift). Menu bar UI, account management, domain registration, XPC client to the FPE.
 - `OneLakeFileProvider/` — File Provider Extension (Swift). `NSFileProviderReplicatedExtension`, `OfemFPEEnumerator`, `FPEEngineHost`. Owns all engine logic.
-- `Shared/` — XPC protocol + types shared by both targets: `OfemClientControlProtocol`, `XPCAccountInfo`, `XPCEngineStatus`.
+- `Shared/` — XPC protocol + types shared by both targets: `OfemClientControlProtocol` (the protocol), `OfemControlInterface` (single `NSXPCInterface` factory), `OfemConfigKey` (canonical `setConfig` key vocabulary), `OfemDomainIdentifier` (`ofem.<alias>` composition helpers), `XPCAccountInfo`, `XPCEngineStatus`, `XPCPausedWorkspace`.
 - `docs/` — all design docs.
 - `homebrew/` — cask template (also lives in separate `homebrew-ofem` tap repo for release publishing).
 - `.github/` — workflows, issue templates, FUNDING.yml.
@@ -56,6 +57,9 @@ make app
 
 # Build only the macOS app (Debug, signed, local use)
 make build
+
+# Build and install the Debug app into /Applications, then relaunch (local dogfooding)
+make install
 
 # Compile unsigned (CI gate — no Developer ID needed)
 make build-ci

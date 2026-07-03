@@ -47,6 +47,7 @@ What each process does:
 
 - The **host app** holds the account-management UI, registers File Provider domains, talks to the system browser for auth, and polls the FPE for change signals. It communicates with the FPE via `NSFileProviderManager.service(name:for:)` + `NSXPCConnection` (protocol `OfemClientControlProtocol`).
 - The **File Provider Extension** is sandboxed by Apple. macOS launches it on demand when Finder needs files. It implements the `NSFileProvider*` classes and owns all engine logic: auth (MSAL Swift), OneLake DFS, Fabric REST, cache (SQLite + blobs), sync, and telemetry.
+- The XPC contract itself lives in `Shared/`, not just the `OfemClientControlProtocol` declaration: `OfemControlInterface` is the single factory both sides call to build the `NSXPCInterface` (so its secure-coding class registrations can never drift between host and FPE), `OfemConfigKey` is the canonical `setConfig` key vocabulary, and `OfemDomainIdentifier` composes/decomposes the `ofem.<alias>` domain identifier string. See [Tech stack](tech-stack.md) for the full `Shared/` inventory.
 
 ## Shared state via App Group
 
@@ -118,11 +119,28 @@ A user double-clicks a folder in Finder. macOS calls `enumerator(for: containerI
 
 Listings are **stale-while-revalidate**. When a folder is opened, the SQLite cache is served immediately if it already holds that folder's children (presence, not age, decides), and a background refresh against OneLake is kicked off at the same time. Only a folder that has never been listed blocks on a refresh before returning, so the first open still shows live entries. When a background refresh finds the listing drifted, the engine notifies the FPE, which signals the affected container so Finder re-enumerates. The cache therefore serves two roles only: instant first paint and an offline fallback. A short revalidate debounce coalesces a burst of opens of the same folder into a single OneLake call.
 
+A few refinements to the discovery/refresh path worth knowing:
+
+- **Discovery upserts are conditional.** `SyncEngine.classifyUpserts` compares each candidate row against the cached row and writes only new-or-changed rows; an unchanged row's `syncedAtNs` is no longer bumped on every poll, so a quiet workspace/item listing does not manufacture phantom deltas.
+- **Workspace item listings refresh via Fabric REST, not DFS.** A materialized poll refreshes a workspace's item list through `SyncEngine.refreshItemListing`, which calls Fabric REST `listItems` (replacing an earlier attempt to `listPath(itemGUID: "__items__")` against DFS, which always failed silently). Calls are throttled to once per `(alias, workspaceID)` per 60 s and in-flight calls are coalesced, so a burst of opens across a workspace's items shares one Fabric round trip.
+- **Item resolution is cache-first.** `OfemKit.ItemResolution.resolveItem`/`.createItem` (used by the FPE's `item(for:)` and `createItem`/`modifyItem` entry points) try a cached row via the private `cacheFirstRecord` helper before going to the network. `resolveItem`'s cache-miss path enumerates the parent container and retries the cache fetch (`cachedRecordOrEnumerate`), then falls back to a Fabric listing for workspace/item identifiers. `SyncEngine.resolveItemType(for:)` is unrelated to that miss path — it is `createItem`'s own last-resort synthetic-item fallback, used only when a just-created item still has no cache row after the enumerate-and-retry above, so the returned placeholder at least carries the right item type for `computeCapabilities`.
+
 ## Working set updates
 
 For change-detection on folders the user has visited recently, the FPE engine polls Fabric on an adaptive schedule. When it finds changes, it calls `NSFileProviderManager.signalEnumerator(for:)` for each affected container. The **host app** (`OneLake.app`) polls the FPE over XPC via `OfemFPEClient` and listens for push notifications. macOS then asks the File Provider Extension to re-enumerate.
 
 **Trade-off:** proactive Finder refresh requires `OneLake.app` to be running. If the user quits the host app, the File Provider Extension continues to work (files open, upload, download) but may not receive all proactive `signalEnumerator` calls. macOS performs its own periodic re-enumeration as a fallback.
+
+## Materialized refresh: subtree-etag skip-gate and self-heal
+
+`pollMaterialized(alias:reply:)` refreshes every container the FPE has materialized (folders opened/kept-on-Mac) for an alias by calling `SyncEngine.refreshMaterialized(alias:keys:concurrencyCap:selfHealIntervalMinutes:)`. A naive implementation would re-list every materialized container on every poll; that's O(materialized containers) DFS calls even when nothing changed. Instead:
+
+- Containers are processed in **depth-ordered waves**, parents before children. Listing a parent folder harvests the ADLS Gen2 directory etag of each child container onto that child's cache row (`SyncEngine.harvestSubtreeEtags`) — under the `2023-11-03` DFS API's deep-advance invariant, that etag changes if *anything* changed anywhere below it.
+- A child whose harvested `subtree_etag` is unchanged since the wave started, **and** whose parent actually vouched for it this pass (listed successfully, or was itself skipped), is skipped entirely — no `listPath` call. This is the `#380` skip-gate; the decision logic lives in the private `SyncEngine.shouldSkip`/`.healDue` helpers, and `CacheReader.subtreeEtags(for:)` bulk-reads the etags for a whole wave in one read transaction rather than one `cache.fetch` per key.
+- The directory etag (and `contentLength`/`lastModified`) is otherwise **ignored** as a change signal in `entryChanged` — it is only ever consulted as this subtree-change token, never diffed directly into the folder listing.
+- **Self-heal floor:** as insurance against the (empirically observed, not contractually guaranteed) deep-advance invariant, each container is forced through a non-gated re-list at least every `selfHealIntervalMinutes`. Each wave's actual listing runs through the private `SyncEngine.runWave` helper; the per-key self-heal clock only advances after a real successful list, never after a swallowed error. Configurable as `sync.self_heal_interval_m` — default 30, `0` disables the floor, otherwise clamped to 10–60 — via Settings → Advanced or `OfemConfigKey.syncSelfHealIntervalM`.
+- Depth-0 containers (item roots) and orphan children (parent not in the polled key set) have no parent to vouch for them, so they always list — matching pre-skip-gate behaviour for those cases.
+- Per-key errors (offline, cancellation, a paused workspace) are swallowed; they never abort the rest of the pass, and a container that failed never advances its self-heal clock so it stays heal-due.
 
 ## Fetching content
 
@@ -133,13 +151,17 @@ When the user opens a placeholder, macOS calls `fetchContents(for: itemIdentifie
 3. Streams to the location macOS gave us.
 4. Returns success; macOS marks the file as locally cached, removes the cloud overlay.
 
+`fetchContents` calls `SyncEngine.openReturningRecord(key:)` rather than a plain `open(key:)`, so the `NSFileProviderItem` it hands back is built from the record `openReturningRecord` already read post-download — not from a cache read taken before the download ran, which could return a `contentVersion` stale relative to the bytes just served and trigger a redundant re-download next cycle.
+
+`open`/`openReturningRecord` gate their freshness check with a TTL (`SyncEngine.defaultBlobFreshnessTTL`, default 60 s, constructor-injectable): a cached row synced within the TTL is served straight from the blob cache with no network call at all; a row outside the TTL falls back to the pre-existing revalidating `HEAD`, except when the engine is known offline, in which case the stale blob is served without attempting the `HEAD`. This keeps a burst of re-opens of the same file (e.g. Quick Look) from paying a round trip each time.
+
 ## Uploading content
 
 When the user saves a modified file, macOS calls `createItem` or `modifyItem`. The extension:
 
 1. Resolves the destination OneLake path from `template.parentItemIdentifier` and `template.filename` (create) or `item.itemIdentifier` (modify).
 2. Calls `SyncEngine.put` directly (no IPC hop).
-3. Streams to OneLake DFS using `PUT ?resource=file` + chunked `PATCH ?action=append` + `PATCH ?action=flush`.
+3. Stages the upload at a temp sibling path within the same item — `OneLakeClient.write` (both the `sourceURL` and `Data` overloads) runs `PUT ?resource=file` + chunked `PATCH ?action=append` + `PATCH ?action=flush` against a path prefixed `.ofem-upload-<uuid>-`, then commits with a same-item DFS rename onto the real destination path. `isMacOSMetadata` treats the `.ofem-upload-` prefix as hidden junk, so a staging file caught mid-flight by a concurrent listing never surfaces in Finder. On failure the staging file is best-effort deleted; if that cleanup itself fails, the orphaned staging blob is harmless — nothing references it. This avoids truncating the original file if an overwrite is interrupted partway through the append/flush sequence: the old content stays intact under its real path until the rename commits atomically.
 4. On success, returns the updated `NSFileProviderItem` with the server-assigned etag/mtime from the post-upload HEAD.
 5. On failure (network, throttling, capacity-paused), returns an `NSFileProviderError` macOS understands; macOS surfaces it in the UI and may retry later (we honor `Retry-After`).
 
@@ -150,6 +172,14 @@ When the user saves a modified file, macOS calls `createItem` or `modifyItem`. T
 - **`.parentItemIdentifier` (reparent / cross-directory move)** — not yet supported; the field is left pending so the framework does not treat the move as applied.
 
 Other metadata-only changes (e.g. `lastUsedDate`, tags) are acknowledged: the extension applies what it can (nothing persisted remotely for these) and returns the existing item, so macOS treats the call as a no-op rather than surfacing an error to the user.
+
+## Deletion delivery model
+
+A remote deletion has to reach Finder as `enumerateChanges` → `didDeleteItems`, which means the cache needs to remember that a row is gone even after the row itself is hard-deleted. `CacheStore.batchDelete(_:recordTombstones:)` does this: when `recordTombstones` is `true` (the `refreshFolder` reconcile and the discovery-row expiry path both pass `true`; maintenance-only deletes pass `false`), a deletion tombstone is written for every removed row — via `CacheStore.tombstoneIdentifierString(workspaceID:itemID:path:)` — in the **same transaction** as the hard-delete, before it runs. Workspace rows are never tombstoned; a removed workspace is remount-driven (`ChangeWatcher`), not delta-driven.
+
+`CacheReader.syncAnchorNs` (renamed from `maxSyncedAtNs`) folds in the newest `deleted_at_ns` alongside `synced_at_ns`, so a poll that only removes rows still advances the anchor instead of stranding the deletion behind it. `CacheReader.itemsChangedAfter` reads both `path_metadata` and `deletion_tombstones` and reconciles any overlap by timestamp (ties favour the live row). A tombstone is cleared as soon as its identifier is re-created — `upsert`/`batchUpsert`/`renamePathPrefix`'s destination subtree all clear a shadowing tombstone inline — so a rename or re-create is never mistakenly reported as a delete-then-add. Migration `v7` does a one-time purge of legacy tombstones already shadowed by a fresher live row from before this model existed.
+
+Known follow-up: `expireDiscoveryRows` does not yet purge orphaned `path_metadata` rows keyed by a removed item's real GUID, and blob cleanup for tombstoned deletes is deferred to the background orphan sweep rather than done inline.
 
 ## Conflict resolution
 
@@ -163,11 +193,12 @@ Read path: we never read these from OneLake (they would never be there in the fi
 
 ## Sign-out / domain removal
 
-Signing out from the menu bar (account submenu -> **Sign Out…**):
-1. Menu bar sends `removeAccount` via XPC to the FPE's `OfemClientControlService`.
-2. FPE calls `NSFileProviderManager.remove(domain)` to ask macOS to tear down the mount.
+Signing out from the menu bar (account submenu -> **Sign Out…**) runs entirely in the **host app**, not over XPC:
+1. `MenuStatusModel.removeAccount(alias:)` calls `SharedOfemAuth.shared.auth.removeAccount(alias:)` — `OfemAuth`, running in-process in the host — which purges the account's refresh token from the shared MSAL Keychain and removes the account entry from `config.toml`.
+2. On success, `DomainSyncManager.shared.removeDomain(alias:)` calls `NSFileProviderManager.remove(domain, mode: .preserveDownloadedUserData)` directly, asking macOS to tear down the mount for that alias while keeping any locally downloaded files on disk.
 3. macOS asks the user for confirmation if there are local-only changes (we cooperate).
-4. FPE clears the SQLite cache rows for that domain, removes the cache blob shards, removes the Keychain item, removes the account from `config.toml`.
+
+There is no `removeAccount` XPC method on `OfemClientControlProtocol` — the protocol surface is `getProtocolVersion`, `getEngineStatus`, `setConfig`, `clearCache`, `pollMaterialized`, and `reloadEngine`. The FPE does not participate in account removal directly; it picks up the account's absence the next time it reads `config.toml`. Cache rows and blob shards for the removed alias are not swept synchronously by this flow (see "Deletion delivery model" above for the general row-removal machinery, which does not currently run a whole-account purge).
 
 ## What we do NOT implement
 
