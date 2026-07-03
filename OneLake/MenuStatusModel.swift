@@ -62,6 +62,10 @@ protocol AccountProvider: Sendable {
 /// Implemented by OfemFPEClient; faked in tests.
 protocol EngineStatusProvider: Sendable {
     func getEngineStatus(alias: String) async throws -> XPCEngineStatus
+    /// Slim badge-only status: `needsSignIn` + `pausedWorkspaces`, skipping
+    /// the FPE's blobBytes() cache scan and config snapshot that
+    /// `getEngineStatus` always pays for. See `OfemFPEClient.getBadgeStatus(alias:)` (#397).
+    func getBadgeStatus(alias: String) async throws -> XPCBadgeStatus
     func setConfig(alias: String, key: String, value: String) async throws
     func clearCache(alias: String) async throws -> Int64
     /// Reloads the FPE's engine for `alias` (e.g. after re-authentication).
@@ -385,10 +389,21 @@ final class MenuStatusModel: ObservableObject {
 
     /// Fetch account list + engine status. Call this on menu open;
     /// safe to call concurrently — a running fetch is cancelled and restarted.
-    func refresh() {
+    ///
+    /// - Parameter full: When true (the default), the primary account's
+    ///   status fetch uses the full `getEngineStatus` verb (cache stats +
+    ///   config snapshot) — appropriate whenever a UI surface is actually
+    ///   showing those numbers. Pass `false` for ambient/background
+    ///   refreshes that only ever consume `needsSignIn` + `pausedWorkspaces`;
+    ///   this routes the primary fetch through the slim `getBadgeStatus`
+    ///   verb instead, skipping the FPE's blobBytes() cache scan (#397).
+    ///   The secondary-account sweep (accounts 2..N) always uses the slim
+    ///   verb regardless of this flag, since it only ever consumes
+    ///   needsSignIn.
+    func refresh(full: Bool = true) {
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
-            await self?.doRefresh()
+            await self?.doRefresh(full: full)
         }
     }
 
@@ -399,11 +414,14 @@ final class MenuStatusModel: ObservableObject {
     /// badge (no-accounts / paused-workspace state) must keep self-healing
     /// even while no UI surface is open — that's the app's normal resting
     /// state. `interval` is deliberately much coarser than the 5 s
-    /// high-frequency loop (`startAutoRefresh`) so the per-account
-    /// `getEngineStatus` round trip — and the `blobBytes()` scan it
-    /// triggers on the FPE side — is paid far less often while nobody is
-    /// looking. `surfaceBecameVisible()` layers the 5 s loop on top
-    /// whenever the dropdown or Settings window is actually open.
+    /// high-frequency loop (`startAutoRefresh`). It also passes
+    /// `full: false` to `refresh()` (#397): the ambient badge only needs
+    /// `needsSignIn` + `pausedWorkspaces`, so this tick uses the slim
+    /// `getBadgeStatus` verb instead of `getEngineStatus`, skipping the
+    /// FPE's blobBytes() cache scan entirely while nobody is looking.
+    /// `surfaceBecameVisible()` layers the 5 s loop — which still fetches
+    /// the full status, cache numbers included — on top whenever the
+    /// dropdown or Settings window is actually open.
     ///
     /// Call once, at launch; the loop is not meant to be stopped.
     func startBackgroundRefresh(interval: Duration = .seconds(75)) {
@@ -411,7 +429,7 @@ final class MenuStatusModel: ObservableObject {
         backgroundRefreshTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                self.refresh()
+                self.refresh(full: false)
                 try? await Task.sleep(for: interval)
             }
         }
@@ -477,7 +495,7 @@ final class MenuStatusModel: ObservableObject {
         stopAutoRefresh()
     }
 
-    private func doRefresh() async {
+    private func doRefresh(full: Bool) async {
         // Stamp this refresh so we can discard stale results when a newer
         // refresh has already completed (generation counter fix for app-07).
         refreshGeneration &+= 1
@@ -518,88 +536,96 @@ final class MenuStatusModel: ObservableObject {
         // account list (typical installations have 1–3 accounts).
         var needsSignInSet: Set<String> = []
 
-        do {
-            let status = try await engineStatusProvider.getEngineStatus(alias: firstAlias)
+        if full {
+            do {
+                let status = try await engineStatusProvider.getEngineStatus(alias: firstAlias)
 
-            // Discard results if a newer refresh already ran while we were
-            // awaiting the XPC reply (stale-snapshot guard for app-07).
-            guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
+                // Discard results if a newer refresh already ran while we were
+                // awaiting the XPC reply (stale-snapshot guard for app-07).
+                guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
 
-            if !isFenced(.cacheMaxSize) {
-                cacheBytes = status.cacheBytes
-                cacheMaxBytes = status.cacheMaxBytes
-                if status.cacheMaxSizeGB > 0 {
-                    cacheMaxSizeGB = status.cacheMaxSizeGB
+                if !isFenced(.cacheMaxSize) {
+                    cacheBytes = status.cacheBytes
+                    cacheMaxBytes = status.cacheMaxBytes
+                    if status.cacheMaxSizeGB > 0 {
+                        cacheMaxSizeGB = status.cacheMaxSizeGB
+                    }
                 }
-            }
-            if !isFenced(.telemetry) {
-                telemetryEnabled = status.telemetryEnabled
-            }
-            if status.netMaxUploads > 0, !isFenced(.netMaxUploads) {
-                netMaxUploads = status.netMaxUploads
-            }
-            if status.netMaxDownloads > 0, !isFenced(.netMaxDownloads) {
-                netMaxDownloads = status.netMaxDownloads
-            }
-            if !status.logLevel.isEmpty, !isFenced(.logLevel) {
-                logLevel = status.logLevel
-            }
-            if status.materializedPollIntervalS > 0, !isFenced(.materializedPollInterval) {
-                materializedPollIntervalS = status.materializedPollIntervalS
-                ChangeWatcher.shared.materializedPollInterval = .seconds(status.materializedPollIntervalS)
-            }
-            if !isFenced(.selfHealInterval) {
-                // 0 from an older FPE means "not yet available"; preserve the last-known
-                // value so the UI does not snap back. Once populated, publish verbatim
-                // (0 = disabled is a valid user choice).
-                if status.selfHealIntervalM > 0 || selfHealIntervalM == 0 {
-                    selfHealIntervalM = status.selfHealIntervalM
+                if !isFenced(.telemetry) {
+                    telemetryEnabled = status.telemetryEnabled
                 }
-            }
+                if status.netMaxUploads > 0, !isFenced(.netMaxUploads) {
+                    netMaxUploads = status.netMaxUploads
+                }
+                if status.netMaxDownloads > 0, !isFenced(.netMaxDownloads) {
+                    netMaxDownloads = status.netMaxDownloads
+                }
+                if !status.logLevel.isEmpty, !isFenced(.logLevel) {
+                    logLevel = status.logLevel
+                }
+                if status.materializedPollIntervalS > 0, !isFenced(.materializedPollInterval) {
+                    materializedPollIntervalS = status.materializedPollIntervalS
+                    ChangeWatcher.shared.materializedPollInterval = .seconds(status.materializedPollIntervalS)
+                }
+                if !isFenced(.selfHealInterval) {
+                    // 0 from an older FPE means "not yet available"; preserve the last-known
+                    // value so the UI does not snap back. Once populated, publish verbatim
+                    // (0 = disabled is a valid user choice).
+                    if status.selfHealIntervalM > 0 || selfHealIntervalM == 0 {
+                        selfHealIntervalM = status.selfHealIntervalM
+                    }
+                }
 
-            // Mark that at least one successful status reply has been applied.
-            // Settings rows that cannot use a sibling field's non-zero value as
-            // a "loaded" proxy (e.g. selfHealIntervalM may be 0 when disabled)
-            // should gate on this flag instead.
-            engineStatusReceived = true
+                // Mark that at least one successful status reply has been applied.
+                // Settings rows that cannot use a sibling field's non-zero value as
+                // a "loaded" proxy (e.g. selfHealIntervalM may be 0 when disabled)
+                // should gate on this flag instead. Only the full getEngineStatus
+                // reply actually populates the cache/config fields this flag
+                // guards, so the badge-only branch below leaves it untouched.
+                engineStatusReceived = true
 
-            // Map XPCPausedWorkspace entries to PausedWorkspaceInfo.
-            pausedWorkspaces = status.pausedWorkspaces.map { xpc in
-                PausedWorkspaceInfo(
-                    accountAlias: xpc.accountAlias,
-                    workspaceId: xpc.workspaceID,
-                    reason: xpc.reason,
-                    // A zero/negative detectedAtSec means the timestamp is
-                    // unknown. Use Date.distantPast (Apple's conventional
-                    // "never / unknown" sentinel) rather than the Unix epoch
-                    // (1970-01-01), which would format as a nonsensical date
-                    // in any downstream display.
-                    detectedAt: xpc.detectedAtSec > 0
-                        ? Date(timeIntervalSince1970: xpc.detectedAtSec)
-                        : Date.distantPast,
-                    probedAt: nil
+                pausedWorkspaces = mapPausedWorkspaces(status.pausedWorkspaces)
+
+                // Capture auth state from the first account's status reply.
+                if status.needsSignIn {
+                    needsSignInSet.insert(firstAlias)
+                }
+            } catch {
+                // FPE not yet reachable — fields stay at last-known values or defaults.
+                Self.log.debug(
+                    "Engine status fetch skipped (FPE not reachable): \(error.localizedDescription, privacy: .public)"
                 )
             }
+        } else {
+            // Ambient/background refresh (#397): only needsSignIn + pausedWorkspaces
+            // are needed here, so use the slim verb and skip the FPE's blobBytes()
+            // cache scan and config snapshot entirely. Cache/config fields are left
+            // at their last-known values — engineStatusReceived is NOT set here,
+            // since this branch never actually fetches the fields it gates.
+            do {
+                let status = try await engineStatusProvider.getBadgeStatus(alias: firstAlias)
 
-            // Capture auth state from the first account's status reply.
-            if status.needsSignIn {
-                needsSignInSet.insert(firstAlias)
+                guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
+
+                pausedWorkspaces = mapPausedWorkspaces(status.pausedWorkspaces)
+
+                if status.needsSignIn {
+                    needsSignInSet.insert(firstAlias)
+                }
+            } catch {
+                Self.log.debug(
+                    "Badge status fetch skipped (FPE not reachable): \(error.localizedDescription, privacy: .public)"
+                )
             }
-        } catch {
-            // FPE not yet reachable — fields stay at last-known values or defaults.
-            Self.log.debug(
-                "Engine status fetch skipped (FPE not reachable): \(error.localizedDescription, privacy: .public)"
-            )
         }
 
-        // Query remaining accounts for their per-domain auth state.
-        //
-        // Each call also runs a blobBytes() full-table scan on the FPE side
-        // (getEngineStatus always measures cache usage before replying) even
-        // though only needsSignIn is used here. Sign-in state doesn't need
-        // high-frequency freshness, so this sweep only actually round-trips
-        // once every `secondaryAccountCheckInterval` of wall-clock time;
-        // skipped calls carry forward the last-known membership instead
+        // Query remaining accounts for their per-domain auth state via the slim
+        // getBadgeStatus verb — only needsSignIn is used here, so this never runs
+        // the FPE's blobBytes() cache scan (#397; previously every call paid that
+        // scan via getEngineStatus for data this sweep never read). Sign-in state
+        // doesn't need high-frequency freshness, so this sweep only actually
+        // round-trips once every `secondaryAccountCheckInterval` of wall-clock
+        // time; skipped calls carry forward the last-known membership instead
         // (E3). Time-based rather than a per-refresh counter: refresh()
         // now fires from two independent loops (the always-on low-frequency
         // background loop and the visibility-gated high-frequency one) plus
@@ -612,11 +638,10 @@ final class MenuStatusModel: ObservableObject {
         let now = ContinuousClock.now
         let secondaryAccountCheckDue = lastSecondaryAccountCheckAt.map { now - $0 >= secondaryAccountCheckInterval } ?? true
         if secondaryAccountCheckDue {
-            lastSecondaryAccountCheckAt = now
             for acc in nativeAccounts.dropFirst() {
                 guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
                 do {
-                    let s = try await engineStatusProvider.getEngineStatus(alias: acc.alias)
+                    let s = try await engineStatusProvider.getBadgeStatus(alias: acc.alias)
                     if s.needsSignIn {
                         needsSignInSet.insert(acc.alias)
                     }
@@ -632,8 +657,47 @@ final class MenuStatusModel: ObservableObject {
             }
         }
 
+        // Stamp (when due) and publish together, both gated by the SAME final
+        // guard as `accountsNeedingSignIn` below — not by the per-iteration
+        // guard inside the loop above, which only re-checks *before* each
+        // iteration's await. A task superseded while awaiting the LAST
+        // account has no further iteration left to catch that: it would
+        // fall through the loop and reach an unconditional stamp write with
+        // a `now` captured before the sweep started, potentially clobbering
+        // a fresher stamp already written by the task that superseded it.
+        // Gating here instead means a superseded task can write neither the
+        // stamp nor accountsNeedingSignIn — matching the earlier stamp-
+        // after-sweep fix's intent (a sweep that didn't finish under this
+        // task's own generation must count as "didn't happen"), but now
+        // covering the tail-of-loop case too, not just the mid-loop one.
         guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
+        if secondaryAccountCheckDue {
+            lastSecondaryAccountCheckAt = now
+        }
         accountsNeedingSignIn = needsSignInSet
+    }
+
+    /// Maps `XPCPausedWorkspace` entries to `PausedWorkspaceInfo`. Shared by
+    /// both the full (`getEngineStatus`) and badge-only (`getBadgeStatus`)
+    /// branches of `doRefresh`, since both carry the same `pausedWorkspaces`
+    /// field (#397).
+    private func mapPausedWorkspaces(_ xpcWorkspaces: [XPCPausedWorkspace]) -> [PausedWorkspaceInfo] {
+        xpcWorkspaces.map { xpc in
+            PausedWorkspaceInfo(
+                accountAlias: xpc.accountAlias,
+                workspaceId: xpc.workspaceID,
+                reason: xpc.reason,
+                // A zero/negative detectedAtSec means the timestamp is
+                // unknown. Use Date.distantPast (Apple's conventional
+                // "never / unknown" sentinel) rather than the Unix epoch
+                // (1970-01-01), which would format as a nonsensical date
+                // in any downstream display.
+                detectedAt: xpc.detectedAtSec > 0
+                    ? Date(timeIntervalSince1970: xpc.detectedAtSec)
+                    : Date.distantPast,
+                probedAt: nil
+            )
+        }
     }
 
     // MARK: - XPC version mismatch surfacing (xpc-06)

@@ -48,11 +48,13 @@ private final class CountingAccountProvider: AccountProvider, @unchecked Sendabl
     func removeAccount(alias _: String) async throws {}
 }
 
-/// Records every alias getEngineStatus() is called with, so tests can
-/// verify the secondary-account throttle (E3).
+/// Records every alias getEngineStatus()/getBadgeStatus() is called with, so
+/// tests can verify the secondary-account throttle (E3) and, since #397,
+/// which verb the background/secondary paths actually use.
 @MainActor
 private final class CallLoggingEngineStatusProvider: EngineStatusProvider, @unchecked Sendable {
     private(set) var calledAliases: [String] = []
+    private(set) var calledBadgeAliases: [String] = []
 
     func getEngineStatus(alias: String) async throws -> XPCEngineStatus {
         calledAliases.append(alias)
@@ -61,6 +63,57 @@ private final class CallLoggingEngineStatusProvider: EngineStatusProvider, @unch
             telemetryEnabled: true, netMaxUploads: 1, netMaxDownloads: 1,
             logLevel: "info", pausedWorkspaces: [], needsSignIn: false
         )
+    }
+
+    func getBadgeStatus(alias: String) async throws -> XPCBadgeStatus {
+        calledBadgeAliases.append(alias)
+        return XPCBadgeStatus(needsSignIn: false, pausedWorkspaces: [])
+    }
+
+    func setConfig(alias _: String, key _: String, value _: String) async throws {}
+    func clearCache(alias _: String) async throws -> Int64 {
+        0
+    }
+
+    func reloadEngine(alias _: String) async throws {}
+}
+
+/// Like `CallLoggingEngineStatusProvider`, but the getBadgeStatus() call at
+/// `gateCallIndex` (0-based, across all getBadgeStatus invocations) suspends
+/// until `releaseGate()` is called. Used to reproduce the stamp-after-sweep
+/// bug (#397): a secondary-sweep call in flight when a newer refresh()
+/// supersedes it.
+@MainActor
+private final class GatedEngineStatusProvider: EngineStatusProvider, @unchecked Sendable {
+    private(set) var calledAliases: [String] = []
+    private(set) var calledBadgeAliases: [String] = []
+    var gateCallIndex: Int?
+    private var badgeCallIndex = 0
+    private var gateContinuation: CheckedContinuation<Void, Never>?
+
+    func getEngineStatus(alias: String) async throws -> XPCEngineStatus {
+        calledAliases.append(alias)
+        return XPCEngineStatus(
+            cacheBytes: 0, cacheMaxBytes: 0, cacheMaxSizeGB: 0,
+            telemetryEnabled: true, netMaxUploads: 1, netMaxDownloads: 1,
+            logLevel: "info", pausedWorkspaces: [], needsSignIn: false
+        )
+    }
+
+    func getBadgeStatus(alias: String) async throws -> XPCBadgeStatus {
+        let myIndex = badgeCallIndex
+        badgeCallIndex += 1
+        calledBadgeAliases.append(alias)
+        if myIndex == gateCallIndex {
+            await withCheckedContinuation { cont in gateContinuation = cont }
+        }
+        return XPCBadgeStatus(needsSignIn: false, pausedWorkspaces: [])
+    }
+
+    /// Resumes the gated getBadgeStatus() call, if one is currently suspended.
+    func releaseGate() {
+        gateContinuation?.resume()
+        gateContinuation = nil
     }
 
     func setConfig(alias _: String, key _: String, value _: String) async throws {}
@@ -193,13 +246,26 @@ final class MenuStatusModelAutoRefreshTests: XCTestCase, @unchecked Sendable {
         }
         cancellable?.cancel()
 
-        let secondCallCount = engineProvider.calledAliases.count(where: { $0 == "second" })
+        // The secondary sweep always uses getBadgeStatus (#397), never
+        // getEngineStatus — assert against calledBadgeAliases.
+        let secondCallCount = engineProvider.calledBadgeAliases.count(where: { $0 == "second" })
         XCTAssertEqual(
             secondCallCount, 1,
-            "getEngineStatus for a secondary account must be throttled, not called on every tick"
+            "getBadgeStatus for a secondary account must be throttled, not called on every tick"
+        )
+        // "second" (the secondary account) must never appear in calledAliases
+        // (the full getEngineStatus verb) — but "first" (the primary account,
+        // checked via the default refresh(full: true) used in this test)
+        // legitimately does, so calledAliases as a whole is NOT expected to
+        // be empty here. Asserting `.isEmpty` would be wrong: it conflates
+        // "the secondary sweep never uses the full verb" with "nothing here
+        // ever uses the full verb", and the primary fetch is supposed to.
+        XCTAssertFalse(
+            engineProvider.calledAliases.contains("second"),
+            "The secondary sweep must never call the full getEngineStatus verb"
         )
         // The first account is not throttled — its cache stats must stay
-        // fresh on every tick.
+        // fresh on every tick (default refresh() uses full: true).
         let firstCallCount = engineProvider.calledAliases.count(where: { $0 == "first" })
         XCTAssertEqual(firstCallCount, 5, "The first account must still be checked on every tick")
     }
@@ -230,10 +296,77 @@ final class MenuStatusModelAutoRefreshTests: XCTestCase, @unchecked Sendable {
         await waitUntil { completedRefreshes == 2 }
         cancellable?.cancel()
 
-        let secondCallCount = engineProvider.calledAliases.count(where: { $0 == "second" })
+        let secondCallCount = engineProvider.calledBadgeAliases.count(where: { $0 == "second" })
         XCTAssertEqual(
             secondCallCount, 2,
-            "getEngineStatus for a secondary account must re-check once the throttle window elapses"
+            "getBadgeStatus for a secondary account must re-check once the throttle window elapses"
+        )
+    }
+
+    // MARK: - Stamp-after-sweep (#397 paired nit)
+
+    func testDoRefresh_secondarySweepAbortedMidway_doesNotStampCheckTime() async {
+        // Reproduces the bug fixed alongside the getBadgeStatus RPC split:
+        // lastSecondaryAccountCheckAt used to be stamped BEFORE the sweep
+        // loop ran, so a sweep aborted partway through (by a newer refresh()
+        // superseding it via the generation guard) still recorded a
+        // "checked" timestamp — freezing accountsNeedingSignIn at a stale
+        // value for a full secondaryAccountCheckInterval window even though
+        // some accounts were never actually re-verified.
+        //
+        // This exercises the MID-loop abort (gated on the first secondary
+        // call, caught by the per-iteration guard). A second review round
+        // flagged that the tail-of-loop case — superseded while awaiting the
+        // LAST account, which the per-iteration guard never gets a chance to
+        // re-check — needed covering too: the fix moves both the stamp write
+        // and `accountsNeedingSignIn = needsSignInSet` behind the SAME final
+        // `guard myGeneration == refreshGeneration, !Task.isCancelled` at the
+        // end of doRefresh(), so there is now exactly one code path deciding
+        // whether a superseded task may write either value — the mid-loop
+        // and tail-of-loop cases can no longer diverge by construction, so a
+        // second timing-dependent test exercising the tail case specifically
+        // would be redundant coverage of the same guard, not a genuinely
+        // independent check.
+        let accountProvider = CountingAccountProvider()
+        accountProvider.accounts = [
+            makeAccount(alias: "first"), makeAccount(alias: "second"), makeAccount(alias: "third"),
+        ]
+        let engineProvider = GatedEngineStatusProvider()
+        // Gate only the very first getBadgeStatus call overall — Task A's
+        // check of "second" — so Task B's own sweep below is unaffected.
+        engineProvider.gateCallIndex = 0
+        let model = MenuStatusModel(
+            accountProvider: accountProvider,
+            engineStatusProvider: engineProvider,
+            domainManager: NoOpDomainManager()
+        )
+
+        // Task A: reaches "second" and suspends on the gate mid-sweep.
+        model.refresh()
+        await waitUntil { engineProvider.calledBadgeAliases.contains("second") }
+
+        // Task B: fired while Task A is still suspended. refresh() cancels
+        // Task A's underlying Task, so when Task A eventually resumes its
+        // `!Task.isCancelled` guard fails before it reaches "third" or the
+        // stamp. Task B's own sweep is well within the (default 30 s)
+        // throttle window relative to Task A — if Task A had incorrectly
+        // stamped lastSecondaryAccountCheckAt up front, Task B would skip
+        // its sweep entirely and never reach "third".
+        model.refresh()
+        await waitUntil { engineProvider.calledBadgeAliases.contains("third") }
+
+        // Release Task A so it can resume, hit the guard, and return.
+        engineProvider.releaseGate()
+        try? await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(
+            engineProvider.calledBadgeAliases.count(where: { $0 == "third" }), 1,
+            "Task B must have run its own secondary sweep and reached 'third' — proof that Task A's " +
+                "aborted sweep did not prematurely stamp lastSecondaryAccountCheckAt"
+        )
+        XCTAssertEqual(
+            engineProvider.calledBadgeAliases.count(where: { $0 == "second" }), 2,
+            "'second' is checked once by Task A (before it suspends) and once by Task B"
         )
     }
 
@@ -255,6 +388,27 @@ final class MenuStatusModelAutoRefreshTests: XCTestCase, @unchecked Sendable {
         XCTAssertGreaterThanOrEqual(
             accountProvider.listAccountsCallCount, 3,
             "startBackgroundRefresh must keep ticking regardless of dropdown/Settings visibility"
+        )
+    }
+
+    // MARK: - startBackgroundRefresh uses the slim badge verb (#397)
+
+    func testStartBackgroundRefresh_usesBadgeStatus_notEngineStatus() async {
+        let accountProvider = CountingAccountProvider()
+        accountProvider.accounts = [makeAccount(alias: "first")]
+        let engineProvider = CallLoggingEngineStatusProvider()
+        let model = MenuStatusModel(
+            accountProvider: accountProvider,
+            engineStatusProvider: engineProvider,
+            domainManager: NoOpDomainManager()
+        )
+
+        model.startBackgroundRefresh(interval: .milliseconds(15))
+        await waitUntil { engineProvider.calledBadgeAliases.count >= 2 }
+
+        XCTAssertTrue(
+            engineProvider.calledAliases.isEmpty,
+            "The always-on background tick must never call the full getEngineStatus verb (#397)"
         )
     }
 

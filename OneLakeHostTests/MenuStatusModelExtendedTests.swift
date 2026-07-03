@@ -62,6 +62,11 @@ private final class FakeEngineStatusProvider: EngineStatusProvider, @unchecked S
         return s
     }
 
+    func getBadgeStatus(alias _: String) async throws -> XPCBadgeStatus {
+        guard let s = statusToReturn else { throw FakeError.noStatus }
+        return XPCBadgeStatus(needsSignIn: s.needsSignIn, pausedWorkspaces: s.pausedWorkspaces)
+    }
+
     func setConfig(alias _: String, key: String, value: String) async throws {
         configSets.append((key: key, value: value))
     }
@@ -525,6 +530,10 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
                     telemetryEnabled: true, netMaxUploads: 1, netMaxDownloads: 1,
                     logLevel: "info", pausedWorkspaces: [], needsSignIn: needsSignIn
                 )
+            }
+
+            func getBadgeStatus(alias: String) async throws -> XPCBadgeStatus {
+                XPCBadgeStatus(needsSignIn: alias == "corp", pausedWorkspaces: [])
             }
 
             func setConfig(alias _: String, key _: String, value _: String) async throws {}

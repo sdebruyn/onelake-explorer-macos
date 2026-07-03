@@ -14,6 +14,7 @@
 // XPC methods exposed:
 //   - getProtocolVersion(reply:)  — version handshake; called on every new connection
 //   - getEngineStatus(reply:)     — cache stats + config snapshot
+//   - getBadgeStatus(reply:)      — slim needsSignIn + pausedWorkspaces, no cache scan (#397)
 //   - setConfig(key:value:reply:) — write one config field, persist and trigger engine reload
 //   - clearCache(reply:)          — wipe all cached blobs; reply carries freed byte count
 //   - reloadEngine(alias:reply:)  — reload the engine for alias (e.g. after re-authentication)
@@ -179,7 +180,12 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate, @u
 /// `OfemClientControlProtocol` is a synchronous non-isolated `@objc` protocol.
 /// The only stored property (`engineHost`) is immutable after init and is itself
 /// `Sendable` (declared as `AnyObject & Sendable` in `EngineProviding`).
-private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @unchecked Sendable {
+///
+/// Internal rather than `private` (the file-scoping used by the other helper
+/// types in this file) so `OfemClientControlServiceTests.swift` can construct
+/// it directly against a `MockEngineHost` and exercise the protocol methods
+/// without an actual XPC connection.
+final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @unchecked Sendable {
     private static let log = Logger(
         subsystem: "dev.debruyn.ofem.fileprovider",
         category: "xpc-handler"
@@ -268,6 +274,44 @@ private final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, 
                 )
                 replyOnce.callOnce { rb.fn(nil, error) }
             }
+        }
+    }
+
+    // MARK: - getBadgeStatus
+
+    func getBadgeStatus(reply: @escaping (XPCBadgeStatus?, Error?) -> Void) {
+        // xpc-02: reply-once guard via ReplyOnce — fires exactly once on every
+        // path, including Task cancellation or connection teardown.
+        //
+        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
+        // @unchecked Sendable so the Task body can capture it safely — the
+        // ReplyOnce guard ensures the closure is called at most once.
+        struct ReplyBox: @unchecked Sendable { let fn: (XPCBadgeStatus?, Error?) -> Void }
+        let rb = ReplyBox(fn: reply)
+        let replyOnce = ReplyOnce()
+        Task { [self] in
+            defer { replyOnce.callOnce { rb.fn(nil, NSFileProviderError(.cannotSynchronize)) } }
+            // Engine-optional, mirroring getEngineStatus's existingEngine() branch,
+            // so the badge still reports needsSignIn before the engine has ever
+            // been built. Deliberately skips blobBytes() and the config snapshot
+            // entirely — that's the whole point of this slim verb (#397).
+            var pausedWorkspaces: [XPCPausedWorkspace] = []
+            if let engine = engineHost.existingEngine(),
+               let rows = try? await engine.cache.listPausedWorkspaces()
+            {
+                pausedWorkspaces = rows.map { row in
+                    XPCPausedWorkspace(
+                        accountAlias: row.accountAlias,
+                        workspaceID: row.workspaceID,
+                        reason: row.reason,
+                        detectedAtSec: row.detectedAtNs > 0
+                            ? Double(row.detectedAtNs) / 1_000_000_000
+                            : 0
+                    )
+                }
+            }
+            let status = XPCBadgeStatus(needsSignIn: engineHost.needsSignIn, pausedWorkspaces: pausedWorkspaces)
+            replyOnce.callOnce { rb.fn(status, nil) }
         }
     }
 

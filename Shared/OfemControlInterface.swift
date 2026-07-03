@@ -38,6 +38,17 @@ public enum OfemControlInterface {
             argumentIndex: 0,
             ofReply: true
         )
+
+        // getBadgeStatus reply: (XPCBadgeStatus?, Error?)
+        // Same NSArray/XPCPausedWorkspace wiring as getEngineStatus above, plus
+        // XPCBadgeStatus itself — the slim badge-status type (#397).
+        iface.setClasses(
+            // swiftlint:disable:next force_cast
+            NSSet(array: [XPCBadgeStatus.self, NSArray.self, XPCPausedWorkspace.self]) as! Set<AnyHashable>,
+            for: #selector(OfemClientControlProtocol.getBadgeStatus(reply:)),
+            argumentIndex: 0,
+            ofReply: true
+        )
         return iface
     }
 }

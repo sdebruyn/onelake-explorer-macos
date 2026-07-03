@@ -45,6 +45,15 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
         countLock.withLock { _engineCallCount }
     }
 
+    /// Number of times `configStore()` was called. Mirrors `engineCallCount`
+    /// so tests can assert a code path never reads a config snapshot (#397 —
+    /// e.g. getBadgeStatus, unlike getEngineStatus, must never touch this).
+    /// Guarded by the same lock as `engineCallCount`.
+    private var _configStoreCallCount = 0
+    var configStoreCallCount: Int {
+        countLock.withLock { _configStoreCallCount }
+    }
+
     init(alias: String = "test") {
         self.alias = alias
     }
@@ -60,6 +69,7 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
     }
 
     func configStore() throws -> OfemConfigStore {
+        countLock.withLock { _configStoreCallCount += 1 }
         if let err = configStoreError { throw err }
         // OfemConfigStore() reads from the app-group container, which is fine
         // in tests (defaults to a no-op config if the file is absent).
