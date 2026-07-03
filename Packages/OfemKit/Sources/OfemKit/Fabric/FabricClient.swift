@@ -116,9 +116,19 @@ public final class FabricClient: Sendable {
     /// ``FabricError/paginationExceeded(_:)`` and
     /// ``FabricError/loopingPagination(_:)`` as safety guards.
     public func listAllWorkspaces(alias: String) async throws -> [Workspace] {
-        try await listAllPages(alias: alias, path: "/v1/workspaces", endpoint: "listWorkspaces") { (wire: WireWorkspace) in
+        try await listAllWorkspacesDetailed(alias: alias).workspaces
+    }
+
+    /// Returns every workspace the principal can see, plus the count of wire
+    /// elements dropped during decode across all pages.
+    ///
+    /// See ``FabricClientProtocol/listAllWorkspacesDetailed(alias:)`` for why
+    /// `droppedCount` matters to callers that purge on absence.
+    public func listAllWorkspacesDetailed(alias: String) async throws -> (workspaces: [Workspace], droppedCount: Int) {
+        let (items, dropped) = try await listAllPages(alias: alias, path: "/v1/workspaces", endpoint: "listWorkspaces") { (wire: WireWorkspace) in
             wire.toWorkspace()
         }
+        return (items, dropped)
     }
 
     // MARK: - Item operations
@@ -176,7 +186,7 @@ public final class FabricClient: Sendable {
         let path = "/v1/workspaces/\(workspaceID.percentEncodedPathSegment)/items"
         return try await listAllPages(alias: alias, path: path, endpoint: "listItems", workspaceId: workspaceID) { (wire: WireItem) in
             wire.toItem()
-        }
+        }.items
     }
 
     // MARK: - Folder operations
@@ -237,7 +247,7 @@ public final class FabricClient: Sendable {
         let path = "/v1/workspaces/\(workspaceID.percentEncodedPathSegment)/folders"
         return try await listAllPages(alias: alias, path: path, endpoint: "listFolders", workspaceId: workspaceID) { (wire: WireFolder) in
             wire.toFolder()
-        }
+        }.items
     }
 
     // MARK: - Single-resource operations
@@ -362,14 +372,21 @@ public final class FabricClient: Sendable {
     /// - Hard cap of ``maxPaginationPages``.
     /// - Full set of seen continuation tokens/URIs (not just the immediately
     ///   previous one), catching A→B→A→B cycles (onelake-11 pattern).
+    ///
+    /// `droppedCount` is the number of raw wire elements `convert` returned
+    /// `nil` for (summed across all pages) — the fabric-06 per-element
+    /// leniency. Most callers only need `items`; ``listAllWorkspacesDetailed(alias:)``
+    /// is the one caller that needs `droppedCount` too, since a dropped
+    /// workspace element feeds a destructive purge downstream.
     private func listAllPages<Wire: Decodable, Model>(
         alias: String,
         path: String,
         endpoint: String,
         workspaceId: String = "",
         convert: (Wire) -> Model?
-    ) async throws -> [Model] {
+    ) async throws -> (items: [Model], droppedCount: Int) {
         var all: [Model] = []
+        var dropped = 0
         var nextURL: URL = try fabricListURL(base: baseURL, path: path)
         var seenTokens: Set<String> = []
         var seenURIs: Set<String> = []
@@ -384,6 +401,7 @@ public final class FabricClient: Sendable {
             }
 
             let pageItems = pr.value.compactMap(convert)
+            dropped += pr.value.count - pageItems.count
             all.append(contentsOf: pageItems)
 
             // Determine how to advance (token branch or URI branch).
@@ -427,12 +445,13 @@ public final class FabricClient: Sendable {
                     "endpoint": endpoint,
                     "totalPages": "\(page + 1)",
                     "totalItems": "\(all.count)",
+                    "droppedElements": "\(dropped)",
                 ]
                 if !workspaceId.isEmpty {
                     completeMeta["workspaceId"] = workspaceId
                 }
                 logger.debug("fabric list complete", metadata: completeMeta)
-                return all
+                return (all, dropped)
             }
         }
 

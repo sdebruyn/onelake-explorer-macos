@@ -280,20 +280,33 @@ final class MockFabricClient: FabricClientProtocol, @unchecked Sendable {
     var listWorkspacesResults: [Result<[Workspace], any Error>] = []
     var listItemsResults: [Result<[Item], any Error>] = []
     var listFoldersResults: [Result<[Folder], any Error>] = []
+    /// Dropped-element counts consumed in lockstep with `listWorkspacesResults`
+    /// by `listAllWorkspacesDetailed`. Defaults to 0 (complete listing) when
+    /// exhausted, so existing tests that only stub `listWorkspacesResults`
+    /// keep working unchanged.
+    var listWorkspacesDroppedCounts: [Int] = []
 
     private let lock = NSLock()
 
     /// Recorded call count so throttle tests can assert "no Fabric call was made".
     private(set) var listAllItemsCallCount = 0
 
-    func listAllWorkspaces(alias _: String) async throws -> [Workspace] {
+    func listAllWorkspaces(alias: String) async throws -> [Workspace] {
+        try await listAllWorkspacesDetailed(alias: alias).workspaces
+    }
+
+    func listAllWorkspacesDetailed(alias _: String) async throws -> (workspaces: [Workspace], droppedCount: Int) {
         let result: Result<[Workspace], any Error> = lock.withLock {
             guard !listWorkspacesResults.isEmpty else {
                 return .failure(MockError.stubsExhausted("listAllWorkspaces"))
             }
             return listWorkspacesResults.removeFirst()
         }
-        return try result.get()
+        let workspaces = try result.get()
+        let dropped = lock.withLock {
+            listWorkspacesDroppedCounts.isEmpty ? 0 : listWorkspacesDroppedCounts.removeFirst()
+        }
+        return (workspaces, dropped)
     }
 
     func listAllItems(alias _: String, workspaceID _: String) async throws -> [Item] {
