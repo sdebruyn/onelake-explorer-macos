@@ -120,12 +120,21 @@ public actor TelemetryClient {
     /// construction and updatable afterwards via ``setOptOut(_:)``.
     private var optOut: Bool
 
-    /// The `sink.send(events)` call currently in flight inside ``flush()``,
-    /// if any. Tracked so ``setOptOut(_:)`` can cancel it best-effort when
-    /// opt-out lands while a flush is already mid-send — actor reentrancy
-    /// means that window exists even though `optOut` is re-checked
-    /// immediately after `batch.drain()`. `nil` whenever no flush is sending.
-    private var inFlightSendTask: Task<Void, Error>?
+    /// The `sink.send(events)` calls currently in flight inside ``flush()``,
+    /// keyed by a per-call generation from ``nextSendGeneration``. Tracked so
+    /// ``setOptOut(_:)`` can cancel them best-effort when opt-out lands while
+    /// one or more flushes are already mid-send — actor reentrancy means a
+    /// second `flush()` can start (and finish) while a first is still
+    /// sending, so a single shared slot let the second flush's `defer` clear
+    /// the first flush's still-in-flight handle before `setOptOut` ever saw
+    /// it (#391). Each `flush()` call owns exactly one key and removes only
+    /// that key in its `defer`, so concurrent flushes can't clobber one
+    /// another. Empty whenever no flush is sending.
+    private var inFlightSendTasks: [UInt64: Task<Void, Error>] = [:]
+
+    /// Monotonically increasing counter handing out the keys for
+    /// ``inFlightSendTasks``. Never reused within a process lifetime.
+    private var nextSendGeneration: UInt64 = 0
 
     private var flushTask: Task<Void, Never>?
     private var isClosed = false
@@ -256,15 +265,19 @@ public actor TelemetryClient {
     /// Closes two windows for events that were enqueued *before* the call:
     ///   1. Still-buffered, not yet drained by a `flush()` — discarded here
     ///      via `batch.drain()`.
-    ///   2. Already drained and mid-`sink.send()` inside a concurrently
-    ///      running `flush()` — `TelemetryClient` is a reentrant actor, so a
-    ///      `flush()` suspended inside `await sink.send(events)` does not
-    ///      block this call from running. `inFlightSendTask.cancel()` cancels
-    ///      that send best-effort: cooperative cancellation propagates into
-    ///      `AppInsightsSink.send`'s `URLSession` call (Foundation's async
-    ///      `URLSession` APIs abort the underlying request on Task
-    ///      cancellation), but cannot retroactively un-send bytes already on
-    ///      the wire — see the class-level doc for the precise guarantee.
+    ///   2. Already drained and mid-`sink.send()` inside one or more
+    ///      concurrently running `flush()` calls — `TelemetryClient` is a
+    ///      reentrant actor, so a `flush()` suspended inside
+    ///      `await sink.send(events)` does not block this call from running,
+    ///      and a second `flush()` can even start and finish while the first
+    ///      is still sending. Cancelling every `Task` in `inFlightSendTasks`
+    ///      (#391: keyed by generation so concurrent flushes don't clobber
+    ///      each other's handle) cancels each send best-effort: cooperative
+    ///      cancellation propagates into `AppInsightsSink.send`'s
+    ///      `URLSession` call (Foundation's async `URLSession` APIs abort the
+    ///      underlying request on Task cancellation), but cannot
+    ///      retroactively un-send bytes already on the wire — see the
+    ///      class-level doc for the precise guarantee.
     ///
     /// Called by `FPEEngineHost.reloadEngine()` after a `setConfig(telemetry:)`
     /// XPC call so the opt-out takes effect immediately — the shared
@@ -272,7 +285,13 @@ public actor TelemetryClient {
     public func setOptOut(_ value: Bool) async {
         optOut = value
         if value {
-            inFlightSendTask?.cancel()
+            // Cancel every concurrently in-flight send, not just one slot's
+            // worth (#391) — a reentrant flush() means more than one can be
+            // mid-send at once.
+            for task in inFlightSendTasks.values {
+                task.cancel()
+            }
+            inFlightSendTasks.removeAll()
             _ = await batch.drain()
         }
     }
@@ -314,15 +333,19 @@ public actor TelemetryClient {
         // Task starts, so a concurrent `setOptOut(true)` cannot land in that
         // gap — this closes the "drained but send not yet started" window.
         // The "already inside send" window (setOptOut racing a send that has
-        // already started) is closed separately via `inFlightSendTask`.
+        // already started) is closed separately via `inFlightSendTasks`.
         guard !optOut else { return }
 
         // Wrap the send in its own Task so `setOptOut(true)` has a handle to
         // cancel it — an actor method call by itself gives external callers
-        // no way to interrupt a suspended `await`.
+        // no way to interrupt a suspended `await`. Keyed by generation
+        // (#391) so a concurrent, reentrant flush() gets its own slot and
+        // can't clobber (or be clobbered by) another flush's handle.
+        let generation = nextSendGeneration
+        nextSendGeneration += 1
         let sendTask = Task { [sink] in try await sink.send(events) }
-        inFlightSendTask = sendTask
-        defer { inFlightSendTask = nil }
+        inFlightSendTasks[generation] = sendTask
+        defer { inFlightSendTasks.removeValue(forKey: generation) }
 
         do {
             try await sendTask.value

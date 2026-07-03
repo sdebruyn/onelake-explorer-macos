@@ -107,6 +107,59 @@ struct EpochDateTests {
         #expect(props.creationDate != nil)
     }
 
+    // MARK: - propertiesFromHeaders: Content-Range totalLength parsing (C8)
+
+    @Test("propertiesFromHeaders: Content-Range bytes x-y/total → totalLength")
+    func propertiesFromHeadersContentRangeTotal() {
+        let headers: [AnyHashable: Any] = [
+            "Content-Length": "500",
+            "Content-Range": "bytes 500-999/1234",
+            "ETag": "\"abc\"",
+        ]
+        let props = propertiesFromHeaders(headers)
+        #expect(props.totalLength == 1234)
+        // contentLength keeps its existing "size of this response" meaning —
+        // must NOT be overwritten by the Content-Range total.
+        #expect(props.contentLength == 500)
+    }
+
+    @Test("propertiesFromHeaders: absent Content-Range → nil totalLength")
+    func propertiesFromHeadersMissingContentRange() {
+        let headers: [AnyHashable: Any] = [
+            "Content-Length": "1024",
+            "ETag": "\"abc\"",
+        ]
+        let props = propertiesFromHeaders(headers)
+        #expect(props.totalLength == nil)
+    }
+
+    @Test("propertiesFromHeaders: Content-Range with unknown '*' total → nil totalLength")
+    func propertiesFromHeadersContentRangeUnknownTotal() {
+        let headers: [AnyHashable: Any] = [
+            "Content-Range": "bytes 500-999/*",
+        ]
+        let props = propertiesFromHeaders(headers)
+        #expect(props.totalLength == nil)
+    }
+
+    @Test("propertiesFromHeaders: malformed Content-Range → nil totalLength")
+    func propertiesFromHeadersMalformedContentRange() {
+        let headers: [AnyHashable: Any] = [
+            "Content-Range": "not-a-content-range",
+        ]
+        let props = propertiesFromHeaders(headers)
+        #expect(props.totalLength == nil)
+    }
+
+    @Test("propertiesFromHeaders: Content-Range header lookup is case-insensitive")
+    func propertiesFromHeadersContentRangeCaseInsensitive() {
+        let headers: [AnyHashable: Any] = [
+            "content-range": "bytes 0-99/100",
+        ]
+        let props = propertiesFromHeaders(headers)
+        #expect(props.totalLength == 100)
+    }
+
     // MARK: - DomainItem.from(record:) — creation date fallback
 
     @Test("from(record:): zero createdNs falls back to lastModified (never nil/1970)")

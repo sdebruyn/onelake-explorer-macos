@@ -2320,4 +2320,67 @@ struct SyncEngineTests {
         #expect(retryCall.range == nil, "self-healed retry must be a full download, not a resume")
         #expect(retryCall.ifMatch.isEmpty, "self-healed retry must not pin to the stale etag")
     }
+
+    // MARK: - C8: resumed download prefers the Content-Range total
+
+    /// A resumed (206) download's `Content-Length` header reports only the
+    /// size of the *returned range*, not the full file — `performDownload`
+    /// derives the total by adding that (untrusted) value to the local
+    /// resume offset (`plan.rangeStart`). `propertiesFromHeaders` also parses
+    /// the `Content-Range: bytes <start>-<end>/<total>` header into
+    /// `PathProperties.totalLength`, and `performDownload` must prefer that
+    /// server-authoritative total when present — bypassing the addition (and
+    /// its overflow guard) entirely (C8).
+    ///
+    /// Proven by pairing a correct `totalLength` (matching the real assembled
+    /// file size) with a `contentLength` so large that the old rangeStart +
+    /// Content-Length addition would have overflowed and thrown
+    /// `SyncError.resumeOffsetOverflow` (same shape as the C6 tests above):
+    /// with totalLength preferred, the addition is never attempted and the
+    /// download succeeds.
+    @Test("open() resume prefers Content-Range's totalLength over rangeStart + Content-Length (C8)")
+    func resumeDownloadPrefersContentRangeTotalLength() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+
+        let existing = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: Self.path, parentPath: "Files", name: "data.csv", isDir: false,
+            contentLength: 1000, etag: "etag-v1"
+        )
+        try await store.upsert(existing)
+
+        // Same partial spill + etag sidecar setup as the C6 overflow tests:
+        // a 500-byte spill file gives PartialManager.rangeStart(for:) a
+        // hasPartial == true resume with rangeStart == 500.
+        let scratchDir = store.root.appending(path: "scratch", directoryHint: .isDirectory)
+        let partialsDir = scratchDir.appendingPathComponent("\(ProcessInfo.processInfo.processIdentifier)")
+        try FileManager.default.createDirectory(at: partialsDir, withIntermediateDirectories: true)
+        let shadow = PartialManager(scratchDir: partialsDir)
+        try Data(repeating: 0, count: 500).write(to: shadow.partialURL(for: key))
+        try shadow.storeEtag("etag-v1", for: key)
+
+        // The remaining 5 bytes of the file. contentLength is deliberately a
+        // hostile/wrong value (as if the server mis-reported Content-Length)
+        // so the old rangeStart + contentLength compensation would overflow;
+        // the authoritative totalLength (500 + 5 == 505, as Content-Range
+        // would report) must be preferred instead.
+        let tailBody = Data("hello".utf8)
+        let props = PathProperties(
+            isDirectory: false, contentLength: Int64.max - 100, eTag: "etag-v1",
+            lastModified: Date(), contentType: "text/csv", totalLength: 505
+        )
+        ol.readResults.append(.success((tailBody, props)))
+
+        let (fileURL, record) = try await engine.openReturningRecord(key: key)
+
+        let assembled = try Data(contentsOf: fileURL)
+        #expect(assembled.count == 505, "assembled spill file must be rangeStart (500) + the new bytes (5)")
+        #expect(assembled.suffix(5) == tailBody)
+        #expect(record.contentLength == 505,
+                "row.contentLength must come from totalLength, not the overflowing rangeStart + Content-Length sum")
+    }
 }

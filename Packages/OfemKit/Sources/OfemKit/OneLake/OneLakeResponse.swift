@@ -61,6 +61,14 @@ public struct PathProperties: Sendable {
     /// `nil` when the header is absent or unparseable (service version < 2023-05-03,
     /// or a directory entry).
     public let creationDate: Date?
+    /// The `total` component of a `Content-Range: bytes <start>-<end>/<total>`
+    /// response header (RFC 7233 §4.2), present on a 206 Partial Content
+    /// response to a ranged `read()`. `nil` on a full (200) response, or when
+    /// the header is absent, unparseable, or reports the `*` (unknown)
+    /// placeholder. Unlike ``contentLength`` — which on a 206 response is only
+    /// the size of the returned range, not the full file — this is the
+    /// server-authoritative total size (C8).
+    public let totalLength: Int64?
 
     public init(
         isDirectory: Bool,
@@ -68,7 +76,8 @@ public struct PathProperties: Sendable {
         eTag: String,
         lastModified: Date,
         contentType: String,
-        creationDate: Date? = nil
+        creationDate: Date? = nil,
+        totalLength: Int64? = nil
     ) {
         self.isDirectory = isDirectory
         self.contentLength = contentLength
@@ -76,6 +85,7 @@ public struct PathProperties: Sendable {
         self.lastModified = lastModified
         self.contentType = contentType
         self.creationDate = creationDate
+        self.totalLength = totalLength
     }
 }
 
@@ -156,7 +166,25 @@ func propertiesFromHeaders(_ headers: [AnyHashable: Any]) -> PathProperties {
     // x-ms-creation-time is an RFC1123 HTTP-date returned by HEAD/GET since
     // service version 2023-05-03. Absent or unparseable → nil.
     let creationDate = normalised["x-ms-creation-time"].flatMap { parseHTTPDate($0, formatters: fmts) }
-    return PathProperties(isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified, contentType: contentType, creationDate: creationDate)
+    let totalLength = totalLengthFromContentRange(normalised["content-range"])
+    return PathProperties(
+        isDirectory: isDir, contentLength: size, eTag: etag, lastModified: modified,
+        contentType: contentType, creationDate: creationDate, totalLength: totalLength
+    )
+}
+
+/// Parses the `total` component out of a `Content-Range: bytes <start>-<end>/<total>`
+/// header value (C8). Returns `nil` when the header is absent, malformed, or
+/// the total is the `*` (unknown) placeholder — the caller must then fall
+/// back to another source for the full size.
+///
+/// No status-code gate is needed: per RFC 7233 §4.2, `Content-Range` only
+/// appears on a 206 (or 416) response, and ADLS Gen2 never sends it on a 200 —
+/// `propertiesFromHeaders` doesn't receive the status code, so this parses
+/// unconditionally and simply finds nothing to parse on a full response.
+private func totalLengthFromContentRange(_ headerValue: String?) -> Int64? {
+    guard let value = headerValue, let slashIndex = value.lastIndex(of: "/") else { return nil }
+    return Int64(value[value.index(after: slashIndex)...])
 }
 
 /// Parses an HTTP-date string (RFC 1123, RFC 850, or asctime).
