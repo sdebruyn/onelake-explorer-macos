@@ -253,8 +253,15 @@ final class MenuStatusModelAutoRefreshTests: XCTestCase, @unchecked Sendable {
             secondCallCount, 1,
             "getBadgeStatus for a secondary account must be throttled, not called on every tick"
         )
-        XCTAssertTrue(
-            engineProvider.calledAliases.isEmpty,
+        // "second" (the secondary account) must never appear in calledAliases
+        // (the full getEngineStatus verb) — but "first" (the primary account,
+        // checked via the default refresh(full: true) used in this test)
+        // legitimately does, so calledAliases as a whole is NOT expected to
+        // be empty here. Asserting `.isEmpty` would be wrong: it conflates
+        // "the secondary sweep never uses the full verb" with "nothing here
+        // ever uses the full verb", and the primary fetch is supposed to.
+        XCTAssertFalse(
+            engineProvider.calledAliases.contains("second"),
             "The secondary sweep must never call the full getEngineStatus verb"
         )
         // The first account is not throttled — its cache stats must stay
