@@ -286,6 +286,56 @@ struct SyncEngineWorkspacePurgeTests {
         #expect(try await pathMetadataRowCount(store, workspaceID: "ws-a") == 0)
         #expect(try await pathMetadataRowCount(store, workspaceID: "ws-b") == 0)
     }
+
+    // MARK: - 6. An incomplete listing (a dropped wire element) skips the destructive purge
+
+    @Test("an incomplete listing (a dropped wire element) skips purgeRemovedWorkspaces, though the discovery-row reconcile still runs")
+    func incompleteListingSkipsDestructivePurge() async throws {
+        let fabric = MockFabricClient()
+        fabric.listWorkspacesResults.append(.success([workspace("ws-a"), workspace("ws-b")])) // pass 1: both present
+
+        let (engine, store) = try makeEngine(fabric: fabric)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        // Pass 1 (droppedCounts queue is empty → defaults to 0/complete, as
+        // it must for every other test in this file).
+        _ = try await engine.listWorkspaces(alias: Self.alias)
+        fabric.listItemsResults.append(.success([item("it-a", ws: "ws-a")]))
+        _ = try await engine.listItems(alias: Self.alias, workspaceID: "ws-a")
+        try await seedRealItemRows(store, workspaceID: "ws-a", itemID: "it-a", paths: ["", "Files/data.txt"])
+        try await store.setWorkspaceStatus(WorkspaceStatusRecord(accountAlias: Self.alias, workspaceID: "ws-a"))
+
+        let rowsBefore = try await pathMetadataRowCount(store, workspaceID: "ws-a")
+        #expect(rowsBefore > 0)
+
+        // Pass 2: only ws-b comes back. Models ws-a being the element whose
+        // wire row was missing `id` and got silently dropped by
+        // WireWorkspace.toWorkspace() (fabric-06) — NOT a genuine removal.
+        // The Fabric call itself still succeeds (no throw), but the listing
+        // is INCOMPLETE, signalled by droppedCount == 1. Pushed only now (not
+        // alongside pass 1's stub above) so it lines up with the pass-2
+        // dequeue — the mock consumes both queues in call order.
+        fabric.listWorkspacesResults.append(.success([workspace("ws-b")]))
+        fabric.listWorkspacesDroppedCounts.append(1)
+
+        // ws-a is absent from `seen` (dropped, not genuinely removed) and
+        // droppedCount == 1 → the destructive purge must be skipped.
+        _ = try await engine.listWorkspaces(alias: Self.alias)
+
+        // Nothing was purged: ws-a's real rows and workspace_status survive.
+        #expect(try await pathMetadataRowCount(store, workspaceID: "ws-a") == rowsBefore)
+        #expect(try await workspaceStatusExists(store, workspaceID: "ws-a"))
+
+        // The PRE-EXISTING expireDiscoveryRows reconcile is unaffected by this
+        // guard and still ran: ws-a's workspace-discovery row is gone from the
+        // domain-root listing (a cheap, self-healing remount — not the
+        // destructive full-cache wipe the guard above prevents).
+        let rootChildren = try await store.children(of: CacheKey(
+            accountAlias: Self.alias, workspaceID: VirtualIDs.workspaceID,
+            itemID: VirtualIDs.workspaceID, path: ""
+        ))
+        #expect(!rootChildren.contains { $0.path == "ws-a" })
+    }
 }
 
 // MARK: - CacheStore.purgeWorkspaceRows unit tests
@@ -304,8 +354,11 @@ struct CacheStorePurgeWorkspaceRowsTests {
         let ws = "ws-shared"
 
         // Real rows for the SAME workspace ID under two different aliases:
-        // the item-listing root marker + one item-discovery row, plus a
-        // paused workspace_status row.
+        // the item-listing root marker (itemID == VirtualIDs.itemID) + a real
+        // item's own root path_metadata row (itemID == the item GUID "it-x",
+        // NOT a discovery row — discovery rows are keyed itemID ==
+        // VirtualIDs.itemID with path == the item GUID), plus a paused
+        // workspace_status row.
         for alias in [aliasA, aliasB] {
             try await store.upsert(MetadataRecord(
                 accountAlias: alias, workspaceID: ws, itemID: VirtualIDs.itemID,
@@ -333,7 +386,7 @@ struct CacheStorePurgeWorkspaceRowsTests {
         ))
 
         let deleted = try await store.purgeWorkspaceRows(accountAlias: aliasA, workspaceID: ws)
-        #expect(deleted == 2) // the item-listing root marker + the it-x discovery row
+        #expect(deleted == 2) // the item-listing root marker + it-x's own root row
 
         // aliasA's workspace-scoped rows and status are gone.
         #expect(try await pathMetadataCount(store, alias: aliasA, workspaceID: ws) == 0)
