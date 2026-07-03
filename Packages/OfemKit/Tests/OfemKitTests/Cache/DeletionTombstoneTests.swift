@@ -345,8 +345,8 @@ struct DeletionTombstoneTests {
         })
     }
 
-    @Test("A discovery re-upsert newer than the tombstone clears it: recreate wins, reported as an update")
-    func discoveryReupsertClearsTombstoneAndReportsUpdate() async throws {
+    @Test("A discovery re-upsert after a tombstone clears it (unconditional write-order match): recreate is reported as an update")
+    func discoveryReupsertAfterTombstoneClearsItAndReportsUpdate() async throws {
         let clock = StepClock(0)
         let store = try makeTempStore(clock: { clock.now })
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -357,6 +357,15 @@ struct DeletionTombstoneTests {
 
         // The item reappears in a workspace listing at T3 > T2, written through
         // batchUpsert — the reconcile path SyncEngine uses for a full listing.
+        //
+        // clearTombstone deletes on an unconditional identifier match at write
+        // time — it does not compare deletedAtNs/syncedAtNs. The tombstone is
+        // gone here because this upsert runs AFTER it (T3 > T2, enforced by this
+        // test's write order), not because CacheStore itself timestamp-gates the
+        // clear. The T2/T3 ordering only matters for the case where a stale row
+        // is already in the DB when a tombstone lands (see the "shadows a stale
+        // real item-root row" case above), where itemsChangedAfter does compare
+        // timestamps.
         clock.now = 300
         try await store.batchUpsert([MetadataRecord(
             accountAlias: Self.alias, workspaceID: Self.ws, itemID: VirtualIDs.itemID,
