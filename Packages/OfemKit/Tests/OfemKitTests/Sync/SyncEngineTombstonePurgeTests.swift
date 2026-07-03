@@ -55,36 +55,45 @@ struct SyncEngineTombstonePurgeTests {
             nowNsProvider: { pollClock.now }
         )
 
-        // A tombstone older than the 30-day TTL relative to the first purge time.
+        // Two tombstones, staggered so each purge pass that actually RUNS has
+        // something new to reclaim: a watermark that changes is proof the purge
+        // ran, and one that doesn't change is proof it was throttled — instead
+        // of the ambiguous "it ran but there was nothing left to purge".
         storeClock.now = 10 * Self.day
         try await store.recordDeletion(
-            accountAlias: Self.alias, identifierString: "\(Self.ws)/\(Self.item)/gone.txt"
+            accountAlias: Self.alias, identifierString: "\(Self.ws)/\(Self.item)/gone1.txt"
         )
-        storeClock.now = 100 * Self.day // cutoff 70d ⇒ the 10d tombstone is expired
+        storeClock.now = 80 * Self.day
+        try await store.recordDeletion(
+            accountAlias: Self.alias, identifierString: "\(Self.ws)/\(Self.item)/gone2.txt"
+        )
+        storeClock.now = 100 * Self.day // cutoff 70d ⇒ only gone1.txt (10d) is expired
 
-        // Call 1 (window empty): purge runs, deletes the expired tombstone, and
-        // stamps the watermark at 100d − 30d = 70d.
+        // Call 1 (window empty): purge runs, deletes gone1.txt, and stamps the
+        // watermark at ITS OWN timestamp (10d) — not the cutoff (70d).
         pollClock.now = 0
         _ = await engine.refreshMaterialized(alias: Self.alias, keys: [Self.containerKey], concurrencyCap: 2)
         let wm1 = try await store.tombstonesPurgedThroughNs(accountAlias: Self.alias)
-        #expect(wm1 == 100 * Self.day - CacheStore.tombstoneTTLNs)
+        #expect(wm1 == 10 * Self.day)
 
-        // Advance the STORE clock so any purge that runs now would write a
-        // visibly different watermark (200d − 30d = 170d).
-        storeClock.now = 200 * Self.day
+        // Advance the STORE clock so gone2.txt (80d) is now expired too — if
+        // the throttle did NOT suppress the next purge attempt, it would be
+        // reclaimed and the watermark would jump to 80d.
+        storeClock.now = 200 * Self.day // cutoff 170d ⇒ gone2.txt (80d) is now expired
 
-        // Call 2 (within the window, +1h): throttle skips the purge, so the
-        // watermark must be unchanged — proof the purge did NOT run again.
+        // Call 2 (within the window, +1h): throttle skips the purge, so
+        // gone2.txt survives and the watermark stays at wm1 — proof the purge
+        // did NOT run again.
         pollClock.now = 1 * Self.hour
         _ = await engine.refreshMaterialized(alias: Self.alias, keys: [Self.containerKey], concurrencyCap: 2)
         let wm2 = try await store.tombstonesPurgedThroughNs(accountAlias: Self.alias)
         #expect(wm2 == wm1)
 
-        // Call 3 (window elapsed, +25h): the purge runs again and advances the
-        // watermark (writing it even though there is nothing left to delete).
+        // Call 3 (window elapsed, +25h): the purge runs again, reclaims
+        // gone2.txt, and advances the watermark to ITS OWN timestamp (80d).
         pollClock.now = 25 * Self.hour
         _ = await engine.refreshMaterialized(alias: Self.alias, keys: [Self.containerKey], concurrencyCap: 2)
         let wm3 = try await store.tombstonesPurgedThroughNs(accountAlias: Self.alias)
-        #expect(wm3 == 200 * Self.day - CacheStore.tombstoneTTLNs)
+        #expect(wm3 == 80 * Self.day)
     }
 }

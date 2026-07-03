@@ -231,11 +231,13 @@ public enum CacheSchema {
         // v8: add sync_meta to persist the per-alias tombstone-purge watermark.
         // `tombstones_purged_through_ns` is the monotonic horizon below which
         // expired deletion tombstones have been TTL-purged
-        // (CacheStore.purgeExpiredTombstones advances it, never lowers it, and
-        // writes it even when zero rows are deleted so the horizon is always
-        // honest). The FPE reads it via CacheReader.tombstonesPurgedThroughNs to
-        // expire any client whose sync anchor predates the horizon, forcing a
-        // full re-enumeration so purged deletions are reconciled by absence.
+        // (CacheStore.purgeExpiredTombstones advances it to the newest
+        // deleted_at_ns actually reclaimed, never lowers it, and leaves it
+        // untouched on a zero-row purge so an idle alias doesn't trip the
+        // guard below with a horizon that reclaimed nothing). The FPE reads it
+        // via CacheReader.tombstonesPurgedThroughNs to expire any client whose
+        // sync anchor predates the horizon, forcing a full re-enumeration so
+        // purged deletions are reconciled by absence.
         //
         // Plain additive migration (mirrors v3/v5/v6): the project is pre-go-live,
         // so a cache rebuild on upgrade is acceptable and no data-migration

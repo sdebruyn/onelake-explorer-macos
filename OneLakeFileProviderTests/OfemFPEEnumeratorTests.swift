@@ -640,13 +640,16 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let purged = try await store.purgeExpiredTombstones(accountAlias: alias)
         XCTAssertEqual(purged, 1, "the expired deletion tombstone must be purged")
 
+        // The watermark advances to the PURGED ROW'S OWN timestamp (10d), not
+        // the cutoff (70d).
         let watermark = try await store.tombstonesPurgedThroughNs(accountAlias: alias)
-        XCTAssertEqual(watermark, 100 * day - CacheStore.tombstoneTTLNs)
+        XCTAssertEqual(watermark, 10 * day)
 
-        // A client last synced before the horizon (20d): its anchor predates the
-        // purge horizon (70d), so it must be expired into a full re-enumeration.
+        // A client last synced before the horizon (5d): its anchor predates the
+        // purge horizon (10d) — it could have missed the purged deletion — so it
+        // must be expired into a full re-enumeration.
         let currentNs = try await store.syncAnchorNs(accountAlias: alias)
-        let decision = syncAnchorDecision(previousNs: 20 * day, currentNs: currentNs, purgedThroughNs: watermark)
+        let decision = syncAnchorDecision(previousNs: 5 * day, currentNs: currentNs, purgedThroughNs: watermark)
         XCTAssertEqual(decision, .expire, "a client whose anchor predates the purge horizon must be expired")
 
         try? FileManager.default.removeItem(at: store.root)
@@ -663,13 +666,20 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let store = try makeTempFPECacheStore(clock: { clock.now })
         let alias = "post-clamp-\(UUID().uuidString)"
 
-        // Establish a purge horizon W = 70d (100d − 30d TTL).
-        clock.now = 100 * day
-        _ = try await store.purgeExpiredTombstones(accountAlias: alias)
+        // Establish a purge horizon by actually purging a tombstone: recorded
+        // at 10d, purged in a pass whose cutoff (70d) is well ahead of it, so
+        // the watermark advances to the purged row's OWN timestamp — W = 10d.
+        // (A zero-row purge would leave the watermark at 0 under the new
+        // logic, so an actual purged tombstone is required to establish W.)
+        clock.now = 10 * day
+        try await store.recordDeletion(accountAlias: alias, identifierString: "ws-1/lh-1/olddel.txt")
+        clock.now = 100 * day // cutoff 70d ⇒ the 10d tombstone is expired
+        let purged = try await store.purgeExpiredTombstones(accountAlias: alias)
+        XCTAssertEqual(purged, 1)
         let watermark = try await store.tombstonesPurgedThroughNs(accountAlias: alias)
-        XCTAssertEqual(watermark, 100 * day - CacheStore.tombstoneTTLNs)
+        XCTAssertEqual(watermark, 10 * day)
 
-        // A NEW deletion strictly after the horizon (deleted_at = 100d > W = 70d).
+        // A NEW deletion strictly after the horizon (deleted_at = 100d > W = 10d).
         clock.now = 100 * day
         try await store.recordDeletion(accountAlias: alias, identifierString: "ws-1/lh-1/newdel.txt")
 
