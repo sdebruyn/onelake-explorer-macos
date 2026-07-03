@@ -215,9 +215,17 @@ func syncAnchorDecision(previousNs: Int64, currentNs: Int64, purgedThroughNs: In
 /// Every anchor the FPE vends (from `serveCacheDelta` and both enumerators'
 /// `currentSyncAnchor`) is clamped up to the tombstone-purge horizon so it never
 /// sits below `purgedThroughNs` — see `syncAnchorDecision` for why an anchor
-/// below the horizon would cause an infinite re-enumeration loop. Returns `0` on
-/// any read failure, which forces a full diff on the next poll (safe: a spurious
-/// full re-enumeration, never a silent skip).
+/// below the horizon would cause an infinite re-enumeration loop.
+///
+/// Both reads are independently `try?`-defaulted to `0`, so the result is:
+/// - both reads succeed → `max(syncAnchorNs, purgedThroughNs)` (the intended floor);
+/// - only the watermark read fails → an UNCLAMPED `syncAnchorNs` (which may sit
+///   below the horizon → at most a transient extra re-enumeration next poll,
+///   self-healing once the read recovers, never a silent skip);
+/// - both reads fail → `0`, forcing a full diff on the next poll.
+/// A degraded read therefore only ever costs a spurious full re-enumeration; it
+/// can never drop an event. (The lagging-client GUARD in `serveCacheDelta`
+/// deliberately does NOT tolerate a failed watermark read — see the `try` there.)
 func effectiveAnchorNs(engine: OfemEngine, alias: String) async -> Int64 {
     let currentNs = (try? await engine.cache.syncAnchorNs(accountAlias: alias)) ?? 0
     let purgedThroughNs = (try? await engine.cache.tombstonesPurgedThroughNs(accountAlias: alias)) ?? 0
@@ -251,10 +259,13 @@ func serveCacheDelta(
     log: Logger,
     logPrefix: String
 ) async throws {
+    // INTENTIONAL asymmetry between these two reads — do not "unify" them:
+    // `currentNs` is `try?`-defaulted to 0 because a failed/stale anchor read
+    // only costs a spurious re-enumeration (safe). The watermark read below
+    // deliberately PROPAGATES via `try`: silently defaulting the horizon to 0
+    // would disable the lagging-client guard and could serve a delta missing
+    // purged deletions — the exact silent loss this guards against.
     let currentNs = (try? await engine.cache.syncAnchorNs(accountAlias: alias)) ?? 0
-    // Propagate (not `try?`) a watermark read failure: silently defaulting the
-    // horizon to 0 would disable the lagging-client guard and could serve a
-    // delta missing purged deletions — the exact silent loss this guards against.
     let purgedThroughNs = try await engine.cache.tombstonesPurgedThroughNs(accountAlias: alias)
 
     let effectiveNs: Int64

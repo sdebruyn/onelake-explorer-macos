@@ -652,6 +652,46 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         try? FileManager.default.removeItem(at: store.root)
     }
 
+    /// Post-clamp flow: a client already rebased to the horizon
+    /// (`previousNs == watermark`) is SERVED (not expired), and a deletion that
+    /// lands AFTER the horizon is delivered as a normal incremental delta — the
+    /// clamp raising the served anchor to the horizon never blocks a genuine
+    /// post-horizon change, because the delta's lower bound stays `previousNs`.
+    func testPostClamp_clientAtHorizon_receivesNewDeletionAsIncrementalDelta() async throws {
+        let day: Int64 = 86400 * 1_000_000_000
+        let clock = FPEStepClock(0)
+        let store = try makeTempFPECacheStore(clock: { clock.now })
+        let alias = "post-clamp-\(UUID().uuidString)"
+
+        // Establish a purge horizon W = 70d (100d − 30d TTL).
+        clock.now = 100 * day
+        _ = try await store.purgeExpiredTombstones(accountAlias: alias)
+        let watermark = try await store.tombstonesPurgedThroughNs(accountAlias: alias)
+        XCTAssertEqual(watermark, 100 * day - CacheStore.tombstoneTTLNs)
+
+        // A NEW deletion strictly after the horizon (deleted_at = 100d > W = 70d).
+        clock.now = 100 * day
+        try await store.recordDeletion(accountAlias: alias, identifierString: "ws-1/lh-1/newdel.txt")
+
+        // A client whose anchor is exactly at the horizon must be SERVED, not expired.
+        let currentNs = try await store.syncAnchorNs(accountAlias: alias)
+        let decision = syncAnchorDecision(previousNs: watermark, currentNs: currentNs, purgedThroughNs: watermark)
+        XCTAssertEqual(
+            decision, .serve(effectiveNs: currentNs),
+            "a client at the horizon must be served an incremental delta, not expired"
+        )
+
+        // ...and the post-horizon deletion is delivered by the incremental query,
+        // whose lower bound is the client's own anchor (== the horizon here).
+        let changes = try await store.itemsChangedAfter(accountAlias: alias, ns: watermark)
+        XCTAssertTrue(
+            changes.deletedIdentifierStrings.contains("ws-1/lh-1/newdel.txt"),
+            "a deletion after the horizon must reach a client sitting at the horizon"
+        )
+
+        try? FileManager.default.removeItem(at: store.root)
+    }
+
     // MARK: - Helpers
 
     /// Builds a `CacheStore` backed by a fresh temp directory. `CacheStore`
