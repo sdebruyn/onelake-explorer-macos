@@ -297,6 +297,97 @@ final class XPCEngineStatusTests: XCTestCase {
     }
 }
 
+// MARK: - XPCBadgeStatus round-trip
+
+final class XPCBadgeStatusTests: XCTestCase {
+    private func roundTrip(_ obj: XPCBadgeStatus) throws -> XPCBadgeStatus {
+        let data = try NSKeyedArchiver.archivedData(
+            withRootObject: obj,
+            requiringSecureCoding: true
+        )
+        let result = try NSKeyedUnarchiver.unarchivedObject(
+            ofClass: XPCBadgeStatus.self,
+            from: data
+        )
+        return try XCTUnwrap(result, "NSKeyedUnarchiver returned nil — check encode/decode key parity")
+    }
+
+    func testRoundTripNeedsSignInTrue() throws {
+        let original = XPCBadgeStatus(needsSignIn: true)
+        let decoded = try roundTrip(original)
+        XCTAssertTrue(decoded.needsSignIn,
+                      "needsSignIn=true must survive the encode/decode round-trip")
+        XCTAssertTrue(decoded.pausedWorkspaces.isEmpty)
+    }
+
+    func testRoundTripNeedsSignInFalse() throws {
+        let original = XPCBadgeStatus(needsSignIn: false)
+        let decoded = try roundTrip(original)
+        XCTAssertFalse(decoded.needsSignIn,
+                       "needsSignIn=false must survive the encode/decode round-trip")
+    }
+
+    func testRoundTripWithPausedWorkspaces() throws {
+        let pw1 = XPCPausedWorkspace(
+            accountAlias: "work",
+            workspaceID: "ws-1111",
+            reason: "capacity_paused",
+            detectedAtSec: 1_700_000_000
+        )
+        let pw2 = XPCPausedWorkspace(
+            accountAlias: "personal",
+            workspaceID: "ws-2222",
+            reason: "",
+            detectedAtSec: 0
+        )
+        let original = XPCBadgeStatus(needsSignIn: true, pausedWorkspaces: [pw1, pw2])
+        let decoded = try roundTrip(original)
+
+        XCTAssertTrue(decoded.needsSignIn)
+        XCTAssertEqual(decoded.pausedWorkspaces.count, 2)
+        XCTAssertEqual(decoded.pausedWorkspaces[0].accountAlias, "work")
+        XCTAssertEqual(decoded.pausedWorkspaces[0].workspaceID, "ws-1111")
+        XCTAssertEqual(decoded.pausedWorkspaces[1].accountAlias, "personal")
+        XCTAssertEqual(decoded.pausedWorkspaces[1].reason, "")
+    }
+
+    func testNeedsSignInFallsBackToFalseWhenKeyMissing() throws {
+        // Verify the backward-compat default (false) when decoding an archive
+        // that omits needsSignIn — mirrors XPCEngineStatusTests' equivalent case.
+        let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+        archiver.encode([] as NSArray, forKey: "pausedWorkspaces")
+        // "needsSignIn" intentionally omitted.
+        archiver.finishEncoding()
+        let data = archiver.encodedData
+
+        let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
+        unarchiver.requiresSecureCoding = true // matches production XPC security boundary
+        let decoded = XPCBadgeStatus(coder: unarchiver)
+        let status = try XCTUnwrap(decoded, "XPCBadgeStatus(coder:) returned nil")
+        XCTAssertFalse(status.needsSignIn,
+                       "missing needsSignIn key must decode as false (backward compat)")
+    }
+
+    func testPausedWorkspacesFallsBackToEmptyWhenKeyMissing() throws {
+        let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+        archiver.encode(true, forKey: "needsSignIn")
+        // "pausedWorkspaces" intentionally omitted.
+        archiver.finishEncoding()
+        let data = archiver.encodedData
+
+        let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
+        unarchiver.requiresSecureCoding = true
+        let decoded = XPCBadgeStatus(coder: unarchiver)
+        let status = try XCTUnwrap(decoded, "XPCBadgeStatus(coder:) returned nil")
+        XCTAssertTrue(status.pausedWorkspaces.isEmpty,
+                      "missing pausedWorkspaces key must decode as an empty array")
+    }
+
+    func testSupportsSecureCodingIsTrue() {
+        XCTAssertTrue(XPCBadgeStatus.supportsSecureCoding)
+    }
+}
+
 // MARK: - XPCPausedWorkspace round-trip
 
 final class XPCPausedWorkspaceTests: XCTestCase {

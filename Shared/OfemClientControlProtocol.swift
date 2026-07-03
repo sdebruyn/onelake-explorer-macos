@@ -12,6 +12,7 @@
 // Protocol surface:
 //   - getProtocolVersion(reply:)      — version handshake; call before any other method
 //   - getEngineStatus(reply:)         — cache stats + config snapshot
+//   - getBadgeStatus(reply:)          — slim needsSignIn + pausedWorkspaces, no cache scan
 //   - setConfig(key:value:reply:)     — write a single config field and notify FPE
 //   - clearCache(reply:)              — wipe all cached blobs
 //   - pollMaterialized(alias:reply:)  — refresh materialized containers for alias, return whether any changed
@@ -48,6 +49,22 @@ import Foundation
     /// - Parameter reply: Called with an `XPCEngineStatus` on success, or
     ///   nil + an error on failure.
     func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void)
+
+    // MARK: - Badge status
+
+    /// Returns a slim status snapshot for the ambient menu-bar badge:
+    /// `needsSignIn` and `pausedWorkspaces` only.
+    ///
+    /// Unlike `getEngineStatus`, this does NOT run the FPE's cache-usage
+    /// scan (`blobBytes()`) or read a config snapshot — it exists so the
+    /// always-on background poll and the secondary-account sign-in sweep
+    /// can be paid for without a `GROUP BY blob_sha256` cache query on
+    /// every tick (#397). Callers that need cache/config fields must still
+    /// use `getEngineStatus`.
+    ///
+    /// - Parameter reply: Called with an `XPCBadgeStatus` on success, or
+    ///   nil + an error on failure.
+    func getBadgeStatus(reply: @escaping (XPCBadgeStatus?, Error?) -> Void)
 
     // MARK: - Config mutation
 
@@ -140,5 +157,5 @@ public let ofemControlServiceName = "dev.debruyn.ofem.control"
 /// The host compares this value to the FPE's report on every new connection;
 /// a mismatch is surfaced as a user-visible error.
 ///
-/// Bumped to 4: added `reloadEngine(alias:reply:)` (xpc-11).
-public let ofemControlProtocolVersion: Int = 4
+/// Bumped to 5: added `getBadgeStatus(reply:)` (#397).
+public let ofemControlProtocolVersion: Int = 5
