@@ -316,6 +316,7 @@ public actor SyncEngine {
         // Container freshness for sub-containers is surfaced by the host
         // working-set poll loop rather than any per-container signal.
         await expireDiscoveryRows(children: cachedChildren, seen: seen, alias: alias)
+        await purgeRemovedWorkspaces(alias: alias, seen: seen)
 
         await track(eventName: "workspace_list", alias: alias, start: start, outcome: .success())
         return ws
@@ -2341,6 +2342,57 @@ public actor SyncEngine {
             } catch {
                 Self.log.warning(
                     "purgeRemovedItems: removeMaterialized failed prefix=\(identifierPrefix, privacy: .public) err=\(error, privacy: .public)"
+                )
+            }
+        }
+    }
+
+    /// Purges the orphaned residue of workspaces that are no longer part of a
+    /// successful Fabric listing.
+    ///
+    /// SET-BASED, not edge-triggered: unlike ``purgeRemovedItems(alias:workspaceID:itemGUIDs:)``,
+    /// which reacts to the discovery-row deltas ``expireDiscoveryRows`` just
+    /// computed, this re-derives the orphan set directly from the cache's live
+    /// workspace IDs vs `seen` (the fresh Fabric listing) on every successful
+    /// reconcile. That converges after any race — a re-upsert that slips in
+    /// between reconciles is caught again on the very next pass, with no
+    /// discovery row required to trigger it — AND retroactively reclaims
+    /// pre-existing leaks: a workspace whose discovery row is already gone (for
+    /// whatever reason) still gets its residue swept the next time
+    /// `listWorkspaces` succeeds. An edge-triggered purge could do neither.
+    ///
+    /// Safety relies entirely on the caller: ``listWorkspaces(alias:)`` rethrows
+    /// on any `fabric.listAllWorkspaces` failure *before* reaching this call,
+    /// and `listAllWorkspaces` itself throws (`FabricError.paginationExceeded` /
+    /// `.loopingPagination`) rather than returning a partial page list on
+    /// pagination truncation — so this only ever runs against a COMPLETE
+    /// successful listing. An empty-but-successful `seen` purging every cached
+    /// workspace for the alias is therefore intentional, not a bug to guard
+    /// against: it mirrors the already-visible behavior of an empty listing
+    /// expiring every discovery row and remounting to an empty domain — this
+    /// just aligns storage with what the user already sees. No absent-twice or
+    /// debounce guard is added on top.
+    ///
+    /// No tombstones are written — see
+    /// ``CacheStore/purgeWorkspaceRows(accountAlias:workspaceID:)``'s doc comment
+    /// for why the workspace's disappearance from Finder needs none.
+    private func purgeRemovedWorkspaces(alias: String, seen: Set<String>) async {
+        let cachedWorkspaceIDs = (try? await cache.workspaceIDs(accountAlias: alias)) ?? []
+        let removed = cachedWorkspaceIDs.filter { !seen.contains($0) }
+        guard !removed.isEmpty else { return }
+        for workspaceID in removed {
+            do {
+                _ = try await cache.purgeWorkspaceRows(accountAlias: alias, workspaceID: workspaceID)
+            } catch {
+                Self.log.warning(
+                    "purgeRemovedWorkspaces: purgeWorkspaceRows failed workspaceID=\(workspaceID, privacy: .public) err=\(error, privacy: .public)"
+                )
+            }
+            do {
+                try await cache.removeMaterialized(alias: alias, identifierPrefix: workspaceID)
+            } catch {
+                Self.log.warning(
+                    "purgeRemovedWorkspaces: removeMaterialized failed workspaceID=\(workspaceID, privacy: .public) err=\(error, privacy: .public)"
                 )
             }
         }

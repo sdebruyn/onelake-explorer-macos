@@ -165,6 +165,23 @@ public final class CacheReader: Sendable {
         }
     }
 
+    /// Returns the distinct `workspace_id` values present in `path_metadata`
+    /// for `accountAlias`, excluding the ``VirtualIDs/workspaceID`` sentinel
+    /// (the workspace-discovery row itself, not a real workspace).
+    ///
+    /// Used by ``SyncEngine/purgeRemovedWorkspaces(alias:seen:)`` to detect
+    /// workspaces the cache still holds rows for that a fresh Fabric listing
+    /// no longer reports.
+    public func workspaceIDs(accountAlias: String) async throws -> [String] {
+        guard !accountAlias.isEmpty else { throw CacheError.missingArgument("accountAlias") }
+        return try await db.read { db in
+            try String.fetchAll(db, sql: """
+            SELECT DISTINCT workspace_id FROM path_metadata
+            WHERE account_alias = ? AND workspace_id != ?
+            """, arguments: [accountAlias, VirtualIDs.workspaceID])
+        }
+    }
+
     // MARK: - Workspace status reads
 
     /// Reads the persisted status for the given workspace.
