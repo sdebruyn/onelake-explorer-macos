@@ -57,6 +57,28 @@
 ///     throw error
 /// }
 /// ```
+///
+/// ## Cancellation
+///
+/// `acquire` is **deliberately not cancellation-aware** — it suspends on a
+/// plain `Void, Never` continuation with no `withTaskCancellationHandler`,
+/// so a cancelled caller keeps waiting for its turn like everyone else in
+/// the FIFO queue. This is the opposite of ``AsyncSemaphore``, whose
+/// `wait()` observes cancellation and throws `CancellationError` instead of
+/// granting the slot.
+///
+/// The asymmetry is intentional. `AsyncSemaphore` bounds *concurrency*
+/// (e.g. "at most N uploads at once"), where a cancelled waiter can simply
+/// give up its place — no one is depending on it having run. `AsyncPathMutex`
+/// instead serialises a *must-complete* critical section: acquire → take the
+/// cross-process fcntl lock → do the I/O → release the fcntl lock → release
+/// (see "Why this exists" above). If a queued caller could abandon its turn
+/// on cancellation, the turn would simply pass to the next waiter as normal —
+/// but the *cancelled* caller's own fcntl-acquire/I-O/fcntl-release sequence
+/// would never run, silently skipping work its caller may still be
+/// depending on completing (e.g. a token write already committed to the
+/// in-memory cache). Making `acquire` uncancellable keeps "the turn was
+/// granted" and "the critical section will run" the same guarantee.
 actor AsyncPathMutex {
     /// Process-wide singleton — all callers in this process share one
     /// registry of per-path turns.
