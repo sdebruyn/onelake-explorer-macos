@@ -340,7 +340,7 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
     ///   `finishedBeforeRegistration`; this method consumes that record
     ///   instead of storing a handle for a Task that's already done.
     private func runReplying<Reply>(
-        reply: @escaping Reply,
+        reply: Reply,
         onTeardown: @escaping @Sendable (Reply) -> Void,
         operation: @escaping @Sendable (Reply, ReplyOnce) async -> Void
     ) {
