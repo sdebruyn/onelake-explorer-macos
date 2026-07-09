@@ -79,7 +79,7 @@ import Foundation
     /// falling through to `.unknownKey` at runtime (xpc-10). Supported keys
     /// and their value formats:
     ///   - `OfemConfigKey.telemetry`                    ("on" | "off")
-    ///   - `OfemConfigKey.cacheMaxSizeGB`                (integer string, 1–100)
+    ///   - `OfemConfigKey.cacheMaxSizeGB`                (integer string, 0 or 1–100; 0 = no limit)
     ///   - `OfemConfigKey.netMaxUploads`                 (integer string, 1–16)
     ///   - `OfemConfigKey.netMaxDownloads`               (integer string, 1–32)
     ///   - `OfemConfigKey.logLevel`                      ("debug" | "info" | "warn" | "error")

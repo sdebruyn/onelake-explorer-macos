@@ -12,8 +12,11 @@ import Testing
 //   config-07  config dir + file permission bits (regression)
 //   config-08  lock fd released when mutator throws
 //   config-09  OfemPaths.ensureDirectories()
+//   M9         clamp bounds centralized in ConfigSchema (CacheConfig,
+//              NetConfig, SetConfigLimits) — no independent literals
+//              duplicated on the host or FPE side
 
-@Suite("Config refactor — config-02/03/06/07/08/09")
+@Suite("Config refactor — config-02/03/06/07/08/09/M9")
 struct ConfigRefactorTests {
     // MARK: - Helpers
 
@@ -340,5 +343,62 @@ struct ConfigRefactorTests {
             let exists = fm.fileExists(atPath: dir.path(percentEncoded: false), isDirectory: &isDir)
             #expect(exists && isDir.boolValue)
         }
+    }
+
+    // MARK: - M9: clamp bounds centralized in ConfigSchema
+
+    /// `SetConfigLimits` used to be defined twice — an FPE-local type
+    /// backing `OfemClientControlService.setConfig`'s validating clamp, and
+    /// hardcoded literals in `MenuStatusModel`'s optimistic clamp — with
+    /// nothing tying the two together. This pins the actual numbers so a
+    /// future edit to one without the other fails a test instead of
+    /// silently drifting.
+    @Test("M9: SetConfigLimits bounds are tighter than NetConfig's absolute ceiling")
+    func setConfigLimitsAreTighterThanNetConfigCeiling() {
+        #expect(SetConfigLimits.maxUploadsPerAccount == 16)
+        #expect(SetConfigLimits.maxDownloadsPerAccount == 32)
+        #expect(SetConfigLimits.maxUploadsPerAccount < NetConfig.maxConcurrent,
+                "the XPC-level ceiling must stay tighter than the config-file-level ceiling")
+        #expect(SetConfigLimits.maxDownloadsPerAccount < NetConfig.maxConcurrent,
+                "the XPC-level ceiling must stay tighter than the config-file-level ceiling")
+    }
+
+    /// Pins `CacheConfig`'s documented bounds, which both
+    /// `MenuStatusModel.setCacheLimitGB` and
+    /// `OfemClientControlService.setConfig` clamp through.
+    @Test("M9: CacheConfig min/max bounds")
+    func cacheConfigBounds() {
+        #expect(CacheConfig.minSizeGB == 1)
+        #expect(CacheConfig.maxSizeGB == 100)
+    }
+
+    /// The `0 = no limit` cache sentinel must round-trip through
+    /// `CacheConfig.clampSizeGB` — the single function both the host's
+    /// optimistic clamp (`MenuStatusModel.setCacheLimitGB`) and the FPE's
+    /// validating clamp (`OfemClientControlService.setConfig`) call, so
+    /// there is no separate expression left to drift between the two (M9).
+    @Test("M9: CacheConfig.clampSizeGB preserves 0 and otherwise clamps to [minSizeGB, maxSizeGB]")
+    func cacheClampSizeGBPreservesSentinel() {
+        #expect(CacheConfig.clampSizeGB(0) == 0, "0 must be preserved as the no-limit sentinel")
+        #expect(CacheConfig.clampSizeGB(-5) == CacheConfig.minSizeGB, "a negative non-zero value clamps up to minSizeGB")
+        #expect(CacheConfig.clampSizeGB(1) == 1)
+        #expect(CacheConfig.clampSizeGB(50) == 50)
+        #expect(CacheConfig.clampSizeGB(9999) == CacheConfig.maxSizeGB, "an absurdly large value clamps down to maxSizeGB")
+    }
+
+    /// `SetConfigLimits.clampUploads`/`clampDownloads` are the single
+    /// functions both sides call — mirrors `cacheClampSizeGBPreservesSentinel`
+    /// for the net-concurrency fields (M9).
+    @Test("M9: SetConfigLimits.clampUploads/clampDownloads clamp to [minConcurrent, the per-field max]")
+    func netConcurrencyClampFunctions() {
+        #expect(SetConfigLimits.clampUploads(0) == NetConfig.minConcurrent, "0 has no sentinel meaning here — clamps up like any other too-low value")
+        #expect(SetConfigLimits.clampUploads(-5) == NetConfig.minConcurrent)
+        #expect(SetConfigLimits.clampUploads(4) == 4)
+        #expect(SetConfigLimits.clampUploads(9999) == SetConfigLimits.maxUploadsPerAccount)
+
+        #expect(SetConfigLimits.clampDownloads(0) == NetConfig.minConcurrent)
+        #expect(SetConfigLimits.clampDownloads(-5) == NetConfig.minConcurrent)
+        #expect(SetConfigLimits.clampDownloads(8) == 8)
+        #expect(SetConfigLimits.clampDownloads(9999) == SetConfigLimits.maxDownloadsPerAccount)
     }
 }

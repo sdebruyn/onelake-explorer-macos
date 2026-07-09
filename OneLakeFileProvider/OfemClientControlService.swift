@@ -532,9 +532,10 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
                                                     reason: "expected an integer"))
                     break
                 }
-                // 0 is the "no limit" sentinel; positive values are
-                // clamped to [minSizeGB, maxSizeGB].
-                let clamped = gb == 0 ? 0 : min(max(gb, CacheConfig.minSizeGB), CacheConfig.maxSizeGB)
+                // CacheConfig.clampSizeGB preserves the 0 "no limit" sentinel
+                // and clamps positive values to [minSizeGB, maxSizeGB] — the
+                // same expression the host's optimistic clamp uses (M9).
+                let clamped = CacheConfig.clampSizeGB(gb)
                 result = .success(.cacheMaxSizeGB(clamped))
             case .netMaxUploads:
                 guard let n = Int(value) else {
@@ -542,20 +543,20 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
                                                     reason: "expected an integer"))
                     break
                 }
-                // xpc-07: use named constants from NetConfig.
-                // Upper bound is per-protocol (16 uploads); the shared
-                // NetConfig.maxConcurrent (64) is the absolute ceiling
-                // for any concurrency field — the XPC protocol caps
-                // uploads more tightly to avoid swamping the endpoint.
-                result = .success(.netMaxUploads(min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxUploadsPerAccount)))
+                // xpc-07: SetConfigLimits.clampUploads is per-protocol
+                // (16 uploads); the shared NetConfig.maxConcurrent (64) is
+                // the absolute ceiling for any concurrency field — the XPC
+                // protocol caps uploads more tightly to avoid swamping the
+                // endpoint. Same clamp the host's optimistic clamp uses (M9).
+                result = .success(.netMaxUploads(SetConfigLimits.clampUploads(n)))
             case .netMaxDownloads:
                 guard let n = Int(value) else {
                     result = .failure(.invalidValue(key: key, value: value,
                                                     reason: "expected an integer"))
                     break
                 }
-                // xpc-08: use named constants from NetConfig.
-                result = .success(.netMaxDownloads(min(max(n, NetConfig.minConcurrent), SetConfigLimits.maxDownloadsPerAccount)))
+                // xpc-08: SetConfigLimits.clampDownloads — see clampUploads above.
+                result = .success(.netMaxDownloads(SetConfigLimits.clampDownloads(n)))
             case .logLevel:
                 let allowed = ["debug", "info", "warn", "error"]
                 guard allowed.contains(value) else {
@@ -755,22 +756,6 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
             }
         )
     }
-}
-
-// MARK: - SetConfig concurrency limits (xpc-07/08)
-
-/// Per-field upper bounds for the XPC setConfig handler's concurrency fields.
-///
-/// These values are intentionally tighter than `NetConfig.maxConcurrent` (64)
-/// to avoid saturating the OneLake / Fabric endpoints from a single client.
-/// The XPC protocol comments document these numbers; keep them in sync.
-enum SetConfigLimits {
-    /// Maximum allowed concurrent uploads per account (maps to the protocol
-    /// comment "integer string, 1–16").
-    static let maxUploadsPerAccount = 16
-    /// Maximum allowed concurrent downloads per account (maps to the protocol
-    /// comment "integer string, 1–32").
-    static let maxDownloadsPerAccount = 32
 }
 
 // MARK: - SetConfig errors

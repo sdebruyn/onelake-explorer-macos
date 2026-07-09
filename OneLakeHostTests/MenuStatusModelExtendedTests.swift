@@ -332,6 +332,56 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
                        "Fence must be released on cancel for netMaxDownloads")
     }
 
+    // MARK: - Clamp bounds centralized in ConfigSchema (M9)
+
+    /// The host's floor used to hardcode `max(1, min(100, gb))`, which
+    /// silently turned the engine's `0 = no limit` sentinel into "1 GB"
+    /// before the write ever reached the FPE. This asserts 0 now survives
+    /// the full write path: optimistic publish + the XPC value actually sent.
+    func testSetCacheLimitGB_zero_isPreservedAsNoLimitSentinel() async {
+        // writeConfig resolves the target alias via accountProvider.listAccounts()
+        // and bails out silently if it's empty — needed so the write actually
+        // reaches the fake engineProvider and configSets gets populated.
+        accountProvider.accounts = [makeAccount(alias: "work")]
+        model.setCacheLimitGB(0)
+        XCTAssertEqual(model.cacheMaxSizeGB, 0,
+                       "the optimistic publish must not clamp 0 up to the old floor of 1")
+
+        await waitUntil { !model.isFenced(.cacheMaxSize) }
+        XCTAssertEqual(engineProvider.configSets.last?.key, OfemConfigKey.cacheMaxSizeGB.rawValue)
+        XCTAssertEqual(engineProvider.configSets.last?.value, "0",
+                       "0 must round-trip to the FPE unclamped, matching its own no-limit sentinel")
+    }
+
+    /// Existing clamp behaviour must be unchanged for in-range and
+    /// out-of-range non-zero values — only the 0 sentinel is special-cased.
+    func testSetCacheLimitGB_outOfRange_stillClampsTo_minSizeGB_maxSizeGB() async {
+        accountProvider.accounts = [makeAccount(alias: "work")]
+        model.setCacheLimitGB(-5)
+        await waitUntil { !model.isFenced(.cacheMaxSize) }
+        XCTAssertEqual(engineProvider.configSets.last?.value, String(CacheConfig.minSizeGB),
+                       "a negative non-zero value must still clamp up to minSizeGB, not to 0")
+
+        model.setCacheLimitGB(9999)
+        await waitUntil { !model.isFenced(.cacheMaxSize) }
+        XCTAssertEqual(engineProvider.configSets.last?.value, String(CacheConfig.maxSizeGB),
+                       "an absurdly large value must still clamp down to maxSizeGB")
+    }
+
+    /// `setNetMaxUploads`/`setNetMaxDownloads` now clamp through
+    /// `SetConfigLimits`, the same shared bounds the FPE validates against,
+    /// instead of independently hardcoded `16`/`32` literals.
+    func testSetNetMaxUploadsAndDownloads_clampThroughSharedLimits() async {
+        accountProvider.accounts = [makeAccount(alias: "work")]
+        model.setNetMaxUploads(9999)
+        await waitUntil { !model.isFenced(.netMaxUploads) }
+        XCTAssertEqual(engineProvider.configSets.last?.value, String(SetConfigLimits.maxUploadsPerAccount))
+
+        model.setNetMaxDownloads(9999)
+        await waitUntil { !model.isFenced(.netMaxDownloads) }
+        XCTAssertEqual(engineProvider.configSets.last?.value, String(SetConfigLimits.maxDownloadsPerAccount))
+    }
+
     // MARK: - headerLabel: sign-in + paused both visible when both conditions hold
 
     func testHeaderLabel_signInAndPaused_showsBoth() async {

@@ -889,7 +889,10 @@ final class MenuStatusModel: ObservableObject {
     /// Optimistically updates the published `cacheMaxSizeGB` so the
     /// Stepper visibly tracks every click, then debounces the actual XPC call.
     func setCacheLimitGB(_ gb: Int) {
-        let clamped = max(1, min(100, gb))
+        // CacheConfig.clampSizeGB preserves 0 (the "no limit" sentinel) and
+        // is the same clamp the FPE's setConfig handler validates against,
+        // so the expression itself can't drift between the two (M9).
+        let clamped = CacheConfig.clampSizeGB(gb)
         setCacheLimitTask?.cancel()
         setCacheLimitTask = debouncedSet(.cacheMaxSize, debounce: MenuStatusModel.setCacheLimitDebounce, publish: {
             cacheMaxSizeGB = clamped
@@ -916,7 +919,9 @@ final class MenuStatusModel: ObservableObject {
 
     /// Stage a new "max parallel uploads per account" value.
     func setNetMaxUploads(_ n: Int) {
-        let clamped = max(1, min(16, n))
+        // M9: SetConfigLimits.clampUploads is the same clamp the FPE's
+        // setConfig handler validates against, so the two never drift.
+        let clamped = SetConfigLimits.clampUploads(n)
         setNetUploadsTask?.cancel()
         setNetUploadsTask = debouncedSet(.netMaxUploads, debounce: MenuStatusModel.setNetConcurrencyDebounce, publish: {
             netMaxUploads = clamped
@@ -927,7 +932,9 @@ final class MenuStatusModel: ObservableObject {
 
     /// Stage a new "max parallel downloads per account" value.
     func setNetMaxDownloads(_ n: Int) {
-        let clamped = max(1, min(32, n))
+        // M9: SetConfigLimits.clampDownloads is the same clamp the FPE's
+        // setConfig handler validates against, so the two never drift.
+        let clamped = SetConfigLimits.clampDownloads(n)
         setNetDownloadsTask?.cancel()
         setNetDownloadsTask = debouncedSet(.netMaxDownloads, debounce: MenuStatusModel.setNetConcurrencyDebounce, publish: {
             netMaxDownloads = clamped
