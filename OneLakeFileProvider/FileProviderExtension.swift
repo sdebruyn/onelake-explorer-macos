@@ -234,10 +234,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         return runFPEOperation(
             logContext: "item(for:) failed for \(aliasCopy)/\(ofemID.opaqueLogPrefix)",
             work: { host, _ in
-                let engine = try await host.engine()
-                return OfemFPEItem(from: try await ItemResolution.resolveItem(
-                    identifier: ofemID, alias: aliasCopy, sync: engine.sync, cache: engine.cache
-                ))
+                OfemFPEItem(from: try await host.resolveItem(identifier: ofemID, alias: aliasCopy))
             },
             complete: { result in
                 switch result {
@@ -382,19 +379,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         return runFPEOperation(
             logContext: "createItem failed",
             work: { host, _ in
-                let engine = try await host.engine()
                 // Collapse the FileProvider create semantics into plain-Swift
                 // parameters before crossing into OfemKit: `.contents` present
                 // AND a source URL → upload; otherwise placeholder-only (nil).
-                return OfemFPEItem(from: try await ItemResolution.createItem(
+                OfemFPEItem(from: try await host.createOfemItem(
                     parent: parentID,
                     filename: filename,
                     isDirectory: isDir,
                     uploadSource: fieldsCopy.contains(.contents) ? srcURL : nil,
                     mayAlreadyExist: optionsCopy.contains(.mayAlreadyExist),
-                    alias: aliasCopy,
-                    sync: engine.sync,
-                    cache: engine.cache
+                    alias: aliasCopy
                 ))
             },
             complete: { result in
@@ -488,14 +482,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 logContext: "modifyItem rename failed",
                 work: { host, _ -> RenameOutcome in
                     do {
-                        let engine = try await host.engine()
                         let key = CacheKey(
                             accountAlias: aliasCopy,
                             workspaceID: wsID,
                             itemID: itemID,
                             path: path
                         )
-                        let updated = try await engine.sync.rename(key: key, newName: newFilename)
+                        let updated = try await host.renameOfemItem(key: key, newName: newFilename)
                         // Return the ORIGINAL identifier with the new filename/size/
                         // dates so the framework registers a metadata change, not a
                         // delete+add (see DomainItem.from(record:overridingIdentifier:)).
@@ -545,10 +538,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             return runFPEOperation(
                 logContext: "modifyItem(metadata) fetch failed",
                 work: { host, _ in
-                    let engine = try await host.engine()
-                    return OfemFPEItem(from: try await ItemResolution.resolveItem(
-                        identifier: ofemID, alias: aliasCopy, sync: engine.sync, cache: engine.cache
-                    ))
+                    OfemFPEItem(from: try await host.resolveItem(identifier: ofemID, alias: aliasCopy))
                 },
                 complete: { result in
                     switch result {
@@ -592,7 +582,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         return runFPEOperation(
             logContext: "modifyItem failed",
             work: { host, progress -> OfemFPEItem in
-                let engine = try await host.engine()
                 let fileSize: Int64 = if let attrs = try? FileManager.default.attributesOfItem(atPath: contentsURL.path),
                                          let sz = attrs[.size] as? NSNumber
                 {
@@ -604,13 +593,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     progress.totalUnitCount = fileSize
                 }
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
-                try await engine.sync.put(key: key, sourceURL: contentsURL)
+                try await host.putOfemContents(key: key, sourceURL: contentsURL)
                 progress.completedUnitCount = progress.totalUnitCount
                 // Re-fetch the item metadata after upload so the returned version
                 // matches what subsequent enumeration produces.
-                return OfemFPEItem(from: try await ItemResolution.resolveItem(
-                    identifier: ofemID, alias: aliasCopy, sync: engine.sync, cache: engine.cache
-                ))
+                return OfemFPEItem(from: try await host.resolveItem(identifier: ofemID, alias: aliasCopy))
             },
             complete: { result in
                 switch result {
@@ -650,9 +637,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         return runFPEOperation(
             logContext: "deleteItem failed",
             work: { host, _ in
-                let engine = try await host.engine()
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
-                try await engine.sync.delete(key: key)
+                try await host.deleteOfemItem(key: key)
             },
             complete: { result in
                 switch result {

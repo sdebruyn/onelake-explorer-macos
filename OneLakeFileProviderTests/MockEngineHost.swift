@@ -115,4 +115,76 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
             _markedNeedsSignIn = true
         }
     }
+
+    // MARK: - FPE operation seam (M7)
+
+    /// Per-operation overrides. When set, the corresponding method returns
+    /// (or throws) the override directly, without touching `engine()` at
+    /// all — this is what lets a happy-path test stub a successful
+    /// resolution/create/rename/put/delete without a live `OfemEngine`.
+    ///
+    /// When `nil`, each method falls through to the same
+    /// `engine()`-then-delegate shape as `EngineProviding`'s default
+    /// extension implementation, so the existing `engineResult`/
+    /// `engineCallCount` plumbing (and every pre-existing failure/pending
+    /// test built on it) keeps working unmodified.
+    var resolveItemResult: Result<DomainItem, Error>?
+    var createOfemItemResult: Result<DomainItem, Error>?
+    var renameOfemItemResult: Result<MetadataRecord, Error>?
+    var putOfemContentsResult: Result<Void, Error>?
+    var deleteOfemItemResult: Result<Void, Error>?
+
+    func resolveItem(identifier: ItemIdentifier, alias: String) async throws -> DomainItem {
+        if let override = resolveItemResult { return try override.get() }
+        let engine = try await engine()
+        return try await ItemResolution.resolveItem(
+            identifier: identifier, alias: alias, sync: engine.sync, cache: engine.cache
+        )
+    }
+
+    func createOfemItem(
+        parent: ItemIdentifier,
+        filename: String,
+        isDirectory: Bool,
+        uploadSource: URL?,
+        mayAlreadyExist: Bool,
+        alias: String
+    ) async throws -> DomainItem {
+        if let override = createOfemItemResult { return try override.get() }
+        let engine = try await engine()
+        return try await ItemResolution.createItem(
+            parent: parent,
+            filename: filename,
+            isDirectory: isDirectory,
+            uploadSource: uploadSource,
+            mayAlreadyExist: mayAlreadyExist,
+            alias: alias,
+            sync: engine.sync,
+            cache: engine.cache
+        )
+    }
+
+    func renameOfemItem(key: CacheKey, newName: String) async throws -> MetadataRecord {
+        if let override = renameOfemItemResult { return try override.get() }
+        let engine = try await engine()
+        return try await engine.sync.rename(key: key, newName: newName)
+    }
+
+    func putOfemContents(key: CacheKey, sourceURL: URL) async throws {
+        if let override = putOfemContentsResult {
+            try override.get()
+            return
+        }
+        let engine = try await engine()
+        try await engine.sync.put(key: key, sourceURL: sourceURL)
+    }
+
+    func deleteOfemItem(key: CacheKey) async throws {
+        if let override = deleteOfemItemResult {
+            try override.get()
+            return
+        }
+        let engine = try await engine()
+        try await engine.sync.delete(key: key)
+    }
 }
