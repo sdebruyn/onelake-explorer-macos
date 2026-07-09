@@ -121,10 +121,19 @@ protocol EngineProviding: AnyObject, Sendable {
     /// Backs `modifyItem`'s rename branch.
     func renameOfemItem(key: CacheKey, newName: String) async throws -> MetadataRecord
 
-    /// Uploads new file contents via the engine.
+    /// Uploads new file contents via the engine, then re-fetches the item's
+    /// metadata so the returned version matches what subsequent enumeration
+    /// produces.
+    ///
+    /// Put and refetch are one seam call — not two — so both run against the
+    /// SAME `engine()` resolution, matching the pre-seam inlined code (which
+    /// captured `engine()` once and reused it for both steps). Splitting this
+    /// into separate `put` and `resolveItem` seam calls would let a
+    /// reload/teardown race between them turn a successfully committed
+    /// upload into a reported failure.
     ///
     /// Backs `modifyItem`'s content-bearing branch.
-    func putOfemContents(key: CacheKey, sourceURL: URL) async throws
+    func putOfemContents(key: CacheKey, sourceURL: URL, identifier: ItemIdentifier, alias: String) async throws -> DomainItem
 
     /// Deletes an item via the engine.
     ///
@@ -191,9 +200,12 @@ extension EngineProviding {
         return try await engine.sync.rename(key: key, newName: newName)
     }
 
-    func putOfemContents(key: CacheKey, sourceURL: URL) async throws {
+    func putOfemContents(key: CacheKey, sourceURL: URL, identifier: ItemIdentifier, alias: String) async throws -> DomainItem {
         let engine = try await self.engine()
         try await engine.sync.put(key: key, sourceURL: sourceURL)
+        return try await ItemResolution.resolveItem(
+            identifier: identifier, alias: alias, sync: engine.sync, cache: engine.cache
+        )
     }
 
     func deleteOfemItem(key: CacheKey) async throws {

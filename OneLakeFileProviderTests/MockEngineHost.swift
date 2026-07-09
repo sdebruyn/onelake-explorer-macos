@@ -131,7 +131,7 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
     var resolveItemResult: Result<DomainItem, Error>?
     var createOfemItemResult: Result<DomainItem, Error>?
     var renameOfemItemResult: Result<MetadataRecord, Error>?
-    var putOfemContentsResult: Result<Void, Error>?
+    var putOfemContentsResult: Result<DomainItem, Error>?
     var deleteOfemItemResult: Result<Void, Error>?
 
     func resolveItem(identifier: ItemIdentifier, alias: String) async throws -> DomainItem {
@@ -170,13 +170,13 @@ final class MockEngineHost: EngineProviding, @unchecked Sendable {
         return try await engine.sync.rename(key: key, newName: newName)
     }
 
-    func putOfemContents(key: CacheKey, sourceURL: URL) async throws {
-        if let override = putOfemContentsResult {
-            try override.get()
-            return
-        }
+    func putOfemContents(key: CacheKey, sourceURL: URL, identifier: ItemIdentifier, alias: String) async throws -> DomainItem {
+        if let override = putOfemContentsResult { return try override.get() }
         let engine = try await engine()
         try await engine.sync.put(key: key, sourceURL: sourceURL)
+        return try await ItemResolution.resolveItem(
+            identifier: identifier, alias: alias, sync: engine.sync, cache: engine.cache
+        )
     }
 
     func deleteOfemItem(key: CacheKey) async throws {

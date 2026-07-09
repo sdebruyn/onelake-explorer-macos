@@ -484,7 +484,6 @@ final class FileProviderExtensionTests: XCTestCase {
 
     func testModifyItemContentSuccessCompletesNoError() async throws {
         let host = MockEngineHost(alias: "test")
-        host.putOfemContentsResult = .success(())
         let wsID = "00000000-0000-0000-0000-000000000001"
         let itemID = "00000000-0000-0000-0000-000000000002"
         let expected = DomainItem.synthetic(
@@ -493,7 +492,10 @@ final class FileProviderExtensionTests: XCTestCase {
             name: "file.txt",
             isDirectory: false
         )
-        host.resolveItemResult = .success(expected)
+        // putOfemContents does the put AND the post-upload refetch as a single
+        // seam call (see FPEEngineHost's doc), so only this one override is
+        // needed — resolveItemResult is not consulted on this branch.
+        host.putOfemContentsResult = .success(expected)
         let ext = makeExtension(host: host)
 
         let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

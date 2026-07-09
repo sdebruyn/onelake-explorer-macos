@@ -593,11 +593,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     progress.totalUnitCount = fileSize
                 }
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
-                try await host.putOfemContents(key: key, sourceURL: contentsURL)
+                // putOfemContents uploads AND re-fetches the item metadata (so the
+                // returned version matches what subsequent enumeration produces)
+                // against the SAME engine() resolution — see that method's doc.
+                let updated = try await host.putOfemContents(
+                    key: key, sourceURL: contentsURL, identifier: ofemID, alias: aliasCopy
+                )
                 progress.completedUnitCount = progress.totalUnitCount
-                // Re-fetch the item metadata after upload so the returned version
-                // matches what subsequent enumeration produces.
-                return OfemFPEItem(from: try await host.resolveItem(identifier: ofemID, alias: aliasCopy))
+                return OfemFPEItem(from: updated)
             },
             complete: { result in
                 switch result {
