@@ -2,10 +2,11 @@
 
 This document distinguishes between:
 
-- **Local development** — what you need to clone the repo, build, run tests, and dogfood OFEM on your own machine (no signing, no notarization, no release).
+- **Compiling and passing CI checks** — what you need to clone the repo, edit code, verify it compiles (`make build-ci`), and run the tests (`make test`). No Apple account, free or paid.
+- **Running the signed app locally (dogfooding)** — additionally needed to produce a *runnable* `.app` with the File Provider Extension you can install on your own Mac (`make build`). Requires a paid Apple Developer Program membership — see below.
 - **Publishing & signing** — what additionally is needed to produce the official signed/notarized `.app` and ship it via Homebrew cask.
 
-If you only want to contribute code, you only need the **Local development** section. The publishing requirements are only relevant to the maintainer and to release CI.
+If you only want to contribute code, the first bullet is all you need: `make build-ci` and `make test` both work on a fresh checkout with zero Apple credentials. The publishing requirements are only relevant to the maintainer and to release CI.
 
 ---
 
@@ -29,10 +30,23 @@ Plus a configured **Microsoft Entra tenant** with at least one workspace you can
 - `delta` — nicer diffs in git (`brew install git-delta`).
 - `entr` — auto-run tests on file save (`brew install entr`).
 
-### Working on the `.app` and File Provider Extension requires
+### Compiling without an Apple account
+
+`make build-ci` builds the app + extension unsigned (no signing identity, no
+provisioning round trip) — exactly what CI runs on every PR. That's enough
+to verify your change compiles and to run the unit tests; no Apple account,
+free or paid, is required.
+
+### Running the `.app` and File Provider Extension locally requires
 
 - Xcode 15+ (you already need it).
-- A free Apple ID and **ad-hoc signing** are enough to install the `.app` on your own Mac. Other people cannot install your build without disabling Gatekeeper.
+- A **paid Apple Developer Program membership** ($99/yr). Provisioning the
+  File Provider Extension for a runnable build requires a paid team — a
+  free Personal Team cannot sign it. See [File Provider Extension —
+  architecture § Signing for local vs
+  release](file-provider.md#signing-for-local-vs-release). Ad-hoc signing
+  with a free Apple ID is not sufficient to produce a runnable `.app` with
+  the extension embedded.
 
 #### Xcode project generation
 
@@ -47,9 +61,11 @@ is gitignored.
 Then:
 
 ```bash
-make bootstrap   # writes Local.xcconfig (gitignored); edit it
+make bootstrap   # writes Local.xcconfig (gitignored)
 make gen         # regenerates OneLake.xcodeproj
-make build       # Debug build via xcodebuild
+make build-ci    # unsigned compile-only build — no Apple account needed
+# or, with a paid Apple Developer Program team ID set in Local.xcconfig:
+make build       # Debug build via xcodebuild, signed and runnable
 ```
 
 #### Swift Package tests
@@ -70,8 +86,7 @@ swift test
 | Apple Developer Program enrollment | $99/year | https://developer.apple.com/programs/ |
 | Developer ID Application certificate | included in Developer Program | Xcode → Settings → Accounts → Manage Certificates → "+" → Developer ID Application |
 | App Store Connect API key (for notarytool) | included in Developer Program | https://appstoreconnect.apple.com/access/integrations/api → "+" → "Developer" or "Admin" role |
-| App Group identifier `group.dev.debruyn.ofem` | included | https://developer.apple.com/account/resources/identifiers → "+" → App Groups |
-| File Provider entitlement | included | configured per-extension in the `.entitlements` file |
+| App Group identifier `group.dev.debruyn.ofem` | included | https://developer.apple.com/account/resources/identifiers → "+" → App Groups. Declared as `com.apple.security.application-groups` in both `OneLake/OneLake.entitlements` and `OneLakeFileProvider/OneLakeFileProvider.entitlements` — this is what lets the host app and the extension share state; there is no separate "File Provider" entitlement key in either file. |
 | Microsoft Entra App Registration | free | ✅ done — client ID `939b4a06-cc18-49eb-9674-a1fc041489f6` ("OneLake Explorer for macOS", multi-tenant, public client). See [docs/auth.md](auth.md) for the underlying settings. |
 | Azure Application Insights resource (Free tier) | free up to 5 GB/month | https://portal.azure.com → "Application Insights" → "+" → choose Pay-As-You-Go subscription, Free pricing tier |
 | GitHub repository | free | already exists once initial scaffolding is pushed |

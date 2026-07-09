@@ -68,7 +68,14 @@ gen: bootstrap ## Regenerate OneLake.xcodeproj from project.yml (force)
 	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: make bootstrap && brew install xcodegen"; exit 1; }
 	xcodegen generate --spec project.yml --project-root . --project .
 
-# Build the OneLake.app target (Debug, arm64) for local dogfooding.
+# Build the OneLake.app target (Debug, arm64) for local dogfooding. The
+# guard below only rejects an UNSET DEVELOPMENT_TEAM (the placeholder in
+# Local.xcconfig) — it cannot tell a free team ID from a paid one. A real
+# team ID passes the guard, but xcodebuild's -allowProvisioningUpdates
+# provisioning step then requires a paid Apple Developer Program team to
+# sign the File Provider Extension (a free Personal Team cannot produce a
+# runnable build). Contributors without a paid account should use
+# `build-ci` instead.
 build: bootstrap OneLake.xcodeproj/project.pbxproj ## Build OneLake.app (Debug, signed) for local use
 	@if grep -q 'REPLACE_WITH_YOUR_TEAM_ID' $(APPLE_CONFIG) 2>/dev/null; then \
 		echo "ERROR: $(APPLE_CONFIG) still has the placeholder DEVELOPMENT_TEAM."; \
@@ -149,7 +156,8 @@ install: build ## Build and install Debug app into /Applications, then relaunch
 # Compile the app + .appex unsigned (no signing identity, no provisioning
 # round-trip). This is the CI build gate: it catches Swift compile
 # regressions on every PR without needing a Developer ID. The product is
-# not runnable.
+# not runnable. Recommended as the first build for a new contributor — it
+# works on a fresh checkout with no Apple account, free or paid.
 build-ci: bootstrap OneLake.xcodeproj/project.pbxproj ## Compile app + .appex unsigned (CI gate)
 	xcodebuild -project $(XCODE_PROJECT) \
 		-scheme OneLake \

@@ -5,17 +5,17 @@ Thanks for considering a contribution! This is a small, focused open-source proj
 ## Project communication
 
 - All issues, PRs, code, comments, commit messages, and documentation are in **English** so anyone can contribute, regardless of where they are.
-- Be kind. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+- Be kind. See [CODE_OF_CONDUCT.md](https://github.com/sdebruyn/onelake-explorer-macos/blob/main/CODE_OF_CONDUCT.md).
 
 ## Reporting bugs and requesting features
 
 Use [GitHub Issues](https://github.com/sdebruyn/onelake-explorer-macos/issues). There are templates for both. Search first to avoid duplicates.
 
-For **security** issues, do NOT open a public issue. See [SECURITY.md](SECURITY.md).
+For **security** issues, do NOT open a public issue. See [SECURITY.md](https://github.com/sdebruyn/onelake-explorer-macos/blob/main/SECURITY.md).
 
 ## Setting up your dev environment
 
-See [docs/prerequisites.md](docs/prerequisites.md) for the full list. TL;DR:
+See [docs/prerequisites.md](https://github.com/sdebruyn/onelake-explorer-macos/blob/main/docs/prerequisites.md) for the full list. TL;DR:
 
 ```bash
 # clone
@@ -28,14 +28,19 @@ brew install commitlint xcodegen swiftformat swiftlint periphery
 # generate the Xcode project
 make gen
 
-# build the signed app (requires Developer ID certificate in keychain)
-make build
+# compile the app + .appex unsigned — no Apple account needed, this is
+# what CI runs on every PR
+make build-ci
 
 # run the unit tests (OfemKit engine + host app)
 make test
+
+# to build and run a signed app on your own Mac, you additionally need a
+# paid Apple Developer Program membership (see prerequisites.md), then:
+make build
 ```
 
-You need Xcode for all work on this project. The entire codebase is Swift.
+You need Xcode for all work on this project. The entire codebase is Swift. `make build-ci` is enough to verify your change compiles — you don't need a paid Apple account to contribute code.
 
 ## Branching and pull requests
 
@@ -87,7 +92,7 @@ The release workflow uses these to auto-generate the release notes on each GitHu
 - Unit tests run on every PR and merge to main, host-less and unsigned. They don't touch the network — OneLake and Fabric HTTP calls are mocked.
 - Run them with `make test` (OfemKit engine + host app), or `cd Packages/OfemKit && swift test` for the engine alone.
 - Aim for >80% line coverage on `Packages/OfemKit/Sources/`.
-- Integration tests run against a live Fabric workspace and exercise the real OneLake DFS data plane and Fabric REST discovery — no mocks. They are gated behind `OFEM_INTEGRATION=1` and skipped in the normal unit-test pass. Run them with `make test-integration`; this requires bearer tokens and workspace coordinates in the environment (`OFEM_TOKEN_ONELAKE`, `OFEM_TOKEN_FABRIC`, `OFEM_TEST_WORKSPACE_ID`, `OFEM_TEST_LAKEHOUSE_ID`) — see [docs/auth.md](docs/auth.md) for how CI provisions those. In CI they run on a schedule, on demand, and on any pull request that carries the `integration` label (via `.github/workflows/integration.yml`).
+- Integration tests run against a live Fabric workspace and exercise the real OneLake DFS data plane and Fabric REST discovery — no mocks. They are gated behind `OFEM_INTEGRATION=1` and skipped in the normal unit-test pass. Run them with `make test-integration`; this requires bearer tokens and workspace coordinates in the environment (`OFEM_TOKEN_ONELAKE`, `OFEM_TOKEN_FABRIC`, `OFEM_TEST_WORKSPACE_ID`, `OFEM_TEST_LAKEHOUSE_ID`) — see [docs/auth.md](https://github.com/sdebruyn/onelake-explorer-macos/blob/main/docs/auth.md) for how CI provisions those. In CI they run on a schedule, on demand, and on any pull request that carries the `integration` label (via `.github/workflows/integration.yml`).
 - The warehouse tests additionally read a prepared Delta table. Seed it first with `scripts/prep_warehouse.sql` via [go-sqlcmd](https://github.com/microsoft/go-sqlcmd) (`brew install sqlcmd`), which authenticates with your `az login` identity — no password or secret:
 
   ```bash
@@ -113,7 +118,7 @@ git push origin v2026.05.1
 
 GitHub Actions does the rest: build, sign, notarize, DMG, GitHub Release upload, cask bump.
 
-See [docs/packaging-homebrew.md](docs/packaging-homebrew.md) for full pipeline details and [docs/prerequisites.md](docs/prerequisites.md) for the secrets that must be configured.
+See [docs/packaging-homebrew.md](https://github.com/sdebruyn/onelake-explorer-macos/blob/main/docs/packaging-homebrew.md) for full pipeline details and [docs/prerequisites.md](https://github.com/sdebruyn/onelake-explorer-macos/blob/main/docs/prerequisites.md) for the secrets that must be configured.
 
 ## Questions?
 
