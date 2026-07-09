@@ -339,6 +339,10 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
     /// before the write ever reached the FPE. This asserts 0 now survives
     /// the full write path: optimistic publish + the XPC value actually sent.
     func testSetCacheLimitGB_zero_isPreservedAsNoLimitSentinel() async {
+        // writeConfig resolves the target alias via accountProvider.listAccounts()
+        // and bails out silently if it's empty — needed so the write actually
+        // reaches the fake engineProvider and configSets gets populated.
+        accountProvider.accounts = [makeAccount(alias: "work")]
         model.setCacheLimitGB(0)
         XCTAssertEqual(model.cacheMaxSizeGB, 0,
                        "the optimistic publish must not clamp 0 up to the old floor of 1")
@@ -352,6 +356,7 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
     /// Existing clamp behaviour must be unchanged for in-range and
     /// out-of-range non-zero values — only the 0 sentinel is special-cased.
     func testSetCacheLimitGB_outOfRange_stillClampsTo_minSizeGB_maxSizeGB() async {
+        accountProvider.accounts = [makeAccount(alias: "work")]
         model.setCacheLimitGB(-5)
         await waitUntil { !model.isFenced(.cacheMaxSize) }
         XCTAssertEqual(engineProvider.configSets.last?.value, String(CacheConfig.minSizeGB),
@@ -367,6 +372,7 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
     /// `SetConfigLimits`, the same shared bounds the FPE validates against,
     /// instead of independently hardcoded `16`/`32` literals.
     func testSetNetMaxUploadsAndDownloads_clampThroughSharedLimits() async {
+        accountProvider.accounts = [makeAccount(alias: "work")]
         model.setNetMaxUploads(9999)
         await waitUntil { !model.isFenced(.netMaxUploads) }
         XCTAssertEqual(engineProvider.configSets.last?.value, String(SetConfigLimits.maxUploadsPerAccount))
