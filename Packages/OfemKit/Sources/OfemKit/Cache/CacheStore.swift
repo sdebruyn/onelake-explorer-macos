@@ -129,6 +129,7 @@ public actor CacheStore {
             try db.execute(sql: "PRAGMA synchronous = NORMAL")
             try db.execute(sql: "PRAGMA busy_timeout = \(CacheStore.busyTimeoutMs)")
             try db.execute(sql: "PRAGMA foreign_keys = ON")
+            try Self.enableCaseSensitiveLike(db)
         }
         dbPool = try DatabasePool(path: dbURL.path, configuration: config)
 
@@ -225,6 +226,7 @@ public actor CacheStore {
         config.prepareDatabase { db in
             try db.execute(sql: "PRAGMA journal_mode = WAL")
             try db.execute(sql: "PRAGMA busy_timeout = \(CacheStore.busyTimeoutMs)")
+            try Self.enableCaseSensitiveLike(db)
         }
         guard let pool = try? DatabasePool(path: dbURL.path, configuration: config) else {
             return nil
@@ -1757,6 +1759,52 @@ public actor CacheStore {
         DELETE FROM deletion_tombstones
         WHERE account_alias = ? AND identifier_string = ?
         """, arguments: [record.accountAlias, identStr])
+    }
+
+    // MARK: LIKE case-sensitivity (#426)
+
+    /// Sets `case_sensitive_like = ON` for one connection.
+    ///
+    /// OneLake paths are case-sensitive, but SQLite's `LIKE` operator is
+    /// ASCII-case-insensitive by default. Every subtree/prefix match in this
+    /// file — ``delete(key:)``, ``batchDelete(_:recordTombstones:)``,
+    /// ``renamePathPrefix(accountAlias:workspaceID:itemID:oldPath:newPath:newName:)``,
+    /// ``removeMaterialized(alias:identifierPrefix:)`` — matches descendants
+    /// with `path LIKE prefix || '/%'` (or the `identifier_string` equivalent).
+    /// Without this pragma, two siblings differing only in ASCII case
+    /// (`Reports/…` vs `reports/…`) would cross-match: deleting, renaming, or
+    /// unmaterializing one would incorrectly touch the other's cached rows.
+    ///
+    /// Called from `prepareDatabase` (once per pooled connection, both the
+    /// read-write pool in `init` and the read-only pool in ``openReadOnly(root:logger:)``)
+    /// rather than qualifying each call site individually — a grep of every
+    /// `LIKE` in this file (and of `CacheReader`, which has none) confirms no
+    /// query anywhere relies on the case-insensitive default, so a single
+    /// connection-wide pragma is safe.
+    ///
+    /// This also does not trade away the index: SQLite's LIKE-to-range-scan
+    /// optimization only converts a `LIKE 'prefix%'` into a `>= / <` B-tree
+    /// range bound when the column is BINARY-collated AND
+    /// `case_sensitive_like` is ON — with the default OFF, a BINARY-collated
+    /// column (which `path` and `identifier_string` are; neither declares
+    /// `COLLATE NOCASE`) could never use that optimization against
+    /// `idx_pm_path` in the first place. Enabling the pragma is therefore a
+    /// net win for the index, not a tradeoff against it.
+    ///
+    /// Assumption: ``removeMaterialized(alias:identifierPrefix:)`` and
+    /// ``renamePathPrefix(accountAlias:workspaceID:itemID:oldPath:newPath:newName:)``'s
+    /// destination-tombstone clear build their LIKE prefix directly from
+    /// `workspaceID`/`itemID` GUIDs, with no case normalization anywhere in
+    /// this file. Both rely on Fabric never echoing a workspace/item GUID
+    /// back in different letter casing than when the row was first written.
+    /// This is not a new exposure from this pragma: the exact-match branch
+    /// in those same queries (`identifier_string = ?`) is BINARY-collated
+    /// and has always been case-sensitive regardless of `LIKE`'s
+    /// case-folding, so GUID-casing drift would already have broken exact
+    /// cleanup before #426 — this pragma only makes descendant matching
+    /// consistent with that pre-existing exact-match behaviour.
+    private static func enableCaseSensitiveLike(_ db: Database) throws {
+        try db.execute(sql: "PRAGMA case_sensitive_like = ON")
     }
 
     // MARK: SQL escape helper
