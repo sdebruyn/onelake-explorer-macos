@@ -45,11 +45,46 @@ bootstrap: ## Write Local.xcconfig from the sample (first-time setup)
 		echo "$(APPLE_CONFIG) already exists. Nothing to do."; \
 	fi
 
-# FILE target: regenerate the .xcodeproj only when project.yml is newer than
-# project.pbxproj. A clean CI checkout has no .xcodeproj, so the target always
+# Source directories mirrored from project.yml's `sources:` entries (across
+# all five targets). Only the *set* of files under these directories matters
+# for the "new/removed file" regen case below — see .source-manifest.
+XCODEGEN_SOURCE_DIRS := OneLake OneLakeFileProvider Shared OneLakeHostTests OneLakeFileProviderTests
+
+# Filesystem/editor noise that can appear and disappear inside a source
+# directory without any actual source change (Finder's .DS_Store, editor
+# swap files) — excluded from the snapshot below so it can't trip the
+# list-diff guard into a spurious (harmless but noisy) regen. Mirrors the
+# same noise patterns already ignored elsewhere in .gitignore.
+XCODEGEN_SOURCE_NOISE := .DS_Store *.swp *.swo *~
+
+# FORCE lets .source-manifest's recipe (a cheap `find`) run on every
+# invocation while .source-manifest itself still behaves as a normal
+# mtime-based prerequisite for the project.pbxproj rule below.
+.PHONY: FORCE
+FORCE:
+
+# Snapshot of the source tree's file *names* — not their content — one per
+# line, sorted for a stable diff. project.pbxproj enumerates file references
+# by path, so xcodegen only needs to be told about the project again when a
+# file is ADDED or REMOVED; editing an existing file's content never changes
+# this list. The recipe always runs (via FORCE), but only overwrites — and
+# thus only bumps the mtime of — .source-manifest when the list actually
+# changed, via the cmp/mv guard. That mtime is the signal the file target
+# below reacts to, so an ordinary content edit correctly does NOT trigger
+# a regen, while a new or deleted source file does.
+.source-manifest: FORCE
+	@find $(XCODEGEN_SOURCE_DIRS) -type f $(foreach n,$(XCODEGEN_SOURCE_NOISE),-not -name '$(n)') 2>/dev/null | sort > $@.tmp
+	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
+	@rm -f $@.tmp
+
+# FILE target: regenerate the .xcodeproj when project.yml changes, or when
+# .source-manifest's mtime advances (a source file was added or removed —
+# see above). A clean CI checkout has no .xcodeproj, so the target always
 # fires there (file missing → make considers it stale).
 # This avoids the unconditional xcodegen run on every build/test invocation
-# that the old phony-gen prerequisite caused (build-23).
+# that the old phony-gen prerequisite caused (build-23), while still
+# catching new source files that project.yml's own mtime wouldn't reflect
+# (#453 — previously a newly added file was silently absent from the build).
 # Note: bootstrap must be called before this target so Local.xcconfig exists
 # (xcodegen requires the config files referenced in project.yml at generation
 # time). The build/build-ci/test targets list bootstrap + this file target as
@@ -58,13 +93,18 @@ bootstrap: ## Write Local.xcconfig from the sample (first-time setup)
 # --project-root . lets the spec reference source paths from the repo root
 # (e.g. "OneLake") while --project . drops the generated .xcodeproj at the
 # repo root, next to the spec.
-OneLake.xcodeproj/project.pbxproj: project.yml
+OneLake.xcodeproj/project.pbxproj: project.yml .source-manifest
 	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: make bootstrap && brew install xcodegen"; exit 1; }
 	xcodegen generate --spec project.yml --project-root . --project .
 
 # Phony alias — forces regeneration regardless of timestamps. Useful for
 # `make gen` after adding new source files or editing project.yml explicitly.
-gen: bootstrap ## Regenerate OneLake.xcodeproj from project.yml (force)
+# Depends on .source-manifest so this run also refreshes the snapshot to the
+# current file list; otherwise a contributor following this target's own
+# "run after adding source files" advice would leave the manifest stale,
+# and the *next* build would trip the list-diff guard for a no-op, redundant
+# (if harmless) xcodegen pass.
+gen: bootstrap .source-manifest ## Regenerate OneLake.xcodeproj from project.yml (force)
 	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: make bootstrap && brew install xcodegen"; exit 1; }
 	xcodegen generate --spec project.yml --project-root . --project .
 
@@ -234,7 +274,7 @@ clean: ## Remove build artefacts and unregister app from LaunchServices
 			if [ -d "$$app" ]; then "$(LSREGISTER)" -u "$$app" 2>/dev/null || true; fi; \
 		done; \
 	fi
-	rm -rf OneLake.xcodeproj OneLake.xcworkspace build DerivedData
+	rm -rf OneLake.xcodeproj OneLake.xcworkspace build DerivedData .source-manifest
 
 # SwiftFormat (nicklockwood/SwiftFormat 0.61.1) — the version is pinned so
 # local and CI agree. Install: brew install swiftformat (or the exact version).

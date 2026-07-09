@@ -69,9 +69,10 @@ jobs:
           path: |
             Packages/OfemKit/.build
             DerivedData/SourcePackages
-          # Distinct prefix from ci.yml's "spm-" key so the CodeQL tracer's
-          # instrumented artifacts never pollute the clean-build cache used
-          # by the main CI workflow.
+          # Distinct prefix from ci.yml's "spm-build-"/"spm-ofemkit-" keys and
+          # release.yml's "spm-release-" key so the CodeQL tracer's
+          # instrumented artifacts never pollute the clean-build caches used
+          # by the other workflows.
           key: codeql-spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
           restore-keys: |
             codeql-spm-${{ runner.os }}-
