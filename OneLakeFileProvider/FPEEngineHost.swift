@@ -224,27 +224,6 @@ final class FPEEngineHost: EngineProviding {
         }
     }
 
-    /// Builds the `TelemetrySink` implied by `cfg`: a live `AppInsightsSink`
-    /// when telemetry is enabled and the connection string parses,
-    /// `NoopTelemetrySink` otherwise.
-    ///
-    /// Shared by `sharedTelemetry()` (first construction) and
-    /// `reloadEngine()` (runtime opt-in sink swap, via
-    /// `TelemetryClient.reconfigureSink(optOut:makeLiveSink:)`) so both
-    /// sites build the sink identically.
-    private static func makeTelemetrySink(cfg: OfemConfig) -> any TelemetrySink {
-        guard cfg.telemetry,
-              let sink = try? AppInsightsSink(
-                  connectionString: BuildInfo.appInsightsConnectionString,
-                  installID: cfg.installID,
-                  appVersion: BuildInfo.version
-              )
-        else {
-            return NoopTelemetrySink()
-        }
-        return sink
-    }
-
     /// Returns (or lazily creates) the process-wide TelemetryClient.
     ///
     /// Uses the same double-checked pattern as `sharedCache()` to avoid
@@ -258,7 +237,7 @@ final class FPEEngineHost: EngineProviding {
         // Build outside the lock.
         let cfg = try sharedSubsystemsLock.withLock { try sharedConfigStore().snapshot() }
         let candidate = TelemetryClient(
-            sink: Self.makeTelemetrySink(cfg: cfg),
+            sink: TelemetryClient.makeSink(cfg: cfg),
             appVersion: BuildInfo.version,
             installID: cfg.installID,
             configuration: TelemetryConfiguration(optOut: !cfg.telemetry)
@@ -624,7 +603,7 @@ final class FPEEngineHost: EngineProviding {
         // exists — this call hits the cheap fast path, no fresh TOML load.
         guard let cfg = try? Self.sharedConfigStore().snapshot() else { return }
         await telemetry?.reconfigureSink(optOut: !cfg.telemetry) {
-            Self.makeTelemetrySink(cfg: cfg)
+            TelemetryClient.makeSink(cfg: cfg)
         }
         await cache?.setMaxBlobBytes(cfg.cache.maxBytes)
     }

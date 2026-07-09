@@ -186,23 +186,13 @@ public actor OfemEngine {
     ) throws {
         let cfg = configStore.snapshot()
 
-        // Build owned telemetry.
-        // `AppInsightsSink.init` throws only if the connection string is
-        // malformed; the constant in `BuildInfo` is always well-formed, so
-        // the `try?` here is purely a defensive fallback.
-        let telSink: any TelemetrySink = if cfg.telemetry,
-                                            let sink = try? AppInsightsSink(
-                                                connectionString: BuildInfo.appInsightsConnectionString,
-                                                installID: cfg.installID,
-                                                appVersion: BuildInfo.version
-                                            )
-        {
-            sink
-        } else {
-            NoopTelemetrySink()
-        }
+        // Build owned telemetry. `TelemetryClient.makeSink` is the single
+        // source of truth for the cfg.telemetry -> sink selection, shared
+        // with `FPEEngineHost.sharedTelemetry()`/`reloadEngine()` so all
+        // three call sites build the sink identically instead of drifting
+        // out of sync.
         let ownedTelemetry = TelemetryClient(
-            sink: telSink,
+            sink: TelemetryClient.makeSink(cfg: cfg),
             appVersion: BuildInfo.version,
             installID: cfg.installID,
             configuration: TelemetryConfiguration(optOut: !cfg.telemetry)

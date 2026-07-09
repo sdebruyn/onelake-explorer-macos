@@ -262,15 +262,16 @@ struct TelemetryClientTests {
 
     // MARK: - reconfigureSink (M3: runtime opt-in must swap off NoopTelemetrySink, #428)
 
-    @Test("reconfigureSink(optOut: false) swaps a memoized Noop sink for a live one and starts flushing")
+    @Test("reconfigureSink(optOut: false) swaps an opted-out client's sink for a live one and starts flushing")
     func reconfigureSinkOptInSwapsNoopForLiveSink() async {
-        // Models the exact bug (#428): a client memoized opted-out at launch —
-        // `TelemetryConfiguration(optOut: true)` forces `NoopTelemetrySink`
-        // regardless of the sink passed to init, the same way
+        // Models the exact bug (#428): a client memoized opted-out at launch
+        // (`TelemetryConfiguration(optOut: true)`) the same way
         // `FPEEngineHost.sharedTelemetry()` does when `cfg.telemetry == false`
         // at first construction. `setOptOut(false)` alone (the pre-fix
-        // behaviour) would flip the flag but leave the sink Noop forever —
-        // track()+flush() would still silently discard every event.
+        // behaviour) would flip the flag but leave the client parked on
+        // whatever sink it was opted out with, and `start()` never having
+        // launched a flush timer — track()+flush() would still silently
+        // discard every event.
         let sink = MemoryTelemetrySink()
         let client = TelemetryClient(
             sink: sink,
@@ -324,6 +325,54 @@ struct TelemetryClientTests {
         await client.flush()
         #expect(sink.count == 1, "no new events must reach the original sink after opt-out")
         #expect(poison.count == 0, "the opt-out branch must never call makeLiveSink")
+    }
+
+    @Test("concurrent opt-out/opt-in reconfigureSink calls never leave the client enabled with no live sink (#428 reentrancy regression)")
+    func reconfigureSinkConcurrentCallsNeverInconsistent() async {
+        // Independent review of #435 found a real reentrancy window: the
+        // opt-out branch used to call `await setOptOut(true)` — which
+        // suspends at a cross-actor `await batch.drain()` — and only AFTER
+        // that resumed did it separately write `sink = NoopTelemetrySink()`.
+        // A concurrent, all-synchronous opt-in call could land inside that
+        // suspension, flip the client to enabled, and then have its work
+        // clobbered by the opt-out call's late Noop write on resume —
+        // reintroducing #428 (opted in but mute) via a brand-new code path.
+        //
+        // The fix collapses the flag and the sink into one `SinkState` field
+        // so every transition is a single atomic, await-free assignment.
+        // Run many iterations: actor scheduling is nondeterministic, so a
+        // single run is not guaranteed to exercise the interleaving that
+        // used to be racy.
+        for _ in 0 ..< 50 {
+            let constructionSink = MemoryTelemetrySink()
+            let client = TelemetryClient(
+                sink: constructionSink,
+                appVersion: "2026.06.1",
+                installID: "race-test",
+                configuration: TelemetryConfiguration(flushInterval: .seconds(3600))
+            )
+
+            // Both `makeLiveSink` closures return the SAME object, so no
+            // matter which call's opt-in branch actually wins the race, a
+            // successful delivery is observable through one fixed reference.
+            let sharedLiveSink = MemoryTelemetrySink()
+            async let optOutCall: Void = client.reconfigureSink(optOut: true) { sharedLiveSink }
+            async let optInCall: Void = client.reconfigureSink(optOut: false) { sharedLiveSink }
+            _ = await (optOutCall, optInCall)
+
+            // Whichever call landed last, the client must be internally
+            // consistent: "enabled" (non-Noop) implies a tracked event is
+            // actually delivered; "opted out" implies nothing is.
+            let isNoop = await client.sinkIsNoopForTesting
+            await client.track(TelemetryEvent(name: "probe"))
+            await client.flush()
+
+            if isNoop {
+                #expect(sharedLiveSink.count == 0, "reported opted-out but an event still reached the live sink")
+            } else {
+                #expect(sharedLiveSink.count == 1, "reported enabled but the probe event was never delivered")
+            }
+        }
     }
 
     @Test("setOptOut(true) cancels a flush already parked inside sink.send")
