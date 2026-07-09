@@ -1845,17 +1845,9 @@ public actor SyncEngine {
             }
         }.value
 
-        // Best-effort seed for the progress `total` while the download is in
-        // flight: the size from the last successful sync, when known (#461).
-        // This is deliberately NOT the authoritative `expectedTotal` computed
-        // below from `props` — that value needs the full response headers,
-        // which are only available once performNetworkRead returns.
-        let totalHint = cached?.contentLength ?? 0
-
         // Perform the download, handling 412 on the resume path.
         let props = try await performNetworkRead(
-            key: key, spillURL: spillURL, plan: plan, start: start,
-            totalHint: totalHint, onProgress: onProgress
+            key: key, spillURL: spillURL, plan: plan, start: start, onProgress: onProgress
         )
         await offlineTracker.observe(nil)
 
@@ -2007,6 +1999,40 @@ public actor SyncEngine {
         }
     }
 
+    /// Combines a single network attempt's own (completed, total) progress
+    /// tick with the local resume offset to produce an ABSOLUTE pair for the
+    /// whole file (#461, review round 2).
+    ///
+    /// Alamofire's `totalUnitCount` for a ranged/resumed request only covers
+    /// the bytes THIS request returns (the remaining range), not the full
+    /// file — adding `rangeStart` (bytes already on disk from a prior
+    /// attempt) reconstructs the true total live, from data the progress
+    /// tick itself carries. This deliberately does NOT use a value sourced
+    /// before the download started (e.g. a cached row's stale
+    /// `contentLength`): if the remote size changed since that row was
+    /// written — most plausible exactly on the 412-resume-discard-retry path,
+    /// which exists BECAUSE the remote object changed — a fixed pre-download
+    /// total could report `completed > total` or land short of 100%.
+    ///
+    /// - Returns: `total == 0` when Alamofire hasn't reported a positive
+    ///   total for this request yet (e.g. chunked transfer encoding) —
+    ///   callers treat that as "indeterminate" rather than inventing a
+    ///   number. A hostile/corrupted header that would overflow `Int64` when
+    ///   added to `rangeStart` degrades the same way (this is a UI hint, not
+    ///   correctness-critical, so it silently drops to indeterminate rather
+    ///   than throwing).
+    static func absoluteDownloadProgress(
+        rangeStart: Int64,
+        completedInRequest: Int64,
+        totalInRequest: Int64
+    ) -> (completed: Int64, total: Int64) {
+        let (completed, completedOverflowed) = rangeStart.addingReportingOverflow(completedInRequest)
+        guard !completedOverflowed else { return (0, 0) }
+        guard totalInRequest > 0 else { return (completed, 0) }
+        let (total, totalOverflowed) = rangeStart.addingReportingOverflow(totalInRequest)
+        return (completed, totalOverflowed ? 0 : total)
+    }
+
     /// Issues the network read for a single download attempt. Handles the 412
     /// precondition-failed path by resetting to a full restart and retrying
     /// once (sync-02/sync-09/sync-23).
@@ -2014,35 +2040,26 @@ public actor SyncEngine {
     /// All blocking FileHandle operations run off the actor via `Task.detached`
     /// (sync-14).
     ///
-    /// - Parameters:
-    ///   - totalHint: Best-effort expected file size to report as the progress
-    ///     `total`, sourced by ``performDownload(key:start:cached:onProgress:)``
-    ///     from the cached row (#461) — deliberately NOT recomputed per network
-    ///     attempt, since the authoritative Content-Range-derived total is only
-    ///     known once the whole response has been read (see `expectedTotal` in
-    ///     `performDownload`).
-    ///   - onProgress: Forwarded to `onelake.read(...)`, wrapped per attempt so
-    ///     the `completed` byte count reported to the caller is ABSOLUTE (i.e.
-    ///     accounts for `rangeStart`) rather than relative to this one request.
-    ///     The 412-retry-as-full-restart branch below rewraps with a
-    ///     `rangeStart` of 0 — that attempt is a fresh, unranged GET, so the
-    ///     original resume offset no longer applies.
+    /// - Parameter onProgress: Forwarded to `onelake.read(...)`, wrapped per
+    ///   attempt via ``absoluteDownloadProgress(rangeStart:completedInRequest:totalInRequest:)``
+    ///   so the caller sees an ABSOLUTE (completed, total) pair rather than
+    ///   values relative to this one request. The 412-retry-as-full-restart
+    ///   branch below rewraps with a `rangeStart` of 0 — that attempt is a
+    ///   fresh, unranged GET, so the original resume offset no longer applies.
     private func performNetworkRead(
         key: CacheKey,
         spillURL: URL,
         plan: ResumePlan,
         start: Date,
-        totalHint: Int64 = 0,
         onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
     ) async throws -> PathProperties {
-        /// Wraps onProgress so the callback receives an ABSOLUTE completed byte
-        /// count (rangeStart + bytes written by this attempt) and the fixed
-        /// totalHint, rather than Alamofire's own per-attempt total (which on a
-        /// ranged request is only the remaining bytes, not the full file — #461).
         func absoluteProgress(rangeStart: Int64) -> (@Sendable (Int64, Int64) -> Void)? {
             guard let onProgress else { return nil }
-            return { @Sendable completedInRequest, _ in
-                onProgress(rangeStart + completedInRequest, totalHint)
+            return { @Sendable completedInRequest, totalInRequest in
+                let (completed, total) = Self.absoluteDownloadProgress(
+                    rangeStart: rangeStart, completedInRequest: completedInRequest, totalInRequest: totalInRequest
+                )
+                onProgress(completed, total)
             }
         }
 

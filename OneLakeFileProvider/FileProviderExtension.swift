@@ -300,8 +300,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
                 // Progress isn't Sendable-checked by the compiler; box it like
                 // `work`/`complete` above so it can be captured by the
-                // @Sendable progress callback, which fires from Alamofire's
-                // delivery queue mid-download, not necessarily main (#461).
+                // @Sendable progress callback. That callback fires on
+                // Alamofire's own delivery queue (`.main` by default — see
+                // `doStreamRequest`) rather than this Task's, so it may not
+                // land on the same thread as the rest of `work` (#461).
                 // Progress itself is documented as safe to mutate off-main.
                 let progressBox = UncheckedSendable(value: progress)
                 let (_, record) = try await engine.sync.openReturningRecord(key: key) { completed, total in
@@ -339,9 +341,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 } else {
                     domainItem.documentSize?.int64Value ?? 0
                 }
-                if progress.totalUnitCount < actualBytes {
-                    progress.totalUnitCount = actualBytes
-                }
+                // Force exact 100% regardless of where the incremental ticks
+                // (or the documentSize hint above) landed: an in-flight
+                // progress tick's total can end up ABOVE actualBytes just as
+                // easily as below it (e.g. the remote size changed mid-
+                // download), and completedUnitCount must never end up short
+                // of totalUnitCount once the transfer is actually done (#461
+                // review round 2) — so both are set to the same
+                // known-correct value here, not merely raised.
+                progress.totalUnitCount = actualBytes
                 progress.completedUnitCount = actualBytes
                 return (dest, domainItem)
             },

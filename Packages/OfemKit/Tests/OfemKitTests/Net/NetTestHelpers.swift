@@ -140,7 +140,18 @@ final class MockURLProtocol: URLProtocol {
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         if let chunks = stub.bodyChunks, !chunks.isEmpty {
-            for chunk in chunks {
+            for (index, chunk) in chunks.enumerated() {
+                if index > 0 {
+                    // #461 review round 1 (observed on real CI): chunks
+                    // delivered back-to-back with no gap can be coalesced by
+                    // the URL Loading System into a single didWriteData /
+                    // downloadProgress tick, especially for a small payload.
+                    // A short sleep between deliveries gives it a chance to
+                    // flush a separate progress notification per chunk.
+                    // startLoading() runs off the caller's thread, so this
+                    // does not block the test's own Task.
+                    Thread.sleep(forTimeInterval: 0.02)
+                }
                 client?.urlProtocol(self, didLoad: chunk)
             }
         } else {
@@ -210,6 +221,28 @@ struct QueueIDAdapter: RequestAdapter {
         var req = urlRequest
         req.setValue(queueID, forHTTPHeaderField: MockURLProtocol.queueIDHeader)
         completion(.success(req))
+    }
+}
+
+// MARK: - ProgressTickRecorder
+
+/// Records `(completed, total)` progress ticks under an `NSLock` — an
+/// `onProgress` callback threaded through `OneLakeClient`/`SyncEngine` is
+/// `@Sendable` and, in production, is invoked from Alamofire's own delivery
+/// queue (`.main` by default) rather than the calling task (mirrors
+/// `ResponseSizeGuard` in `HTTPRequestCore.swift`). Shared between
+/// `OneLakeStreamingTests.swift` and `SyncEngineTests.swift` (#461 review
+/// round 1 — was duplicated per-file).
+final class ProgressTickRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _ticks: [(completed: Int64, total: Int64)] = []
+
+    func record(_ completed: Int64, _ total: Int64) {
+        lock.withLock { _ticks.append((completed, total)) }
+    }
+
+    var ticks: [(completed: Int64, total: Int64)] {
+        lock.withLock { _ticks }
     }
 }
 

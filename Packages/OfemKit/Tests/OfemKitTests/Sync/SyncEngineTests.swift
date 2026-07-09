@@ -2449,23 +2449,6 @@ struct SyncEngineTests {
 
     // MARK: - #461: resumed download progress accounts for plan.rangeStart
 
-    /// Records `(completed, total)` progress ticks under an `NSLock` —
-    /// `onProgress` is `@Sendable` and, in production, is invoked from
-    /// Alamofire's own delivery queue rather than the calling task (mirrors
-    /// `ResponseSizeGuard` in `HTTPRequestCore.swift`).
-    private final class ProgressCollector: @unchecked Sendable {
-        private let lock = NSLock()
-        private var _ticks: [(completed: Int64, total: Int64)] = []
-
-        func record(_ completed: Int64, _ total: Int64) {
-            lock.withLock { _ticks.append((completed, total)) }
-        }
-
-        var ticks: [(completed: Int64, total: Int64)] {
-            lock.withLock { _ticks }
-        }
-    }
-
     /// A resumed download's `onProgress` callback must report an ABSOLUTE
     /// completed byte count — `plan.rangeStart` (the local resume offset)
     /// plus the bytes delivered by THIS network attempt — not bytes relative
@@ -2508,12 +2491,12 @@ struct SyncEngineTests {
         )
         ol.readResults.append(.success((tailBody, props)))
 
-        let collector = ProgressCollector()
+        let recorder = ProgressTickRecorder()
         _ = try await engine.openReturningRecord(key: key) { completed, total in
-            collector.record(completed, total)
+            recorder.record(completed, total)
         }
 
-        let ticks = collector.ticks
+        let ticks = recorder.ticks
         #expect(ticks.count == 2, "expected the mock's midpoint + final ticks, got \(ticks)")
         for tick in ticks {
             #expect(tick.completed >= 500,
@@ -2521,8 +2504,91 @@ struct SyncEngineTests {
         }
         #expect(ticks.last?.completed == 505,
                 "final tick must reach rangeStart (500) + this request's bytes (5)")
-        // totalHint is seeded from the pre-download cached row's
-        // contentLength (505 here), not recomputed per tick.
+        // total is rangeStart (500) + THIS request's own live total (5, from
+        // props.contentLength above) — 505 for both ticks here, not a
+        // pre-download hint (#461 review round 2).
         #expect(ticks.allSatisfy { $0.total == 505 })
+    }
+
+    // MARK: - #461 review round 2: SyncEngine.absoluteDownloadProgress unit tests
+
+    /// Deterministic, non-networked coverage of the pure wrapping function
+    /// behind every `onProgress` tick — the CI-flaky Alamofire-integration
+    /// path (`OneLakeStreamProgressTests` in `OneLakeStreamingTests.swift`)
+    /// only smoke-tests that real chunked delivery reaches this function at
+    /// all; the actual guarantees (absolute byte accounting, the
+    /// completed-never-exceeds-total invariant, indeterminate handling, and
+    /// overflow safety) are pinned here instead.
+    @Suite("SyncEngine.absoluteDownloadProgress (#461)")
+    struct AbsoluteDownloadProgressTests {
+        @Test("a fresh (non-resumed) download passes completed/total through unchanged")
+        func freshDownloadPassesThrough() {
+            let result = SyncEngine.absoluteDownloadProgress(rangeStart: 0, completedInRequest: 40, totalInRequest: 100)
+            #expect(result.completed == 40)
+            #expect(result.total == 100)
+        }
+
+        @Test("a resumed download adds rangeStart to both completed and total")
+        func resumedDownloadAddsRangeStart() {
+            let result = SyncEngine.absoluteDownloadProgress(rangeStart: 500, completedInRequest: 2, totalInRequest: 5)
+            #expect(result.completed == 502)
+            #expect(result.total == 505)
+        }
+
+        @Test("completed never exceeds total, by construction, across a range of inputs")
+        func completedNeverExceedsTotal() {
+            let cases: [(rangeStart: Int64, completedInRequest: Int64, totalInRequest: Int64)] = [
+                (0, 0, 0), (0, 100, 100), (500, 0, 505), (500, 505, 505), (1, 1, 1), (12345, 6789, 20000),
+            ]
+            for testCase in cases {
+                let result = SyncEngine.absoluteDownloadProgress(
+                    rangeStart: testCase.rangeStart,
+                    completedInRequest: testCase.completedInRequest,
+                    totalInRequest: testCase.totalInRequest
+                )
+                if result.total > 0 {
+                    #expect(result.completed <= result.total, "completed must never exceed total: \(testCase) -> \(result)")
+                }
+            }
+        }
+
+        @Test("an unknown per-request total (<= 0) reports indeterminate (total == 0), not a fabricated number")
+        func unknownTotalReportsIndeterminate() {
+            let zero = SyncEngine.absoluteDownloadProgress(rangeStart: 500, completedInRequest: 10, totalInRequest: 0)
+            #expect(zero.completed == 510)
+            #expect(zero.total == 0)
+
+            let negative = SyncEngine.absoluteDownloadProgress(rangeStart: 500, completedInRequest: 10, totalInRequest: -1)
+            #expect(negative.completed == 510)
+            #expect(negative.total == 0)
+        }
+
+        @Test("an overflowing completed addition degrades to indeterminate rather than trapping")
+        func overflowingCompletedDegradesToIndeterminate() {
+            let result = SyncEngine.absoluteDownloadProgress(
+                rangeStart: Int64.max - 5, completedInRequest: 10, totalInRequest: 20
+            )
+            #expect(result.completed == 0)
+            #expect(result.total == 0)
+        }
+
+        @Test("an overflowing total addition still reports completed but drops total to indeterminate")
+        func overflowingTotalDropsToIndeterminateButKeepsCompleted() {
+            let result = SyncEngine.absoluteDownloadProgress(
+                rangeStart: Int64.max - 5, completedInRequest: 3, totalInRequest: 20
+            )
+            #expect(result.completed == Int64.max - 2)
+            #expect(result.total == 0)
+        }
+
+        @Test("a 412-retry-as-full-restart re-wrap with rangeStart 0 matches a fresh download")
+        func fullRestartRewrapMatchesFreshDownload() {
+            // Mirrors performNetworkRead's 412 branch: the retry passes
+            // rangeStart: 0 regardless of the original (now-stale) resume
+            // offset, since that attempt is a brand-new unranged GET.
+            let result = SyncEngine.absoluteDownloadProgress(rangeStart: 0, completedInRequest: 30, totalInRequest: 90)
+            #expect(result.completed == 30)
+            #expect(result.total == 90)
+        }
     }
 }

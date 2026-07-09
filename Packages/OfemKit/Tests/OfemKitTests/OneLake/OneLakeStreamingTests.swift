@@ -198,22 +198,6 @@ struct OneLakeStreamProgressTests {
     private static let wsGUID = "ws-guid-progress"
     private static let itemGUID = "item-guid-progress"
 
-    /// Records `(completed, total)` progress ticks under an `NSLock` —
-    /// `downloadProgress`'s closure fires on Alamofire's own delivery queue,
-    /// not the calling task (mirrors `ResponseSizeGuard` in `HTTPRequestCore.swift`).
-    private final class ProgressTickRecorder: @unchecked Sendable {
-        private let lock = NSLock()
-        private var _ticks: [(completed: Int64, total: Int64)] = []
-
-        func record(_ completed: Int64, _ total: Int64) {
-            lock.withLock { _ticks.append((completed, total)) }
-        }
-
-        var ticks: [(completed: Int64, total: Int64)] {
-            lock.withLock { _ticks }
-        }
-    }
-
     /// Isolated staging directory + mock session, matching
     /// `OneLakeStreamTempFileCleanupTests.makeClient(stubs:)`.
     private func makeClient(stubs: [MockURLProtocol.StubResponse]) async -> (OneLakeClient, String, URL) {
@@ -232,8 +216,21 @@ struct OneLakeStreamProgressTests {
         return (client, queueID, stagingDir)
     }
 
-    @Test("downloadProgress fires at least twice with monotonically increasing bytes for a multi-chunk body")
-    func multiChunkProgressFiresIncrementally() async throws {
+    /// #461 review round 1: an earlier version of this test asserted ≥2
+    /// ticks for a 3-chunk body, but that failed deterministically on real
+    /// CI — the URL Loading System can coalesce `bodyChunks` delivered
+    /// back-to-back (even with `MockURLProtocol`'s inter-chunk delay, see
+    /// `NetTestHelpers.startLoading()`) into a single `didWriteData` /
+    /// `downloadProgress` tick for a small payload, which is outside this
+    /// test's control. This is now a SMOKE test for the real Alamofire
+    /// wiring end to end (≥1 tick, correct final byte count, and — as a
+    /// bonus check only when more than one tick did land — monotonically
+    /// increasing). The actual ≥2-ticks/monotonic guarantee and the
+    /// completed-never-exceeds-total invariant are pinned deterministically
+    /// by `SyncEngineTests`'s unit tests on `SyncEngine.absoluteDownloadProgress`,
+    /// which don't depend on real chunked delivery.
+    @Test("downloadProgress fires at least once for a multi-chunk body, reaching the full byte count")
+    func multiChunkProgressFiresAtLeastOnce() async throws {
         let chunks = [
             Data(repeating: 0x41, count: 4096),
             Data(repeating: 0x42, count: 4096),
@@ -269,21 +266,24 @@ struct OneLakeStreamProgressTests {
         // downloadProgress's closure is dispatched relative to the request's
         // own completion asynchronously — see the doc comment on
         // `HTTPRetryTests.declaredContentLengthOverCapIsPreflightRejected`
-        // for the same caveat on the DataRequest side. Poll briefly for the
-        // ticks to land rather than asserting immediately after the await.
+        // for the same caveat on the DataRequest side. Poll briefly for at
+        // least one tick to land rather than asserting immediately after
+        // the await.
         var ticks = recorder.ticks
         var iterations = 0
-        while ticks.count < 2, iterations < 200 {
+        while ticks.isEmpty, iterations < 200 {
             try? await Task.sleep(nanoseconds: 2_000_000)
             ticks = recorder.ticks
             iterations += 1
         }
 
-        #expect(ticks.count >= 2, "expected at least 2 progress ticks for a 3-chunk body, got \(ticks.count)")
-        var previousCompleted: Int64 = -1
-        for tick in ticks {
-            #expect(tick.completed > previousCompleted, "completed bytes must strictly increase: \(ticks)")
-            previousCompleted = tick.completed
+        #expect(!ticks.isEmpty, "expected at least 1 progress tick for a 3-chunk body")
+        if ticks.count > 1 {
+            var previousCompleted: Int64 = -1
+            for tick in ticks {
+                #expect(tick.completed > previousCompleted, "completed bytes must strictly increase: \(ticks)")
+                previousCompleted = tick.completed
+            }
         }
         #expect(ticks.last?.completed == Int64(full.count))
 
