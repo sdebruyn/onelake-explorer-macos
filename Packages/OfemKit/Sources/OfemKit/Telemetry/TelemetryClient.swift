@@ -92,12 +92,27 @@ public struct TelemetryConfiguration: Sendable {
 /// - The environment variable `OFEM_TELEMETRY` is set to `0` or `false`, **or**
 /// - ``setOptOut(_:)`` was last called with `true`.
 ///
-/// When disabled at construction time the client uses `NoopTelemetrySink`,
-/// which silently discards every event. ``setOptOut(_:)`` additionally gates
-/// every subsequent ``track(_:)`` call on a live, actor-isolated flag so a
-/// runtime opt-out (e.g. via the host app's `setConfig`) takes effect
-/// immediately — with no process restart — even though `sink` itself is
-/// fixed at construction.
+/// Enabled/disabled and "which sink is live" are stored as ONE field —
+/// `SinkState.enabled(_:)` / `.optedOut(lastSink:)` — not two independently
+/// mutable ones. Two separate fields (a `Bool` flag plus a
+/// separately-swappable `sink`) briefly reintroduced this exact class of bug
+/// (#428) via a reentrancy window: `setOptOut(true)` suspends at a
+/// cross-actor `await batch.drain()`, and a concurrent, all-synchronous
+/// runtime opt-in could land in that window, flip the flag to enabled, and
+/// then have its work clobbered when the opt-out call resumed and
+/// unconditionally overwrote the sink back to `NoopTelemetrySink` —
+/// leaving `optOut == false` with no live sink, silently mute again. With
+/// one field, every transition is a single atomic, `await`-free assignment,
+/// so no interleaving of concurrent calls can observe (or produce) a torn
+/// combination of "enabled" and "no live sink" — see
+/// ``reconfigureSink(optOut:makeLiveSink:)``.
+///
+/// A runtime opt-**in** needs one more step when the client was memoized as
+/// opted-out at launch: the sink itself must move off whatever was retained
+/// at opt-out time, and the flush timer — which ``start()`` never launches
+/// while opted out — must be started. See
+/// ``reconfigureSink(optOut:makeLiveSink:)``, which handles both directions
+/// and is what `FPEEngineHost.reloadEngine()` calls.
 ///
 /// **Precise guarantee**: no event *enqueued at or after* `setOptOut(true)`
 /// returns is ever transmitted. An event whose `send()` was already
@@ -110,15 +125,43 @@ public struct TelemetryConfiguration: Sendable {
 public actor TelemetryClient {
     // MARK: - State
 
-    private let sink: any TelemetrySink
+    /// The client's combined enabled/disabled state. See the class-level
+    /// "Opt-out" section for why this replaces what used to be two
+    /// independently-mutable fields (a `Bool` flag and a separately-swappable
+    /// `sink`) — that split allowed a reentrancy bug (#428) that this design
+    /// makes structurally unrepresentable: there is no way to be "enabled"
+    /// without also holding a live sink, because there is only one field.
+    private enum SinkState {
+        /// Telemetry is on; events flush to the wrapped sink.
+        case enabled(any TelemetrySink)
+        /// Telemetry is off. `lastSink` is retained — not discarded — purely
+        /// so a bare ``setOptOut(false)`` (which takes no sink parameter) can
+        /// restore it. Nothing reads or sends through `lastSink` while in
+        /// this case: `track()`, `flush()`, and `start()` all gate on
+        /// `.enabled`.
+        case optedOut(lastSink: any TelemetrySink)
+    }
+
+    private var sinkState: SinkState
     private let batch: TelemetryBatch
     private let commonProps: [String: String]
     private let configuration: TelemetryConfiguration
 
-    /// Live opt-out flag, consulted on every ``track(_:)`` call. Seeded from
-    /// `configuration.optOut` (plus the `OFEM_TELEMETRY` env override) at
-    /// construction and updatable afterwards via ``setOptOut(_:)``.
-    private var optOut: Bool
+    /// `true` while `sinkState` is `.optedOut`. Consulted on every
+    /// ``track(_:)`` call.
+    private var isOptedOut: Bool {
+        if case .optedOut = sinkState { true } else { false }
+    }
+
+    /// The sink associated with the current state either way — the live
+    /// sink when `.enabled`, or the retained `lastSink` when `.optedOut`.
+    /// Used to move between the two cases without losing the reference.
+    private var underlyingSink: any TelemetrySink {
+        switch sinkState {
+        case let .enabled(sink): sink
+        case let .optedOut(lastSink): lastSink
+        }
+    }
 
     /// The `sink.send(events)` calls currently in flight inside ``flush()``,
     /// keyed by a per-call generation from ``nextSendGeneration``. Tracked so
@@ -162,13 +205,8 @@ public actor TelemetryClient {
         let envOptOut = Self.isOptedOutViaEnv()
         let effectiveOptOut = configuration.optOut || envOptOut
 
-        let effectiveSink: any TelemetrySink = effectiveOptOut
-            ? NoopTelemetrySink()
-            : sink
-
-        self.sink = effectiveSink
+        self.sinkState = effectiveOptOut ? .optedOut(lastSink: sink) : .enabled(sink)
         self.configuration = configuration
-        self.optOut = effectiveOptOut
         self.batch = TelemetryBatch(maxSize: configuration.maxBatchSize)
 
         let platform = configuration.platform.isEmpty ? "darwin" : configuration.platform
@@ -190,9 +228,9 @@ public actor TelemetryClient {
 
     /// Starts the background flush timer. Call once after construction.
     ///
-    /// No-op when the sink is `NoopTelemetrySink` (disabled state).
+    /// No-op while opted out.
     public func start() {
-        guard !(sink is NoopTelemetrySink) else { return }
+        guard case .enabled = sinkState else { return }
         guard flushTask == nil, !isClosed else { return }
 
         let interval = configuration.flushInterval
@@ -230,7 +268,7 @@ public actor TelemetryClient {
     /// to `true` — checked on every call so a runtime opt-out takes effect
     /// immediately, not just the opt-out state at construction time.
     public func track(_ event: TelemetryEvent) async {
-        guard !isClosed, !optOut else { return }
+        guard !isClosed, !isOptedOut else { return }
 
         var ev = event
         if ev.time == nil { ev.time = Date() }
@@ -279,12 +317,20 @@ public actor TelemetryClient {
     ///      retroactively un-send bytes already on the wire — see the
     ///      class-level doc for the precise guarantee.
     ///
-    /// Called by `FPEEngineHost.reloadEngine()` after a `setConfig(telemetry:)`
-    /// XPC call so the opt-out takes effect immediately — the shared
-    /// `TelemetryClient` singleton is not rebuilt on reload.
+    /// `sinkState` is written as the very first statement — synchronously,
+    /// before the only `await` in this method (`batch.drain()`) — so a
+    /// concurrent, reentrant call (from another `setOptOut` or from
+    /// ``reconfigureSink(optOut:makeLiveSink:)``) can only ever observe the
+    /// fully-updated state, never a torn one. See the class-level "Opt-out"
+    /// doc for the reentrancy bug two separate fields caused here (#428).
+    ///
+    /// Called directly by tests that only need the flag semantics against a
+    /// client already constructed with a live sink. Production code goes
+    /// through ``reconfigureSink(optOut:makeLiveSink:)``, which also repairs
+    /// the sink when the client was memoized as opted-out at launch.
     public func setOptOut(_ value: Bool) async {
-        optOut = value
         if value {
+            sinkState = .optedOut(lastSink: underlyingSink)
             // Cancel every concurrently in-flight send, not just one slot's
             // worth (#391) — a reentrant flush() means more than one can be
             // mid-send at once.
@@ -293,8 +339,92 @@ public actor TelemetryClient {
             }
             inFlightSendTasks.removeAll()
             _ = await batch.drain()
+        } else {
+            sinkState = .enabled(underlyingSink)
         }
     }
+
+    // MARK: - Live sink swap
+
+    /// Reconfigures the client for a runtime opt-out/opt-in transition,
+    /// repairing what ``setOptOut(_:)`` alone cannot: a client memoized as
+    /// opted-out because telemetry was off at construction time
+    /// (`FPEEngineHost.sharedTelemetry()` builds the process-wide singleton
+    /// exactly once, honouring whatever `cfg.telemetry` read at that
+    /// moment). ``start()`` never launches the flush timer while opted out,
+    /// so `setOptOut(false)` by itself would leave the client "enabled" but
+    /// mute — no flush timer ever running, and any flush that does happen
+    /// ships to whatever sink was retained at opt-out time (`NoopTelemetrySink`
+    /// when the client started opted-out).
+    ///
+    /// - `optOut == false`: if `sinkState` is currently `.optedOut`, swaps in
+    ///   the sink built by `makeLiveSink()` and calls ``start()``. `start()`
+    ///   is idempotent (its own `flushTask == nil` guard), so a reload that
+    ///   finds telemetry already live neither builds a second sink
+    ///   (`makeLiveSink()` is not even invoked in that case) nor starts a
+    ///   second timer.
+    /// - `optOut == true`: delegates to ``setOptOut(true)``. No separate sink
+    ///   write is needed here — the single `sinkState` field means
+    ///   `setOptOut(true)` alone already leaves the client fully, atomically
+    ///   opted out. (An earlier version of this method wrote `sink =
+    ///   NoopTelemetrySink()` itself, AFTER awaiting `setOptOut(true)`; that
+    ///   extra, late write was exactly the #428 reentrancy bug described in
+    ///   the class-level doc.)
+    ///
+    /// Does **not** rebuild the `TelemetryClient` itself — only `sinkState` —
+    /// so the process-wide memoized-singleton contract (arch-04, see
+    /// `FPEEngineHost`) stays intact.
+    ///
+    /// Called by `FPEEngineHost.reloadEngine()` after a `setConfig(telemetry:)`
+    /// XPC call, in place of a bare `setOptOut(_:)`.
+    ///
+    /// - Parameters:
+    ///   - optOut: `true` to disable, `false` to (re-)enable. Named
+    ///     `shouldOptOut` internally so it can never be misread as (or
+    ///     accidentally shadow) actor state — there is no stored `optOut`
+    ///     property any more, but the parameter keeps a distinct internal
+    ///     name regardless, since a future stored property of that name
+    ///     would otherwise silently start shadowing it again.
+    ///   - makeLiveSink: Builds the sink to install when transitioning into
+    ///     the opted-in state. Runs on the actor's own executor — no
+    ///     external synchronization is needed.
+    public func reconfigureSink(optOut shouldOptOut: Bool, makeLiveSink: @Sendable () -> any TelemetrySink) async {
+        // Matches the guard `start()`/`track()` already have: a reload that
+        // races a `shutdown()` must not resurrect a sink on a closed client.
+        guard !isClosed else { return }
+
+        if shouldOptOut {
+            await setOptOut(true)
+            return
+        }
+
+        if case .optedOut = sinkState {
+            sinkState = .enabled(makeLiveSink())
+        }
+        start()
+    }
+
+    #if DEBUG
+        // periphery:ignore
+        /// `true` when the client currently has no live sink in use
+        /// (`.optedOut`) or when the enabled sink happens to itself be
+        /// `NoopTelemetrySink` (e.g. a construction-time fallback when
+        /// `AppInsightsSink.init` failed to parse the connection string).
+        /// Test-only introspection — production callers never need to read
+        /// this back. Exposed so `FPEEngineHostTests` can assert that
+        /// `reloadEngine()` actually swapped in a live sink (or moved back to
+        /// opted-out) without needing to observe a real network call to App
+        /// Insights.
+        ///
+        /// `#if DEBUG`-gated (matching `CacheStore.maxBlobBytesForTesting`) so
+        /// this test-only surface never ships in a Release build.
+        public var sinkIsNoopForTesting: Bool {
+            switch sinkState {
+            case .optedOut: true
+            case let .enabled(sink): sink is NoopTelemetrySink
+            }
+        }
+    #endif
 
     /// Emits the `"error"` event with a PII-safe error code.
     ///
@@ -328,13 +458,14 @@ public actor TelemetryClient {
         let events = await batch.drain()
         guard !events.isEmpty else { return }
 
-        // Re-check the live opt-out flag immediately after drain. There is
-        // no `await` between this check and the point below where the send
+        // Re-check the live state immediately after drain, and extract the
+        // live sink from it in the same, `await`-free step. There is no
+        // `await` between this check and the point below where the send
         // Task starts, so a concurrent `setOptOut(true)` cannot land in that
         // gap — this closes the "drained but send not yet started" window.
         // The "already inside send" window (setOptOut racing a send that has
         // already started) is closed separately via `inFlightSendTasks`.
-        guard !optOut else { return }
+        guard case let .enabled(liveSink) = sinkState else { return }
 
         // Wrap the send in its own Task so `setOptOut(true)` has a handle to
         // cancel it — an actor method call by itself gives external callers
@@ -343,7 +474,7 @@ public actor TelemetryClient {
         // can't clobber (or be clobbered by) another flush's handle.
         let generation = nextSendGeneration
         nextSendGeneration += 1
-        let sendTask = Task { [sink] in try await sink.send(events) }
+        let sendTask = Task { [liveSink] in try await liveSink.send(events) }
         inFlightSendTasks[generation] = sendTask
         defer { inFlightSendTasks.removeValue(forKey: generation) }
 
@@ -357,7 +488,7 @@ public actor TelemetryClient {
                 "telemetry flush cancelled by opt-out; \(events.count, privacy: .public) events dropped"
             )
         } catch let AppInsightsSinkError.partialReject(_, _, retriable) {
-            if !retriable.isEmpty, !optOut {
+            if !retriable.isEmpty, !isOptedOut {
                 await batch.requeue(retriable)
             }
             log.warning(
@@ -367,7 +498,7 @@ public actor TelemetryClient {
             // Other errors: re-queue the entire batch, unless opt-out landed
             // while the send was failing — in that case the events must not
             // survive to a future flush.
-            if !optOut {
+            if !isOptedOut {
                 await batch.requeue(events)
             }
             // Log only the error category (domain:code), never the localised
@@ -377,6 +508,33 @@ public actor TelemetryClient {
                 "telemetry flush failed: \(ns.domain, privacy: .public):\(ns.code, privacy: .public)"
             )
         }
+    }
+
+    // MARK: - Sink factory
+
+    /// Builds the `TelemetrySink` implied by `cfg`: a live `AppInsightsSink`
+    /// when telemetry is enabled and the App Insights connection string
+    /// parses, `NoopTelemetrySink` otherwise.
+    ///
+    /// The single source of truth for this selection — used by
+    /// `FPEEngineHost.sharedTelemetry()` (first construction),
+    /// `FPEEngineHost.reloadEngine()` (runtime opt-in sink swap, via
+    /// ``reconfigureSink(optOut:makeLiveSink:)``), and `OfemEngine`'s
+    /// standalone initialiser. All three used to inline their own copy of
+    /// this `if cfg.telemetry, let sink = try? AppInsightsSink(...)` — three
+    /// copies that could silently drift apart. Hoisted here so there is
+    /// exactly one.
+    public static func makeSink(cfg: OfemConfig) -> any TelemetrySink {
+        guard cfg.telemetry,
+              let sink = try? AppInsightsSink(
+                  connectionString: BuildInfo.appInsightsConnectionString,
+                  installID: cfg.installID,
+                  appVersion: BuildInfo.version
+              )
+        else {
+            return NoopTelemetrySink()
+        }
+        return sink
     }
 
     // MARK: - Env-var opt-out

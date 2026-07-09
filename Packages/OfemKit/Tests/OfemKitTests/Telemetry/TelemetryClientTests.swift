@@ -260,6 +260,132 @@ struct TelemetryClientTests {
         #expect(sink.count == 1)
     }
 
+    // MARK: - reconfigureSink (M3: runtime opt-in must swap off NoopTelemetrySink, #428)
+
+    @Test("reconfigureSink(optOut: false) swaps an opted-out client's sink for a live one and starts flushing")
+    func reconfigureSinkOptInSwapsNoopForLiveSink() async {
+        // Models the exact bug (#428): a client memoized opted-out at launch
+        // (`TelemetryConfiguration(optOut: true)`) the same way
+        // `FPEEngineHost.sharedTelemetry()` does when `cfg.telemetry == false`
+        // at first construction. `setOptOut(false)` alone (the pre-fix
+        // behaviour) would flip the flag but leave the client parked on
+        // whatever sink it was opted out with, and `start()` never having
+        // launched a flush timer — track()+flush() would still silently
+        // discard every event.
+        let sink = MemoryTelemetrySink()
+        let client = TelemetryClient(
+            sink: sink,
+            appVersion: "2026.06.1",
+            installID: "x",
+            configuration: TelemetryConfiguration(optOut: true, flushInterval: .seconds(3600))
+        )
+
+        let liveSink = MemoryTelemetrySink()
+        await client.reconfigureSink(optOut: false) { liveSink }
+
+        await client.track(TelemetryEvent(name: "resumed_after_opt_in"))
+        await client.flush()
+
+        #expect(sink.count == 0, "the original construction-time sink must never receive events post-swap")
+        #expect(liveSink.count == 1, "reconfigureSink(optOut: false) must swap in the live sink and resume emitting")
+    }
+
+    @Test("reconfigureSink(optOut: false) does not rebuild the sink when one is already live")
+    func reconfigureSinkOptInIsNoopWhenAlreadyLive() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink) // opted-in by default, live sink from construction
+
+        // If reconfigureSink wrongly rebuilt the sink on every reload, events
+        // tracked afterwards would land here instead of `sink` (#428:
+        // "no duplicate/second sink is started when telemetry was already on").
+        let poison = MemoryTelemetrySink()
+        await client.reconfigureSink(optOut: false) { poison }
+
+        await client.track(TelemetryEvent(name: "still_original_sink"))
+        await client.flush()
+        #expect(sink.count == 1, "the original sink must still be in use")
+        #expect(poison.count == 0, "makeLiveSink's result must not be installed when the sink is already live")
+    }
+
+    @Test("reconfigureSink(optOut: true) swaps the live sink to Noop and stops emission")
+    func reconfigureSinkOptOutSwapsToNoop() async {
+        let sink = MemoryTelemetrySink()
+        let client = makeClient(sink: sink)
+
+        await client.track(TelemetryEvent(name: "before_opt_out"))
+        await client.flush()
+        #expect(sink.count == 1)
+
+        // The opt-out branch must never call makeLiveSink — if it did, this
+        // poison sink would prove it by staying reachable through `sink`.
+        let poison = MemoryTelemetrySink()
+        await client.reconfigureSink(optOut: true) { poison }
+
+        await client.track(TelemetryEvent(name: "after_opt_out"))
+        await client.flush()
+        #expect(sink.count == 1, "no new events must reach the original sink after opt-out")
+        #expect(poison.count == 0, "the opt-out branch must never call makeLiveSink")
+    }
+
+    @Test("SinkState survives heavy concurrent opt-out/opt-in interleaving without corruption (#428 follow-up smoke test)")
+    func reconfigureSinkConcurrentInterleavingStaysConsistent() async {
+        // NOT a regression test: it would not have failed against the
+        // pre-fix, two-field (`sink` + `optOut`) implementation either.
+        // Independent review of #435 found a real reentrancy window there:
+        // the opt-out branch called `await setOptOut(true)` — which
+        // suspends at a cross-actor `await batch.drain()` — and only AFTER
+        // that resumed did it separately write `sink = NoopTelemetrySink()`,
+        // so a concurrent, all-synchronous opt-in call could land inside
+        // that suspension and have its work clobbered on resume. But the
+        // introspection this test reads (`sinkIsNoopForTesting`) and the
+        // actual delivery target `flush()` uses were BOTH derived from the
+        // very same field either way — `sink` pre-fix, `sinkState`
+        // post-fix — so they can never independently disagree with each
+        // other from outside the actor, in either version. Reproducing the
+        // actual torn state (`optOut == false` while `sink is
+        // NoopTelemetrySink`) would require re-introducing the old
+        // two-field design by hand, which defeats the point: the fix's
+        // whole value is that this state is now structurally
+        // unrepresentable, not merely avoided by careful sequencing.
+        //
+        // What this test DOES verify: that firing opposite-valued
+        // `reconfigureSink` calls concurrently, many times, never corrupts
+        // `sinkState` into something where the enabled/live-sink invariant
+        // fails to hold, and never crashes or deadlocks. Run many
+        // iterations — actor scheduling is nondeterministic, so a single
+        // run does not exercise every interleaving.
+        for _ in 0 ..< 50 {
+            let constructionSink = MemoryTelemetrySink()
+            let client = TelemetryClient(
+                sink: constructionSink,
+                appVersion: "2026.06.1",
+                installID: "race-test",
+                configuration: TelemetryConfiguration(flushInterval: .seconds(3600))
+            )
+
+            // Both `makeLiveSink` closures return the SAME object, so no
+            // matter which call's opt-in branch actually wins the race, a
+            // successful delivery is observable through one fixed reference.
+            let sharedLiveSink = MemoryTelemetrySink()
+            async let optOutCall: Void = client.reconfigureSink(optOut: true) { sharedLiveSink }
+            async let optInCall: Void = client.reconfigureSink(optOut: false) { sharedLiveSink }
+            _ = await (optOutCall, optInCall)
+
+            // Whichever call landed last, the client must be internally
+            // consistent: "enabled" (non-Noop) implies a tracked event is
+            // actually delivered; "opted out" implies nothing is.
+            let isNoop = await client.sinkIsNoopForTesting
+            await client.track(TelemetryEvent(name: "probe"))
+            await client.flush()
+
+            if isNoop {
+                #expect(sharedLiveSink.count == 0, "reported opted-out but an event still reached the live sink")
+            } else {
+                #expect(sharedLiveSink.count == 1, "reported enabled but the probe event was never delivered")
+            }
+        }
+    }
+
     @Test("setOptOut(true) cancels a flush already parked inside sink.send")
     func setOptOutCancelsInFlightSend() async throws {
         // Reproduces the reentrancy window: flush() drains the buffer and

@@ -92,7 +92,7 @@ All targets build in **Swift 6 language mode**:
 - **Host app** (`OneLake/`) and **File Provider Extension**
   (`OneLakeFileProvider/`) — `SWIFT_VERSION = "6.0"` in `project.yml`.
 
-TOMLKit 0.6.0 compiles cleanly under Swift 6 / Xcode 16.3 with no errors.
+TOMLKit 0.6.0 compiles cleanly under Swift 6 / Xcode 16.4 with no errors.
 The `Shared/` XPC payload types (`XPCEngineStatus`, `XPCAccountInfo`,
 `XPCPausedWorkspace`) and XPC service types conform to `@unchecked Sendable`
 with justification comments; all other cross-boundary types are value types

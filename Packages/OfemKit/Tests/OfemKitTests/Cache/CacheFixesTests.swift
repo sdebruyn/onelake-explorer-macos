@@ -505,4 +505,76 @@ struct CacheFixesTests {
         )
         #expect(other.name == "other.txt")
     }
+
+    // MARK: - Atomic upsert+delete (#427 / review M2)
+
+    @Test("batchUpsertAndDelete upserts new rows and deletes vanished rows in one call")
+    func batchUpsertAndDeleteHappyPath() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        try await store.upsert(MetadataRecord(
+            accountAlias: "a", workspaceID: "w", itemID: "i",
+            path: "gone.txt", parentPath: "", name: "gone.txt", isDir: false
+        ))
+
+        let upsertKey = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "new.txt")
+        let deleteKey = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "gone.txt")
+        try await store.batchUpsertAndDelete(
+            upserts: [MetadataRecord(
+                accountAlias: "a", workspaceID: "w", itemID: "i",
+                path: "new.txt", parentPath: "", name: "new.txt", isDir: false
+            )],
+            deletes: [deleteKey],
+            recordTombstones: true
+        )
+
+        let created = try await store.fetch(key: upsertKey)
+        #expect(created.name == "new.txt")
+        await #expect(throws: CacheError.notFound("a/w/i/gone.txt")) {
+            try await store.fetch(key: deleteKey)
+        }
+    }
+
+    @Test("batchUpsertAndDelete rolls back the upsert half when the delete half fails")
+    func batchUpsertAndDeleteRollsBackOnDeleteFailure() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        try await store.upsert(MetadataRecord(
+            accountAlias: "a", workspaceID: "w", itemID: "i",
+            path: "gone.txt", parentPath: "", name: "gone.txt", isDir: false
+        ))
+
+        // Fail exactly the "gone.txt" delete — a stand-in for a transient
+        // SQLITE_BUSY/SQLITE_FULL landing mid-transaction.
+        try await store.dbPool.write { db in
+            try db.execute(sql: """
+            CREATE TEMP TRIGGER fail_gone_delete BEFORE DELETE ON path_metadata
+            WHEN OLD.path = 'gone.txt'
+            BEGIN SELECT RAISE(ABORT, 'simulated delete-phase failure'); END;
+            """)
+        }
+
+        let upsertKey = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "new.txt")
+        let deleteKey = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "gone.txt")
+
+        await #expect(throws: (any Error).self) {
+            try await store.batchUpsertAndDelete(
+                upserts: [MetadataRecord(
+                    accountAlias: "a", workspaceID: "w", itemID: "i",
+                    path: "new.txt", parentPath: "", name: "new.txt", isDir: false
+                )],
+                deletes: [deleteKey],
+                recordTombstones: true
+            )
+        }
+
+        // Neither half took effect: the upsert rolled back along with the delete.
+        await #expect(throws: CacheError.notFound("a/w/i/new.txt")) {
+            try await store.fetch(key: upsertKey)
+        }
+        let survivor = try await store.fetch(key: deleteKey)
+        #expect(survivor.name == "gone.txt")
+    }
 }

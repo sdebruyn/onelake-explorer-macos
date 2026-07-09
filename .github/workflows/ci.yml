@@ -18,21 +18,32 @@ jobs:
     name: Build + smoke tests
     runs-on: macos-15
     timeout-minutes: 30
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - uses: actions/checkout@v7.0.0
 
-      - name: Assert Xcode 16.4 and Swift 6.1.2 are present
-        # Fail fast if the runner image no longer ships Xcode 16.4 rather
-        # than silently falling back to a different Xcode version.
+      - name: Load pinned Xcode version
+        # Single source of truth for the Xcode version, shared with
+        # codeql.yml and release.yml — see .github/xcode-version. Exporting
+        # DEVELOPER_DIR here (instead of a hardcoded job-level env:) means
+        # the three workflows can never drift to different literals again.
+        id: xcode
+        run: |
+          set -euo pipefail
+          version="$(cat .github/xcode-version)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "DEVELOPER_DIR=/Applications/Xcode_${version}.app/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Assert Xcode ${{ steps.xcode.outputs.version }} and Swift 6.1.2 are present
+        # Fail fast if the runner image no longer ships the pinned Xcode
+        # rather than silently falling back to a different Xcode version.
         # periphery 3.7.4 requires Swift >= 6.1.2 (Xcode 16.4); the build,
         # tests, and periphery scan all share this single Xcode so their
         # index stores are compatible.
         run: |
           set -euo pipefail
-          if [ ! -d /Applications/Xcode_16.4.app ]; then
-            echo "ERROR: Xcode_16.4.app not found at /Applications/Xcode_16.4.app" >&2
+          xcode_app="/Applications/Xcode_${{ steps.xcode.outputs.version }}.app"
+          if [ ! -d "$xcode_app" ]; then
+            echo "ERROR: ${xcode_app} not found (pinned in .github/xcode-version)" >&2
             echo "Available Xcode installations:" >&2
             ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
             exit 1
@@ -276,16 +287,24 @@ jobs:
     name: OfemKit package tests
     runs-on: macos-15
     timeout-minutes: 20
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - uses: actions/checkout@v7.0.0
 
-      - name: Assert Xcode 16.4 and Swift 6.1.2 are present
+      - name: Load pinned Xcode version
+        # Single source of truth for the Xcode version — see .github/xcode-version.
+        id: xcode
         run: |
           set -euo pipefail
-          if [ ! -d /Applications/Xcode_16.4.app ]; then
-            echo "ERROR: Xcode_16.4.app not found at /Applications/Xcode_16.4.app" >&2
+          version="$(cat .github/xcode-version)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "DEVELOPER_DIR=/Applications/Xcode_${version}.app/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Assert Xcode ${{ steps.xcode.outputs.version }} and Swift 6.1.2 are present
+        run: |
+          set -euo pipefail
+          xcode_app="/Applications/Xcode_${{ steps.xcode.outputs.version }}.app"
+          if [ ! -d "$xcode_app" ]; then
+            echo "ERROR: ${xcode_app} not found (pinned in .github/xcode-version)" >&2
             ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
             exit 1
           fi

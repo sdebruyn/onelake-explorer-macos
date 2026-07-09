@@ -56,6 +56,139 @@ struct OneLakeStreamingTests {
     }
 }
 
+// MARK: - OneLakeStreamTempFileCleanupTests
+
+/// M5 / #430: `doStreamRequest` downloads to a private temp file before
+/// copying into the caller's destination handle (see the doc on
+/// `OneLakeClient.read(destination:)`). The temp file used to leak on the
+/// nil-response guard and outer-catch exit paths. These tests pin it removed
+/// on every exit — a transport failure with no response, a validation
+/// failure, and success — using an isolated `downloadTempDirectory` per test
+/// so the assertion never races other suites that also scribble in the
+/// shared system temp dir under parallel test execution.
+@Suite("OneLakeClient — doStreamRequest temp-file cleanup (M5)")
+struct OneLakeStreamTempFileCleanupTests {
+    private static let wsGUID = "ws-guid-cleanup"
+    private static let itemGUID = "item-guid-cleanup"
+
+    /// Builds a client backed by a mock session plus an isolated, uniquely
+    /// named staging directory so a leaked-file assertion never sees a file
+    /// left behind by an unrelated, concurrently running test.
+    private func makeClient(stubs: [MockURLProtocol.StubResponse]) async -> (OneLakeClient, String, URL) {
+        let queueID = UUID().uuidString
+        MockURLProtocol.registerQueue(id: queueID, stubs: stubs)
+        let session = makeMockSession(queueID: queueID)
+        let pool = SessionPool(tokenProvider: NoopTokenProvider())
+        await pool._setSessionForTesting(session, alias: "test", scope: .oneLake)
+        let stagingDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ofem-stream-cleanup-\(UUID().uuidString)", isDirectory: true)
+        let client = OneLakeClient(
+            sessionPool: pool,
+            baseURL: streamBaseURL,
+            downloadTempDirectory: stagingDir
+        )
+        return (client, queueID, stagingDir)
+    }
+
+    /// Files left behind in `directory`, or `[]` if it was never created —
+    /// `doStreamRequest` only creates it lazily via
+    /// `.createIntermediateDirectories` on first write.
+    private func leakedFiles(in directory: URL) -> [URL] {
+        (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+    }
+
+    @Test("a transport failure with no response never leaves a staged temp file behind")
+    func nilResponseFailureLeavesNoTempFile() async throws {
+        // Empty stub queue: MockURLProtocol fails the request before ever
+        // calling didReceive(response:), so dl.response stays nil and
+        // doStreamRequest's nil-response guard fires — the path that used to
+        // leak the staged temp file (M5).
+        let (client, queueID, stagingDir) = await makeClient(stubs: [])
+        defer {
+            MockURLProtocol.clearQueue(id: queueID)
+            try? FileManager.default.removeItem(at: stagingDir)
+        }
+
+        let (destURL, handle) = try makeTempFileHandle(prefix: "ofem-stream-cleanup-dest")
+        defer {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: destURL)
+        }
+
+        await #expect(throws: OneLakeError.self) {
+            try await client.read(
+                alias: "test",
+                workspaceGUID: Self.wsGUID,
+                itemGUID: Self.itemGUID,
+                path: "Files/a.txt",
+                destination: handle
+            )
+        }
+
+        #expect(leakedFiles(in: stagingDir).isEmpty)
+    }
+
+    @Test("a non-2xx response that fails validation never leaves a staged temp file behind")
+    func validationFailureLeavesNoTempFile() async throws {
+        // A real (short) response body is downloaded to the staging
+        // directory before .validate() rejects the 500 status — this
+        // exercises the doStreamRequest's `.failure(afError)` branch, the
+        // other path that used to leak (M5).
+        let (client, queueID, stagingDir) = await makeClient(stubs: [
+            .init(status: 500, body: "boom"),
+        ])
+        defer {
+            MockURLProtocol.clearQueue(id: queueID)
+            try? FileManager.default.removeItem(at: stagingDir)
+        }
+
+        let (destURL, handle) = try makeTempFileHandle(prefix: "ofem-stream-cleanup-dest")
+        defer {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: destURL)
+        }
+
+        await #expect(throws: OneLakeError.self) {
+            try await client.read(
+                alias: "test",
+                workspaceGUID: Self.wsGUID,
+                itemGUID: Self.itemGUID,
+                path: "Files/a.txt",
+                destination: handle
+            )
+        }
+
+        #expect(leakedFiles(in: stagingDir).isEmpty)
+    }
+
+    @Test("a successful download copies bytes into the destination and never leaves a staged temp file behind")
+    func successLeavesNoTempFile() async throws {
+        let payload = Data("hello onelake streaming".utf8)
+        let (client, queueID, stagingDir) = await makeClient(stubs: [
+            .init(status: 200, body: payload),
+        ])
+        defer {
+            MockURLProtocol.clearQueue(id: queueID)
+            try? FileManager.default.removeItem(at: stagingDir)
+        }
+
+        let (destURL, handle) = try makeTempFileHandle(prefix: "ofem-stream-cleanup-dest")
+        defer { try? FileManager.default.removeItem(at: destURL) }
+
+        _ = try await client.read(
+            alias: "test",
+            workspaceGUID: Self.wsGUID,
+            itemGUID: Self.itemGUID,
+            path: "Files/a.txt",
+            destination: handle
+        )
+
+        #expect(leakedFiles(in: stagingDir).isEmpty)
+        try handle.close()
+        #expect(try Data(contentsOf: destURL) == payload)
+    }
+}
+
 // MARK: - OneLakeStatusMappingTests
 
 @Suite("OneLakeError — status coverage")
