@@ -40,12 +40,13 @@ free or paid, is required.
 ### Running the `.app` and File Provider Extension locally requires
 
 - Xcode 15+ (you already need it).
-- A **paid Apple Developer Program membership** ($99/yr). The File Provider
-  entitlement family is a restricted capability that a free Personal Team
-  cannot sign — see [File Provider Extension — architecture § Signing for
-  local vs release](file-provider.md#signing-for-local-vs-release) for why.
-  Ad-hoc signing with a free Apple ID is not sufficient to produce a runnable
-  `.app` with the extension embedded.
+- A **paid Apple Developer Program membership** ($99/yr). Provisioning the
+  File Provider Extension for a runnable build requires a paid team — a
+  free Personal Team cannot sign it. See [File Provider Extension —
+  architecture § Signing for local vs
+  release](file-provider.md#signing-for-local-vs-release). Ad-hoc signing
+  with a free Apple ID is not sufficient to produce a runnable `.app` with
+  the extension embedded.
 
 #### Xcode project generation
 

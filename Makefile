@@ -68,12 +68,14 @@ gen: bootstrap ## Regenerate OneLake.xcodeproj from project.yml (force)
 	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: make bootstrap && brew install xcodegen"; exit 1; }
 	xcodegen generate --spec project.yml --project-root . --project .
 
-# Build the OneLake.app target (Debug, arm64) for local dogfooding. Requires
-# a paid Apple Developer Program team set as DEVELOPMENT_TEAM in
-# Local.xcconfig (see `bootstrap` below) — the File Provider entitlement
-# family is not available to a free Personal Team, so -allowProvisioningUpdates
-# cannot produce a runnable build without one. Contributors without a paid
-# account should use `build-ci` instead.
+# Build the OneLake.app target (Debug, arm64) for local dogfooding. The
+# guard below only rejects an UNSET DEVELOPMENT_TEAM (the placeholder in
+# Local.xcconfig) — it cannot tell a free team ID from a paid one. A real
+# team ID passes the guard, but xcodebuild's -allowProvisioningUpdates
+# provisioning step then requires a paid Apple Developer Program team to
+# sign the File Provider Extension (a free Personal Team cannot produce a
+# runnable build). Contributors without a paid account should use
+# `build-ci` instead.
 build: bootstrap OneLake.xcodeproj/project.pbxproj ## Build OneLake.app (Debug, signed) for local use
 	@if grep -q 'REPLACE_WITH_YOUR_TEAM_ID' $(APPLE_CONFIG) 2>/dev/null; then \
 		echo "ERROR: $(APPLE_CONFIG) still has the placeholder DEVELOPMENT_TEAM."; \

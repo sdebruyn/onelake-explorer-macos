@@ -244,13 +244,9 @@ not run the sync engine.
 ### Signing for local vs release
 
 The **paid Apple Developer Program** (Developer ID team) is the primary
-development path. It provides a real provisioning profile that includes
-the `com.apple.developer.file-provider` entitlement family; no
-`testing-mode` entitlement is needed or used.
-
-Building a *runnable* copy of the Swift host app and the File Provider
-Extension requires a paid Apple Developer Program membership (a free
-Personal Team cannot sign the extension). With your team set in
+development path: building a *runnable* copy of the Swift host app and the
+File Provider Extension requires a paid membership — a free Personal Team
+cannot provision or sign the extension. With your team set in
 `Local.xcconfig`, build both with:
 
 ```
