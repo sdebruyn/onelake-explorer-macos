@@ -177,6 +177,28 @@ private final class AttemptCounter: RequestAdapter, @unchecked Sendable {
     }
 }
 
+/// Builds a bare Alamofire `Session` (no `SessionPool`) wired to
+/// `MockURLProtocol` with `retriers` in its interceptor chain, registering
+/// `stubs` under a fresh queue ID. Shared by every RetryAfterRetrier-focused
+/// suite below so each test isn't re-deriving the same
+/// config/interceptor/session boilerplate (review nit on PR #451).
+private func makeRetrierSession(
+    stubs: [MockURLProtocol.StubResponse],
+    retriers: [RequestRetrier],
+    adapters: [RequestAdapter] = []
+) -> (session: Session, queueID: String) {
+    let queueID = "retrier-\(UUID().uuidString)"
+    MockURLProtocol.registerQueue(id: queueID, stubs: stubs)
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [MockURLProtocol.self]
+    config.urlCache = nil
+    let interceptor = Interceptor(
+        adapters: adapters + [QueueIDAdapter(queueID: queueID)],
+        retriers: retriers
+    )
+    return (Session(configuration: config, interceptor: interceptor), queueID)
+}
+
 @Suite("RetryAfterRetrier retry budget")
 struct RetryAfterRetrierBudgetTests {
     /// F3: a sustained 429 with a parseable `Retry-After` header must stop
@@ -186,31 +208,24 @@ struct RetryAfterRetrierBudgetTests {
     /// stopped because of the cap, not because the mock queue ran dry.
     @Test("sustained 429 + Retry-After stops after the shared retry cap and surfaces the error")
     func stopsAfterMaxRetries() async {
-        let queueID = "retry-budget-\(UUID().uuidString)"
         let stubs = (0 ..< 20).map { _ in
             MockURLProtocol.StubResponse(status: 429, headers: ["Retry-After": "0"])
         }
-        MockURLProtocol.registerQueue(id: queueID, stubs: stubs)
-        defer { MockURLProtocol.clearQueue(id: queueID) }
-
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [MockURLProtocol.self]
-        config.urlCache = nil
-
         let counter = AttemptCounter()
         // Mirrors SessionPool's actual retrier chain (not a stand-in): the
         // production RetryAfterRetrier ahead of the production
         // JitteredRetryPolicy, both sharing one request.retryCount budget.
-        let interceptor = Interceptor(
-            adapters: [counter, QueueIDAdapter(queueID: queueID)],
+        let (session, queueID) = makeRetrierSession(
+            stubs: stubs,
             retriers: [
                 RetryAfterRetrier(),
                 JitteredRetryPolicy(
                     retryLimit: UInt(RetryAfterRetrier.maxRetries), retryableHTTPStatusCodes: [429]
                 ),
-            ]
+            ],
+            adapters: [counter]
         )
-        let session = Session(configuration: config, interceptor: interceptor)
+        defer { MockURLProtocol.clearQueue(id: queueID) }
 
         let dataResponse = await session.request("https://example.invalid/throttled")
             .validate()
@@ -239,22 +254,13 @@ struct RetryAfterRetrierIdempotencyTests {
     /// with `.resourceUnavailable` instead of surfacing the 429.
     @Test("POST is not retried on Retry-After even within the retry budget")
     func postIsNotRetriedOnRetryAfter() async {
-        let queueID = "retry-idempotency-post-\(UUID().uuidString)"
-        MockURLProtocol.registerQueue(id: queueID, stubs: [
-            MockURLProtocol.StubResponse(status: 429, headers: ["Retry-After": "0"]),
-        ])
-        defer { MockURLProtocol.clearQueue(id: queueID) }
-
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [MockURLProtocol.self]
-        config.urlCache = nil
-
         let counter = AttemptCounter()
-        let interceptor = Interceptor(
-            adapters: [counter, QueueIDAdapter(queueID: queueID)],
-            retriers: [RetryAfterRetrier()]
+        let (session, queueID) = makeRetrierSession(
+            stubs: [MockURLProtocol.StubResponse(status: 429, headers: ["Retry-After": "0"])],
+            retriers: [RetryAfterRetrier()],
+            adapters: [counter]
         )
-        let session = Session(configuration: config, interceptor: interceptor)
+        defer { MockURLProtocol.clearQueue(id: queueID) }
 
         let dataResponse = await session.request(
             "https://example.invalid/throttled", method: .post
@@ -275,28 +281,82 @@ struct RetryAfterRetrierIdempotencyTests {
     /// not accidentally stop GET (an idempotent method) from retrying.
     @Test("GET is still retried on Retry-After")
     func getIsStillRetriedOnRetryAfter() async {
-        let queueID = "retry-idempotency-get-\(UUID().uuidString)"
-        MockURLProtocol.registerQueue(id: queueID, stubs: [
-            MockURLProtocol.StubResponse(status: 429, headers: ["Retry-After": "0"]),
-            MockURLProtocol.StubResponse(status: 200),
-        ])
-        defer { MockURLProtocol.clearQueue(id: queueID) }
-
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [MockURLProtocol.self]
-        config.urlCache = nil
-
         let counter = AttemptCounter()
-        let interceptor = Interceptor(
-            adapters: [counter, QueueIDAdapter(queueID: queueID)],
-            retriers: [RetryAfterRetrier()]
+        let (session, queueID) = makeRetrierSession(
+            stubs: [
+                MockURLProtocol.StubResponse(status: 429, headers: ["Retry-After": "0"]),
+                MockURLProtocol.StubResponse(status: 200),
+            ],
+            retriers: [RetryAfterRetrier()],
+            adapters: [counter]
         )
-        let session = Session(configuration: config, interceptor: interceptor)
+        defer { MockURLProtocol.clearQueue(id: queueID) }
 
         let dataResponse = await session.request("https://example.invalid/throttled")
             .validate()
             .serializingData()
             .response
+
+        #expect(dataResponse.response?.statusCode == 200)
+        #expect(counter.count == 2)
+    }
+
+    /// Should-fix on PR #451 review: a per-request `markIdempotent(false:)`
+    /// override takes precedence over the method-based default — a PATCH
+    /// (normally in `idempotentHTTPMethods`) explicitly opted out must not be
+    /// replayed on Retry-After.
+    @Test("an explicit markIdempotent(false:) override is not retried even for a normally-idempotent method")
+    func explicitOptOutOverridesMethodDefault() async {
+        let counter = AttemptCounter()
+        let (session, queueID) = makeRetrierSession(
+            stubs: [MockURLProtocol.StubResponse(status: 429, headers: ["Retry-After": "0"])],
+            retriers: [RetryAfterRetrier()],
+            adapters: [counter]
+        )
+        defer { MockURLProtocol.clearQueue(id: queueID) }
+
+        let dataResponse = await session.request(
+            "https://example.invalid/throttled", method: .patch
+        ) { urlRequest in
+            RetryAfterRetrier.markIdempotent(false, on: &urlRequest)
+        }
+        .validate()
+        .serializingData()
+        .response
+
+        #expect(dataResponse.response?.statusCode == 429)
+        guard case .failure = dataResponse.result else {
+            Issue.record("Expected the opted-out PATCH to fail without a Retry-After replay")
+            return
+        }
+        #expect(counter.count == 1)
+    }
+
+    /// Companion: an explicit `markIdempotent(true:)` override retries a
+    /// method that would otherwise be excluded from `idempotentHTTPMethods`
+    /// (POST) — the override works in both directions, not just as an
+    /// opt-out.
+    @Test("an explicit markIdempotent(true:) override retries even a normally-excluded method")
+    func explicitOptInOverridesMethodDefault() async {
+        let counter = AttemptCounter()
+        let (session, queueID) = makeRetrierSession(
+            stubs: [
+                MockURLProtocol.StubResponse(status: 429, headers: ["Retry-After": "0"]),
+                MockURLProtocol.StubResponse(status: 200),
+            ],
+            retriers: [RetryAfterRetrier()],
+            adapters: [counter]
+        )
+        defer { MockURLProtocol.clearQueue(id: queueID) }
+
+        let dataResponse = await session.request(
+            "https://example.invalid/throttled", method: .post
+        ) { urlRequest in
+            RetryAfterRetrier.markIdempotent(true, on: &urlRequest)
+        }
+        .validate()
+        .serializingData()
+        .response
 
         #expect(dataResponse.response?.statusCode == 200)
         #expect(counter.count == 2)
@@ -358,14 +418,14 @@ struct BufferedResponseCapTests {
         return (pool, queueID)
     }
 
-    /// #450: a buffered response body over ``maxBufferedResponseBytes`` must
-    /// throw `.responseTooLarge` rather than being handed back uncapped —
+    /// #450: a buffered response body over ``HTTPClientError/maxBufferedResponseBytes``
+    /// must throw `.responseTooLarge` rather than being handed back uncapped —
     /// `mapError: FabricError.from` mirrors the real call site
     /// (`FabricClient.doRequest`) so this exercises the exact same mapping
     /// path production code uses.
     @Test("an over-cap buffered response throws responseTooLarge")
     func overCapResponseThrows() async {
-        let overCap = Data(count: maxBufferedResponseBytes + 1)
+        let overCap = Data(count: HTTPClientError.maxBufferedResponseBytes + 1)
         let (pool, queueID) = await makePool(stubs: [
             MockURLProtocol.StubResponse(status: 200, body: overCap),
         ])
@@ -389,7 +449,7 @@ struct BufferedResponseCapTests {
                 return
             }
             #expect(bytesReceived == overCap.count)
-            #expect(limit == maxBufferedResponseBytes)
+            #expect(limit == HTTPClientError.maxBufferedResponseBytes)
         } catch {
             Issue.record("Expected FabricError.httpError(.responseTooLarge), got \(error)")
         }
@@ -398,7 +458,7 @@ struct BufferedResponseCapTests {
     /// A response at exactly the cap is not rejected — the guard is `<=`, not `<`.
     @Test("a buffered response at the cap is returned normally")
     func atCapResponseSucceeds() async throws {
-        let atCap = Data(count: maxBufferedResponseBytes)
+        let atCap = Data(count: HTTPClientError.maxBufferedResponseBytes)
         let (pool, queueID) = await makePool(stubs: [
             MockURLProtocol.StubResponse(status: 200, body: atCap),
         ])
@@ -414,7 +474,7 @@ struct BufferedResponseCapTests {
             body: nil,
             mapError: FabricError.from
         )
-        #expect(data.count == maxBufferedResponseBytes)
+        #expect(data.count == HTTPClientError.maxBufferedResponseBytes)
         #expect(response.statusCode == 200)
     }
 }

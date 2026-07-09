@@ -30,17 +30,56 @@ struct RetryAfterRetrier: RequestRetrier {
     /// `request.retryCount` cannot drift out of sync.
     static let maxRetries = 5
 
-    /// HTTP methods this retrier considers safe to replay.
+    /// HTTP methods this retrier considers safe to replay by default.
     ///
     /// Single source of truth for the idempotency notion shared with
     /// `SessionPool`'s `JitteredRetryPolicy` — mirrors `maxRetries` above.
     /// `SessionPool` configures `JitteredRetryPolicy(retryableHTTPMethods:)`
     /// from this same set rather than hard-coding a second one, so a
     /// `Retry-After` replay and an exponential-backoff replay can never
-    /// disagree on which methods are safe to retry. PATCH is included
-    /// because OneLake append/flush calls are position-addressed and
-    /// replay-safe; POST is deliberately excluded as non-idempotent.
+    /// disagree on which methods are safe to retry by default. PATCH is
+    /// included because *today's only PATCH callers* — OneLake DFS
+    /// append/flush — are position-addressed (`position=N`) and replay-safe:
+    /// Alamofire re-issuing the same PATCH rewrites the same not-yet-committed
+    /// range rather than double-appending (only flush commits). This is a
+    /// generic HTTP layer shared with `FabricClient`, so that fact does not
+    /// hold universally — a future non-idempotent PATCH (Fabric or otherwise)
+    /// must opt out per-request via ``markIdempotent(_:on:)`` rather than
+    /// changing this set.
     static let idempotentHTTPMethods: Set<HTTPMethod> = [.get, .head, .put, .delete, .options, .patch]
+
+    /// Key used to stamp a per-request idempotency override via
+    /// `URLProtocol.setProperty`/`property(forKey:in:)`.
+    ///
+    /// Deliberately a `URLProtocol` property rather than a header: it is
+    /// client-side-only metadata attached to the `URLRequest` object itself,
+    /// never serialized onto the wire, so it never reaches OneLake/Fabric.
+    private static let idempotencyPropertyKey = "dev.debruyn.ofem.retryAfterIdempotent"
+
+    /// Marks `urlRequest` with an explicit idempotency override that
+    /// ``isIdempotent(_:)`` reads back instead of falling through to
+    /// ``idempotentHTTPMethods``.
+    ///
+    /// Call from a request's `requestModifier` closure, which runs before the
+    /// request is handed to `URLSession` — the property then rides along on
+    /// every `URLRequest` this retrier subsequently sees for that request,
+    /// including on retries, since Alamofire replays the same `URLRequest`.
+    static func markIdempotent(_ idempotent: Bool, on urlRequest: inout URLRequest) {
+        guard let mutable = (urlRequest as NSURLRequest).mutableCopy() as? NSMutableURLRequest else { return }
+        URLProtocol.setProperty(idempotent, forKey: idempotencyPropertyKey, in: mutable)
+        urlRequest = mutable as URLRequest
+    }
+
+    /// Returns whether `urlRequest` is safe to replay for a Retry-After-driven
+    /// retry: an explicit ``markIdempotent(_:on:)`` override if present,
+    /// otherwise the ``idempotentHTTPMethods`` default for its HTTP method.
+    static func isIdempotent(_ urlRequest: URLRequest) -> Bool {
+        if let override = URLProtocol.property(forKey: idempotencyPropertyKey, in: urlRequest) as? Bool {
+            return override
+        }
+        guard let method = urlRequest.method else { return false }
+        return idempotentHTTPMethods.contains(method)
+    }
 
     func retry(
         _ request: Request,
@@ -49,8 +88,8 @@ struct RetryAfterRetrier: RequestRetrier {
         completion: @escaping @Sendable (RetryResult) -> Void
     ) {
         guard request.retryCount < Self.maxRetries,
-              let method = request.request?.method,
-              Self.idempotentHTTPMethods.contains(method),
+              let urlRequest = request.request,
+              Self.isIdempotent(urlRequest),
               let response = request.response,
               [429, 503].contains(response.statusCode),
               let header = response.value(forHTTPHeaderField: "Retry-After"),

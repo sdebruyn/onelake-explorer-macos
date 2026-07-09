@@ -879,8 +879,15 @@ public final class OneLakeClient: Sendable {
     /// mutating requests (onelake-07). Authentication, retry, and back-off are
     /// handled transparently by the session's interceptor stack. Request
     /// execution and error mapping are shared with `FabricClient` via
-    /// ``executeDataRequest(sessionPool:alias:scope:method:url:headers:body:onFailure:mapError:)``
+    /// ``executeDataRequest(sessionPool:alias:scope:method:url:headers:body:idempotent:onFailure:mapError:)``
     /// (http-02).
+    ///
+    /// - Parameter idempotent: Forwarded to `executeDataRequest(idempotent:)`,
+    ///   which threads it into `RetryAfterRetrier` as a per-request override —
+    ///   every current call site passes `true`, since every current PATCH here
+    ///   is position-addressed append/flush (see
+    ///   `RetryAfterRetrier.idempotentHTTPMethods`), but a future non-idempotent
+    ///   call can pass `false` to opt out of a Retry-After replay.
     @discardableResult
     private func doRequest(
         alias: String,
@@ -888,7 +895,7 @@ public final class OneLakeClient: Sendable {
         url: URL,
         body: Data?,
         extraHeaders: [String: String]?,
-        idempotent _: Bool // retained for call-site documentation; session handles retry
+        idempotent: Bool
     ) async throws -> (Data, HTTPURLResponse) {
         var headers = HTTPHeaders()
         headers.add(name: "x-ms-version", value: oneLakeDFSAPIVersion)
@@ -909,6 +916,7 @@ public final class OneLakeClient: Sendable {
             url: url,
             headers: headers,
             body: body,
+            idempotent: idempotent,
             mapError: OneLakeError.from
         )
     }

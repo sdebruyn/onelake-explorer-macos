@@ -297,8 +297,10 @@ public final class FabricClient: Sendable {
     /// interceptor stack. Maps ``AFError`` → ``HTTPClientError`` →
     /// ``FabricError`` on failure. Request execution and error mapping are
     /// shared with `OneLakeClient` via
-    /// ``executeDataRequest(sessionPool:alias:scope:method:url:headers:body:onFailure:mapError:)``
-    /// (http-02).
+    /// ``executeDataRequest(sessionPool:alias:scope:method:url:headers:body:idempotent:onFailure:mapError:)``
+    /// (http-02). Every Fabric call this client makes is a GET, so it relies
+    /// on `executeDataRequest`'s `idempotent: true` default rather than
+    /// passing it explicitly.
     @discardableResult
     private func doRequest(
         alias: String,

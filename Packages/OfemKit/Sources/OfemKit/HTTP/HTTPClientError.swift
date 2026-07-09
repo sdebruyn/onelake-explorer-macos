@@ -160,3 +160,21 @@ extension HTTPClientError {
         }
     }
 }
+
+// MARK: - HTTPClientError + buffered response cap
+
+extension HTTPClientError {
+    /// Maximum size accepted for a response body buffered fully in memory by
+    /// `executeDataRequest` — the small buffered API-response path used by
+    /// `FabricClient`/`OneLakeClient` for Fabric REST discovery calls and
+    /// OneLake DFS metadata PUT/PATCH/DELETE/GET. Never applies to the
+    /// large-file download path (`OneLakeClient.doStreamRequest`), which
+    /// streams straight to a temp file and never holds the whole body in
+    /// memory.
+    ///
+    /// 10 MiB mirrors `RotatingFileWriter.defaultMaxFileSizeBytes`, the
+    /// project's existing precedent for a generous but bounded buffer;
+    /// Fabric REST and DFS metadata payloads are JSON, normally well under
+    /// this size.
+    static let maxBufferedResponseBytes = 10 * 1024 * 1024
+}
