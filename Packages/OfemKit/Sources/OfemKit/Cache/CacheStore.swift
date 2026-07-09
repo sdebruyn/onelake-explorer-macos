@@ -227,8 +227,15 @@ public actor CacheStore {
     /// API), and its one host-app caller (`ChangeWatcher.getOrOpenCacheReader()`)
     /// only ever reads through it — the FPE remains the sole writer.
     ///
-    /// Returns `nil` when the SQLite file cannot be opened (e.g. the FPE has
-    /// not yet created the database).
+    /// Returns `nil` when the SQLite file cannot be opened. Usually this means
+    /// the FPE has not yet created the database; more rarely it means the
+    /// database exists but a read-only connection can't open it cleanly right
+    /// now — e.g. a crash left an uncheckpointed `-wal` with a stale or absent
+    /// `-shm` before the FPE (the sole writer) has relaunched to run recovery,
+    /// which a read-only connection cannot do itself. Either way this is
+    /// self-healing: the caller (`ChangeWatcher`) treats `nil` as "skip this
+    /// tick" and retries on the next poll, by which point the FPE has
+    /// recovered the database.
     public static func openReadOnly(root: URL, logger: OfemLogger = .init()) -> CacheReader? {
         guard let pool = openReadOnlyPool(root: root) else { return nil }
         return CacheReader(db: pool, logger: logger)
