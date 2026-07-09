@@ -531,7 +531,10 @@ struct CacheFixesTests {
 
         let created = try await store.fetch(key: upsertKey)
         #expect(created.name == "new.txt")
-        await #expect(throws: CacheError.notFound("a/w/i/gone.txt")) {
+        // The specific deleted key (deleteKey, not upsertKey) throwing is the
+        // discriminator here — the redacted payload itself doesn't need to
+        // carry the raw path for that.
+        await #expect(throws: CacheError.notFound(deleteKey.opaqueLogPrefix)) {
             try await store.fetch(key: deleteKey)
         }
     }
@@ -570,8 +573,11 @@ struct CacheFixesTests {
             )
         }
 
-        // Neither half took effect: the upsert rolled back along with the delete.
-        await #expect(throws: CacheError.notFound("a/w/i/new.txt")) {
+        // Neither half took effect: the upsert rolled back along with the
+        // delete. Fetching the specific upsertKey (not deleteKey) throwing,
+        // plus deleteKey's row surviving below, is the discriminator — not
+        // the redacted payload text.
+        await #expect(throws: CacheError.notFound(upsertKey.opaqueLogPrefix)) {
             try await store.fetch(key: upsertKey)
         }
         let survivor = try await store.fetch(key: deleteKey)
