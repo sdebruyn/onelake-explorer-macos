@@ -12,9 +12,19 @@
 //   file/folder enumeration uses SyncEngine.enumerate(key:) which
 //   hits the cache + remote refresh.
 //
-// - Cursor / page tokens: the Swift engine's enumerate(key:) returns
-//   the full listing in one call (no server-side pagination at the DFS
-//   level). We use one page, nil cursor.
+// - Cursor / page tokens: we report one page, nil cursor, always. This is
+//   correct-by-design, not unfinished: OneLakeClient.listPath resolves the
+//   DFS continuation-token loop to completion internally (up to
+//   maxPaginationPages) before SyncEngine.enumerate(key:) ever returns, and
+//   a cache hit is served via CacheReader.children(of:)'s single unbounded
+//   fetchAll — so the full folder is already materialized by the time this
+//   enumerator runs. Paging it out here would only slice up an
+//   already-built array (no network/memory saving), and a positional cursor
+//   over the live-mutating cache would reopen the same cursor-stability
+//   problem class the sync-anchor delta logic exists to solve for changes —
+//   without that logic's anchor/tombstone-horizon machinery behind it.
+//   Deferred until a real folder-size problem justifies it. See
+//   docs/file-provider.md "Enumeration model".
 //
 // - Sync anchors: `currentSyncAnchor` returns the max(synced_at_ns) value
 //   from the cache database for the account alias, encoded as a big-endian
@@ -271,6 +281,18 @@ func effectiveAnchorNs(engine: OfemEngine, alias: String) async -> Int64 {
 /// keeps its own outer `do/catch` for `CancellationError` and auth-error
 /// handling (`markNeedsSignIn`), since only the working set also needs to
 /// reset its refresh throttle on an auth failure.
+///
+/// Scope: the delta is alias-wide, not scoped to whichever container asked.
+/// `CacheReader.itemsChangedAfter` filters only by `accountAlias`, so a
+/// caller for one container (workspace, item, or path) receives the same
+/// alias-wide set of changed rows/tombstones as every other container. This
+/// is safe — the framework re-resolves each delivered item's true location
+/// via its own `parentItemIdentifier`, so a `didUpdate` for an item outside
+/// the calling container is inert, not wrong — and intentional: scoping
+/// would require either a `deletion_tombstones` schema change (it has no
+/// `workspace_id`/`item_id` columns) or fragile `identifier_string` parsing,
+/// for a purely local SQLite-read saving. See docs/file-provider.md "Design
+/// decisions: per-container delta is alias-wide, not container-scoped".
 ///
 /// The incoming anchor is evaluated by ``syncAnchorDecision(previousNs:currentNs:purgedThroughNs:)``.
 /// When it returns `.expire` — the anchor is ahead of the cache (DB reset) OR it
@@ -708,6 +730,10 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
 /// drives a real cache diff: changed records since the anchor are surfaced
 /// as `didUpdate` calls instead of always answering "no changes".
 ///
+/// Empty baseline: `enumerateItems` always returning `[]` is correct-by-
+/// design, not a stub — see the doc comment on `enumerateItems` below for
+/// why, and for the one narrow self-healing gap it has.
+///
 /// Workspace refresh: before computing the cache delta, `enumerateChanges`
 /// calls `engine.sync.listWorkspaces(alias:)` to refresh the SQLite workspace
 /// cache (adds new workspaces, tombstones removed ones, advances `synced_at`).
@@ -817,6 +843,25 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
         )
     }
 
+    /// Always reports an empty page. The working set's items arrive
+    /// exclusively via `enumerateChanges`'s real cache-delta path
+    /// (`serveCacheDelta`) — this baseline never populates it.
+    ///
+    /// Correct-by-design for the common case: a fresh/zero sync anchor makes
+    /// `syncAnchorDecision` always `.serve`, so the very next
+    /// `enumerateChanges` call's `itemsChangedAfter(ns: 0)` collapses into
+    /// "everything" — the empty baseline here costs nothing on first mount.
+    ///
+    /// Narrow self-healing gap: `syncAnchorDecision` expires (forcing a fresh
+    /// call here) any anchor older than `tombstonesPurgedThroughNs`, the
+    /// ~30-day tombstone-purge horizon (`CacheStore.tombstoneTTLNs`). A mount
+    /// left dormant 30+ days re-baselines through this empty page on its next
+    /// poll, so previously materialized-but-untouched items drop out of
+    /// Spotlight/badge coverage until next touched. Files stay fully
+    /// browsable via ordinary folder enumeration (a separate, unaffected
+    /// path); nothing is deleted, and coverage self-heals on the item's next
+    /// `enumerateChanges` delta. See docs/file-provider.md "Working set
+    /// updates".
     func enumerateItems(
         for observer: NSFileProviderEnumerationObserver,
         startingAt _: NSFileProviderPage
