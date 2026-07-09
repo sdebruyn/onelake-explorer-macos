@@ -32,7 +32,11 @@ import GRDB
 /// - `idx_pm_synced_at`: composite on `(account_alias, synced_at_ns)` used
 ///   by `itemsChangedAfter` to avoid full `path_metadata` scans.
 /// - `idx_pm_path`: composite on `(account_alias, workspace_id, item_id, path)`
-///   to serve the `path LIKE 'prefix/%'` prefix scan in subtree deletes.
+///   to serve the `path LIKE 'prefix/%'` prefix scan in subtree deletes. The
+///   scan is case-sensitive (`PRAGMA case_sensitive_like = ON`, set at
+///   connection open in `CacheStore` — #426) so it stays index-backed: SQLite
+///   only turns `LIKE` into a B-tree range scan against a BINARY-collated
+///   column, like `path`, when the pragma is on.
 /// - `idx_dt_deleted_at`: composite on `(account_alias, deleted_at_ns)` used
 ///   by `itemsChangedAfter` to avoid full `deletion_tombstones` scans.
 /// - `materialized_containers` PK `(account_alias, identifier_string)`: its
