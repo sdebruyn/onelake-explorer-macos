@@ -269,6 +269,92 @@ final class FPEEngineHostTests: XCTestCase {
                        "reloadEngine() must propagate cache.max_size_gb to the shared CacheStore")
     }
 
+    // MARK: - reloadEngine() swaps the telemetry sink on runtime opt-in / opt-out (M3, #428)
+
+    func testReloadEngineSwapsSinkOnRuntimeOptInThenOptOut() async throws {
+        // Everything below is backed by a disposable temp directory, installed
+        // via the `#if DEBUG` *ForTesting seams — never the real App Group
+        // container (see the file-level comment for why that matters here).
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let paths = OfemPaths(root: tmp)
+        try paths.ensureDirectories()
+
+        let configStore = try OfemConfigStore(paths: paths)
+        // Start opted-out on disk so the config the host reads matches the
+        // client's launch-time state below (telemetry off at launch).
+        _ = try await configStore.updateAndSave { cfg in cfg.telemetry = false }
+        FPEEngineHost.installSharedConfigStoreForTesting(configStore)
+
+        // Simulate exactly what a real opted-out launch produces: `sharedTelemetry()`
+        // memoizes the client with `NoopTelemetrySink` whenever `cfg.telemetry ==
+        // false` at first construction — the state that #428's bug left mute
+        // forever, even after a later runtime opt-in.
+        let telemetry = TelemetryClient(
+            sink: NoopTelemetrySink(),
+            appVersion: "test",
+            installID: "sink-swap-test-install",
+            configuration: TelemetryConfiguration(optOut: true, flushInterval: .seconds(3600))
+        )
+        let cache = try CacheStore(root: paths.cacheDir, maxBlobBytes: 999)
+        FPEEngineHost.installSharedSubsystemsForTesting(cache: cache, telemetry: telemetry)
+        let isNoopAtLaunch = await telemetry.sinkIsNoopForTesting
+        XCTAssertTrue(isNoopAtLaunch, "precondition: client memoized opted-out at launch")
+
+        let host = FPEEngineHost(alias: "sink-swap-test", domain: makeDomain("sink-swap-test"))
+
+        // --- Runtime opt-in: telemetry false -> true ---
+        _ = try await configStore.updateAndSave { cfg in cfg.telemetry = true }
+        await host.reloadEngine()
+        let isNoopAfterOptIn = await telemetry.sinkIsNoopForTesting
+        XCTAssertFalse(isNoopAfterOptIn,
+                       "reloadEngine() must swap in a live sink on a runtime opt-in, not leave the client mute")
+
+        // --- Runtime opt-out: telemetry true -> false (the reverse) ---
+        _ = try await configStore.updateAndSave { cfg in cfg.telemetry = false }
+        await host.reloadEngine()
+        let isNoopAfterOptOut = await telemetry.sinkIsNoopForTesting
+        XCTAssertTrue(isNoopAfterOptOut,
+                      "reloadEngine() must swap the live sink back to Noop on a runtime opt-out")
+    }
+
+    // MARK: - reloadEngine() does not rebuild the sink when telemetry was already on (#428)
+
+    func testReloadEngineDoesNotSwapSinkWhenAlreadyEnabled() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let paths = OfemPaths(root: tmp)
+        try paths.ensureDirectories()
+
+        let configStore = try OfemConfigStore(paths: paths)
+        _ = try await configStore.updateAndSave { cfg in cfg.telemetry = true }
+        FPEEngineHost.installSharedConfigStoreForTesting(configStore)
+
+        let sink = RecordingTelemetrySink()
+        let telemetry = TelemetryClient(
+            sink: sink,
+            appVersion: "test",
+            installID: "no-double-swap-test-install",
+            configuration: TelemetryConfiguration(optOut: false, flushInterval: .seconds(3600))
+        )
+        let cache = try CacheStore(root: paths.cacheDir, maxBlobBytes: 999)
+        FPEEngineHost.installSharedSubsystemsForTesting(cache: cache, telemetry: telemetry)
+
+        let host = FPEEngineHost(alias: "no-double-swap", domain: makeDomain("no-double-swap"))
+        // cfg.telemetry stays true across this reload — models a reload
+        // triggered by an unrelated field (e.g. cache.max_size_gb) while
+        // telemetry was already on.
+        await host.reloadEngine()
+
+        // If reloadEngine() had rebuilt the sink unconditionally, a freshly
+        // built AppInsightsSink would silently have replaced `sink` here, and
+        // this track()+flush() would never reach the originally-installed one.
+        await telemetry.track(TelemetryEvent(name: "still_using_injected_sink"))
+        await telemetry.flush()
+        XCTAssertEqual(sink.count, 1,
+                       "reloadEngine() must not swap the sink when telemetry was already enabled")
+    }
+
     // MARK: - Helpers
 
     private func makeDomain(_ alias: String) -> NSFileProviderDomain {

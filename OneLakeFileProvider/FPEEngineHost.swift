@@ -224,6 +224,27 @@ final class FPEEngineHost: EngineProviding {
         }
     }
 
+    /// Builds the `TelemetrySink` implied by `cfg`: a live `AppInsightsSink`
+    /// when telemetry is enabled and the connection string parses,
+    /// `NoopTelemetrySink` otherwise.
+    ///
+    /// Shared by `sharedTelemetry()` (first construction) and
+    /// `reloadEngine()` (runtime opt-in sink swap, via
+    /// `TelemetryClient.reconfigureSink(optOut:makeLiveSink:)`) so both
+    /// sites build the sink identically.
+    private static func makeTelemetrySink(cfg: OfemConfig) -> any TelemetrySink {
+        guard cfg.telemetry,
+              let sink = try? AppInsightsSink(
+                  connectionString: BuildInfo.appInsightsConnectionString,
+                  installID: cfg.installID,
+                  appVersion: BuildInfo.version
+              )
+        else {
+            return NoopTelemetrySink()
+        }
+        return sink
+    }
+
     /// Returns (or lazily creates) the process-wide TelemetryClient.
     ///
     /// Uses the same double-checked pattern as `sharedCache()` to avoid
@@ -236,19 +257,8 @@ final class FPEEngineHost: EngineProviding {
 
         // Build outside the lock.
         let cfg = try sharedSubsystemsLock.withLock { try sharedConfigStore().snapshot() }
-        let telSink: any TelemetrySink = if cfg.telemetry,
-                                            let sink = try? AppInsightsSink(
-                                                connectionString: BuildInfo.appInsightsConnectionString,
-                                                installID: cfg.installID,
-                                                appVersion: BuildInfo.version
-                                            )
-        {
-            sink
-        } else {
-            NoopTelemetrySink()
-        }
         let candidate = TelemetryClient(
-            sink: telSink,
+            sink: Self.makeTelemetrySink(cfg: cfg),
             appVersion: BuildInfo.version,
             installID: cfg.installID,
             configuration: TelemetryConfiguration(optOut: !cfg.telemetry)
@@ -561,12 +571,16 @@ final class FPEEngineHost: EngineProviding {
     /// shared-subsystem design eliminates. Config fields that only affect
     /// those subsystems (`cache.maxBytes`, `telemetry`) instead take effect
     /// through live setters (``CacheStore/setMaxBlobBytes(_:)``,
-    /// ``TelemetryClient/setOptOut(_:)``) called at the end of this method,
-    /// with no FPE process restart needed. For the telemetry opt-out
-    /// specifically, see `TelemetryClient`'s class-level doc for the precise
-    /// guarantee: no event enqueued at or after the opt-out is transmitted,
-    /// and an already-in-flight send is cancelled best-effort — not
-    /// instantaneously aborted.
+    /// ``TelemetryClient/reconfigureSink(optOut:makeLiveSink:)``) called at
+    /// the end of this method, with no FPE process restart needed. The
+    /// telemetry side uses `reconfigureSink`, not a bare `setOptOut`,
+    /// because a client memoized with `NoopTelemetrySink` (telemetry was off
+    /// at launch) needs its sink swapped to a live one — and its flush timer
+    /// started — before a runtime opt-in actually emits anything; see that
+    /// method's doc and `TelemetryClient`'s class-level doc for the precise
+    /// opt-out guarantee: no event enqueued at or after the opt-out is
+    /// transmitted, and an already-in-flight send is cancelled best-effort —
+    /// not instantaneously aborted.
     func reloadEngine() async {
         let (existing, startTask): (OfemEngine?, Task<Void, Never>?) = lock.withLock {
             let e = _engine
@@ -609,7 +623,9 @@ final class FPEEngineHost: EngineProviding {
         // step, so a non-nil peek above implies the config store already
         // exists — this call hits the cheap fast path, no fresh TOML load.
         guard let cfg = try? Self.sharedConfigStore().snapshot() else { return }
-        await telemetry?.setOptOut(!cfg.telemetry)
+        await telemetry?.reconfigureSink(optOut: !cfg.telemetry) {
+            Self.makeTelemetrySink(cfg: cfg)
+        }
         await cache?.setMaxBlobBytes(cfg.cache.maxBytes)
     }
 

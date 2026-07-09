@@ -96,8 +96,12 @@ public struct TelemetryConfiguration: Sendable {
 /// which silently discards every event. ``setOptOut(_:)`` additionally gates
 /// every subsequent ``track(_:)`` call on a live, actor-isolated flag so a
 /// runtime opt-out (e.g. via the host app's `setConfig`) takes effect
-/// immediately — with no process restart — even though `sink` itself is
-/// fixed at construction.
+/// immediately — with no process restart. A runtime opt-**in** needs one
+/// more step when the client was memoized as opted-out at launch: the sink
+/// itself must move off `NoopTelemetrySink`, and the flush timer — which
+/// ``start()`` never launches for a Noop sink — must be started. See
+/// ``reconfigureSink(optOut:makeLiveSink:)``, which handles both
+/// directions and is what `FPEEngineHost.reloadEngine()` calls.
 ///
 /// **Precise guarantee**: no event *enqueued at or after* `setOptOut(true)`
 /// returns is ever transmitted. An event whose `send()` was already
@@ -110,7 +114,12 @@ public struct TelemetryConfiguration: Sendable {
 public actor TelemetryClient {
     // MARK: - State
 
-    private let sink: any TelemetrySink
+    /// The live transport. `var`, not `let`: ``reconfigureSink(optOut:makeLiveSink:)``
+    /// swaps this in place when a runtime opt-in needs to move off the
+    /// `NoopTelemetrySink` the client may have been memoized with at
+    /// construction (see that method's doc). All reads and writes are
+    /// actor-isolated, so the swap needs no extra locking.
+    private var sink: any TelemetrySink
     private let batch: TelemetryBatch
     private let commonProps: [String: String]
     private let configuration: TelemetryConfiguration
@@ -279,9 +288,12 @@ public actor TelemetryClient {
     ///      retroactively un-send bytes already on the wire — see the
     ///      class-level doc for the precise guarantee.
     ///
-    /// Called by `FPEEngineHost.reloadEngine()` after a `setConfig(telemetry:)`
-    /// XPC call so the opt-out takes effect immediately — the shared
-    /// `TelemetryClient` singleton is not rebuilt on reload.
+    /// Called directly by callers that only ever flip the flag against a
+    /// client already constructed with a live sink (see the test suite).
+    /// `FPEEngineHost.reloadEngine()` itself goes through
+    /// ``reconfigureSink(optOut:makeLiveSink:)``, which also repairs the
+    /// sink when the client was memoized as opted-out at launch — see that
+    /// method's doc for why a bare `setOptOut(_:)` cannot do that on its own.
     public func setOptOut(_ value: Bool) async {
         optOut = value
         if value {
@@ -295,6 +307,68 @@ public actor TelemetryClient {
             _ = await batch.drain()
         }
     }
+
+    // MARK: - Live sink swap
+
+    /// Reconfigures the client for a runtime opt-out/opt-in transition,
+    /// repairing what ``setOptOut(_:)`` alone cannot: a client memoized with
+    /// `NoopTelemetrySink` because telemetry was off at construction time
+    /// (`FPEEngineHost.sharedTelemetry()` builds the process-wide singleton
+    /// exactly once, honouring whatever `cfg.telemetry` read at that
+    /// moment). ``start()`` permanently declines to start the flush timer
+    /// for a Noop sink, so `setOptOut(false)` by itself would leave the
+    /// client "enabled" but mute — no flush timer ever running, and any
+    /// flush that does happen ships to a sink that silently discards
+    /// everything.
+    ///
+    /// - `optOut == false`: if the current sink is `NoopTelemetrySink`,
+    ///   swaps in the sink built by `makeLiveSink()` and calls ``start()``.
+    ///   `start()` is idempotent (its own `flushTask == nil` guard), so a
+    ///   reload that finds telemetry already live neither builds a second
+    ///   sink (`makeLiveSink()` is not even invoked in that case) nor starts
+    ///   a second timer.
+    /// - `optOut == true`: delegates to ``setOptOut(true)`` (draining the
+    ///   buffer and cancelling in-flight sends, as documented there), then
+    ///   swaps the sink to `NoopTelemetrySink` so no live sink lingers.
+    ///
+    /// Does **not** rebuild the `TelemetryClient` itself — only the sink —
+    /// so the process-wide memoized-singleton contract (arch-04, see
+    /// `FPEEngineHost`) stays intact.
+    ///
+    /// Called by `FPEEngineHost.reloadEngine()` after a `setConfig(telemetry:)`
+    /// XPC call, in place of a bare `setOptOut(_:)`.
+    ///
+    /// - Parameter makeLiveSink: Builds the sink to install when
+    ///   transitioning into the opted-in state. Runs on the actor's own
+    ///   executor — no external synchronization is needed.
+    public func reconfigureSink(optOut: Bool, makeLiveSink: @Sendable () -> any TelemetrySink) async {
+        guard !optOut else {
+            await setOptOut(true)
+            sink = NoopTelemetrySink()
+            return
+        }
+
+        if sink is NoopTelemetrySink {
+            sink = makeLiveSink()
+        }
+        self.optOut = false
+        start()
+    }
+
+    #if DEBUG
+        // periphery:ignore
+        /// `true` when the live sink is currently `NoopTelemetrySink`. Test-only
+        /// introspection — production callers never need to read this back.
+        /// Exposed so `FPEEngineHostTests` can assert that `reloadEngine()`
+        /// actually swapped in a live sink (or swapped back to Noop) without
+        /// needing to observe a real network call to App Insights.
+        ///
+        /// `#if DEBUG`-gated (matching `CacheStore.maxBlobBytesForTesting`) so
+        /// this test-only surface never ships in a Release build.
+        public var sinkIsNoopForTesting: Bool {
+            sink is NoopTelemetrySink
+        }
+    #endif
 
     /// Emits the `"error"` event with a PII-safe error code.
     ///
