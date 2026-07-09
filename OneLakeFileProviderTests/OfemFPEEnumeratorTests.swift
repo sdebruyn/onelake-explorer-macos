@@ -83,7 +83,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let observer = SpyEnumerationObserver()
         let finished = expectFinish(observer)
         enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage.initialPageSortedByName as NSFileProviderPage)
-        await fulfillment(of: [finished], timeout: 5.0)
+        await fulfillment(of: [finished], timeout: Self.expectationTimeout)
 
         XCTAssertTrue(observer.finishEnumeratingWithErrorCalled,
                       "Observer should receive finishEnumeratingWithError when the engine is unavailable")
@@ -117,7 +117,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let changeObserver = SpyChangeObserver()
         let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-        await fulfillment(of: [finished], timeout: 5.0)
+        await fulfillment(of: [finished], timeout: Self.expectationTimeout)
 
         XCTAssertTrue(changeObserver.finishedWithError,
                       "Engine failure must propagate as finishEnumeratingWithError")
@@ -229,7 +229,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let changeObserver = SpyChangeObserver()
         let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-        await fulfillment(of: [finished], timeout: 5.0)
+        await fulfillment(of: [finished], timeout: Self.expectationTimeout)
 
         XCTAssertTrue(changeObserver.finishedWithError,
                       "Observer should receive an error on token-acquisition failure")
@@ -258,7 +258,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let changeObserver = SpyChangeObserver()
         let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-        await fulfillment(of: [finished], timeout: 5.0)
+        await fulfillment(of: [finished], timeout: Self.expectationTimeout)
 
         XCTAssertTrue(changeObserver.finishedWithError)
         XCTAssertFalse(host.markedNeedsSignIn,
@@ -283,7 +283,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let changeObserver = SpyChangeObserver()
         let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-        await fulfillment(of: [finished], timeout: 5.0)
+        await fulfillment(of: [finished], timeout: Self.expectationTimeout)
 
         XCTAssertTrue(changeObserver.finishedWithError,
                       "WorkingSetEnumerator: observer should receive error on token-acquisition failure")
@@ -302,7 +302,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let changeObserver = SpyChangeObserver()
         let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-        await fulfillment(of: [finished], timeout: 5.0)
+        await fulfillment(of: [finished], timeout: Self.expectationTimeout)
 
         XCTAssertTrue(changeObserver.finishedWithError)
         XCTAssertFalse(host.markedNeedsSignIn,
@@ -329,7 +329,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let observer = SpyEnumerationObserver()
         let finished = expectFinish(observer)
         enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage.initialPageSortedByName as NSFileProviderPage)
-        await fulfillment(of: [finished], timeout: 5.0)
+        await fulfillment(of: [finished], timeout: Self.expectationTimeout)
 
         XCTAssertTrue(observer.finishEnumeratingWithErrorCalled)
         XCTAssertTrue(host.markedNeedsSignIn,
@@ -355,7 +355,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let changeObserver = SpyChangeObserver()
         let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-        await fulfillment(of: [finished], timeout: 5.0)
+        await fulfillment(of: [finished], timeout: Self.expectationTimeout)
 
         // Engine failed → listWorkspaces never ran → stamp must NOT be set.
         XCTAssertNil(OfemWorkingSetEnumerator.lastRefresh(for: alias),
@@ -428,7 +428,15 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let obs = SpyChangeObserver()
         let finished = expectFinish(obs)
         freshEnumerator.enumerateChanges(for: obs, from: encodeSyncAnchor(0))
-        await fulfillment(of: [finished], timeout: 5.0)
+        await fulfillment(of: [finished], timeout: Self.expectationTimeout)
+
+        // Confirm the FAILURE path actually ran — expectFinish's expectation
+        // is fulfilled by either finish method, so without this the stamp-
+        // unchanged assertion below would be over-determined (shouldRefresh
+        // is already false, so the stamp survives regardless of how
+        // enumerateChanges finished) rather than proving the non-auth
+        // failure path specifically left it untouched.
+        XCTAssertTrue(obs.finishedWithError, "engine() failing cannotSynchronize must finish with an error")
 
         XCTAssertEqual(
             OfemWorkingSetEnumerator.lastRefresh(for: alias), prearmedStamp,
@@ -459,7 +467,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let obs = SpyChangeObserver()
         let finished = expectFinish(obs)
         enumerator.enumerateChanges(for: obs, from: encodeSyncAnchor(0))
-        await fulfillment(of: [finished], timeout: 5.0)
+        await fulfillment(of: [finished], timeout: Self.expectationTimeout)
 
         XCTAssertTrue(obs.finishedWithError, "Auth error must finish with error")
         XCTAssertTrue(host.markedNeedsSignIn, "markNeedsSignIn must be called on auth error")
@@ -486,7 +494,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let obs1 = SpyChangeObserver()
         let finished1 = expectFinish(obs1)
         enumerator.enumerateChanges(for: obs1, from: encodeSyncAnchor(0))
-        await fulfillment(of: [finished1], timeout: 5.0)
+        await fulfillment(of: [finished1], timeout: Self.expectationTimeout)
         // Stamp manually to simulate a previous successful run.
         let manualStamp = ContinuousClock.now
         OfemWorkingSetEnumerator.recordRefresh(for: alias, at: manualStamp)
@@ -495,7 +503,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let obs2 = SpyChangeObserver()
         let finished2 = expectFinish(obs2)
         enumerator.enumerateChanges(for: obs2, from: encodeSyncAnchor(0))
-        await fulfillment(of: [finished2], timeout: 5.0)
+        await fulfillment(of: [finished2], timeout: Self.expectationTimeout)
 
         // The stamp must be the manually-set one — the throttle suppressed a new stamp.
         let stampAfter = OfemWorkingSetEnumerator.lastRefresh(for: alias)
@@ -534,7 +542,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let changeObserver = SpyChangeObserver()
         let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-        await fulfillment(of: [finished], timeout: 5.0)
+        await fulfillment(of: [finished], timeout: Self.expectationTimeout)
 
         XCTAssertTrue(changeObserver.finishedWithError,
                       "Auth error in working-set enumerateChanges must call finishEnumeratingWithError")
@@ -712,6 +720,15 @@ final class OfemFPEEnumeratorTests: XCTestCase {
     /// expectation has to be armed before the async Task can fulfil it, or a
     /// completion that races ahead of a not-yet-armed expectation would be
     /// missed.
+    /// Timeout for `fulfillment(of:timeout:)` calls throughout this file.
+    /// These waits are keyed on `MockEngineHost`'s in-memory, no-I/O mock
+    /// paths — a passing run fulfils in microseconds regardless of this
+    /// value, so it only bounds how long a genuine hang takes to fail CI.
+    /// 2s is generous headroom over that (vs. the old ~1s poll budget)
+    /// without inflating a real-hang failure to the ~5s a larger timeout
+    /// would cost.
+    private static let expectationTimeout: TimeInterval = 2.0
+
     private func expectFinish(_ observer: SpyChangeObserver) -> XCTestExpectation {
         let exp = expectation(description: "enumerateChanges finished")
         observer.finishExpectation = exp

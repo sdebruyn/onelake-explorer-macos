@@ -211,8 +211,13 @@ struct CacheSchemaTests {
 
         // Seed rows using ONLY the columns that existed at v1 (no item_type,
         // created_ns, or subtree_etag — all added by later migrations), plus
-        // a deletion tombstone shadowed by a fresher live row, which v7's
-        // data-rewriting purge must clean up as part of the chain.
+        // TWO tombstones: one shadowed by a fresher live row (which v7's
+        // data-rewriting purge must clean up) and one with no live row at all
+        // (which must SURVIVE). Seeding only the purgeable tombstone would let
+        // an over-purge regression — v7 deleting every tombstone outright —
+        // pass just as easily as a correct purge, since "empty" would read
+        // the same either way; the survivor turns this into a real over-purge
+        // guard, mirroring DeletionTombstoneTests.v7PurgesLegacyStaleTombstones.
         try await pool.write { db in
             try db.execute(sql: """
             INSERT INTO path_metadata
@@ -229,6 +234,11 @@ struct CacheSchemaTests {
                 (account_alias, workspace_id, item_id, path, parent_path, name, is_dir, last_accessed_ns, synced_at_ns)
             VALUES (?, ?, ?, ?, ?, ?, 0, 0, 200)
             """, arguments: ["acct", "ws-1", "item-1", "stale.txt", "Files", "stale.txt"])
+            // Unshadowed — no live row for "gone.txt" — must survive the v7 purge.
+            try db.execute(sql: """
+            INSERT INTO deletion_tombstones (account_alias, identifier_string, deleted_at_ns)
+            VALUES (?, ?, ?)
+            """, arguments: ["acct", "ws-1/item-1/gone.txt", 300])
         }
 
         // Migrate the rest of the way — v2 through the current version — in
@@ -259,16 +269,20 @@ struct CacheSchemaTests {
         #expect(dataRow["created_ns"] as Int64 == 0, "v5's new column must default to 0 for a pre-v5 row")
         #expect(dataRow["subtree_etag"] as String == "", "v6's new column must default to '' for a pre-v6 row")
 
-        // (3) v7's data-rewriting step still fires correctly when applied as
-        // part of the full v1→current chain (not just the isolated v6→v7
-        // step covered by DeletionTombstoneTests): the tombstone shadowed by
-        // the fresher "stale.txt" live row (synced at 200, after the
-        // tombstone's 100) is purged.
+        // (3) v7's data-rewriting step still fires correctly — and ONLY
+        // correctly — when applied as part of the full v1→current chain (not
+        // just the isolated v6→v7 step covered by DeletionTombstoneTests):
+        // the tombstone shadowed by the fresher "stale.txt" live row (synced
+        // at 200, after the tombstone's 100) is purged, while the unshadowed
+        // "gone.txt" tombstone — which has no live row at all — survives. An
+        // over-purge regression (v7 wiping every tombstone) would fail this
+        // just as loudly as an under-purge one (v7 not firing at all), since
+        // the exact surviving set is asserted, not merely emptiness.
         let tombstoneIDs = try await pool.read { db in
-            try String.fetchAll(db, sql: "SELECT identifier_string FROM deletion_tombstones")
+            try String.fetchAll(db, sql: "SELECT identifier_string FROM deletion_tombstones ORDER BY identifier_string")
         }
-        #expect(tombstoneIDs.isEmpty,
-                "v7's legacy-tombstone purge must still fire when applied as part of the full v1→current chain")
+        #expect(tombstoneIDs == ["ws-1/item-1/gone.txt"],
+                "v7's legacy-tombstone purge must remove only the shadowed tombstone when applied as part of the full v1→current chain")
     }
 }
 
