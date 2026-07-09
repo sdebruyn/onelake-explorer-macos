@@ -361,6 +361,50 @@ struct RetryAfterRetrierIdempotencyTests {
         #expect(dataResponse.response?.statusCode == 200)
         #expect(counter.count == 2)
     }
+
+    /// #451 review round 3 (high should-fix): `markIdempotent(false:)` must
+    /// be honored by the FULL production retrier chain, not just
+    /// `RetryAfterRetrier` in isolation. `SessionPool` wires
+    /// `[RetryAfterRetrier(), JitteredRetryPolicy(...)]`, and Alamofire falls
+    /// through to the next retrier on `.doNotRetry` — without
+    /// `JitteredRetryPolicy` also consulting the override,
+    /// `RetryAfterRetrier` would correctly decline, only for
+    /// `JitteredRetryPolicy`'s own (override-blind) method check to replay
+    /// the same request anyway on the same 429, a silent no-op opt-out. This
+    /// wires both retriers, exactly mirroring `SessionPool`'s real chain
+    /// (only the concrete stubs/status codes differ), to pin the opt-out
+    /// holding end-to-end.
+    @Test("an explicit markIdempotent(false:) override is honored end-to-end through the full production retrier chain")
+    func explicitOptOutHoldsThroughFullRetrierChain() async {
+        let counter = AttemptCounter()
+        let (session, queueID) = makeRetrierSession(
+            stubs: [MockURLProtocol.StubResponse(status: 429, headers: ["Retry-After": "0"])],
+            retriers: [
+                RetryAfterRetrier(),
+                JitteredRetryPolicy(
+                    retryLimit: UInt(RetryAfterRetrier.maxRetries), retryableHTTPStatusCodes: [429]
+                ),
+            ],
+            adapters: [counter]
+        )
+        defer { MockURLProtocol.clearQueue(id: queueID) }
+
+        let dataResponse = await session.request(
+            "https://example.invalid/throttled", method: .patch
+        ) { urlRequest in
+            RetryAfterRetrier.markIdempotent(false, on: &urlRequest)
+        }
+        .validate()
+        .serializingData()
+        .response
+
+        #expect(dataResponse.response?.statusCode == 429)
+        guard case .failure = dataResponse.result else {
+            Issue.record("Expected the opted-out PATCH to fail without either retrier replaying it")
+            return
+        }
+        #expect(counter.count == 1)
+    }
 }
 
 // MARK: - JitteredRetryPolicy (C10)
@@ -476,5 +520,51 @@ struct BufferedResponseCapTests {
         )
         #expect(data.count == HTTPClientError.maxBufferedResponseBytes)
         #expect(response.statusCode == 200)
+    }
+
+    /// #451 review round 3: distinct from `overCapResponseThrows` above,
+    /// which relies on the post-buffer `data.count` backstop, this pins the
+    /// `downloadProgress`-driven PREFLIGHT specifically. The stub declares a
+    /// `Content-Length` far over the cap but sends only a tiny actual body,
+    /// so the post-buffer check (which only ever sees those 10 bytes) can
+    /// never trip on its own — the only way this can observe
+    /// `responseTooLarge` is the preflight guard reading the declared
+    /// `Content-Length` (via `Progress.totalUnitCount`) and recording it as
+    /// over-cap, independent of whether `req.cancel()` wins its race against
+    /// the mock's synchronous delivery.
+    @Test("a response declaring Content-Length over the cap is preflight-rejected despite a tiny actual body")
+    func declaredContentLengthOverCapIsPreflightRejected() async {
+        let declaredLength = HTTPClientError.maxBufferedResponseBytes + 1
+        let (pool, queueID) = await makePool(stubs: [
+            MockURLProtocol.StubResponse(
+                status: 200,
+                body: Data(count: 10),
+                headers: ["Content-Length": "\(declaredLength)"]
+            ),
+        ])
+        defer { MockURLProtocol.clearQueue(id: queueID) }
+
+        do {
+            _ = try await executeDataRequest(
+                sessionPool: pool,
+                alias: "test",
+                scope: .fabric,
+                method: "GET",
+                url: Self.capURL,
+                headers: [:],
+                body: nil,
+                mapError: FabricError.from
+            )
+            Issue.record("Expected responseTooLarge from the Content-Length preflight despite a tiny actual body")
+        } catch let FabricError.httpError(underlying) {
+            guard case let HTTPClientError.responseTooLarge(bytesReceived, limit)? = underlying as? HTTPClientError else {
+                Issue.record("Expected HTTPClientError.responseTooLarge, got \(underlying)")
+                return
+            }
+            #expect(bytesReceived == declaredLength)
+            #expect(limit == HTTPClientError.maxBufferedResponseBytes)
+        } catch {
+            Issue.record("Expected FabricError.httpError(.responseTooLarge), got \(error)")
+        }
     }
 }
