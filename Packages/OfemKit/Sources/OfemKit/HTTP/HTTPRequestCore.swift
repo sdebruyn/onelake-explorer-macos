@@ -130,6 +130,39 @@ struct HTTPErrorClassification {
     }
 }
 
+// MARK: - Buffered response size guard
+
+/// Tracks whether `executeDataRequest`'s size guard cancelled a request
+/// because it crossed ``HTTPClientError/maxBufferedResponseBytes``, and if
+/// so, the byte count observed at the moment it tripped.
+///
+/// `downloadProgress` fires on Alamofire's own delivery queue while
+/// `executeDataRequest`'s single `await` is still suspended, so this needs
+/// its own lock rather than relying on Swift concurrency isolation — reading
+/// `result` after that `await` resolves is safe because `req.cancel()`
+/// (called synchronously from inside the progress closure, see below)
+/// always happens-before the completion handler that resolves the `await`.
+private final class ResponseSizeGuard: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tripped: (bytesReceived: Int, limit: Int)?
+
+    /// Records `bytesReceived` as the trip point the first time it exceeds
+    /// `limit`, and returns whether *this* call was the one that tripped it
+    /// (so the caller cancels exactly once).
+    @discardableResult
+    func recordIfExceeded(bytesReceived: Int, limit: Int) -> Bool {
+        lock.withLock {
+            guard tripped == nil, bytesReceived > limit else { return false }
+            tripped = (bytesReceived, limit)
+            return true
+        }
+    }
+
+    var result: (bytesReceived: Int, limit: Int)? {
+        lock.withLock { tripped }
+    }
+}
+
 // MARK: - executeDataRequest (http-02)
 
 /// Shared request-execution core for ``OneLakeClient`` and ``FabricClient``.
@@ -142,7 +175,30 @@ struct HTTPErrorClassification {
 /// `emptyRequestMethods` allowlist, or the defensive nil-response guard — only
 /// needs to be made once.
 ///
+/// Response body size is bounded to ``HTTPClientError/maxBufferedResponseBytes``
+/// via two mechanisms, layered because neither alone is both early and
+/// reliable:
+/// - A `downloadProgress`-driven guard cancels the request as soon as either
+///   the declared `Content-Length` or the running received-byte total
+///   crosses the cap — a declared-over-cap response is rejected without
+///   downloading the rest of it, and a chunked/undeclared-length response is
+///   cut off mid-transfer rather than only after it fully lands. This is
+///   best-effort, not a guarantee: a transfer that completes before Alamofire
+///   schedules the progress callback (plausible for a merely-over-cap, not
+///   pathologically large, response on a fast connection) will have already
+///   finished buffering by the time it fires.
+/// - The post-buffer `data.count` check below is the deterministic backstop
+///   for exactly that case: it always catches an over-cap body, just without
+///   bounding peak memory for it, since the whole body is already in memory
+///   by the time it runs.
+///
 /// - Parameters:
+///   - idempotent: Whether this specific request is safe to replay on a
+///     `Retry-After` response, independent of its HTTP method. Defaults to
+///     `true` (today's behaviour for every existing caller). Threaded into
+///     `RetryAfterRetrier.markIdempotent(_:on:)` so a caller can opt a
+///     request out even though `RetryAfterRetrier.idempotentHTTPMethods`
+///     would otherwise treat its method as replay-safe.
 ///   - onFailure: Invoked with the raw `AFError` before it is mapped, so a
 ///     caller can log the pre-classification error (fabric-05). Not invoked
 ///     on the nil-response guard path, mirroring the pre-extraction behaviour.
@@ -156,6 +212,7 @@ func executeDataRequest<DomainError: Error>(
     url: URL,
     headers: HTTPHeaders,
     body: Data?,
+    idempotent: Bool = true,
     onFailure: ((AFError) -> Void)? = nil,
     mapError: (any Error) -> DomainError
 ) async throws -> (Data, HTTPURLResponse) {
@@ -163,8 +220,20 @@ func executeDataRequest<DomainError: Error>(
     let httpMethod = HTTPMethod(rawValue: method)
     let req = session.request(url, method: httpMethod, headers: headers) { urlRequest in
         urlRequest.httpBody = body
+        RetryAfterRetrier.markIdempotent(idempotent, on: &urlRequest)
     }
     .validate()
+
+    let sizeGuard = ResponseSizeGuard()
+    _ = req.downloadProgress { progress in
+        let declared = Int(progress.totalUnitCount)
+        let received = Int(progress.completedUnitCount)
+        let observed = max(declared, received)
+        if sizeGuard.recordIfExceeded(bytesReceived: observed, limit: HTTPClientError.maxBufferedResponseBytes) {
+            _ = req.cancel()
+        }
+    }
+
     // OneLake/ADLS Gen2 and Fabric REST both return empty bodies on successful
     // mutating calls and on 0-byte reads. Allow empty bodies for all methods
     // used by either client so Alamofire yields Data() rather than an error.
@@ -172,10 +241,32 @@ func executeDataRequest<DomainError: Error>(
     let dataResponse = await req.serializingData(
         emptyRequestMethods: [.get, .put, .patch, .delete, .post, .head]
     ).response
+
+    // The size guard may have cancelled the request above; that always takes
+    // precedence over however Alamofire's own Result resolved, since a
+    // cancellation this function triggered itself can race either branch
+    // (.success, if the whole body had already landed when it fired, or
+    // .failure(.explicitlyCancelled) otherwise) depending on timing.
+    if let capped = sizeGuard.result {
+        throw mapError(HTTPClientError.responseTooLarge(bytesReceived: capped.bytesReceived, limit: capped.limit))
+    }
+
     switch dataResponse.result {
     case let .success(data):
         guard let httpResponse = dataResponse.response else {
             throw mapError(HTTPClientError.transport(URLError(.badServerResponse)))
+        }
+        // Deterministic backstop — see the doc comment above. Checked against
+        // the actual buffered byte count rather than the declared
+        // Content-Length header: a response can omit or under-report
+        // Content-Length (e.g. chunked transfer-encoding), so data.count is
+        // the only authoritative measure of what actually landed in memory.
+        guard data.count <= HTTPClientError.maxBufferedResponseBytes else {
+            throw mapError(
+                HTTPClientError.responseTooLarge(
+                    bytesReceived: data.count, limit: HTTPClientError.maxBufferedResponseBytes
+                )
+            )
         }
         return (data, httpResponse)
     case let .failure(afError):

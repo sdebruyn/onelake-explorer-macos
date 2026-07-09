@@ -131,14 +131,10 @@ public actor SessionPool {
                 RetryAfterRetrier(),
                 JitteredRetryPolicy(
                     // Single source of truth shared with RetryAfterRetrier's
-                    // own cap — see RetryAfterRetrier.maxRetries.
+                    // own cap and idempotency notion — see
+                    // RetryAfterRetrier.maxRetries / .idempotentHTTPMethods.
                     retryLimit: UInt(RetryAfterRetrier.maxRetries),
-                    retryableHTTPMethods: [
-                        .get, .head, .put, .delete, .options,
-                        // PATCH is added for OneLake append/flush: position-addressed
-                        // operations are replay-safe and must remain retriable.
-                        .patch,
-                    ],
+                    retryableHTTPMethods: RetryAfterRetrier.idempotentHTTPMethods,
                     retryableHTTPStatusCodes: [408, 425, 429, 500, 502, 503, 504]
                 ),
             ],
@@ -162,11 +158,39 @@ public actor SessionPool {
 /// jitter (a uniform random delay in `[0, computedDelay]`) spreads retries
 /// out so the waves de-correlate.
 ///
-/// Only the delay computation changes; retry eligibility (`shouldRetry`,
-/// `retryLimit`) is inherited unmodified from `RetryPolicy`.
+/// The delay computation changes (see ``jitteredDelay(forRetryCount:)``);
+/// `retryLimit` is inherited unmodified from `RetryPolicy`.
+///
+/// ``shouldRetry(request:dueTo:)`` is overridden too, but only to consult a
+/// per-request ``RetryAfterRetrier/markIdempotent(_:on:)`` override before
+/// falling through to `RetryPolicy`'s stock method/status-code/URLError-code
+/// logic unchanged — see that override's doc comment for why.
 ///
 /// See: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
 final class JitteredRetryPolicy: RetryPolicy, @unchecked Sendable {
+    /// Declines immediately for a request explicitly opted out (or, absent an
+    /// override, whose method is outside ``RetryAfterRetrier/idempotentHTTPMethods``)
+    /// via ``RetryAfterRetrier/isIdempotent(_:)`` — the same check
+    /// `RetryAfterRetrier` itself gates on. Otherwise defers entirely to
+    /// `RetryPolicy`'s inherited logic.
+    ///
+    /// Without this, `RetryAfterRetrier.markIdempotent(false:)` would be a
+    /// silent no-op: `SessionPool` wires `[RetryAfterRetrier(), JitteredRetryPolicy(...)]`,
+    /// so a request `RetryAfterRetrier` correctly declines to retry on
+    /// `.doNotRetry` falls through to this retrier next — and this retrier's
+    /// own `retryableHTTPMethods` check (fed from `RetryAfterRetrier
+    /// .idempotentHTTPMethods`, the *method-based default*, not the
+    /// *per-request override*) would replay it anyway on any of its broader
+    /// `retryableHTTPStatusCodes`. Both retriers must agree on the same
+    /// per-request signal, not just the same method-based default, or an
+    /// opt-out only *looks* like it works.
+    override func shouldRetry(request: Request, dueTo error: Error) -> Bool {
+        guard let urlRequest = request.request, RetryAfterRetrier.isIdempotent(urlRequest) else {
+            return false
+        }
+        return super.shouldRetry(request: request, dueTo: error)
+    }
+
     override func retry(
         _ request: Request,
         for _: Session,
