@@ -344,7 +344,11 @@ public actor CacheStore {
     /// Unlike ``batchUpsert(_:)`` / ``batchDelete(_:recordTombstones:)``, this
     /// does not chunk: it exists for a single folder's reconcile pass, which is
     /// bounded by one directory listing, and chunking would reintroduce the
-    /// exact split-transaction problem this method exists to close.
+    /// exact split-transaction problem this method exists to close. This is a
+    /// deliberate trade-off: a very large first-time folder listing lands as
+    /// ONE WAL-held write transaction instead of the old 500-row chunks — a
+    /// larger memory/WAL burst than before, which matters in the FPE's
+    /// constrained-memory process — accepted in exchange for atomicity.
     ///
     /// `now` is read once and shared by both phases, so every upserted row's
     /// `synced_at_ns` and every deleted row's tombstone `deleted_at_ns` come
