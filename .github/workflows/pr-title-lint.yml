@@ -12,6 +12,10 @@
 # trigger to re-validate a later title change, and ci.yml's push+pull_request
 # triggers are shared by the macOS build job — adding `edited` there would
 # re-run the full 30-minute build on every title tweak.
+#
+# NOTE: this check is not yet in the branch protection required-status-checks
+# list, so on its own it does not block a bad title from being merged — a
+# repo admin needs to add "Lint PR title (squash-merge subject)" there.
 
 name: PR Title Lint
 
@@ -30,7 +34,7 @@ jobs:
   lint-pr-title:
     name: Lint PR title (squash-merge subject)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.0
 
@@ -46,6 +50,8 @@ jobs:
         # `commitlint` with no --from/--to/--edit lints whatever is piped to
         # stdin as a single commit message, so this validates the title
         # against commitlint.config.js exactly like a normal commit subject.
+        # printf (not echo) so a title that happens to start with -e/-n/-E
+        # is passed through literally instead of being read as a flag.
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: echo "$PR_TITLE" | npx commitlint --verbose
+        run: printf '%s\n' "$PR_TITLE" | npx commitlint --verbose
