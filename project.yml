@@ -31,7 +31,7 @@ settings:
     # All targets — app, FPE, and OfemKit — build in Swift 6 language mode.
     # OfemKit uses swift-tools-version: 6.0 in its package manifest; the app
     # and FPE targets are set here. TOMLKit 0.6.0 compiles cleanly under
-    # Swift 6 / Xcode 16.3. See docs/tech-stack.md.
+    # Swift 6 / Xcode 16.4. See docs/tech-stack.md.
     SWIFT_VERSION: "6.0"
     # MACOSX_DEPLOYMENT_TARGET is intentionally omitted here — XcodeGen
     # derives it from options.deploymentTarget.macOS above ("14.0") and

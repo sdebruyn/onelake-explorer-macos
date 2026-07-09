@@ -67,21 +67,32 @@ jobs:
     # (narrower than the old workflow-level grant).
     permissions:
       contents: write
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_16.3.app/Contents/Developer
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0
 
-      - name: Assert Xcode 16.3 is present
-        # Fail fast if the runner image no longer ships Xcode 16.3 rather
-        # than silently falling back to a different Xcode version.
+      - name: Load pinned Xcode version
+        # Single source of truth for the Xcode version, shared with ci.yml
+        # and codeql.yml — see .github/xcode-version. Aligning the release
+        # toolchain to the one CI already exercises means a change that
+        # compiles in CI is guaranteed to also compile at release time.
+        id: xcode
         run: |
           set -euo pipefail
-          if [ ! -d /Applications/Xcode_16.3.app ]; then
-            echo "ERROR: Xcode_16.3.app not found at /Applications/Xcode_16.3.app" >&2
+          version="$(cat .github/xcode-version)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "DEVELOPER_DIR=/Applications/Xcode_${version}.app/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Assert Xcode ${{ steps.xcode.outputs.version }} is present
+        # Fail fast if the runner image no longer ships the pinned Xcode
+        # rather than silently falling back to a different Xcode version.
+        run: |
+          set -euo pipefail
+          xcode_app="/Applications/Xcode_${{ steps.xcode.outputs.version }}.app"
+          if [ ! -d "$xcode_app" ]; then
+            echo "ERROR: ${xcode_app} not found (pinned in .github/xcode-version)" >&2
             echo "Available Xcode installations:" >&2
             ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
             exit 1
