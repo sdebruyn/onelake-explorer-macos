@@ -14,7 +14,7 @@ Removes the app. Your local cache and sign-in state stay on disk so a future re-
 brew uninstall --cask --zap ofem
 ```
 
-Also deletes the local cache, config, and your sign-in state.
+Deletes the local cache and config. It cannot reach the macOS Keychain, so your MSAL sign-in tokens survive it — sign out of each account in the app first, or remove the `dev.debruyn.ofem` Keychain items by hand, if you want those gone too.
 
 ## Revoke access in your tenant
 
