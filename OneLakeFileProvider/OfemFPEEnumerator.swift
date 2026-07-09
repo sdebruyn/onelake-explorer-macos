@@ -85,6 +85,24 @@ func parseOfemItemIdentifier(_ rawIdentifier: String) throws -> ItemIdentifier {
     try ItemIdentifierParser.parse(rawIdentifier)
 }
 
+/// Log-safe (redacted) representation of a raw NSFileProviderItemIdentifier
+/// string, for call sites that only have the raw string on hand at the log
+/// point — typically because parsing it (for control flow) happens later or
+/// not at all on that path. Prefer `ItemIdentifier.opaqueLogPrefix` directly
+/// wherever an already-parsed identifier is in scope; this exists only to
+/// avoid a bare, unredacted `rawValue` reaching `privacy: .public` (a `.path`
+/// identifier's raw string embeds a human-readable file/folder name — see
+/// `ItemIdentifier.opaqueLogPrefix`'s doc). On a parse failure this returns
+/// the fixed placeholder `"<unparseable>"` and does NOT itself log an error —
+/// some call sites (e.g. one that returns early without ever calling
+/// `parseOfemItemIdentifier` on this same raw string) never surface the
+/// failure elsewhere either. That's an accepted trade-off: this helper feeds
+/// a debug/info log line, not the operation's correctness path, which still
+/// runs its own parse-and-fail handling where it matters.
+func opaqueLogIdentifier(_ rawIdentifier: String) -> String {
+    (try? parseOfemItemIdentifier(rawIdentifier))?.opaqueLogPrefix ?? "<unparseable>"
+}
+
 // MARK: - Sync anchor encoding/decoding
 
 /// Encodes an Int64 nanosecond timestamp as an 8-byte big-endian anchor token.
@@ -133,6 +151,14 @@ func decodeRecords(
     logPrefix: String,
     log: Logger
 ) -> [OfemFPEItem] {
+    /// Redacted per-record log identifier: keeps the workspace/item GUIDs
+    /// (safe) while dropping the path segment (a human-readable filename).
+    func opaqueLogID(for record: MetadataRecord) -> String {
+        ItemIdentifier.path(
+            workspaceID: record.workspaceID, itemID: record.itemID, path: record.path
+        ).opaqueLogPrefix
+    }
+
     var items: [OfemFPEItem] = []
     items.reserveCapacity(records.count)
     for record in records {
@@ -143,14 +169,14 @@ func decodeRecords(
             // __FILEPROVIDER_BAD_ITEM_MISSING_FILENAME__ → SIGABRT.
             guard !item.filename.isEmpty else {
                 log.error(
-                    "\(logPrefix, privacy: .public): skipping empty-filename row (path=\(record.path, privacy: .public))"
+                    "\(logPrefix, privacy: .public): skipping empty-filename row (id=\(opaqueLogID(for: record), privacy: .public))"
                 )
                 continue
             }
             items.append(item)
         } catch {
             log.error(
-                "\(logPrefix, privacy: .public): skipping un-decodable record (path=\(record.path, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+                "\(logPrefix, privacy: .public): skipping un-decodable record (id=\(opaqueLogID(for: record), privacy: .public)): \(error.localizedDescription, privacy: .public)"
             )
         }
     }

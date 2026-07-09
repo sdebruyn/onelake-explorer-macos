@@ -40,7 +40,11 @@ public final class CacheReader: Sendable {
                     .filter(MetadataRecord.Columns.path == key.path)
                     .fetchOne(db)
                 else {
-                    throw CacheError.notFound("\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)")
+                    // Redacted at the throw site: `CacheError` is `LocalizedError`
+                    // AND directly interpolatable, so any raw path embedded here
+                    // reaches every `.public` log of this error, at any call site,
+                    // forever — not just the ones we've grepped for today.
+                    throw CacheError.notFound(key.opaqueLogPrefix)
                 }
                 return row
             }

@@ -60,15 +60,22 @@ struct CacheStoreCaseSensitivityTests {
 
         try await store.delete(key: key("Reports"))
 
-        // "Reports" subtree is gone.
-        await #expect(throws: CacheError.notFound("\(alias)/\(ws)/\(item)/Reports")) {
+        // "Reports" subtree is gone. The thrown error's payload is redacted
+        // (`CacheKey.opaqueLogPrefix` drops the path) — that alone can't
+        // distinguish "Reports" from "reports" (both produce the identical
+        // "a/w/i/..." string), so it is NOT the discriminator here. The real
+        // proof that the delete didn't cross-match is the surviving-sibling
+        // fetch below: if case-sensitivity regressed and "reports" were
+        // wrongly swept up too, that fetch would throw and fail the test.
+        await #expect(throws: CacheError.notFound(key("Reports").opaqueLogPrefix)) {
             try await store.fetch(key: key("Reports"))
         }
-        await #expect(throws: CacheError.notFound("\(alias)/\(ws)/\(item)/Reports/a.txt")) {
+        await #expect(throws: CacheError.notFound(key("Reports/a.txt").opaqueLogPrefix)) {
             try await store.fetch(key: key("Reports/a.txt"))
         }
 
-        // "reports" (differing only in case) must survive untouched.
+        // "reports" (differing only in case) must survive untouched — this is
+        // the actual cross-match discriminator (see comment above).
         let reportsDir = try await store.fetch(key: key("reports"))
         #expect(reportsDir.path == "reports")
         let reportsFile = try await store.fetch(key: key("reports/b.txt"))
@@ -85,7 +92,10 @@ struct CacheStoreCaseSensitivityTests {
 
         try await store.batchDelete([key("Reports")], recordTombstones: false)
 
-        await #expect(throws: CacheError.notFound("\(alias)/\(ws)/\(item)/Reports/a.txt")) {
+        // As in `deleteDoesNotCrossMatchCaseSibling`: the redacted payload
+        // can't distinguish the siblings, so the surviving-sibling fetch
+        // below is the real cross-match discriminator, not this assertion.
+        await #expect(throws: CacheError.notFound(key("Reports/a.txt").opaqueLogPrefix)) {
             try await store.fetch(key: key("Reports/a.txt"))
         }
         let reportsFile = try await store.fetch(key: key("reports/b.txt"))

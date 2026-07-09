@@ -493,7 +493,8 @@ public actor CacheStore {
             return db.changesCount
         }
         if affected == 0 {
-            throw CacheError.notFound("\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)")
+            // Redacted at the throw site — see `CacheKey.opaqueLogPrefix`'s doc.
+            throw CacheError.notFound(key.opaqueLogPrefix)
         }
     }
 
@@ -1030,9 +1031,8 @@ public actor CacheStore {
             // The blob was written to disk but no metadata row exists — surface
             // the error so the caller can upsert the row first. The orphaned
             // blob will be reclaimed by the next eviction pass or init sweep.
-            throw CacheError.notFound(
-                "\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)"
-            )
+            // Redacted at the throw site — see `CacheKey.opaqueLogPrefix`'s doc.
+            throw CacheError.notFound(key.opaqueLogPrefix)
         }
 
         // Enforce the byte budget after every successful write. Each pass
@@ -1066,7 +1066,8 @@ public actor CacheStore {
         try validateKey(key)
         let record = try await fetch(key: key)
         guard !record.blobSHA256.isEmpty else {
-            throw CacheError.notFound("blob for \(key.path)")
+            // Redacted at the throw site — see `CacheKey.opaqueLogPrefix`'s doc.
+            throw CacheError.notFound("blob for \(key.opaqueLogPrefix)")
         }
         // Load the blob file before touching so that a concurrent delete between
         // fetch and load surfaces as a notFound from blobs.load — the cleaner path.
@@ -1076,7 +1077,8 @@ public actor CacheStore {
         } catch CacheError.notFound {
             // File gone from disk — clear the dangling link so blobBytes() is truthful.
             try await clearBlobLink(key: key)
-            throw CacheError.notFound("blob for \(key.path)")
+            // Redacted at the throw site — see `CacheKey.opaqueLogPrefix`'s doc.
+            throw CacheError.notFound("blob for \(key.opaqueLogPrefix)")
         }
         // Touch last_accessed only after a successful load.
         // If the row was concurrently deleted, touch throws notFound — that is
@@ -1173,16 +1175,22 @@ public actor CacheStore {
     /// — should use this instead of re-fetching via `handoffBlob(key:to:)`.
     @discardableResult
     public func handoffBlob(record: MetadataRecord, to destURL: URL) async throws -> Bool {
-        guard !record.blobSHA256.isEmpty else {
-            throw CacheError.notFound("blob for \(record.path)")
-        }
-        guard let srcURL = blobs.fileURL(sha256: record.blobSHA256) else {
-            throw CacheError.notFound("blob file for \(record.blobSHA256)")
-        }
         let key = CacheKey(
             accountAlias: record.accountAlias, workspaceID: record.workspaceID,
             itemID: record.itemID, path: record.path
         )
+        // Redacted at the throw site itself, not just where it's logged:
+        // `CacheError` IS `LocalizedError` (`errorDescription` echoes the raw
+        // associated string), so a raw path in the payload would leak through
+        // `.localizedDescription` at every `.public`-tagged call site that
+        // logs this error — not only the one below. See
+        // `CacheKey.opaqueLogPrefix`'s doc.
+        guard !record.blobSHA256.isEmpty else {
+            throw CacheError.notFound("blob for \(key.opaqueLogPrefix)")
+        }
+        guard let srcURL = blobs.fileURL(sha256: record.blobSHA256) else {
+            throw CacheError.notFound("blob file for \(record.blobSHA256)")
+        }
 
         // Attempt hard link first (zero-copy, same-volume).
         do {
@@ -1193,7 +1201,7 @@ public actor CacheStore {
         } catch {
             // Fall through to copy fallback for cross-volume or permission errors.
             Self.log.debug(
-                "CacheStore: hardlink fallback for \(key.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                "CacheStore: hardlink fallback for \(key.opaqueLogPrefix, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
         }
 
@@ -1236,9 +1244,8 @@ public actor CacheStore {
             return db.changesCount
         }
         if affected == 0 {
-            throw CacheError.notFound(
-                "\(key.accountAlias)/\(key.workspaceID)/\(key.itemID)/\(key.path)"
-            )
+            // Redacted at the throw site — see `CacheKey.opaqueLogPrefix`'s doc.
+            throw CacheError.notFound(key.opaqueLogPrefix)
         }
         if maxBlobBytes > 0 {
             _ = try await evictToLimit()

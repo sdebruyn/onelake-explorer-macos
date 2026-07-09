@@ -20,6 +20,13 @@
 // and either performs the remote move or explicitly returns those fields as
 // still-pending (.featureUnsupported) so the system does not believe the
 // change was applied when it was not.
+//
+// Logging: a `.path` ItemIdentifier's `identifierString` and an
+// NSFileProviderItemIdentifier's raw string both embed a human-readable
+// file/folder name — never interpolate either with `privacy: .public`.
+// Use `ItemIdentifier.opaqueLogPrefix` (already-parsed identifier) or
+// `opaqueLogIdentifier(_:)` (raw string, not yet parsed) instead; a bare
+// filename value goes out with `privacy: .private`. See docs/telemetry.md.
 
 @preconcurrency import FileProvider
 import Foundation
@@ -225,7 +232,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         let aliasCopy = alias
         return runFPEOperation(
-            logContext: "item(for:) failed for \(aliasCopy)/\(ofemID.identifierString)",
+            logContext: "item(for:) failed for \(aliasCopy)/\(ofemID.opaqueLogPrefix)",
             work: { host, _ in
                 let engine = try await host.engine()
                 return OfemFPEItem(from: try await ItemResolution.resolveItem(
@@ -279,7 +286,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         let aliasCopy = alias
         return runFPEOperation(
-            logContext: "fetchContents failed for \(aliasCopy)/\(ofemID.identifierString)",
+            logContext: "fetchContents failed for \(aliasCopy)/\(ofemID.opaqueLogPrefix)",
             work: { host, progress -> (URL, OfemFPEItem) in
                 let engine = try await host.engine()
                 // Download (or serve from cache) first, then build the
@@ -299,7 +306,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 do {
                     domainItem = OfemFPEItem(from: try DomainItem.from(record: record))
                 } catch {
-                    throw FPError.invalidRecord("DomainItem.from failed for \(path): \(error)")
+                    throw FPError.invalidRecord("DomainItem.from failed for \(ofemID.opaqueLogPrefix): \(error)")
                 }
 
                 if let size = domainItem.documentSize?.int64Value, size > 0 {
@@ -369,7 +376,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let optionsCopy = options
 
         FileProviderExtension.log.debug(
-            "createItem \(filename, privacy: .public) isDir=\(isDir, privacy: .public) parent=\(parentID.identifierString, privacy: .public) fields=\(fieldsCopy.rawValue, privacy: .public) options=\(optionsCopy.rawValue, privacy: .public)"
+            "createItem \(filename, privacy: .private) isDir=\(isDir, privacy: .public) parent=\(parentID.opaqueLogPrefix, privacy: .public) fields=\(fieldsCopy.rawValue, privacy: .public) options=\(optionsCopy.rawValue, privacy: .public)"
         )
 
         return runFPEOperation(
@@ -418,7 +425,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let wantsReparent = changedFields.contains(.parentItemIdentifier)
         if wantsReparent {
             FileProviderExtension.log.debug(
-                "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — reparent not supported, leaving pending (fields=\(changedFields.rawValue, privacy: .public))"
+                "modifyItem \(opaqueLogIdentifier(item.itemIdentifier.rawValue), privacy: .public) — reparent not supported, leaving pending (fields=\(changedFields.rawValue, privacy: .public))"
             )
             var pendingFields: NSFileProviderItemFields = [.parentItemIdentifier]
             if wantsRename { pendingFields.insert(.filename) }
@@ -463,7 +470,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             let nonRenameFields = changedFields.subtracting([.filename])
             let aliasCopy = alias
             FileProviderExtension.log.debug(
-                "modifyItem \(ofemID.identifierString, privacy: .public) — rename to \(newFilename, privacy: .public)"
+                "modifyItem \(ofemID.opaqueLogPrefix, privacy: .public) — rename to \(newFilename, privacy: .private)"
             )
 
             // A rename failure does NOT surface as an error result: it leaves ALL
@@ -524,7 +531,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         // existing item with a fresh version token.
         if !changedFields.contains(.contents) {
             FileProviderExtension.log.debug(
-                "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — metadata-only (fields=\(changedFields.rawValue, privacy: .public)), acknowledging"
+                "modifyItem \(opaqueLogIdentifier(item.itemIdentifier.rawValue), privacy: .public) — metadata-only (fields=\(changedFields.rawValue, privacy: .public)), acknowledging"
             )
             let ofemID: ItemIdentifier
             do {
@@ -557,7 +564,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             // changedFields includes .contents but the URL is nil — treat as
             // metadata-only (nothing to upload).
             FileProviderExtension.log.debug(
-                "modifyItem \(item.itemIdentifier.rawValue, privacy: .public) — .contents set but URL nil, acknowledging"
+                "modifyItem \(opaqueLogIdentifier(item.itemIdentifier.rawValue), privacy: .public) — .contents set but URL nil, acknowledging"
             )
             completionHandler(item, [], false, nil)
             return Progress(totalUnitCount: 0)
@@ -579,7 +586,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let aliasCopy = alias
 
         FileProviderExtension.log.debug(
-            "modifyItem \(ofemID.identifierString, privacy: .public)"
+            "modifyItem \(ofemID.opaqueLogPrefix, privacy: .public)"
         )
 
         return runFPEOperation(
@@ -637,7 +644,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let aliasCopy = alias
 
         FileProviderExtension.log.debug(
-            "deleteItem \(ofemID.identifierString, privacy: .public)"
+            "deleteItem \(ofemID.opaqueLogPrefix, privacy: .public)"
         )
 
         return runFPEOperation(
@@ -818,7 +825,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             return OfemWorkingSetEnumerator(alias: alias, engineHost: engineHost)
         }
         FileProviderExtension.log.debug(
-            "enumerator(for:) for \(containerItemIdentifier.rawValue, privacy: .public)"
+            "enumerator(for:) for \(ofemID.opaqueLogPrefix, privacy: .public)"
         )
 
         return OfemFPEEnumerator(

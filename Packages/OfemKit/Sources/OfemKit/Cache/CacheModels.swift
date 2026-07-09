@@ -25,6 +25,21 @@ public struct CacheKey: Hashable, Sendable {
         self.itemID = itemID
         self.path = path
     }
+
+    // MARK: - Log-safe identifier prefix
+
+    /// A log-safe (redacted) representation of this key: keeps the account
+    /// alias (already treated as safe for logging throughout this codebase)
+    /// and the workspace/item GUIDs, but drops `path` — a human-readable
+    /// file/folder path that must never appear unredacted in the system log
+    /// (see `docs/telemetry.md`). Mirrors `ItemIdentifier.opaqueLogPrefix`;
+    /// use this at every `CacheError` throw site (and any other error/log
+    /// construction) that would otherwise embed a raw `CacheKey.path`, so a
+    /// `.public`-tagged log of the resulting error can never leak a path
+    /// regardless of which call site logs it.
+    public var opaqueLogPrefix: String {
+        "\(accountAlias)/\(workspaceID)/\(itemID)/..."
+    }
 }
 
 // MARK: - MetadataRecord
