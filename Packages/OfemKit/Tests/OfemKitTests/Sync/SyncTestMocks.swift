@@ -117,10 +117,22 @@ final class MockOneLakeClient: OneLakeClientProtocol, @unchecked Sendable {
     func read(
         alias: String, workspaceGUID: String, itemGUID: String,
         path: String, range: Range<Int64>?, ifMatch: String,
-        destination: FileHandle
+        destination: FileHandle,
+        onProgress: (@Sendable (Int64, Int64) -> Void)?
     ) async throws -> PathProperties {
         lock.withLock { readCalls.append(ReadCall(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, path: path, range: range, ifMatch: ifMatch)) }
         let (data, props) = try dequeue(&readResults, name: "read")
+        // Simulate incremental delivery in two ticks (#461) so tests that plumb
+        // onProgress through SyncEngine can assert on it without needing a real
+        // chunked HTTP response — mirrors what OneLakeClient's real
+        // downloadProgress handler would report for this request's own bytes.
+        if let onProgress, !data.isEmpty {
+            let mid = Int64(data.count / 2)
+            if mid > 0 {
+                onProgress(mid, Int64(data.count))
+            }
+            onProgress(Int64(data.count), Int64(data.count))
+        }
         try destination.write(contentsOf: data)
         return props
     }
@@ -250,7 +262,7 @@ final class BlockingMockOneLakeClient: OneLakeClientProtocol, @unchecked Sendabl
         )
     }
 
-    func read(alias: String, workspaceGUID: String, itemGUID: String, path: String, range: Range<Int64>?, ifMatch: String, destination: FileHandle) async throws -> PathProperties {
+    func read(alias: String, workspaceGUID: String, itemGUID: String, path: String, range: Range<Int64>?, ifMatch: String, destination: FileHandle, onProgress _: (@Sendable (Int64, Int64) -> Void)?) async throws -> PathProperties {
         let (data, props) = try await read(alias: alias, workspaceGUID: workspaceGUID, itemGUID: itemGUID, path: path, range: range, ifMatch: ifMatch)
         try destination.write(contentsOf: data)
         return props
@@ -441,7 +453,7 @@ final class BlockingListMockOneLakeClient: OneLakeClientProtocol, @unchecked Sen
         (Data(), PathProperties.make())
     }
 
-    func read(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, range _: Range<Int64>?, ifMatch _: String, destination _: FileHandle) async throws -> PathProperties {
+    func read(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, range _: Range<Int64>?, ifMatch _: String, destination _: FileHandle, onProgress _: (@Sendable (Int64, Int64) -> Void)?) async throws -> PathProperties {
         PathProperties.make()
     }
 

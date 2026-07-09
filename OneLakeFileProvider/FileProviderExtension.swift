@@ -298,7 +298,18 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 // check, blob link) into the single read/write `open()`
                 // already performs.
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
-                let (_, record) = try await engine.sync.openReturningRecord(key: key)
+                // Progress isn't Sendable-checked by the compiler; box it like
+                // `work`/`complete` above so it can be captured by the
+                // @Sendable progress callback, which fires from Alamofire's
+                // delivery queue mid-download, not necessarily main (#461).
+                // Progress itself is documented as safe to mutate off-main.
+                let progressBox = UncheckedSendable(value: progress)
+                let (_, record) = try await engine.sync.openReturningRecord(key: key) { completed, total in
+                    if total > 0 {
+                        progressBox.value.totalUnitCount = total
+                    }
+                    progressBox.value.completedUnitCount = completed
+                }
                 let domainItem: OfemFPEItem
                 do {
                     domainItem = OfemFPEItem(from: try DomainItem.from(record: record))

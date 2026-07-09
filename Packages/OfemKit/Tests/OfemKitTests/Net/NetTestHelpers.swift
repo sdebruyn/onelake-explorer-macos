@@ -29,11 +29,20 @@ final class MockURLProtocol: URLProtocol {
         let status: Int
         let body: Data
         let headers: [String: String]
+        /// When non-nil, `startLoading()` delivers these chunks via separate
+        /// `didLoad:` calls instead of `body` in one shot (#461) — each
+        /// chunk lands as its own `URLSessionDownloadDelegate.didWriteData`
+        /// tick, so a `DownloadRequest.downloadProgress` handler observes one
+        /// progress call per chunk rather than a single all-at-once callback.
+        /// `body` should still equal the concatenation of `bodyChunks` for
+        /// callers that also assert on the full response.
+        let bodyChunks: [Data]?
 
-        init(status: Int, body: Data = Data(), headers: [String: String] = [:]) {
+        init(status: Int, body: Data = Data(), headers: [String: String] = [:], bodyChunks: [Data]? = nil) {
             self.status = status
             self.body = body
             self.headers = headers
+            self.bodyChunks = bodyChunks
         }
 
         init(status: Int, body: String, headers: [String: String] = [:]) {
@@ -130,7 +139,13 @@ final class MockURLProtocol: URLProtocol {
             headerFields: stub.headers
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: stub.body)
+        if let chunks = stub.bodyChunks, !chunks.isEmpty {
+            for chunk in chunks {
+                client?.urlProtocol(self, didLoad: chunk)
+            }
+        } else {
+            client?.urlProtocol(self, didLoad: stub.body)
+        }
         client?.urlProtocolDidFinishLoading(self)
     }
 

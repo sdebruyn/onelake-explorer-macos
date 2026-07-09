@@ -43,6 +43,12 @@ public protocol OneLakeClientProtocol: Sendable {
     /// Downloads a file or byte range, writing body bytes into `destination`.
     ///
     /// Streaming overload: avoids holding the full response body in memory.
+    ///
+    /// - Parameter onProgress: Optional callback invoked as the download body
+    ///   arrives, with the bytes written so far for THIS request and the
+    ///   Alamofire-reported total for THIS request (which, on a ranged/resumed
+    ///   request, is only the remaining range — not the full file size; see
+    ///   ``SyncEngine`` for how callers reconstruct the absolute total).
     func read(
         alias: String,
         workspaceGUID: String,
@@ -50,7 +56,8 @@ public protocol OneLakeClientProtocol: Sendable {
         path: String,
         range: Range<Int64>?,
         ifMatch: String,
-        destination: FileHandle
+        destination: FileHandle,
+        onProgress: (@Sendable (Int64, Int64) -> Void)?
     ) async throws -> PathProperties
 
     /// Uploads content from an in-memory buffer using the DFS create + append

@@ -2446,4 +2446,83 @@ struct SyncEngineTests {
         #expect(record.contentLength == 505,
                 "row.contentLength must come from totalLength, not the overflowing rangeStart + Content-Length sum")
     }
+
+    // MARK: - #461: resumed download progress accounts for plan.rangeStart
+
+    /// Records `(completed, total)` progress ticks under an `NSLock` —
+    /// `onProgress` is `@Sendable` and, in production, is invoked from
+    /// Alamofire's own delivery queue rather than the calling task (mirrors
+    /// `ResponseSizeGuard` in `HTTPRequestCore.swift`).
+    private final class ProgressCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _ticks: [(completed: Int64, total: Int64)] = []
+
+        func record(_ completed: Int64, _ total: Int64) {
+            lock.withLock { _ticks.append((completed, total)) }
+        }
+
+        var ticks: [(completed: Int64, total: Int64)] {
+            lock.withLock { _ticks }
+        }
+    }
+
+    /// A resumed download's `onProgress` callback must report an ABSOLUTE
+    /// completed byte count — `plan.rangeStart` (the local resume offset)
+    /// plus the bytes delivered by THIS network attempt — not bytes relative
+    /// to this request alone, which would regress the FPE's progress bar
+    /// back down on every resume instead of continuing from where the prior
+    /// attempt left off (#461).
+    @Test("open() with onProgress reports absolute completed bytes on a resumed download, floored at plan.rangeStart")
+    func resumedDownloadProgressAccountsForRangeStart() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+
+        let existing = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: Self.path, parentPath: "Files", name: "data.csv", isDir: false,
+            contentLength: 505, etag: "etag-v1"
+        )
+        try await store.upsert(existing)
+
+        // Same partial spill + etag sidecar setup as the C6/C8 resume tests
+        // above: a 500-byte spill file gives PartialManager.rangeStart(for:)
+        // a hasPartial == true resume with rangeStart == 500.
+        let scratchDir = store.root.appending(path: "scratch", directoryHint: .isDirectory)
+        let partialsDir = scratchDir.appendingPathComponent("\(ProcessInfo.processInfo.processIdentifier)")
+        try FileManager.default.createDirectory(at: partialsDir, withIntermediateDirectories: true)
+        let shadow = PartialManager(scratchDir: partialsDir)
+        try Data(repeating: 0, count: 500).write(to: shadow.partialURL(for: key))
+        try shadow.storeEtag("etag-v1", for: key)
+
+        // The remaining 5 bytes of the file. MockOneLakeClient.read(destination:)
+        // reports progress relative to THESE 5 bytes only (a midpoint tick and
+        // a final tick) — exactly like a real ranged GET's Content-Length only
+        // covers the returned range, not the full file.
+        let tailBody = Data("hello".utf8)
+        let props = PathProperties(
+            isDirectory: false, contentLength: 5, eTag: "etag-v1",
+            lastModified: Date(), contentType: "text/csv", totalLength: 505
+        )
+        ol.readResults.append(.success((tailBody, props)))
+
+        let collector = ProgressCollector()
+        _ = try await engine.openReturningRecord(key: key) { completed, total in
+            collector.record(completed, total)
+        }
+
+        let ticks = collector.ticks
+        #expect(ticks.count == 2, "expected the mock's midpoint + final ticks, got \(ticks)")
+        for tick in ticks {
+            #expect(tick.completed >= 500,
+                    "resumed download's completed bytes must be floored at rangeStart (500), got \(tick.completed)")
+        }
+        #expect(ticks.last?.completed == 505,
+                "final tick must reach rangeStart (500) + this request's bytes (5)")
+        // totalHint is seeded from the pre-download cached row's
+        // contentLength (505 here), not recomputed per tick.
+        #expect(ticks.allSatisfy { $0.total == 505 })
+    }
 }

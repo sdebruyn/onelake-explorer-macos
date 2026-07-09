@@ -1206,8 +1206,8 @@ public actor SyncEngine {
     /// any caller that only needs the file (matching `blobURL(key:)` /
     /// `handoffBlob(key:to:)` below) and is exercised extensively by the
     /// `open()` test suite.
-    public func open(key: CacheKey) async throws -> URL {
-        try await performOpen(key: key).url
+    public func open(key: CacheKey, onProgress: (@Sendable (Int64, Int64) -> Void)? = nil) async throws -> URL {
+        try await performOpen(key: key, onProgress: onProgress).url
     }
 
     /// Like ``open(key:)`` but also returns the ``MetadataRecord`` describing
@@ -1220,11 +1220,25 @@ public actor SyncEngine {
     /// re-download the next cycle. Re-fetching after `open()` instead would
     /// fix the staleness but re-read the row a second time; returning the
     /// record `open()` already has in hand needs neither.
-    public func openReturningRecord(key: CacheKey) async throws -> (url: URL, record: MetadataRecord) {
-        try await performOpen(key: key)
+    ///
+    /// - Parameter onProgress: Optional incremental download-progress callback
+    ///   (#461), forwarded to a fresh download only — a cache-hit / offline-stale
+    ///   / freshness-revalidated return below never calls it, since the FPE
+    ///   already reports completion for those synchronously once this returns.
+    ///   When multiple callers coalesce onto the same in-flight download (see
+    ///   below), only the FIRST caller's `onProgress` is wired in; late joiners
+    ///   still get the correct final bytes, just no incremental ticks.
+    public func openReturningRecord(
+        key: CacheKey,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
+    ) async throws -> (url: URL, record: MetadataRecord) {
+        try await performOpen(key: key, onProgress: onProgress)
     }
 
-    private func performOpen(key: CacheKey) async throws -> OpenResult {
+    private func performOpen(
+        key: CacheKey,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
+    ) async throws -> OpenResult {
         let start = Date()
         try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)
 
@@ -1346,7 +1360,7 @@ public actor SyncEngine {
                 // in the same actor turn as task completion — no ordering gap.
                 self.cleanupInflight(keyString: keyString, generation: gen)
             }
-            return try await self.performDownload(key: key, start: start, cached: cached)
+            return try await self.performDownload(key: key, start: start, cached: cached, onProgress: onProgress)
         }
         inFlightDownloads[keyString] = task
 
@@ -1802,7 +1816,12 @@ public actor SyncEngine {
     /// (using ``ResumePlan`` for clean state representation), and returns a
     /// file URL alongside the metadata record just written for it. All
     /// blocking filesystem I/O runs off the actor via `Task.detached` (sync-14).
-    private func performDownload(key: CacheKey, start: Date, cached: MetadataRecord?) async throws -> OpenResult {
+    private func performDownload(
+        key: CacheKey,
+        start: Date,
+        cached: MetadataRecord?,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
+    ) async throws -> OpenResult {
         try await acquireDownloadSlot(alias: key.accountAlias)
         defer { releaseDownloadSlot(alias: key.accountAlias) }
 
@@ -1826,9 +1845,17 @@ public actor SyncEngine {
             }
         }.value
 
+        // Best-effort seed for the progress `total` while the download is in
+        // flight: the size from the last successful sync, when known (#461).
+        // This is deliberately NOT the authoritative `expectedTotal` computed
+        // below from `props` — that value needs the full response headers,
+        // which are only available once performNetworkRead returns.
+        let totalHint = cached?.contentLength ?? 0
+
         // Perform the download, handling 412 on the resume path.
         let props = try await performNetworkRead(
-            key: key, spillURL: spillURL, plan: plan, start: start
+            key: key, spillURL: spillURL, plan: plan, start: start,
+            totalHint: totalHint, onProgress: onProgress
         )
         await offlineTracker.observe(nil)
 
@@ -1986,12 +2013,39 @@ public actor SyncEngine {
     ///
     /// All blocking FileHandle operations run off the actor via `Task.detached`
     /// (sync-14).
+    ///
+    /// - Parameters:
+    ///   - totalHint: Best-effort expected file size to report as the progress
+    ///     `total`, sourced by ``performDownload(key:start:cached:onProgress:)``
+    ///     from the cached row (#461) — deliberately NOT recomputed per network
+    ///     attempt, since the authoritative Content-Range-derived total is only
+    ///     known once the whole response has been read (see `expectedTotal` in
+    ///     `performDownload`).
+    ///   - onProgress: Forwarded to `onelake.read(...)`, wrapped per attempt so
+    ///     the `completed` byte count reported to the caller is ABSOLUTE (i.e.
+    ///     accounts for `rangeStart`) rather than relative to this one request.
+    ///     The 412-retry-as-full-restart branch below rewraps with a
+    ///     `rangeStart` of 0 — that attempt is a fresh, unranged GET, so the
+    ///     original resume offset no longer applies.
     private func performNetworkRead(
         key: CacheKey,
         spillURL: URL,
         plan: ResumePlan,
-        start: Date
+        start: Date,
+        totalHint: Int64 = 0,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
     ) async throws -> PathProperties {
+        /// Wraps onProgress so the callback receives an ABSOLUTE completed byte
+        /// count (rangeStart + bytes written by this attempt) and the fixed
+        /// totalHint, rather than Alamofire's own per-attempt total (which on a
+        /// ranged request is only the remaining bytes, not the full file — #461).
+        func absoluteProgress(rangeStart: Int64) -> (@Sendable (Int64, Int64) -> Void)? {
+            guard let onProgress else { return nil }
+            return { @Sendable completedInRequest, _ in
+                onProgress(rangeStart + completedInRequest, totalHint)
+            }
+        }
+
         // Open the spill file, seek to the resume offset, and hold the handle
         // open for the streaming read. Single FD open per attempt — the handle
         // is passed directly to onelake.read() and closed exactly once on all
@@ -2020,7 +2074,8 @@ public actor SyncEngine {
                 path: key.path,
                 range: plan.range,
                 ifMatch: plan.ifMatch,
-                destination: spillHandle
+                destination: spillHandle,
+                onProgress: absoluteProgress(rangeStart: plan.rangeStart)
             )
             try? spillHandle.close()
             return props
@@ -2057,7 +2112,10 @@ public actor SyncEngine {
                         path: key.path,
                         range: nil,
                         ifMatch: "",
-                        destination: freshHandle
+                        destination: freshHandle,
+                        // Full restart from byte 0 — the original rangeStart no
+                        // longer applies (#461).
+                        onProgress: absoluteProgress(rangeStart: 0)
                     )
                     try? freshHandle.close()
                     return props
