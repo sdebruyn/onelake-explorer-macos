@@ -1115,8 +1115,17 @@ public actor CacheStore {
     /// — should use this instead of re-fetching via `handoffBlob(key:to:)`.
     @discardableResult
     public func handoffBlob(record: MetadataRecord, to destURL: URL) async throws -> Bool {
+        // Redacted at the throw site itself, same as ItemResolution's `.path`
+        // case: keeps the ws/item GUIDs for correlation, drops the
+        // human-readable path. `CacheError` isn't `LocalizedError` today (so
+        // `.localizedDescription` doesn't surface the raw associated string),
+        // but it IS `CustomStringConvertible`-reachable via a bare `\(error)`
+        // interpolation — don't rely on that not happening.
+        let logID = ItemIdentifier.path(
+            workspaceID: record.workspaceID, itemID: record.itemID, path: record.path
+        ).opaqueLogPrefix
         guard !record.blobSHA256.isEmpty else {
-            throw CacheError.notFound("blob for \(record.path)")
+            throw CacheError.notFound("blob for \(logID)")
         }
         guard let srcURL = blobs.fileURL(sha256: record.blobSHA256) else {
             throw CacheError.notFound("blob file for \(record.blobSHA256)")
@@ -1135,7 +1144,7 @@ public actor CacheStore {
         } catch {
             // Fall through to copy fallback for cross-volume or permission errors.
             Self.log.debug(
-                "CacheStore: hardlink fallback for \(key.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                "CacheStore: hardlink fallback for \(logID, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
         }
 

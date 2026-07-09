@@ -100,17 +100,22 @@ public enum ItemResolution {
             let key = CacheKey(accountAlias: alias, workspaceID: workspaceID, itemID: itemID, path: path)
             let parent = Enumerator.parentPath(path)
             let parentKey = CacheKey(accountAlias: alias, workspaceID: workspaceID, itemID: itemID, path: parent)
+            // Redacted at the throw site itself, not just at the log call: `identifier`
+            // IS this `.path` case, so `opaqueLogPrefix` keeps the ws/item GUIDs while
+            // dropping the human-readable path — matching every other case in this
+            // function, which only ever embeds GUIDs into its error messages.
+            let logID = identifier.opaqueLogPrefix
 
             guard let record = try await cachedRecordOrEnumerate(
-                key: key, parentKey: parentKey, sync: sync, cache: cache, context: path
+                key: key, parentKey: parentKey, sync: sync, cache: cache, context: logID
             ) else {
                 // Still absent after enumeration → definitively gone.
-                throw FPError.noSuchItem(path)
+                throw FPError.noSuchItem(logID)
             }
             do {
                 return try DomainItem.from(record: record)
             } catch {
-                throw FPError.invalidRecord("DomainItem.from failed for \(path): \(error)")
+                throw FPError.invalidRecord("DomainItem.from failed for \(logID): \(error)")
             }
         }
     }
@@ -172,7 +177,9 @@ public enum ItemResolution {
             let parentKey = CacheKey(accountAlias: alias, workspaceID: wsID, itemID: itemID, path: parentPathStr)
             if let record = try await cachedRecordOrEnumerate(
                 key: key, parentKey: parentKey, sync: sync, cache: cache,
-                context: "createItem mayAlreadyExist \(filename)",
+                // Redacted the same way as resolveItem's `.path` case: `context`
+                // ends up embedded in FPError messages on the cache-error path.
+                context: "createItem mayAlreadyExist \(newIdentifier.opaqueLogPrefix)",
                 isValid: { (try? DomainItem.from(record: $0)) != nil }
             ), let di = try? DomainItem.from(record: record) {
                 return di
@@ -212,7 +219,7 @@ public enum ItemResolution {
                 // A non-notFound cache error is unexpected but not fatal here;
                 // log and fall through to the synthetic fallback.
                 itemResolutionLog.warning(
-                    "createItem: cache fetch error for \(filename, privacy: .public): \(cacheError.localizedDescription, privacy: .public)"
+                    "createItem: cache fetch error for \(filename, privacy: .private): \(cacheError.localizedDescription, privacy: .public)"
                 )
                 break
             }
@@ -226,7 +233,7 @@ public enum ItemResolution {
             }
         case let .failure(other):
             itemResolutionLog.warning(
-                "createItem: unexpected fetch error for \(filename, privacy: .public): \(other.localizedDescription, privacy: .public)"
+                "createItem: unexpected fetch error for \(filename, privacy: .private): \(other.localizedDescription, privacy: .public)"
             )
         }
 
@@ -234,7 +241,7 @@ public enum ItemResolution {
         // on a backend that doesn't enumerate immediately), and the version
         // mismatch will resolve on the next full enumeration of the parent.
         itemResolutionLog.warning(
-            "createItem: using synthetic fallback for \(filename, privacy: .public) parent=\(parent.identifierString, privacy: .public)"
+            "createItem: using synthetic fallback for \(filename, privacy: .private) parent=\(parent.opaqueLogPrefix, privacy: .public)"
         )
         // Carry the parent's item type so computeCapabilities returns the correct
         // caps immediately — without it, a file created under Lakehouse Files/
