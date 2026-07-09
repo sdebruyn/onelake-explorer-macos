@@ -68,7 +68,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
 
     // MARK: - OfemFPEEnumerator: engine error propagates to observer
 
-    func testEnumeratorEngineErrorPropagatesAsError() async throws {
+    func testEnumeratorEngineErrorPropagatesAsError() async {
         let host = MockEngineHost(alias: "err-test")
         host.engineResult = .failure(NSFileProviderError(.serverUnreachable))
 
@@ -81,13 +81,9 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         )
 
         let observer = SpyEnumerationObserver()
+        let finished = expectFinish(observer)
         enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage.initialPageSortedByName as NSFileProviderPage)
-
-        // Wait for the async Task to finish.
-        for _ in 0 ..< 50 {
-            if observer.finishEnumeratingWithErrorCalled || observer.finishEnumeratingCalled { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await fulfillment(of: [finished], timeout: 5.0)
 
         XCTAssertTrue(observer.finishEnumeratingWithErrorCalled,
                       "Observer should receive finishEnumeratingWithError when the engine is unavailable")
@@ -119,13 +115,9 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         )
 
         let changeObserver = SpyChangeObserver()
+        let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-
-        // Wait up to 1 second for the async Task to complete.
-        for _ in 0 ..< 50 {
-            if changeObserver.finished || changeObserver.finishedWithError { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await fulfillment(of: [finished], timeout: 5.0)
 
         XCTAssertTrue(changeObserver.finishedWithError,
                       "Engine failure must propagate as finishEnumeratingWithError")
@@ -235,12 +227,9 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         )
 
         let changeObserver = SpyChangeObserver()
+        let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-
-        for _ in 0 ..< 50 {
-            if changeObserver.finished || changeObserver.finishedWithError { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await fulfillment(of: [finished], timeout: 5.0)
 
         XCTAssertTrue(changeObserver.finishedWithError,
                       "Observer should receive an error on token-acquisition failure")
@@ -267,12 +256,9 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         )
 
         let changeObserver = SpyChangeObserver()
+        let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-
-        for _ in 0 ..< 50 {
-            if changeObserver.finished || changeObserver.finishedWithError { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await fulfillment(of: [finished], timeout: 5.0)
 
         XCTAssertTrue(changeObserver.finishedWithError)
         XCTAssertFalse(host.markedNeedsSignIn,
@@ -283,7 +269,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
 
     // MARK: - enumerateChanges: notAuthenticated error sets markNeedsSignIn (OfemWorkingSetEnumerator)
 
-    func testWorkingSetEnumerateChanges_notAuthenticatedError_setsMarkNeedsSignIn() async throws {
+    func testWorkingSetEnumerateChanges_notAuthenticatedError_setsMarkNeedsSignIn() async {
         // Mirror of the OfemFPEEnumerator test above, but for the working-set
         // enumerator. Token expiry must surface auth failures from both
         // change-observation paths.
@@ -295,12 +281,9 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         let enumerator = OfemWorkingSetEnumerator(alias: "ws-auth-changes-test", engineHost: host)
 
         let changeObserver = SpyChangeObserver()
+        let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-
-        for _ in 0 ..< 50 {
-            if changeObserver.finished || changeObserver.finishedWithError { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await fulfillment(of: [finished], timeout: 5.0)
 
         XCTAssertTrue(changeObserver.finishedWithError,
                       "WorkingSetEnumerator: observer should receive error on token-acquisition failure")
@@ -310,19 +293,16 @@ final class OfemFPEEnumeratorTests: XCTestCase {
 
     // MARK: - enumerateChanges: non-auth error does NOT set markNeedsSignIn (OfemWorkingSetEnumerator)
 
-    func testWorkingSetEnumerateChanges_nonAuthError_doesNotSetMarkNeedsSignIn() async throws {
+    func testWorkingSetEnumerateChanges_nonAuthError_doesNotSetMarkNeedsSignIn() async {
         let host = MockEngineHost(alias: "ws-non-auth-test")
         host.engineResult = .failure(NSFileProviderError(.serverUnreachable))
 
         let enumerator = OfemWorkingSetEnumerator(alias: "ws-non-auth-test", engineHost: host)
 
         let changeObserver = SpyChangeObserver()
+        let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-
-        for _ in 0 ..< 50 {
-            if changeObserver.finished || changeObserver.finishedWithError { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await fulfillment(of: [finished], timeout: 5.0)
 
         XCTAssertTrue(changeObserver.finishedWithError)
         XCTAssertFalse(host.markedNeedsSignIn,
@@ -331,7 +311,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
 
     // MARK: - enumerateItems: notAuthenticated error sets markNeedsSignIn
 
-    func testEnumerateItems_notAuthenticatedError_setsMarkNeedsSignIn() async throws {
+    func testEnumerateItems_notAuthenticatedError_setsMarkNeedsSignIn() async {
         // Confirms the existing enumerateItems path still sets the flag (regression guard).
         let host = MockEngineHost(alias: "items-auth-test")
         host.engineResult = .failure(HTTPClientError.tokenAcquisitionFailed(
@@ -347,12 +327,9 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         )
 
         let observer = SpyEnumerationObserver()
+        let finished = expectFinish(observer)
         enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage.initialPageSortedByName as NSFileProviderPage)
-
-        for _ in 0 ..< 50 {
-            if observer.finishEnumeratingWithErrorCalled || observer.finishEnumeratingCalled { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await fulfillment(of: [finished], timeout: 5.0)
 
         XCTAssertTrue(observer.finishEnumeratingWithErrorCalled)
         XCTAssertTrue(host.markedNeedsSignIn,
@@ -363,7 +340,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
 
     /// The throttle stamp must NOT be set when the refresh fails (stamp-after-success
     /// policy): an engine failure during startup must not consume the 60 s window.
-    func testWorkingSetEnumerateChanges_engineFailure_doesNotStampThrottle() async throws {
+    func testWorkingSetEnumerateChanges_engineFailure_doesNotStampThrottle() async {
         let alias = "throttle-no-stamp-\(UUID().uuidString)"
         // Clear any leftover state from a previous test run.
         OfemWorkingSetEnumerator.clearRefresh(for: alias)
@@ -376,64 +353,95 @@ final class OfemFPEEnumeratorTests: XCTestCase {
                      "Throttle must start unarmed before any call")
 
         let changeObserver = SpyChangeObserver()
+        let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-        for _ in 0 ..< 50 {
-            if changeObserver.finished || changeObserver.finishedWithError { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await fulfillment(of: [finished], timeout: 5.0)
 
         // Engine failed → listWorkspaces never ran → stamp must NOT be set.
         XCTAssertNil(OfemWorkingSetEnumerator.lastRefresh(for: alias),
                      "Stamp must NOT be set when engine() / listWorkspaces fails (stamp-after-success)")
     }
 
-    /// The throttle stamp IS shared across enumerator instances for the same alias.
-    /// A second enumerator vended for the same alias within the window must NOT
-    /// trigger a second refresh attempt.
+    /// The throttle stamp IS shared across enumerator instances for the same
+    /// alias, and correctly scoped PER alias (not a single global stamp).
     ///
-    /// This test uses a direct stamp injection (via recordRefresh) to simulate a
-    /// prior successful refresh on a "previous" enumerator instance, then verifies
-    /// that a freshly-vended enumerator for the same alias honours the window.
-    func testWorkingSetEnumerateChanges_sharedThrottleAcrossInstances() async throws {
+    /// Driving this through a real `enumerateChanges()` call cannot observe
+    /// the suppression itself: `MockEngineHost` has no live `OfemEngine` to
+    /// attach a fake `listWorkspaces` to (see the doc above
+    /// `testWorkingSetEnumerateChanges_refreshAuthError_failsEnumerationAndSignsIn`),
+    /// and `engine()` is called exactly once per `enumerateChanges` call
+    /// regardless of `shouldRefresh` — `shouldRefresh` only gates the INNER
+    /// `engine.sync.listWorkspaces` call on the SAME already-acquired engine,
+    /// so `MockEngineHost.engineCallCount` cannot distinguish a throttled call
+    /// from an unthrottled one. A prior version of this test asserted
+    /// `engineCallCount >= 1`, which holds unconditionally — regardless of
+    /// whether the throttle worked — and so never caught a regression (#457).
+    ///
+    /// What IS genuinely testable without a live engine — and is exactly the
+    /// storage `enumerateChanges`'s `shouldRefresh` reads via
+    /// `Self.lastRefresh` — is the shared, alias-keyed nature of
+    /// `aliasRefreshTimestamps` itself:
+    ///
+    /// 1. A stamp recorded before a "previous" instance existed is visible to
+    ///    a DIFFERENT, freshly-constructed instance for the SAME alias
+    ///    (proves the storage is the static shared bucket the type's doc
+    ///    comment claims, not accidentally per-instance state).
+    /// 2. That same stamp is invisible to an unrelated alias (proves the
+    ///    bucket is keyed per-alias, not a single global stamp that would
+    ///    incorrectly cross-throttle unrelated accounts).
+    /// 3. A subsequent `enumerateChanges` call on the fresh instance, with
+    ///    `engine()` failing non-auth, leaves the pre-armed stamp UNCHANGED —
+    ///    not just "still non-nil" (the earlier, weaker assertion this
+    ///    replaces) but equal to the exact value recorded, proving the
+    ///    failure path never touches it.
+    func testWorkingSetEnumerateChanges_sharedThrottleAcrossInstances() async {
         let alias = "shared-throttle-\(UUID().uuidString)"
-        // Pre-arm the shared throttle as if a previous instance already refreshed.
-        OfemWorkingSetEnumerator.recordRefresh(for: alias, at: ContinuousClock.now)
+        let otherAlias = "shared-throttle-other-\(UUID().uuidString)"
+        OfemWorkingSetEnumerator.clearRefresh(for: alias)
+        OfemWorkingSetEnumerator.clearRefresh(for: otherAlias)
+
+        // Simulate a prior instance's successful refresh — recordRefresh is
+        // exactly what enumerateChanges calls after a successful listWorkspaces.
+        let prearmedStamp = ContinuousClock.now
+        OfemWorkingSetEnumerator.recordRefresh(for: alias, at: prearmedStamp)
 
         let host = MockEngineHost(alias: alias)
-        // If the second enumerator ignores the shared throttle it will call engine()
-        // and then listWorkspaces.  We make engine() succeed but track calls.
         host.engineResult = .failure(NSFileProviderError(.cannotSynchronize))
 
         // Vend a FRESH enumerator instance (simulating re-vend by FileProviderExtension).
         let freshEnumerator = OfemWorkingSetEnumerator(alias: alias, engineHost: host)
 
-        let obs = SpyChangeObserver()
-        freshEnumerator.enumerateChanges(for: obs, from: encodeSyncAnchor(0))
-        for _ in 0 ..< 50 {
-            if obs.finished || obs.finishedWithError { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        // (1) The fresh instance's alias must observe the shared stamp.
+        XCTAssertEqual(
+            OfemWorkingSetEnumerator.lastRefresh(for: alias), prearmedStamp,
+            "a fresh instance for the same alias must observe the shared stamp"
+        )
 
-        // The fresh enumerator must honour the shared throttle.  Because engine()
-        // would throw cannotSynchronize, if it IS called the observer receives
-        // finishedWithError.  The throttle should have suppressed the refresh
-        // attempt entirely, but we still get finishedWithError (engine() is still
-        // called for the cache-delta read below the refresh gate).  What we want
-        // to confirm is that engine() is only called ONCE (for the cache delta
-        // path, not twice — once for listWorkspaces and once for the delta).
-        // The distinguishing observable: engineCallCount == 1 (throttled) vs. > 1.
-        // With engine() throwing, the task exits early before the cache-delta path,
-        // so engineCallCount == 1 total from the single engine() call.
-        XCTAssertGreaterThanOrEqual(host.engineCallCount, 1,
-                                    "engine() must be called once (for the outer try) regardless of throttle")
-        // The stamp must not have advanced (engine threw, no successful refresh).
-        let stampAfter = OfemWorkingSetEnumerator.lastRefresh(for: alias)
-        XCTAssertNotNil(stampAfter, "Shared stamp must still be set from the simulated prior instance")
+        // (2) An unrelated alias must NOT see it — the bucket is per-alias.
+        XCTAssertNil(
+            OfemWorkingSetEnumerator.lastRefresh(for: otherAlias),
+            "the throttle stamp must not leak across unrelated aliases"
+        )
+
+        // (3) A subsequent enumerateChanges call — on the FRESH instance, with
+        // engine() failing non-auth — must leave the pre-armed stamp untouched.
+        let obs = SpyChangeObserver()
+        let finished = expectFinish(obs)
+        freshEnumerator.enumerateChanges(for: obs, from: encodeSyncAnchor(0))
+        await fulfillment(of: [finished], timeout: 5.0)
+
+        XCTAssertEqual(
+            OfemWorkingSetEnumerator.lastRefresh(for: alias), prearmedStamp,
+            "a non-auth engine failure must leave the pre-armed shared stamp exactly as it was"
+        )
+
+        OfemWorkingSetEnumerator.clearRefresh(for: alias)
+        OfemWorkingSetEnumerator.clearRefresh(for: otherAlias)
     }
 
     /// Auth failure must clear the shared throttle stamp so the next working-set
     /// signal (after re-auth) triggers an immediate refresh.
-    func testWorkingSetEnumerateChanges_authFailure_resetsSharedThrottle() async throws {
+    func testWorkingSetEnumerateChanges_authFailure_resetsSharedThrottle() async {
         let alias = "auth-throttle-reset-\(UUID().uuidString)"
         // Pre-arm the shared throttle.
         OfemWorkingSetEnumerator.recordRefresh(for: alias, at: ContinuousClock.now)
@@ -449,11 +457,9 @@ final class OfemFPEEnumeratorTests: XCTestCase {
 
         let enumerator = OfemWorkingSetEnumerator(alias: alias, engineHost: host)
         let obs = SpyChangeObserver()
+        let finished = expectFinish(obs)
         enumerator.enumerateChanges(for: obs, from: encodeSyncAnchor(0))
-        for _ in 0 ..< 50 {
-            if obs.finished || obs.finishedWithError { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await fulfillment(of: [finished], timeout: 5.0)
 
         XCTAssertTrue(obs.finishedWithError, "Auth error must finish with error")
         XCTAssertTrue(host.markedNeedsSignIn, "markNeedsSignIn must be called on auth error")
@@ -465,7 +471,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
     /// A second `enumerateChanges` call within the throttle window (from the same
     /// instance) must NOT re-trigger a refresh — the timestamp from the first call
     /// survives.
-    func testWorkingSetEnumerateChanges_rapidSecondCall_throttled() async throws {
+    func testWorkingSetEnumerateChanges_rapidSecondCall_throttled() async {
         let alias = "throttle-window-\(UUID().uuidString)"
         OfemWorkingSetEnumerator.clearRefresh(for: alias)
 
@@ -478,22 +484,18 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         // success policy).  Manually set the stamp to simulate a prior successful
         // refresh so the second call sees the throttle window.
         let obs1 = SpyChangeObserver()
+        let finished1 = expectFinish(obs1)
         enumerator.enumerateChanges(for: obs1, from: encodeSyncAnchor(0))
-        for _ in 0 ..< 50 {
-            if obs1.finished || obs1.finishedWithError { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await fulfillment(of: [finished1], timeout: 5.0)
         // Stamp manually to simulate a previous successful run.
         let manualStamp = ContinuousClock.now
         OfemWorkingSetEnumerator.recordRefresh(for: alias, at: manualStamp)
 
         // Second call immediately — within the throttle window.
         let obs2 = SpyChangeObserver()
+        let finished2 = expectFinish(obs2)
         enumerator.enumerateChanges(for: obs2, from: encodeSyncAnchor(0))
-        for _ in 0 ..< 50 {
-            if obs2.finished || obs2.finishedWithError { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await fulfillment(of: [finished2], timeout: 5.0)
 
         // The stamp must be the manually-set one — the throttle suppressed a new stamp.
         let stampAfter = OfemWorkingSetEnumerator.lastRefresh(for: alias)
@@ -515,7 +517,7 @@ final class OfemFPEEnumeratorTests: XCTestCase {
     /// trigger markNeedsSignIn for non-auth errors (existing coverage), and the
     /// fail-soft path for listWorkspaces is exercised in integration tests.
     /// Here we cover the auth-fail-soft variant where the outcome IS observable.
-    func testWorkingSetEnumerateChanges_refreshAuthError_failsEnumerationAndSignsIn() async throws {
+    func testWorkingSetEnumerateChanges_refreshAuthError_failsEnumerationAndSignsIn() async {
         // When listWorkspaces throws an auth error, the working-set enumerator
         // must call markNeedsSignIn AND finish with an error. Because engine()
         // itself throws an auth error (the closest proxy available in the test
@@ -530,12 +532,9 @@ final class OfemFPEEnumeratorTests: XCTestCase {
         )
 
         let changeObserver = SpyChangeObserver()
+        let finished = expectFinish(changeObserver)
         enumerator.enumerateChanges(for: changeObserver, from: encodeSyncAnchor(0))
-
-        for _ in 0 ..< 50 {
-            if changeObserver.finished || changeObserver.finishedWithError { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await fulfillment(of: [finished], timeout: 5.0)
 
         XCTAssertTrue(changeObserver.finishedWithError,
                       "Auth error in working-set enumerateChanges must call finishEnumeratingWithError")
@@ -704,6 +703,28 @@ final class OfemFPEEnumeratorTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// Arms `observer.finishExpectation` and returns it, so a test can
+    /// `await fulfillment(of: [expectation], timeout:)` for the exact moment
+    /// `enumerateChanges` finishes instead of polling on a fixed sleep budget
+    /// (which was flaky on loaded CI runners for no benefit — #457).
+    ///
+    /// Must be called BEFORE the enumerator's `enumerateChanges` — the
+    /// expectation has to be armed before the async Task can fulfil it, or a
+    /// completion that races ahead of a not-yet-armed expectation would be
+    /// missed.
+    private func expectFinish(_ observer: SpyChangeObserver) -> XCTestExpectation {
+        let exp = expectation(description: "enumerateChanges finished")
+        observer.finishExpectation = exp
+        return exp
+    }
+
+    /// Mirrors `expectFinish(_: SpyChangeObserver)` for `enumerateItems`.
+    private func expectFinish(_ observer: SpyEnumerationObserver) -> XCTestExpectation {
+        let exp = expectation(description: "enumerateItems finished")
+        observer.finishExpectation = exp
+        return exp
+    }
+
     /// Builds a `CacheStore` backed by a fresh temp directory. `CacheStore`
     /// has no auth dependency, so — unlike `OfemEngine` — it can be driven
     /// directly in this test sandbox (see `MockEngineHost`'s doc comment for
@@ -749,6 +770,11 @@ final class SpyChangeObserver: NSObject, NSFileProviderChangeObserver {
     private(set) var finishedWithError = false
     private(set) var lastError: Error?
 
+    /// Fulfilled the instant either finish method fires, so a test can
+    /// `await fulfillment(of:)` on the real completion signal instead of
+    /// polling a fixed sleep budget (see `expectFinish(_:)` below, #457).
+    var finishExpectation: XCTestExpectation?
+
     func didUpdate(_ updatedItems: [NSFileProviderItem]) {
         self.updatedItems.append(contentsOf: updatedItems)
     }
@@ -757,11 +783,13 @@ final class SpyChangeObserver: NSObject, NSFileProviderChangeObserver {
 
     func finishEnumeratingChanges(upTo _: NSFileProviderSyncAnchor, moreComing _: Bool) {
         finished = true
+        finishExpectation?.fulfill()
     }
 
     func finishEnumeratingWithError(_ error: Error) {
         finishedWithError = true
         lastError = error
+        finishExpectation?.fulfill()
     }
 }
 
@@ -773,6 +801,10 @@ final class SpyEnumerationObserver: NSObject, NSFileProviderEnumerationObserver 
     private(set) var finishEnumeratingWithErrorCalled = false
     private(set) var lastError: Error?
 
+    /// Mirrors `SpyChangeObserver.finishExpectation` for the items-enumeration
+    /// observer contract (#457).
+    var finishExpectation: XCTestExpectation?
+
     func didEnumerate(_ updatedItems: [NSFileProviderItem]) {
         didEnumerateCalled = true
         enumeratedItems.append(contentsOf: updatedItems)
@@ -780,10 +812,12 @@ final class SpyEnumerationObserver: NSObject, NSFileProviderEnumerationObserver 
 
     func finishEnumerating(upTo _: NSFileProviderPage?) {
         finishEnumeratingCalled = true
+        finishExpectation?.fulfill()
     }
 
     func finishEnumeratingWithError(_ error: Error) {
         finishEnumeratingWithErrorCalled = true
         lastError = error
+        finishExpectation?.fulfill()
     }
 }

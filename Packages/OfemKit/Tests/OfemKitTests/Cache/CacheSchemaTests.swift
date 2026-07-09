@@ -177,6 +177,99 @@ struct CacheSchemaTests {
         // to eliminate.
         #expect(!plan.contains("USE TEMP B-TREE"), "GROUP BY should not need a temp b-tree, got plan: \(plan)")
     }
+
+    // MARK: - Full migration chain: old on-disk fixture (#457)
+
+    /// Migrates an on-disk DB frozen at the OLDEST schema version (`v1`)
+    /// through the ENTIRE migration chain to the current version, asserting a
+    /// clean migration and that data written under the old schema survives.
+    ///
+    /// This is the copyable pattern for the next DATA-REWRITING migration
+    /// (like `v7`'s tombstone purge): stop the migrator at a version
+    /// boundary, seed rows using only the columns that existed at that
+    /// version, run the migrator the rest of the way, then assert on the
+    /// post-migration shape and values. `DeletionTombstoneTests
+    /// .v7PurgesLegacyStaleTombstones` already does this for a single step
+    /// (`v6` → `v7`); this test exercises the FULL chain from the true
+    /// baseline schema (`v1` → current), so a fixture frozen at the oldest
+    /// version this cache format has ever shipped is also covered — not only
+    /// the step immediately before/after one migration.
+    @Test("An old (v1) on-disk DB migrates cleanly through the full chain, data intact")
+    func oldSchemaFixtureMigratesThroughFullChain() async throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let dbURL = tmp.appendingPathComponent(CacheStore.sqliteFile)
+        let pool = try DatabasePool(path: dbURL.path)
+
+        let migrator = CacheSchema.migrator()
+        // Freeze the on-disk schema at v1 — the oldest version this cache
+        // format has ever shipped — before inserting any data, mirroring a
+        // real pre-upgrade on-disk database.
+        try migrator.migrate(pool, upTo: "v1")
+
+        // Seed rows using ONLY the columns that existed at v1 (no item_type,
+        // created_ns, or subtree_etag — all added by later migrations), plus
+        // a deletion tombstone shadowed by a fresher live row, which v7's
+        // data-rewriting purge must clean up as part of the chain.
+        try await pool.write { db in
+            try db.execute(sql: """
+            INSERT INTO path_metadata
+                (account_alias, workspace_id, item_id, path, parent_path, name, is_dir,
+                 content_length, etag, last_accessed_ns, synced_at_ns)
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+            """, arguments: ["acct", "ws-1", "item-1", "Files/data.csv", "Files", "data.csv", 42, "\"v1\"", 0, 500])
+            try db.execute(sql: """
+            INSERT INTO deletion_tombstones (account_alias, identifier_string, deleted_at_ns)
+            VALUES (?, ?, ?)
+            """, arguments: ["acct", "ws-1/item-1/stale.txt", 100])
+            try db.execute(sql: """
+            INSERT INTO path_metadata
+                (account_alias, workspace_id, item_id, path, parent_path, name, is_dir, last_accessed_ns, synced_at_ns)
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0, 200)
+            """, arguments: ["acct", "ws-1", "item-1", "stale.txt", "Files", "stale.txt"])
+        }
+
+        // Migrate the rest of the way — v2 through the current version — in
+        // one shot, exactly as a real app upgrade would do on first launch
+        // against an old on-disk database.
+        try migrator.migrate(pool)
+
+        // (1) Every migration in the chain applied cleanly, in order.
+        let applied = try await pool.read { db in
+            try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY rowid")
+        }
+        #expect(applied == ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"])
+
+        // (2) The pre-existing row survives with its original values intact,
+        // and the columns added by later migrations (v3/v5/v6) read back
+        // with their documented defaults instead of NULL or a migration
+        // failure.
+        let row = try await pool.read { db in
+            try Row.fetchOne(db, sql: """
+            SELECT etag, content_length, item_type, created_ns, subtree_etag
+            FROM path_metadata WHERE path = 'Files/data.csv'
+            """)
+        }
+        let dataRow = try #require(row, "the pre-existing row must survive the full migration chain")
+        #expect(dataRow["etag"] as String == "\"v1\"")
+        #expect(dataRow["content_length"] as Int64 == 42)
+        #expect(dataRow["item_type"] as String == "", "v3's new column must default to '' for a pre-v3 row")
+        #expect(dataRow["created_ns"] as Int64 == 0, "v5's new column must default to 0 for a pre-v5 row")
+        #expect(dataRow["subtree_etag"] as String == "", "v6's new column must default to '' for a pre-v6 row")
+
+        // (3) v7's data-rewriting step still fires correctly when applied as
+        // part of the full v1→current chain (not just the isolated v6→v7
+        // step covered by DeletionTombstoneTests): the tombstone shadowed by
+        // the fresher "stale.txt" live row (synced at 200, after the
+        // tombstone's 100) is purged.
+        let tombstoneIDs = try await pool.read { db in
+            try String.fetchAll(db, sql: "SELECT identifier_string FROM deletion_tombstones")
+        }
+        #expect(tombstoneIDs.isEmpty,
+                "v7's legacy-tombstone purge must still fire when applied as part of the full v1→current chain")
+    }
 }
 
 // MARK: - CacheStore test-inspection helpers (actor-isolated, call with await)
