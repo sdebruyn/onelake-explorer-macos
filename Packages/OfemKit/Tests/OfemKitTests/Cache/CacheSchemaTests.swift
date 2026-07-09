@@ -255,19 +255,32 @@ struct CacheSchemaTests {
         // (2) The pre-existing row survives with its original values intact,
         // and the columns added by later migrations (v3/v5/v6) read back
         // with their documented defaults instead of NULL or a migration
-        // failure.
-        let row = try await pool.read { db in
-            try Row.fetchOne(db, sql: """
-            SELECT etag, content_length, item_type, created_ns, subtree_etag
-            FROM path_metadata WHERE path = 'Files/data.csv'
-            """)
-        }
-        let dataRow = try #require(row, "the pre-existing row must survive the full migration chain")
-        #expect(dataRow["etag"] as String == "\"v1\"")
-        #expect(dataRow["content_length"] as Int64 == 42)
-        #expect(dataRow["item_type"] as String == "", "v3's new column must default to '' for a pre-v3 row")
-        #expect(dataRow["created_ns"] as Int64 == 0, "v5's new column must default to 0 for a pre-v5 row")
-        #expect(dataRow["subtree_etag"] as String == "", "v6's new column must default to '' for a pre-v6 row")
+        // failure. `Row` itself is not `Sendable`, so it must be fully
+        // unpacked into Sendable scalars INSIDE the `pool.read` closure — the
+        // same shape `explainQueryPlan` below already uses (fetch `Row`s,
+        // extract, return a `Sendable` value) — rather than returned across
+        // the closure boundary directly, which the generic
+        // `pool.read<T: Sendable>` overload cannot accept.
+        let dataRow: (etag: String, contentLength: Int64, itemType: String, createdNs: Int64, subtreeEtag: String)? =
+            try await pool.read { db in
+                guard let row = try Row.fetchOne(db, sql: """
+                SELECT etag, content_length, item_type, created_ns, subtree_etag
+                FROM path_metadata WHERE path = 'Files/data.csv'
+                """) else { return nil }
+                return (
+                    etag: row["etag"] as String,
+                    contentLength: row["content_length"] as Int64,
+                    itemType: row["item_type"] as String,
+                    createdNs: row["created_ns"] as Int64,
+                    subtreeEtag: row["subtree_etag"] as String
+                )
+            }
+        let unwrapped = try #require(dataRow, "the pre-existing row must survive the full migration chain")
+        #expect(unwrapped.etag == "\"v1\"")
+        #expect(unwrapped.contentLength == 42)
+        #expect(unwrapped.itemType == "", "v3's new column must default to '' for a pre-v3 row")
+        #expect(unwrapped.createdNs == 0, "v5's new column must default to 0 for a pre-v5 row")
+        #expect(unwrapped.subtreeEtag == "", "v6's new column must default to '' for a pre-v6 row")
 
         // (3) v7's data-rewriting step still fires correctly — and ONLY
         // correctly — when applied as part of the full v1→current chain (not
