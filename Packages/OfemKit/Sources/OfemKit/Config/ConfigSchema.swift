@@ -113,6 +113,19 @@ public struct CacheConfig: Sendable {
         self.maxSizeGB = maxSizeGB
     }
 
+    /// Clamps a candidate cache-size-limit value (whole GB) to
+    /// `[minSizeGB, maxSizeGB]`, preserving `0` as the "no limit" sentinel.
+    ///
+    /// The full clamp expression — not just the bound numbers — used to be
+    /// written out independently at the host's optimistic-clamp call site
+    /// (`MenuStatusModel.setCacheLimitGB`) and the FPE's validating-clamp
+    /// call site (`OfemClientControlService.setConfig`), with the two
+    /// copies even nesting `min`/`max` in a different order. Both now call
+    /// this one function so the sentinel logic itself can't drift (M9).
+    public static func clampSizeGB(_ gb: Int) -> Int {
+        gb == 0 ? 0 : max(minSizeGB, min(maxSizeGB, gb))
+    }
+
     // MARK: - Private
 
     private let bytesPerGB: Int64 = 1024 * 1024 * 1024
@@ -168,6 +181,20 @@ public enum SetConfigLimits {
     /// Maximum allowed concurrent downloads per account (maps to the protocol
     /// comment "integer string, 1–32").
     public static let maxDownloadsPerAccount = 32
+
+    /// Clamps a candidate "max concurrent uploads per account" value to
+    /// `[NetConfig.minConcurrent, maxUploadsPerAccount]`. Shared by the
+    /// host's optimistic clamp and the FPE's validating clamp so the
+    /// expression itself — not just the bound numbers — can't drift (M9).
+    public static func clampUploads(_ n: Int) -> Int {
+        max(NetConfig.minConcurrent, min(maxUploadsPerAccount, n))
+    }
+
+    /// Clamps a candidate "max concurrent downloads per account" value to
+    /// `[NetConfig.minConcurrent, maxDownloadsPerAccount]`. See `clampUploads`.
+    public static func clampDownloads(_ n: Int) -> Int {
+        max(NetConfig.minConcurrent, min(maxDownloadsPerAccount, n))
+    }
 }
 
 // MARK: - LogConfig

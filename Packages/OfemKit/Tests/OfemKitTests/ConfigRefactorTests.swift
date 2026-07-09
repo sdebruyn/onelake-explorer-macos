@@ -372,20 +372,33 @@ struct ConfigRefactorTests {
         #expect(CacheConfig.maxSizeGB == 100)
     }
 
-    /// The `0 = no limit` cache sentinel must round-trip through the same
-    /// clamp expression used by both the host and the FPE: `gb == 0 ? 0 :
-    /// max(minSizeGB, min(maxSizeGB, gb))`. This mirrors the two call sites
-    /// verbatim rather than re-deriving the logic, so a change to either
-    /// clamp expression that breaks the sentinel is caught here.
-    @Test("M9: 0-sentinel clamp expression preserves 0 and otherwise matches [minSizeGB, maxSizeGB]")
-    func cacheSentinelClampExpression() {
-        func clamp(_ gb: Int) -> Int {
-            gb == 0 ? 0 : max(CacheConfig.minSizeGB, min(CacheConfig.maxSizeGB, gb))
-        }
-        #expect(clamp(0) == 0, "0 must be preserved as the no-limit sentinel")
-        #expect(clamp(-5) == CacheConfig.minSizeGB, "a negative non-zero value clamps up to minSizeGB")
-        #expect(clamp(1) == 1)
-        #expect(clamp(50) == 50)
-        #expect(clamp(9999) == CacheConfig.maxSizeGB, "an absurdly large value clamps down to maxSizeGB")
+    /// The `0 = no limit` cache sentinel must round-trip through
+    /// `CacheConfig.clampSizeGB` — the single function both the host's
+    /// optimistic clamp (`MenuStatusModel.setCacheLimitGB`) and the FPE's
+    /// validating clamp (`OfemClientControlService.setConfig`) call, so
+    /// there is no separate expression left to drift between the two (M9).
+    @Test("M9: CacheConfig.clampSizeGB preserves 0 and otherwise clamps to [minSizeGB, maxSizeGB]")
+    func cacheClampSizeGBPreservesSentinel() {
+        #expect(CacheConfig.clampSizeGB(0) == 0, "0 must be preserved as the no-limit sentinel")
+        #expect(CacheConfig.clampSizeGB(-5) == CacheConfig.minSizeGB, "a negative non-zero value clamps up to minSizeGB")
+        #expect(CacheConfig.clampSizeGB(1) == 1)
+        #expect(CacheConfig.clampSizeGB(50) == 50)
+        #expect(CacheConfig.clampSizeGB(9999) == CacheConfig.maxSizeGB, "an absurdly large value clamps down to maxSizeGB")
+    }
+
+    /// `SetConfigLimits.clampUploads`/`clampDownloads` are the single
+    /// functions both sides call — mirrors `cacheClampSizeGBPreservesSentinel`
+    /// for the net-concurrency fields (M9).
+    @Test("M9: SetConfigLimits.clampUploads/clampDownloads clamp to [minConcurrent, the per-field max]")
+    func netConcurrencyClampFunctions() {
+        #expect(SetConfigLimits.clampUploads(0) == NetConfig.minConcurrent, "0 has no sentinel meaning here — clamps up like any other too-low value")
+        #expect(SetConfigLimits.clampUploads(-5) == NetConfig.minConcurrent)
+        #expect(SetConfigLimits.clampUploads(4) == 4)
+        #expect(SetConfigLimits.clampUploads(9999) == SetConfigLimits.maxUploadsPerAccount)
+
+        #expect(SetConfigLimits.clampDownloads(0) == NetConfig.minConcurrent)
+        #expect(SetConfigLimits.clampDownloads(-5) == NetConfig.minConcurrent)
+        #expect(SetConfigLimits.clampDownloads(8) == 8)
+        #expect(SetConfigLimits.clampDownloads(9999) == SetConfigLimits.maxDownloadsPerAccount)
     }
 }
