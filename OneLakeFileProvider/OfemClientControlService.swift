@@ -71,6 +71,18 @@ private final class ReplyOnce: @unchecked Sendable {
     }
 }
 
+/// Boxes an XPC reply closure as `Sendable` (M11).
+///
+/// `@objc` XPC protocol reply blocks are `@escaping` but never `@Sendable`, so
+/// they cannot be captured directly by a `Task` body. `Reply` is inferred at
+/// each call site as the verb's own reply closure type (e.g.
+/// `(Bool, Error?) -> Void`); this box carries it across the region-isolation
+/// boundary unchanged. `ReplyOnce` — not this box — is what actually enforces
+/// single-invocation; the box only satisfies the compiler.
+private struct ReplyBox<Reply>: @unchecked Sendable {
+    let fn: Reply
+}
+
 // MARK: - OfemClientControlService
 
 /// NSFileProviderServiceSource that vends the OfemClientControlProtocol XPC service.
@@ -166,7 +178,15 @@ private final class OfemXPCListenerDelegate: NSObject, NSXPCListenerDelegate, @u
         // only records the requirement — the ObjC method is non-throwing.
         newConnection.setCodeSigningRequirement(ofemXPCPeerRequirement)
         newConnection.exportedInterface = OfemControlInterface.make()
-        newConnection.exportedObject = OfemControlXPCHandler(engineHost: engineHost)
+        let handler = OfemControlXPCHandler(engineHost: engineHost)
+        newConnection.exportedObject = handler
+        // M11: cancel every Task the handler has in flight once this
+        // connection tears down — invalidationHandler is the guaranteed
+        // final teardown signal (unlike interruptionHandler, which can
+        // precede a reconnect). Mirrors OfemFPEEnumerator's invalidate().
+        newConnection.invalidationHandler = { [weak handler] in
+            handler?.cancelActiveTasks()
+        }
         newConnection.resume()
         return true
     }
@@ -193,9 +213,113 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
 
     private let engineHost: any EngineProviding
 
+    // MARK: - Handler Task tracking (M11)
+
+    /// Guards `activeTasks` and `isInvalidated`. XPC invokes every handler
+    /// verb from an arbitrary queue, and `cancelActiveTasks()` can run
+    /// concurrently with an in-flight verb call spawning a new Task, so all
+    /// access goes through this lock — mirrors `OfemFPEEnumerator`'s
+    /// `taskLock` discipline.
+    private let tasksLock = NSLock()
+    /// Every Task spawned by `runReplying`, keyed by a per-call `UUID` so
+    /// concurrent calls — to the same verb or different ones — are tracked
+    /// independently. Each entry is removed by its own Task's `defer` on
+    /// completion; `cancelActiveTasks()` drains whatever remains.
+    private nonisolated(unsafe) var activeTasks: [UUID: Task<Void, Never>] = [:]
+    /// Set by `cancelActiveTasks()` under `tasksLock`. `runReplying` checks
+    /// this under the same lock acquisition it uses to store a new Task's
+    /// handle, so a Task whose creation races with `cancelActiveTasks()` is
+    /// cancelled immediately instead of being stored and left unmanaged.
+    private nonisolated(unsafe) var isInvalidated = false
+
     init(engineHost: any EngineProviding) {
         self.engineHost = engineHost
         super.init()
+    }
+
+    private func untrack(_ id: UUID) {
+        tasksLock.withLock {
+            activeTasks.removeValue(forKey: id)
+        }
+    }
+
+    /// Cancels every outstanding handler Task. Wired to the owning
+    /// `NSXPCConnection`'s `invalidationHandler` in
+    /// `OfemXPCListenerDelegate` so no Task spawned by a handler verb
+    /// survives its connection's teardown.
+    func cancelActiveTasks() {
+        tasksLock.withLock {
+            isInvalidated = true
+            for task in activeTasks.values {
+                task.cancel()
+            }
+            activeTasks.removeAll()
+        }
+    }
+
+    // MARK: - Reply-scaffold helper (M11)
+
+    /// Runs `operation` on a newly created, tracked `Task`, guaranteeing the
+    /// XPC reply block fires at most once.
+    ///
+    /// This helper never calls `reply` itself — it only boxes it (`ReplyBox`)
+    /// so `onTeardown` and `operation` can carry it across the
+    /// region-isolation boundary. Both routes call it only through the
+    /// shared `ReplyOnce`, so whichever fires first — `operation`'s own
+    /// success/failure reply, or the `onTeardown` fallback running in
+    /// `defer` (Task cancelled, or `operation` returned without replying) —
+    /// wins, and the other is a silent no-op. A genuine double reply is
+    /// therefore structurally impossible, not merely unlikely.
+    ///
+    /// The Task is created *and* registered in `activeTasks` while holding
+    /// `tasksLock` — not created first and separately locked to store —
+    /// so two races are closed at once:
+    /// - a Task created concurrently with `cancelActiveTasks()` is
+    ///   cancelled immediately instead of stored (`isInvalidated` check,
+    ///   mirroring `OfemFPEEnumerator`);
+    /// - a Task fast enough to run to completion and call `untrack(_:)`
+    ///   before this method would otherwise get around to storing its
+    ///   handle cannot slip past it: `untrack(_:)` needs the same lock, so
+    ///   it simply blocks until this call finishes storing (or discarding)
+    ///   the handle first.
+    private func runReplying<Reply>(
+        reply: @escaping Reply,
+        onTeardown: @escaping @Sendable (Reply) -> Void,
+        operation: @escaping @Sendable (Reply, ReplyOnce) async -> Void
+    ) {
+        let rb = ReplyBox(fn: reply)
+        let replyOnce = ReplyOnce()
+        let taskID = UUID()
+        tasksLock.withLock {
+            let task = Task { [self] in
+                defer {
+                    replyOnce.callOnce { onTeardown(rb.fn) }
+                    untrack(taskID)
+                }
+                await operation(rb.fn, replyOnce)
+            }
+            if isInvalidated {
+                task.cancel()
+            } else {
+                activeTasks[taskID] = task
+            }
+        }
+    }
+
+    // MARK: - XPCPausedWorkspace mapping (M11)
+
+    /// Maps a cache row to the XPC wire type. Shared by `getEngineStatus`
+    /// and `getBadgeStatus`, the only two verbs that report paused
+    /// workspaces.
+    private static func mapPausedWorkspace(_ row: WorkspaceStatusRecord) -> XPCPausedWorkspace {
+        XPCPausedWorkspace(
+            accountAlias: row.accountAlias,
+            workspaceID: row.workspaceID,
+            reason: row.reason,
+            detectedAtSec: row.detectedAtNs > 0
+                ? Double(row.detectedAtNs) / 1_000_000_000
+                : 0
+        )
     }
 
     // MARK: - getProtocolVersion
@@ -207,112 +331,88 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
     // MARK: - getEngineStatus
 
     func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
-        // xpc-02: reply-once guard via ReplyOnce — fires exactly once on every
-        // path, including Task cancellation or connection teardown.
-        //
-        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
-        // @unchecked Sendable so the Task body can capture it safely — the
-        // ReplyOnce guard ensures the closure is called at most once.
-        struct ReplyBox: @unchecked Sendable { let fn: (XPCEngineStatus?, Error?) -> Void }
-        let rb = ReplyBox(fn: reply)
-        let replyOnce = ReplyOnce()
-        Task { [self] in
-            defer { replyOnce.callOnce { rb.fn(nil, NSFileProviderError(.cannotSynchronize)) } }
-            do {
-                // Read config snapshot via the shared configStore — does NOT
-                // require the engine to be built yet (cheaper for first call).
-                let configStore = try engineHost.configStore()
-                let cfg = configStore.snapshot()
+        // xpc-02 / M11: reply-once guard via runReplying — fires exactly
+        // once on every path, including Task cancellation or connection
+        // teardown.
+        runReplying(
+            reply: reply,
+            onTeardown: { fn in fn(nil, NSFileProviderError(.cannotSynchronize)) },
+            operation: { fn, replyOnce in
+                do {
+                    // Read config snapshot via the shared configStore — does NOT
+                    // require the engine to be built yet (cheaper for first call).
+                    let configStore = try self.engineHost.configStore()
+                    let cfg = configStore.snapshot()
 
-                // Measure cached blob bytes only if the engine is already up;
-                // if the engine has never been started we return -1 (not measured).
-                let cacheBytes: Int64
-                var pausedWorkspaces: [XPCPausedWorkspace] = []
+                    // Measure cached blob bytes only if the engine is already up;
+                    // if the engine has never been started we return -1 (not measured).
+                    let cacheBytes: Int64
+                    var pausedWorkspaces: [XPCPausedWorkspace] = []
 
-                if let engine = engineHost.existingEngine() {
-                    cacheBytes = (try? await engine.cache.blobBytes()) ?? -1
+                    if let engine = self.engineHost.existingEngine() {
+                        cacheBytes = (try? await engine.cache.blobBytes()) ?? -1
 
-                    // Query the workspace_status table for paused entries.
-                    // Best-effort — a failure leaves the list empty rather than
-                    // causing the whole status call to fail.
-                    if let rows = try? await engine.cache.listPausedWorkspaces() {
-                        pausedWorkspaces = rows.map { row in
-                            XPCPausedWorkspace(
-                                accountAlias: row.accountAlias,
-                                workspaceID: row.workspaceID,
-                                reason: row.reason,
-                                detectedAtSec: row.detectedAtNs > 0
-                                    ? Double(row.detectedAtNs) / 1_000_000_000
-                                    : 0
-                            )
+                        // Query the workspace_status table for paused entries.
+                        // Best-effort — a failure leaves the list empty rather than
+                        // causing the whole status call to fail.
+                        if let rows = try? await engine.cache.listPausedWorkspaces() {
+                            pausedWorkspaces = rows.map(Self.mapPausedWorkspace)
                         }
+                    } else {
+                        cacheBytes = -1
                     }
-                } else {
-                    cacheBytes = -1
+
+                    let cacheMaxGB = cfg.cache.maxSizeGB
+                    let cacheMaxBytes = cfg.cache.maxBytes
+
+                    let status = XPCEngineStatus(
+                        cacheBytes: cacheBytes,
+                        cacheMaxBytes: cacheMaxBytes,
+                        cacheMaxSizeGB: cacheMaxGB,
+                        telemetryEnabled: cfg.telemetry,
+                        netMaxUploads: cfg.net.maxConcurrentUploadsPerAccount,
+                        netMaxDownloads: cfg.net.maxConcurrentDownloadsPerAccount,
+                        logLevel: cfg.log.level,
+                        pausedWorkspaces: pausedWorkspaces,
+                        needsSignIn: self.engineHost.needsSignIn,
+                        materializedPollIntervalS: cfg.sync.materializedPollIntervalS,
+                        selfHealIntervalM: cfg.sync.selfHealIntervalM
+                    )
+                    replyOnce.callOnce { fn(status, nil) }
+                } catch {
+                    Self.log.error(
+                        "getEngineStatus failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                    replyOnce.callOnce { fn(nil, error) }
                 }
-
-                let cacheMaxGB = cfg.cache.maxSizeGB
-                let cacheMaxBytes = cfg.cache.maxBytes
-
-                let status = XPCEngineStatus(
-                    cacheBytes: cacheBytes,
-                    cacheMaxBytes: cacheMaxBytes,
-                    cacheMaxSizeGB: cacheMaxGB,
-                    telemetryEnabled: cfg.telemetry,
-                    netMaxUploads: cfg.net.maxConcurrentUploadsPerAccount,
-                    netMaxDownloads: cfg.net.maxConcurrentDownloadsPerAccount,
-                    logLevel: cfg.log.level,
-                    pausedWorkspaces: pausedWorkspaces,
-                    needsSignIn: engineHost.needsSignIn,
-                    materializedPollIntervalS: cfg.sync.materializedPollIntervalS,
-                    selfHealIntervalM: cfg.sync.selfHealIntervalM
-                )
-                replyOnce.callOnce { rb.fn(status, nil) }
-            } catch {
-                Self.log.error(
-                    "getEngineStatus failed: \(error.localizedDescription, privacy: .public)"
-                )
-                replyOnce.callOnce { rb.fn(nil, error) }
             }
-        }
+        )
     }
 
     // MARK: - getBadgeStatus
 
     func getBadgeStatus(reply: @escaping (XPCBadgeStatus?, Error?) -> Void) {
-        // xpc-02: reply-once guard via ReplyOnce — fires exactly once on every
-        // path, including Task cancellation or connection teardown.
-        //
-        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
-        // @unchecked Sendable so the Task body can capture it safely — the
-        // ReplyOnce guard ensures the closure is called at most once.
-        struct ReplyBox: @unchecked Sendable { let fn: (XPCBadgeStatus?, Error?) -> Void }
-        let rb = ReplyBox(fn: reply)
-        let replyOnce = ReplyOnce()
-        Task { [self] in
-            defer { replyOnce.callOnce { rb.fn(nil, NSFileProviderError(.cannotSynchronize)) } }
-            // Engine-optional, mirroring getEngineStatus's existingEngine() branch,
-            // so the badge still reports needsSignIn before the engine has ever
-            // been built. Deliberately skips blobBytes() and the config snapshot
-            // entirely — that's the whole point of this slim verb (#397).
-            var pausedWorkspaces: [XPCPausedWorkspace] = []
-            if let engine = engineHost.existingEngine(),
-               let rows = try? await engine.cache.listPausedWorkspaces()
-            {
-                pausedWorkspaces = rows.map { row in
-                    XPCPausedWorkspace(
-                        accountAlias: row.accountAlias,
-                        workspaceID: row.workspaceID,
-                        reason: row.reason,
-                        detectedAtSec: row.detectedAtNs > 0
-                            ? Double(row.detectedAtNs) / 1_000_000_000
-                            : 0
-                    )
+        // xpc-02 / M11: reply-once guard via runReplying — fires exactly
+        // once on every path, including Task cancellation or connection
+        // teardown.
+        runReplying(
+            reply: reply,
+            onTeardown: { fn in fn(nil, NSFileProviderError(.cannotSynchronize)) },
+            operation: { fn, replyOnce in
+                // Engine-optional, mirroring getEngineStatus's existingEngine() branch,
+                // so the badge still reports needsSignIn before the engine has ever
+                // been built. Deliberately skips blobBytes() and the config snapshot
+                // entirely — that's the whole point of this slim verb (#397).
+                var pausedWorkspaces: [XPCPausedWorkspace] = []
+                if let engine = self.engineHost.existingEngine(),
+                   let rows = try? await engine.cache.listPausedWorkspaces()
+                {
+                    pausedWorkspaces = rows.map(Self.mapPausedWorkspace)
                 }
+                let status = XPCBadgeStatus(needsSignIn: self.engineHost.needsSignIn, pausedWorkspaces: pausedWorkspaces)
+                replyOnce.callOnce { fn(status, nil) }
             }
-            let status = XPCBadgeStatus(needsSignIn: engineHost.needsSignIn, pausedWorkspaces: pausedWorkspaces)
-            replyOnce.callOnce { rb.fn(status, nil) }
-        }
+        )
     }
 
     // MARK: - setConfig
@@ -428,144 +528,132 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
             validated = value
         }
 
-        // xpc-02: reply-once guard via ReplyOnce — fires exactly once on every
-        // path, including Task cancellation or connection teardown.
-        //
-        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
-        // @unchecked Sendable so the Task body can capture it safely — the
-        // ReplyOnce guard ensures the closure is called at most once.
-        struct ReplyBox: @unchecked Sendable { let fn: (Error?) -> Void }
-        let rb = ReplyBox(fn: reply)
-        let replyOnce = ReplyOnce()
-        Task { [self] in
-            defer { replyOnce.callOnce { rb.fn(NSFileProviderError(.cannotSynchronize)) } }
-            do {
-                let configStore = try engineHost.configStore()
-                // The mutator closure captures only `validated` — a Sendable
-                // enum of plain value-typed cases — so it is `@Sendable`-safe.
-                try await configStore.updateAndSave { cfg in
-                    switch validated {
-                    case let .telemetry(flag): cfg.telemetry = flag
-                    case let .cacheMaxSizeGB(gb): cfg.cache.maxSizeGB = gb
-                    case let .netMaxUploads(n): cfg.net.maxConcurrentUploadsPerAccount = n
-                    case let .netMaxDownloads(n): cfg.net.maxConcurrentDownloadsPerAccount = n
-                    case let .logLevel(lvl): cfg.log.level = lvl
-                    case let .syncMaterializedPollIntervalS(n): cfg.sync.materializedPollIntervalS = n
-                    case let .syncSelfHealIntervalM(n): cfg.sync.selfHealIntervalM = n
+        // xpc-02 / M11: reply-once guard via runReplying — fires exactly
+        // once on every path, including Task cancellation or connection
+        // teardown.
+        runReplying(
+            reply: reply,
+            onTeardown: { fn in fn(NSFileProviderError(.cannotSynchronize)) },
+            operation: { fn, replyOnce in
+                do {
+                    let configStore = try self.engineHost.configStore()
+                    // The mutator closure captures only `validated` — a Sendable
+                    // enum of plain value-typed cases — so it is `@Sendable`-safe.
+                    try await configStore.updateAndSave { cfg in
+                        switch validated {
+                        case let .telemetry(flag): cfg.telemetry = flag
+                        case let .cacheMaxSizeGB(gb): cfg.cache.maxSizeGB = gb
+                        case let .netMaxUploads(n): cfg.net.maxConcurrentUploadsPerAccount = n
+                        case let .netMaxDownloads(n): cfg.net.maxConcurrentDownloadsPerAccount = n
+                        case let .logLevel(lvl): cfg.log.level = lvl
+                        case let .syncMaterializedPollIntervalS(n): cfg.sync.materializedPollIntervalS = n
+                        case let .syncSelfHealIntervalM(n): cfg.sync.selfHealIntervalM = n
+                        }
                     }
+
+                    Self.log.info(
+                        "setConfig: key='\(key, privacy: .public)' value='\(value, privacy: .public)' applied"
+                    )
+
+                    // Reload the engine so the new config values take effect
+                    // without waiting for the FPE process to terminate.
+                    // OfemEngine reads the config snapshot once at init, so the
+                    // reload mechanism is: shut down the current engine, clear
+                    // _engine and _buildError, and let the next use rebuild lazily.
+                    await self.engineHost.reloadEngine()
+
+                    replyOnce.callOnce { fn(nil) }
+                } catch {
+                    Self.log.error(
+                        "setConfig failed: key='\(key, privacy: .public)' error=\(error.localizedDescription, privacy: .public)"
+                    )
+                    replyOnce.callOnce { fn(error) }
                 }
-
-                Self.log.info(
-                    "setConfig: key='\(key, privacy: .public)' value='\(value, privacy: .public)' applied"
-                )
-
-                // Reload the engine so the new config values take effect
-                // without waiting for the FPE process to terminate.
-                // OfemEngine reads the config snapshot once at init, so the
-                // reload mechanism is: shut down the current engine, clear
-                // _engine and _buildError, and let the next use rebuild lazily.
-                await engineHost.reloadEngine()
-
-                replyOnce.callOnce { rb.fn(nil) }
-            } catch {
-                Self.log.error(
-                    "setConfig failed: key='\(key, privacy: .public)' error=\(error.localizedDescription, privacy: .public)"
-                )
-                replyOnce.callOnce { rb.fn(error) }
             }
-        }
+        )
     }
 
     // MARK: - pollMaterialized
 
     func pollMaterialized(alias: String, reply: @escaping (Bool, Error?) -> Void) {
-        // xpc-02: reply-once guard — fires exactly once on every path.
-        //
-        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
-        // @unchecked Sendable so the Task body can capture it safely — the
-        // ReplyOnce guard ensures the closure is called at most once.
-        struct ReplyBox: @unchecked Sendable { let fn: (Bool, Error?) -> Void }
-        let rb = ReplyBox(fn: reply)
-        let replyOnce = ReplyOnce()
-        Task { [self] in
-            defer { replyOnce.callOnce { rb.fn(false, NSFileProviderError(.cannotSynchronize)) } }
-            do {
-                let engine = try await engineHost.engine()
-                // Read the materialized-container set for `alias` from the
-                // cache. The FPE is the sole writer; no host-side cache access.
-                let keys = try await engine.cache.materializedContainers(alias: alias)
-                // Read the configured self-heal interval from the shared config store.
-                // Falls back to the engine's built-in default when the store is unavailable.
-                let selfHealIntervalM: Int = if let configStore = try? engineHost.configStore() {
-                    configStore.snapshot().sync.selfHealIntervalM
-                } else {
-                    SyncEngine.defaultSelfHealIntervalMinutes
+        // xpc-02 / M11: reply-once guard via runReplying — fires exactly
+        // once on every path.
+        runReplying(
+            reply: reply,
+            onTeardown: { fn in fn(false, NSFileProviderError(.cannotSynchronize)) },
+            operation: { fn, replyOnce in
+                do {
+                    let engine = try await self.engineHost.engine()
+                    // Read the materialized-container set for `alias` from the
+                    // cache. The FPE is the sole writer; no host-side cache access.
+                    let keys = try await engine.cache.materializedContainers(alias: alias)
+                    // Read the configured self-heal interval from the shared config store.
+                    // Falls back to the engine's built-in default when the store is unavailable.
+                    let selfHealIntervalM: Int = if let configStore = try? self.engineHost.configStore() {
+                        configStore.snapshot().sync.selfHealIntervalM
+                    } else {
+                        SyncEngine.defaultSelfHealIntervalMinutes
+                    }
+                    // Fan out refreshes with a per-alias concurrency cap that
+                    // mirrors the download-semaphore cap used elsewhere in the engine.
+                    let changed = await engine.sync.refreshMaterialized(
+                        alias: alias,
+                        keys: keys,
+                        concurrencyCap: 4,
+                        selfHealIntervalMinutes: selfHealIntervalM
+                    )
+                    replyOnce.callOnce { fn(changed, nil) }
+                } catch {
+                    Self.log.error(
+                        "pollMaterialized failed alias=\(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    )
+                    replyOnce.callOnce { fn(false, error) }
                 }
-                // Fan out refreshes with a per-alias concurrency cap that
-                // mirrors the download-semaphore cap used elsewhere in the engine.
-                let changed = await engine.sync.refreshMaterialized(
-                    alias: alias,
-                    keys: keys,
-                    concurrencyCap: 4,
-                    selfHealIntervalMinutes: selfHealIntervalM
-                )
-                replyOnce.callOnce { rb.fn(changed, nil) }
-            } catch {
-                Self.log.error(
-                    "pollMaterialized failed alias=\(alias, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                )
-                replyOnce.callOnce { rb.fn(false, error) }
             }
-        }
+        )
     }
 
     // MARK: - reloadEngine
 
     func reloadEngine(alias: String, reply: @escaping (Error?) -> Void) {
-        // xpc-02: reply-once guard — fires exactly once on every path.
-        //
-        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
-        // @unchecked Sendable so the Task body can capture it safely — the
-        // ReplyOnce guard ensures the closure is called at most once.
-        struct ReplyBox: @unchecked Sendable { let fn: (Error?) -> Void }
-        let rb = ReplyBox(fn: reply)
-        let replyOnce = ReplyOnce()
-        Task { [self] in
-            defer { replyOnce.callOnce { rb.fn(NSFileProviderError(.cannotSynchronize)) } }
-            // engineHost.reloadEngine() shuts down the current engine and
-            // clears _needsSignIn; the next use rebuilds it lazily (xpc-11).
-            await engineHost.reloadEngine()
-            Self.log.info("reloadEngine: alias=\(alias, privacy: .public) reloaded")
-            replyOnce.callOnce { rb.fn(nil) }
-        }
+        // xpc-02 / M11: reply-once guard via runReplying — fires exactly
+        // once on every path.
+        runReplying(
+            reply: reply,
+            onTeardown: { fn in fn(NSFileProviderError(.cannotSynchronize)) },
+            operation: { fn, replyOnce in
+                // engineHost.reloadEngine() shuts down the current engine and
+                // clears _needsSignIn; the next use rebuilds it lazily (xpc-11).
+                await self.engineHost.reloadEngine()
+                Self.log.info("reloadEngine: alias=\(alias, privacy: .public) reloaded")
+                replyOnce.callOnce { fn(nil) }
+            }
+        )
     }
 
     // MARK: - clearCache
 
     func clearCache(reply: @escaping (Int64, Error?) -> Void) {
-        // xpc-02: reply-once guard via ReplyOnce — fires exactly once on every
-        // path, including Task cancellation or connection teardown.
-        //
-        // XPC @objc reply blocks are @escaping but not @Sendable. Box in
-        // @unchecked Sendable so the Task body can capture it safely — the
-        // ReplyOnce guard ensures the closure is called at most once.
-        struct ReplyBox: @unchecked Sendable { let fn: (Int64, Error?) -> Void }
-        let rb = ReplyBox(fn: reply)
-        let replyOnce = ReplyOnce()
-        Task { [self] in
-            defer { replyOnce.callOnce { rb.fn(0, NSFileProviderError(.cannotSynchronize)) } }
-            do {
-                let engine = try await engineHost.engine()
-                let (_, freedBytes) = try await engine.cache.wipe()
-                Self.log.info("clearCache: \(freedBytes, privacy: .public) bytes freed")
-                replyOnce.callOnce { rb.fn(freedBytes, nil) }
-            } catch {
-                Self.log.error(
-                    "clearCache failed: \(error.localizedDescription, privacy: .public)"
-                )
-                replyOnce.callOnce { rb.fn(0, error) }
+        // xpc-02 / M11: reply-once guard via runReplying — fires exactly
+        // once on every path, including Task cancellation or connection
+        // teardown.
+        runReplying(
+            reply: reply,
+            onTeardown: { fn in fn(0, NSFileProviderError(.cannotSynchronize)) },
+            operation: { fn, replyOnce in
+                do {
+                    let engine = try await self.engineHost.engine()
+                    let (_, freedBytes) = try await engine.cache.wipe()
+                    Self.log.info("clearCache: \(freedBytes, privacy: .public) bytes freed")
+                    replyOnce.callOnce { fn(freedBytes, nil) }
+                } catch {
+                    Self.log.error(
+                        "clearCache failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                    replyOnce.callOnce { fn(0, error) }
+                }
             }
-        }
+        )
     }
 }
 

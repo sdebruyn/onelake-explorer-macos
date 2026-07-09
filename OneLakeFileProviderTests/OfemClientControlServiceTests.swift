@@ -181,3 +181,81 @@ final class OfemControlXPCHandlerGetBadgeStatusTests: XCTestCase {
         await engine.shutdown()
     }
 }
+
+// MARK: - runReplying reply-once semantics (M11)
+
+//
+// runReplying() (the shared reply-scaffold helper all six XPC verbs funnel
+// through) replaces six copy-pasted ReplyBox/ReplyOnce/Task/defer blocks.
+// These tests exercise clearCache — one of the verbs with both a success
+// and a thrown-error path — and assert the reply closure fires exactly
+// once on each, regressing against a helper bug that would let the
+// operation's own reply and the onTeardown defer fallback both fire.
+
+final class OfemControlXPCHandlerReplyOnceTests: XCTestCase {
+    func testClearCache_repliesExactlyOnce_onThrownErrorPath() {
+        // MockEngineHost defaults engineResult to
+        // .failure(NSFileProviderError(.cannotSynchronize)), so engine()
+        // throws inside clearCache's operation closure and the catch branch
+        // replies via replyOnce.
+        let host = MockEngineHost(alias: "reply-once-test")
+        let handler = OfemControlXPCHandler(engineHost: host)
+        let replyCount = ReplyCounter()
+
+        let exp = expectation(description: "clearCache replies")
+        handler.clearCache { _, error in
+            replyCount.increment()
+            XCTAssertNotNil(error)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 2)
+
+        XCTAssertEqual(replyCount.value, 1,
+                       "clearCache must reply exactly once on the thrown-error path")
+    }
+
+    func testClearCache_repliesExactlyOnce_onSuccessPath() async throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ofem-clearcache-reply-once-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let paths = OfemPaths(root: tmp)
+        try paths.ensureDirectories()
+        let configStore = try OfemConfigStore(paths: paths)
+        let engine = try OfemEngine(configStore: configStore, paths: paths)
+
+        let host = MockEngineHost(alias: "reply-once-test")
+        host.engineResult = .success(engine)
+        let handler = OfemControlXPCHandler(engineHost: host)
+        let replyCount = ReplyCounter()
+
+        let exp = expectation(description: "clearCache replies")
+        handler.clearCache { _, error in
+            replyCount.increment()
+            XCTAssertNil(error)
+            exp.fulfill()
+        }
+        await fulfillment(of: [exp], timeout: 5)
+
+        XCTAssertEqual(replyCount.value, 1,
+                       "clearCache must reply exactly once on the success path")
+
+        await engine.shutdown()
+    }
+}
+
+/// Thread-safe reply-invocation counter. Mirrors `RecordingTelemetrySink`'s
+/// `NSLock`-guarded counter idiom (`FPEEngineHostTests.swift`) — the reply
+/// closure fires from whichever context `runReplying`'s `Task` completes on,
+/// not necessarily the test's calling thread.
+private final class ReplyCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = 0
+
+    func increment() {
+        lock.withLock { _value += 1 }
+    }
+
+    var value: Int {
+        lock.withLock { _value }
+    }
+}
