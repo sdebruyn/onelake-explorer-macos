@@ -248,13 +248,26 @@ development path. It provides a real provisioning profile that includes
 the `com.apple.developer.file-provider` entitlement family; no
 `testing-mode` entitlement is needed or used.
 
-Building the Swift host app and the File Provider Extension requires a paid
-Apple Developer Program membership (a free Personal Team cannot sign the
-extension). With your team set in `Local.xcconfig`, build both with:
+Building a *runnable* copy of the Swift host app and the File Provider
+Extension requires a paid Apple Developer Program membership (a free
+Personal Team cannot sign the extension). With your team set in
+`Local.xcconfig`, build both with:
 
 ```
 make build
 ```
+
+Contributors without a paid account can still verify their change compiles
+with the CI-equivalent unsigned build:
+
+```
+make build-ci
+```
+
+This produces an unsigned, non-runnable binary — enough to catch Swift
+compile regressions, but not enough to install the extension on your Mac.
+See [Prerequisites](prerequisites.md) for the full compiling-vs-running
+split.
 
 Homebrew cask distribution requires:
 - Apple Developer Program enrollment ($99/yr),

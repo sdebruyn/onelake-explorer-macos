@@ -2,10 +2,11 @@
 
 This document distinguishes between:
 
-- **Local development** — what you need to clone the repo, build, run tests, and dogfood OFEM on your own machine (no signing, no notarization, no release).
+- **Compiling and passing CI checks** — what you need to clone the repo, edit code, verify it compiles (`make build-ci`), and run the tests (`make test`). No Apple account, free or paid.
+- **Running the signed app locally (dogfooding)** — additionally needed to produce a *runnable* `.app` with the File Provider Extension you can install on your own Mac (`make build`). Requires a paid Apple Developer Program membership — see below.
 - **Publishing & signing** — what additionally is needed to produce the official signed/notarized `.app` and ship it via Homebrew cask.
 
-If you only want to contribute code, you only need the **Local development** section. The publishing requirements are only relevant to the maintainer and to release CI.
+If you only want to contribute code, the first bullet is all you need: `make build-ci` and `make test` both work on a fresh checkout with zero Apple credentials. The publishing requirements are only relevant to the maintainer and to release CI.
 
 ---
 
@@ -29,10 +30,22 @@ Plus a configured **Microsoft Entra tenant** with at least one workspace you can
 - `delta` — nicer diffs in git (`brew install git-delta`).
 - `entr` — auto-run tests on file save (`brew install entr`).
 
-### Working on the `.app` and File Provider Extension requires
+### Compiling without an Apple account
+
+`make build-ci` builds the app + extension unsigned (no signing identity, no
+provisioning round trip) — exactly what CI runs on every PR. That's enough
+to verify your change compiles and to run the unit tests; no Apple account,
+free or paid, is required.
+
+### Running the `.app` and File Provider Extension locally requires
 
 - Xcode 15+ (you already need it).
-- A free Apple ID and **ad-hoc signing** are enough to install the `.app` on your own Mac. Other people cannot install your build without disabling Gatekeeper.
+- A **paid Apple Developer Program membership** ($99/yr). The File Provider
+  entitlement family is a restricted capability that a free Personal Team
+  cannot sign — see [File Provider Extension — architecture § Signing for
+  local vs release](file-provider.md#signing-for-local-vs-release) for why.
+  Ad-hoc signing with a free Apple ID is not sufficient to produce a runnable
+  `.app` with the extension embedded.
 
 #### Xcode project generation
 
@@ -47,9 +60,11 @@ is gitignored.
 Then:
 
 ```bash
-make bootstrap   # writes Local.xcconfig (gitignored); edit it
+make bootstrap   # writes Local.xcconfig (gitignored)
 make gen         # regenerates OneLake.xcodeproj
-make build       # Debug build via xcodebuild
+make build-ci    # unsigned compile-only build — no Apple account needed
+# or, with a paid Apple Developer Program team ID set in Local.xcconfig:
+make build       # Debug build via xcodebuild, signed and runnable
 ```
 
 #### Swift Package tests
