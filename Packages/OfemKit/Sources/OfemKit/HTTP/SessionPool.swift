@@ -94,6 +94,15 @@ public actor SessionPool {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = .infinity
+        // M5 / #430: `waitsForConnectivity` is intentionally left `false`
+        // (the default). Turning it on would make a request block instead of
+        // failing fast with `.notConnectedToInternet` while offline — but
+        // ``OfflineTracker`` (Sync/OfflineTracker.swift) keys the app's
+        // offline mode (serve stale cached blobs, skip freshness HEADs) off
+        // exactly that prompt failure. With `timeoutIntervalForResource` set
+        // to `.infinity` above, enabling it would mean a request issued
+        // while offline hangs indefinitely instead of tripping offline mode.
+        // Revisit only alongside a bounded per-request connectivity timeout.
         // Disable the shared URL cache so a stale or negative (404) entry can
         // never be served without a live round-trip.
         config.urlCache = nil
