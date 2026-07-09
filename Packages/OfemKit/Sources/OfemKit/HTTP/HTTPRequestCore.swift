@@ -130,6 +130,21 @@ struct HTTPErrorClassification {
     }
 }
 
+// MARK: - Buffered response size cap
+
+/// Maximum size accepted for a response body buffered fully in memory by
+/// ``executeDataRequest(sessionPool:alias:scope:method:url:headers:body:onFailure:mapError:)``.
+///
+/// Applies only to that small buffered API-response path — Fabric REST
+/// discovery calls and OneLake DFS metadata PUT/PATCH/DELETE/GET — never to
+/// the large-file download path (`OneLakeClient.doStreamRequest`), which
+/// streams straight to a temp file and never holds the whole body in memory.
+///
+/// 10 MiB mirrors `RotatingFileWriter.defaultMaxFileSizeBytes`, the
+/// project's existing precedent for a generous but bounded buffer; Fabric
+/// REST and DFS metadata payloads are JSON, normally well under this size.
+let maxBufferedResponseBytes = 10 * 1024 * 1024
+
 // MARK: - executeDataRequest (http-02)
 
 /// Shared request-execution core for ``OneLakeClient`` and ``FabricClient``.
@@ -176,6 +191,15 @@ func executeDataRequest<DomainError: Error>(
     case let .success(data):
         guard let httpResponse = dataResponse.response else {
             throw mapError(HTTPClientError.transport(URLError(.badServerResponse)))
+        }
+        // Checked against the actual buffered byte count rather than the
+        // declared Content-Length header: a response can omit or under-report
+        // Content-Length (e.g. chunked transfer-encoding), so data.count is
+        // the only authoritative measure of what actually landed in memory.
+        guard data.count <= maxBufferedResponseBytes else {
+            throw mapError(
+                HTTPClientError.responseTooLarge(bytesReceived: data.count, limit: maxBufferedResponseBytes)
+            )
         }
         return (data, httpResponse)
     case let .failure(afError):

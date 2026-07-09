@@ -226,6 +226,83 @@ struct RetryAfterRetrierBudgetTests {
     }
 }
 
+// MARK: - RetryAfterRetrier idempotency gate (#450)
+
+@Suite("RetryAfterRetrier idempotency gate")
+struct RetryAfterRetrierIdempotencyTests {
+    /// #450: a `Retry-After` on a non-idempotent request (POST) must not be
+    /// replayed. `RetryAfterRetrier` gates on the same
+    /// `idempotentHTTPMethods` set `SessionPool` configures
+    /// `JitteredRetryPolicy` from, so the two retriers can never disagree.
+    /// Registering only one stub proves the point: if the retrier incorrectly
+    /// retried the POST, the second attempt would exhaust the queue and fail
+    /// with `.resourceUnavailable` instead of surfacing the 429.
+    @Test("POST is not retried on Retry-After even within the retry budget")
+    func postIsNotRetriedOnRetryAfter() async {
+        let queueID = "retry-idempotency-post-\(UUID().uuidString)"
+        MockURLProtocol.registerQueue(id: queueID, stubs: [
+            MockURLProtocol.StubResponse(status: 429, headers: ["Retry-After": "0"]),
+        ])
+        defer { MockURLProtocol.clearQueue(id: queueID) }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        config.urlCache = nil
+
+        let counter = AttemptCounter()
+        let interceptor = Interceptor(
+            adapters: [counter, QueueIDAdapter(queueID: queueID)],
+            retriers: [RetryAfterRetrier()]
+        )
+        let session = Session(configuration: config, interceptor: interceptor)
+
+        let dataResponse = await session.request(
+            "https://example.invalid/throttled", method: .post
+        )
+        .validate()
+        .serializingData()
+        .response
+
+        #expect(dataResponse.response?.statusCode == 429)
+        guard case .failure = dataResponse.result else {
+            Issue.record("Expected the POST to fail without a Retry-After replay")
+            return
+        }
+        #expect(counter.count == 1)
+    }
+
+    /// Companion to the POST test above: confirms the idempotency gate did
+    /// not accidentally stop GET (an idempotent method) from retrying.
+    @Test("GET is still retried on Retry-After")
+    func getIsStillRetriedOnRetryAfter() async {
+        let queueID = "retry-idempotency-get-\(UUID().uuidString)"
+        MockURLProtocol.registerQueue(id: queueID, stubs: [
+            MockURLProtocol.StubResponse(status: 429, headers: ["Retry-After": "0"]),
+            MockURLProtocol.StubResponse(status: 200),
+        ])
+        defer { MockURLProtocol.clearQueue(id: queueID) }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        config.urlCache = nil
+
+        let counter = AttemptCounter()
+        let interceptor = Interceptor(
+            adapters: [counter, QueueIDAdapter(queueID: queueID)],
+            retriers: [RetryAfterRetrier()]
+        )
+        let session = Session(configuration: config, interceptor: interceptor)
+
+        let dataResponse = await session.request("https://example.invalid/throttled")
+            .validate()
+            .serializingData()
+            .response
+
+        #expect(dataResponse.response?.statusCode == 200)
+        #expect(counter.count == 2)
+    }
+}
+
 // MARK: - JitteredRetryPolicy (C10)
 
 @Suite("JitteredRetryPolicy")
@@ -261,5 +338,83 @@ struct JitteredRetryPolicyTests {
             retryLimit: 5, exponentialBackoffScale: 0, retryableHTTPStatusCodes: [429]
         )
         #expect(policy.jitteredDelay(forRetryCount: 0) == 0)
+    }
+}
+
+// MARK: - Buffered response size cap (#450)
+
+@Suite("executeDataRequest buffered response cap")
+struct BufferedResponseCapTests {
+    private static let capURL = URL(string: "https://example.invalid/buffered")!
+
+    /// Builds a `SessionPool` backed by a mock session serving `stubs`, mirroring
+    /// the pool `FabricClient`/`OneLakeClient` construction uses in production.
+    private func makePool(stubs: [MockURLProtocol.StubResponse]) async -> (SessionPool, String) {
+        let queueID = "buffered-cap-\(UUID().uuidString)"
+        MockURLProtocol.registerQueue(id: queueID, stubs: stubs)
+        let session = makeMockSession(queueID: queueID)
+        let pool = SessionPool(tokenProvider: NoopTokenProvider())
+        await pool._setSessionForTesting(session, alias: "test", scope: .fabric)
+        return (pool, queueID)
+    }
+
+    /// #450: a buffered response body over ``maxBufferedResponseBytes`` must
+    /// throw `.responseTooLarge` rather than being handed back uncapped —
+    /// `mapError: FabricError.from` mirrors the real call site
+    /// (`FabricClient.doRequest`) so this exercises the exact same mapping
+    /// path production code uses.
+    @Test("an over-cap buffered response throws responseTooLarge")
+    func overCapResponseThrows() async {
+        let overCap = Data(count: maxBufferedResponseBytes + 1)
+        let (pool, queueID) = await makePool(stubs: [
+            MockURLProtocol.StubResponse(status: 200, body: overCap),
+        ])
+        defer { MockURLProtocol.clearQueue(id: queueID) }
+
+        do {
+            _ = try await executeDataRequest(
+                sessionPool: pool,
+                alias: "test",
+                scope: .fabric,
+                method: "GET",
+                url: Self.capURL,
+                headers: [:],
+                body: nil,
+                mapError: FabricError.from
+            )
+            Issue.record("Expected responseTooLarge to be thrown for an over-cap buffered response")
+        } catch let FabricError.httpError(underlying) {
+            guard case let HTTPClientError.responseTooLarge(bytesReceived, limit)? = underlying as? HTTPClientError else {
+                Issue.record("Expected HTTPClientError.responseTooLarge, got \(underlying)")
+                return
+            }
+            #expect(bytesReceived == overCap.count)
+            #expect(limit == maxBufferedResponseBytes)
+        } catch {
+            Issue.record("Expected FabricError.httpError(.responseTooLarge), got \(error)")
+        }
+    }
+
+    /// A response at exactly the cap is not rejected — the guard is `<=`, not `<`.
+    @Test("a buffered response at the cap is returned normally")
+    func atCapResponseSucceeds() async throws {
+        let atCap = Data(count: maxBufferedResponseBytes)
+        let (pool, queueID) = await makePool(stubs: [
+            MockURLProtocol.StubResponse(status: 200, body: atCap),
+        ])
+        defer { MockURLProtocol.clearQueue(id: queueID) }
+
+        let (data, response) = try await executeDataRequest(
+            sessionPool: pool,
+            alias: "test",
+            scope: .fabric,
+            method: "GET",
+            url: Self.capURL,
+            headers: [:],
+            body: nil,
+            mapError: FabricError.from
+        )
+        #expect(data.count == maxBufferedResponseBytes)
+        #expect(response.statusCode == 200)
     }
 }

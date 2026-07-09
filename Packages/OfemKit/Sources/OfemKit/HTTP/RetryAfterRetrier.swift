@@ -30,6 +30,18 @@ struct RetryAfterRetrier: RequestRetrier {
     /// `request.retryCount` cannot drift out of sync.
     static let maxRetries = 5
 
+    /// HTTP methods this retrier considers safe to replay.
+    ///
+    /// Single source of truth for the idempotency notion shared with
+    /// `SessionPool`'s `JitteredRetryPolicy` — mirrors `maxRetries` above.
+    /// `SessionPool` configures `JitteredRetryPolicy(retryableHTTPMethods:)`
+    /// from this same set rather than hard-coding a second one, so a
+    /// `Retry-After` replay and an exponential-backoff replay can never
+    /// disagree on which methods are safe to retry. PATCH is included
+    /// because OneLake append/flush calls are position-addressed and
+    /// replay-safe; POST is deliberately excluded as non-idempotent.
+    static let idempotentHTTPMethods: Set<HTTPMethod> = [.get, .head, .put, .delete, .options, .patch]
+
     func retry(
         _ request: Request,
         for _: Session,
@@ -37,14 +49,17 @@ struct RetryAfterRetrier: RequestRetrier {
         completion: @escaping @Sendable (RetryResult) -> Void
     ) {
         guard request.retryCount < Self.maxRetries,
+              let method = request.request?.method,
+              Self.idempotentHTTPMethods.contains(method),
               let response = request.response,
               [429, 503].contains(response.statusCode),
               let header = response.value(forHTTPHeaderField: "Retry-After"),
               let delay = parseRetryAfter(header)
         else {
-            // Retry budget exhausted, no header, unparseable, or wrong status —
-            // let RetryPolicy decide (it will also see the same retryCount and
-            // stop immediately once the shared budget is spent).
+            // Retry budget exhausted, non-idempotent method, no header,
+            // unparseable, or wrong status — let RetryPolicy decide (it will
+            // also see the same retryCount/method and stop immediately once
+            // the shared budget or idempotency gate says no).
             completion(.doNotRetry)
             return
         }

@@ -131,14 +131,10 @@ public actor SessionPool {
                 RetryAfterRetrier(),
                 JitteredRetryPolicy(
                     // Single source of truth shared with RetryAfterRetrier's
-                    // own cap — see RetryAfterRetrier.maxRetries.
+                    // own cap and idempotency notion — see
+                    // RetryAfterRetrier.maxRetries / .idempotentHTTPMethods.
                     retryLimit: UInt(RetryAfterRetrier.maxRetries),
-                    retryableHTTPMethods: [
-                        .get, .head, .put, .delete, .options,
-                        // PATCH is added for OneLake append/flush: position-addressed
-                        // operations are replay-safe and must remain retriable.
-                        .patch,
-                    ],
+                    retryableHTTPMethods: RetryAfterRetrier.idempotentHTTPMethods,
                     retryableHTTPStatusCodes: [408, 425, 429, 500, 502, 503, 504]
                 ),
             ],
