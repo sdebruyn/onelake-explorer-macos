@@ -1,9 +1,11 @@
-{# Umami analytics — endpoint and website-id are placeholders.
-   Sam will fill them in once the Umami instance for ofem.debruyn.dev
-   is provisioned (see https://github.com/sdebruyn/onelake-explorer-macos
-   issue tracker — search label "area:docs"). Until then this block
-   silently no-ops (the script tag still loads but website-id is empty,
-   so Umami's loader skips reporting). #}
+{# Umami analytics for this docs site (ofem.debruyn.dev) — unrelated to
+   the app's own opt-out telemetry, see docs/privacy.md. The tracker
+   script is sideloaded from Umami Cloud's script CDN at build time
+   (docs_build/cloudflare_pages.sh) and served first-party as /t.js so
+   it survives ad-blockers that flag third-party script hosts; events
+   are still reported to our self-hosted collector at data-host-url
+   below, using this site's real website-id. Respects Do Not Track
+   (data-do-not-track). #}
 <script defer
   src="/t.js"
   data-website-id="ad9ee2f3-5666-40c1-becf-1df5b5ead542"

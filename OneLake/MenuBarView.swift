@@ -254,7 +254,7 @@ private struct AccountSubmenu: View {
             log.notice("openInFinder: getUserVisibleURL failed for \(domain.identifier.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return
         }
-        log.info("Opening Finder at \(url.path, privacy: .public)")
+        log.info("Opening Finder at \(url.path, privacy: .private)")
         let accessed = url.startAccessingSecurityScopedResource()
         defer {
             if accessed { url.stopAccessingSecurityScopedResource() }

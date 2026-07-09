@@ -5,4 +5,4 @@ contact_links:
     about: Report security issues privately via GitHub Security Advisories. Do not open a public issue.
   - name: Question or discussion
     url: https://github.com/sdebruyn/onelake-explorer-macos/discussions
-    about: For questions, ideas, and general discussion (once Discussions is enabled).
+    about: For questions, ideas, and general discussion.
