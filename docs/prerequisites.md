@@ -86,8 +86,7 @@ swift test
 | Apple Developer Program enrollment | $99/year | https://developer.apple.com/programs/ |
 | Developer ID Application certificate | included in Developer Program | Xcode → Settings → Accounts → Manage Certificates → "+" → Developer ID Application |
 | App Store Connect API key (for notarytool) | included in Developer Program | https://appstoreconnect.apple.com/access/integrations/api → "+" → "Developer" or "Admin" role |
-| App Group identifier `group.dev.debruyn.ofem` | included | https://developer.apple.com/account/resources/identifiers → "+" → App Groups |
-| File Provider entitlement | included | configured per-extension in the `.entitlements` file |
+| App Group identifier `group.dev.debruyn.ofem` | included | https://developer.apple.com/account/resources/identifiers → "+" → App Groups. Declared as `com.apple.security.application-groups` in both `OneLake/OneLake.entitlements` and `OneLakeFileProvider/OneLakeFileProvider.entitlements` — this is what lets the host app and the extension share state; there is no separate "File Provider" entitlement key in either file. |
 | Microsoft Entra App Registration | free | ✅ done — client ID `939b4a06-cc18-49eb-9674-a1fc041489f6` ("OneLake Explorer for macOS", multi-tenant, public client). See [docs/auth.md](auth.md) for the underlying settings. |
 | Azure Application Insights resource (Free tier) | free up to 5 GB/month | https://portal.azure.com → "Application Insights" → "+" → choose Pay-As-You-Go subscription, Free pricing tier |
 | GitHub repository | free | already exists once initial scaffolding is pushed |
