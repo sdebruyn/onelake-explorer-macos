@@ -21,18 +21,27 @@ import Foundation
 /// field, so this is the preferred strategy for OFEM's multi-account,
 /// multi-tenant use case.
 ///
-/// ## Fallback
+/// ## Alternative: file-backed storage (manual opt-in, not an automatic fallback)
 ///
-/// If a future macOS release or an App Sandbox restriction prevents writes
-/// to the login.keychain, the ``.fileBackedFallback`` strategy delegates
-/// to `OfemKit`'s ``FileTokenStore``. In that case MSAL's cache is
-/// serialised and de-serialised via `MSALSerializedADALCacheProviding`,
-/// and the raw bytes are stored under `<configDir>/tokens/<alias>.bin`.
+/// ``.fileBackedFallback`` delegates to `OfemKit`'s ``FileTokenStore``: MSAL's
+/// cache is serialised and de-serialised via `MSALSerializedADALCacheProviding`,
+/// and the raw bytes are stored under `<configDir>/tokens/<alias>.bin`. The
+/// `fcntl`+mutex machinery behind it is real, cross-process-safe, and covered
+/// by tests (``FileTokenStore``, `FileTokenStoreCacheDelegate`).
 ///
-/// The active strategy is stored per-process; on a fresh install the
-/// default (`.msalKeychain`) is tried first.
+/// Despite the case's name, OFEM does **not** auto-select it: nothing probes
+/// the login.keychain for availability or retries with this strategy after a
+/// Keychain write/read failure. `cacheStrategy` defaults to `.msalKeychain`
+/// everywhere it's threaded through (``OfemAuth``, `MsalAuthClient`,
+/// `InteractiveSignIn`), and no production call site overrides that default —
+/// `.fileBackedFallback` is exercised only by unit tests today (investigated
+/// as part of #449). It remains available as an explicit opt-in for a future
+/// caller that wants file-backed storage deliberately, or for genuine
+/// Keychain-unavailability detection if that is ever built — but until such a
+/// caller exists, selecting it is something a caller must do on purpose.
 public enum TokenCacheStrategy: Sendable {
-    /// Use MSAL's native macOS login.keychain cache (recommended).
+    /// Use MSAL's native macOS login.keychain cache (recommended, and the
+    /// default — the only strategy any production call site selects today).
     ///
     /// MSAL writes two `kSecClassGenericPassword` blobs to the login.keychain
     /// via the ACL-based `MSIDMacACLKeychainAccessor`. The login.keychain
@@ -40,11 +49,13 @@ public enum TokenCacheStrategy: Sendable {
     /// realistic number of accounts and tenants.
     case msalKeychain
 
-    /// Fall back to `OfemKit`'s file-backed ``FileTokenStore``.
+    /// File-backed alternative to `.msalKeychain`, via `OfemKit`'s
+    /// ``FileTokenStore``. MSAL's serialised cache bytes are written to
+    /// `<configDir>/tokens/<alias>.bin` via an `MSALSerializedADALCacheProviding`
+    /// bridge.
     ///
-    /// Used when the login.keychain is unavailable (e.g. certain CI
-    /// environments or edge-case sandbox configurations). MSAL's serialised
-    /// cache bytes are written to `<configDir>/tokens/<alias>.bin` via an
-    /// `MSALSerializedADALCacheProviding` bridge.
+    /// Must be selected explicitly — see the type-level doc above for why
+    /// this is not an automatic fallback despite the name. No production
+    /// caller passes this today; only unit tests do.
     case fileBackedFallback
 }

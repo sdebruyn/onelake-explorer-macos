@@ -455,6 +455,50 @@ struct CacheStoreTests {
         #expect(row.contentLength == 77)
     }
 
+    // MARK: - openReadOnly (#449)
+
+    @Test("openReadOnly returns nil when the database file does not exist yet")
+    func openReadOnlyReturnsNilWhenMissing() {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        #expect(CacheStore.openReadOnly(root: tmp) == nil)
+    }
+
+    @Test("openReadOnly can read rows written by the full-access store")
+    func openReadOnlyReadsWrittenRows() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let key = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "f.txt")
+        try await store.upsert(MetadataRecord(
+            accountAlias: "a", workspaceID: "w", itemID: "i",
+            path: "f.txt", parentPath: "", name: "f.txt", isDir: false,
+            contentLength: 99
+        ))
+
+        let reader = try #require(CacheStore.openReadOnly(root: store.root))
+        let row = try await reader.fetch(key: key)
+        #expect(row.contentLength == 99)
+    }
+
+    @Test("openReadOnly's pool rejects a write (config.readonly enforcement, #449)")
+    func openReadOnlyPoolRejectsWrite() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        // Force the sqlite file to exist before opening the read-only pool.
+        try await store.upsert(MetadataRecord(
+            accountAlias: "a", workspaceID: "w", itemID: "i",
+            path: "f.txt", parentPath: "", name: "f.txt", isDir: false
+        ))
+
+        let pool = try #require(CacheStore.openReadOnlyPoolForTesting(root: store.root))
+        await #expect(throws: DatabaseError.self) {
+            try await pool.write { db in
+                try db.execute(sql: "DELETE FROM path_metadata")
+            }
+        }
+    }
+
     // MARK: - StoreBlob
 
     @Test("StoreBlob throws notFound when metadata row is missing")

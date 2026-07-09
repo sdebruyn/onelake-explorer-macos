@@ -181,6 +181,29 @@ struct MsalApplicationConfigTests {
             )
         }
     }
+
+    @Test("fileBackedFallback with a valid store and alias wires serializedADALCache (#449)")
+    func fileBackedWithValidStoreWiresSerializedCache() throws {
+        // Confirms the file-backed machinery is genuinely functional when a
+        // caller opts into it explicitly — see TokenCacheStrategy's doc: it
+        // is a real, working strategy, just never auto-selected in shipped
+        // builds (nothing there currently exercises this beyond error paths).
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "msal-config-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let store = try FileTokenStore(tokensDir: dir)
+
+        let config = try MsalApplicationConfig.make(
+            clientID: "test-client-id",
+            tenantID: "tenant",
+            cacheStrategy: .fileBackedFallback,
+            fileTokenStore: store,
+            alias: "work"
+        )
+        #expect(
+            config.cacheConfig.serializedADALCache != nil,
+            "fileBackedFallback with a valid store+alias must wire the FileTokenStore bridge onto the MSAL config"
+        )
+    }
 }
 
 // MARK: - MsalAuthClientErrorDescriptionTests

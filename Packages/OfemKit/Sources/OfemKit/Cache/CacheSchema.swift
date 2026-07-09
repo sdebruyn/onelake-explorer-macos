@@ -30,6 +30,11 @@ import GRDB
 ///   The FPE's lagging-client guard expires a client whose sync anchor predates
 ///   this watermark, forcing a full re-enumeration so purged deletions are
 ///   reconciled by absence rather than silently lost.
+/// - `v9` — adds `idx_pm_blob_dedup`, a partial covering index backing the
+///   `GROUP BY blob_sha256` in ``CacheReader/deduplicatedBlobBytesSQL``, which
+///   `evictToLimit()` runs on every ``CacheStore/storeBlob(key:data:)`` call.
+///   Without it that query was a full `path_metadata` scan plus a temp B-tree
+///   sort for the GROUP BY on every download.
 ///
 /// Key indexes:
 /// - `idx_pm_synced_at`: composite on `(account_alias, synced_at_ns)` used
@@ -44,6 +49,12 @@ import GRDB
 ///   by `itemsChangedAfter` to avoid full `deletion_tombstones` scans.
 /// - `materialized_containers` PK `(account_alias, identifier_string)`: its
 ///   B-tree prefix serves the `WHERE account_alias = ?` scan; no separate index.
+/// - `idx_pm_blob_dedup`: partial covering index on `(blob_sha256, blob_size)
+///   WHERE blob_sha256 != ''`, added in v9. Column order matches the `GROUP BY
+///   blob_sha256` in `deduplicatedBlobBytesSQL` exactly, so SQLite can walk the
+///   index in blob_sha256 order instead of a temp B-tree sort; including
+///   `blob_size` makes it a covering index, so the SUM never touches the main
+///   `path_metadata` B-tree at all.
 public enum CacheSchema {
     // MARK: - Migrator
 
@@ -255,6 +266,26 @@ public enum CacheSchema {
                 account_alias                TEXT    PRIMARY KEY,
                 tombstones_purged_through_ns INTEGER NOT NULL DEFAULT 0
             );
+            """)
+        }
+
+        // v9: partial covering index backing the `GROUP BY blob_sha256` in
+        // `CacheReader.deduplicatedBlobBytesSQL`. That query runs on every
+        // `evictToLimit()` pass, which every `storeBlob(key:data:)` call
+        // triggers — i.e. on every download — so an unindexed GROUP BY meant
+        // a full `path_metadata` scan plus a temp B-tree sort on the hot path.
+        // Column order is `(blob_sha256, blob_size)`: `blob_sha256` first to
+        // match the GROUP BY key so SQLite walks the index pre-sorted instead
+        // of building a temp B-tree, and `blob_size` included to make the
+        // index covering — the SUM(blob_size) is answered entirely from the
+        // index, never touching the `path_metadata` B-tree. The partial
+        // `WHERE blob_sha256 != ''` mirrors `idx_pm_blob_lru` (v1): only
+        // blob-bearing rows (a small minority) are indexed.
+        m.registerMigration("v9") { db in
+            try db.execute(sql: """
+            CREATE INDEX idx_pm_blob_dedup
+                ON path_metadata (blob_sha256, blob_size)
+                WHERE blob_sha256 != '';
             """)
         }
 
