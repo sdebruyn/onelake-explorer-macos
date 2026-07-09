@@ -1,0 +1,51 @@
+# Lints the PR title so the squash-merge subject that lands on main is a
+# valid conventional-commit line. The commitlint job in ci.yml only checks
+# branch commits, but this repo squash-merges — the PR title *is* the commit
+# that lands on main, so it needs the same guarantee.
+#
+# This pipes the title through commitlint itself (rather than a separate
+# action such as amannn/action-semantic-pull-request) so it is judged by the
+# repo's single commitlint.config.js verbatim — no second type/length
+# ruleset to keep in sync with the branch-commit check.
+#
+# A separate workflow (not a job in ci.yml) because it needs the `edited`
+# trigger to re-validate a later title change, and ci.yml's push+pull_request
+# triggers are shared by the macOS build job — adding `edited` there would
+# re-run the full 30-minute build on every title tweak.
+
+name: PR Title Lint
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-title-lint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint-pr-title:
+    name: Lint PR title (squash-merge subject)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: "22"
+
+      - name: Install commitlint
+        run: npm install --no-save @commitlint/cli@19.8.1 @commitlint/config-conventional@19.8.1
+
+      - name: Lint PR title
+        # `commitlint` with no --from/--to/--edit lints whatever is piped to
+        # stdin as a single commit message, so this validates the title
+        # against commitlint.config.js exactly like a normal commit subject.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: echo "$PR_TITLE" | npx commitlint --verbose
