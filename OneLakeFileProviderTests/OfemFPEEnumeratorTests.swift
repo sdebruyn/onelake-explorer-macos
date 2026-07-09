@@ -395,10 +395,15 @@ final class OfemFPEEnumeratorTests: XCTestCase {
     ///    replaces) but equal to the exact value recorded, proving the
     ///    failure path never touches it.
     func testWorkingSetEnumerateChanges_sharedThrottleAcrossInstances() async {
+        // Both aliases are UUID-suffixed, so no prior run or sibling test can
+        // ever have populated either key — unlike the fixed aliases in
+        // `fixedWorkingSetAliases` (cleared by setUp/tearDown), a pre-priming
+        // `clearRefresh` here would be defence against a structurally
+        // impossible collision. Matches the other UUID-aliased tests in this
+        // file (e.g. `_rapidSecondCall_throttled`), none of which clear
+        // before or after either — see #458 review.
         let alias = "shared-throttle-\(UUID().uuidString)"
         let otherAlias = "shared-throttle-other-\(UUID().uuidString)"
-        OfemWorkingSetEnumerator.clearRefresh(for: alias)
-        OfemWorkingSetEnumerator.clearRefresh(for: otherAlias)
 
         // Simulate a prior instance's successful refresh — recordRefresh is
         // exactly what enumerateChanges calls after a successful listWorkspaces.
@@ -442,9 +447,6 @@ final class OfemFPEEnumeratorTests: XCTestCase {
             OfemWorkingSetEnumerator.lastRefresh(for: alias), prearmedStamp,
             "a non-auth engine failure must leave the pre-armed shared stamp exactly as it was"
         )
-
-        OfemWorkingSetEnumerator.clearRefresh(for: alias)
-        OfemWorkingSetEnumerator.clearRefresh(for: otherAlias)
     }
 
     /// Auth failure must clear the shared throttle stamp so the next working-set
