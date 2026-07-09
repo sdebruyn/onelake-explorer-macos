@@ -377,12 +377,22 @@ struct RetryAfterRetrierIdempotencyTests {
     @Test("an explicit markIdempotent(false:) override is honored end-to-end through the full production retrier chain")
     func explicitOptOutHoldsThroughFullRetrierChain() async {
         let counter = AttemptCounter()
+        // Mirrors SessionPool's actual JitteredRetryPolicy construction,
+        // retryableHTTPMethods included — omitting it (as an earlier version
+        // of this test did) silently falls back to RetryPolicy's stock
+        // default retryableHTTPMethods ([.delete, .get, .head, .options,
+        // .put, .trace], no .patch), which would decline the PATCH below all
+        // on its own and make this test pass for the wrong reason regardless
+        // of the idempotency override (PR #451 review round 4 caught exactly
+        // this vacuous-test bug).
         let (session, queueID) = makeRetrierSession(
             stubs: [MockURLProtocol.StubResponse(status: 429, headers: ["Retry-After": "0"])],
             retriers: [
                 RetryAfterRetrier(),
                 JitteredRetryPolicy(
-                    retryLimit: UInt(RetryAfterRetrier.maxRetries), retryableHTTPStatusCodes: [429]
+                    retryLimit: UInt(RetryAfterRetrier.maxRetries),
+                    retryableHTTPMethods: RetryAfterRetrier.idempotentHTTPMethods,
+                    retryableHTTPStatusCodes: [429]
                 ),
             ],
             adapters: [counter]
@@ -532,6 +542,23 @@ struct BufferedResponseCapTests {
     /// `Content-Length` (via `Progress.totalUnitCount`) and recording it as
     /// over-cap, independent of whether `req.cancel()` wins its race against
     /// the mock's synchronous delivery.
+    ///
+    /// Known theoretical flake source (#451 review round 4, not fixed here):
+    /// `downloadProgress`'s closure is dispatched onto `.main` *asynchronously*
+    /// relative to `serializingData()`'s completion, which resolves on
+    /// Alamofire's own internal queue — there is no ordering guarantee across
+    /// those two queues. If the `.main`-queued closure has not yet run by the
+    /// time `executeDataRequest` returns, `sizeGuard.result` would still be
+    /// `nil`, and this test would observe an ordinary under-cap success
+    /// instead of `responseTooLarge`. Forcing a guaranteed ordering would mean
+    /// either round-tripping through `.main` on every response in production
+    /// (real latency cost for the common, non-oversized case, just to pin one
+    /// test) or a bigger streaming redesign — neither undertaken here, since
+    /// this is a test-determinism concern, not a production-correctness one:
+    /// a genuinely oversized *buffered* body is still deterministically
+    /// caught by the post-buffer backstop regardless of this race. If this
+    /// test ever flakes, it flakes exactly this way — treat it as a timing
+    /// fluke, not a regression, unless `overCapResponseThrows` also fails.
     @Test("a response declaring Content-Length over the cap is preflight-rejected despite a tiny actual body")
     func declaredContentLengthOverCapIsPreflightRejected() async {
         let declaredLength = HTTPClientError.maxBufferedResponseBytes + 1
