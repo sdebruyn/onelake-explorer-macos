@@ -561,6 +561,13 @@ public actor SyncEngine {
     ///    upsert batch, which deliberately omits unchanged-but-present children).
     /// 6. ``stampParentRow(key:diff:folderItemType:nowNs:)`` — the conditional
     ///    parent freshness marker.
+    ///
+    /// Phases 3 and 5 are committed together in ONE
+    /// ``CacheStore/batchUpsertAndDelete(upserts:deletes:recordTombstones:)``
+    /// transaction (not as two separate writes): a failure while deleting
+    /// vanished children rolls the upserts back too, instead of leaving
+    /// committed-but-un-tombstoned rows behind an already-advanced sync anchor
+    /// (#427 / review finding M2).
     public func refreshFolder(key: CacheKey) async throws -> Diff {
         // Phase 1: pause/offline-guarded listing. Rethrows before any cache
         // mutation, so a paused/offline folder leaves the cache intact.
@@ -598,7 +605,28 @@ public actor SyncEngine {
         )
         diff.added += added
         diff.updated += updated
-        await batchUpsert(upsertBatch, context: "refreshFolder upsert")
+
+        // Phase 5: cached children that disappeared remotely (pure). The
+        // reference set is the FULL remote listing (`remoteChildren`), NEVER the
+        // upsert batch — a child skipped from the batch because it is unchanged
+        // is still present remotely and must not be tombstoned. Computed here,
+        // alongside the upsert batch, so both can commit in one transaction below.
+        let deleteBatch = Self.buildDeleteBatch(
+            key: key,
+            remoteChildren: remoteChildren,
+            cachedByPath: cachedByPath
+        )
+        diff.removed += deleteBatch.count
+
+        // Phases 3 + 5 commit atomically: each removed row (and any descendants
+        // of a vanished directory) is tombstoned in the SAME transaction as the
+        // upserts above, so enumerateChanges delivers the removal incrementally
+        // AND a delete-phase failure (e.g. a transient SQLITE_BUSY/SQLITE_FULL)
+        // rolls the upserts back too — never committed-but-un-tombstoned rows
+        // behind an already-advanced sync anchor (#427 / review finding M2).
+        try await cache.batchUpsertAndDelete(
+            upserts: upsertBatch, deletes: deleteBatch, recordTombstones: true
+        )
 
         // Phase 4: #380 subtree-etag harvest (only updateSubtreeEtag, never a
         // synced_at_ns bump).
@@ -608,20 +636,6 @@ public actor SyncEngine {
             cachedByPath: cachedByPath,
             upsertBatch: upsertBatch
         )
-
-        // Phase 5: delete cached children that disappeared remotely, in one
-        // batch. The reference set is the FULL remote listing (`remoteChildren`),
-        // NEVER the upsert batch — a child skipped from the batch because it is
-        // unchanged is still present remotely and must not be tombstoned. Each
-        // removed row (and any descendants of a vanished directory) is tombstoned
-        // so enumerateChanges delivers the removal incrementally.
-        let deleteBatch = Self.buildDeleteBatch(
-            key: key,
-            remoteChildren: remoteChildren,
-            cachedByPath: cachedByPath
-        )
-        diff.removed += deleteBatch.count
-        await batchDelete(deleteBatch, recordTombstones: true, context: "refreshFolder delete")
 
         // Phase 6: stamp the parent freshness-marker row (conditionally).
         await stampParentRow(key: key, diff: diff, folderItemType: folderItemType, nowNs: nowNs)

@@ -289,20 +289,8 @@ public actor CacheStore {
     public func batchUpsert(_ records: [MetadataRecord]) async throws {
         guard !records.isEmpty else { return }
         let now = clock()
-        let prepared: [MetadataRecord] = records.map { r in
-            var copy = r
-            if copy.lastAccessedNs == 0 { copy.lastAccessedNs = now }
-            if copy.syncedAtNs == 0 { copy.syncedAtNs = now }
-            return copy
-        }
-        for chunk in prepared.chunked(by: Self.batchChunkSize) {
-            try await dbPool.write { db in
-                for record in chunk {
-                    try record.upsert(db)
-                    // Clear any tombstone shadowing this identifier (see upsert).
-                    try Self.clearTombstone(db, record: record)
-                }
-            }
+        for chunk in records.chunked(by: Self.batchChunkSize) {
+            try await dbPool.write { db in try Self.upsertChunk(chunk, now: now, db: db) }
         }
     }
 
@@ -333,63 +321,131 @@ public actor CacheStore {
         let nowNs = clock()
         for chunk in keys.chunked(by: Self.batchChunkSize) {
             try await dbPool.write { db in
-                for key in chunk {
-                    // Collect the paths this key's delete will remove — INSIDE the
-                    // transaction (not before, which would open a TOCTOU window) —
-                    // so a tombstone can be written for each before the hard-delete,
-                    // mirroring delete(key:).
-                    let deletedPaths: [String]
-                    if key.path.isEmpty {
-                        deletedPaths = try String.fetchAll(db, sql: """
-                        SELECT path FROM path_metadata
-                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                        """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
-                    } else {
-                        let (exact, prefix) = Self.subtreeArguments(for: key)
-                        deletedPaths = try String.fetchAll(db, sql: """
-                        SELECT path FROM path_metadata
-                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                          AND (\(Self.subtreeWhereSuffix))
-                        """, arguments: [
-                            key.accountAlias, key.workspaceID, key.itemID,
-                            exact, prefix,
-                        ])
-                    }
+                try Self.deleteChunk(chunk, recordTombstones: recordTombstones, nowNs: nowNs, db: db)
+            }
+        }
+    }
 
-                    if recordTombstones {
-                        for path in deletedPaths {
-                            guard let identStr = Self.tombstoneIdentifierString(
-                                workspaceID: key.workspaceID,
-                                itemID: key.itemID,
-                                path: path
-                            ) else { continue }
-                            let tombstone = DeletionTombstoneRecord(
-                                accountAlias: key.accountAlias,
-                                identifierString: identStr,
-                                deletedAtNs: nowNs
-                            )
-                            try tombstone.save(db)
-                        }
-                    }
+    /// Upserts `upserts` and deletes `deletes` inside ONE GRDB write
+    /// transaction, so a failure in either phase rolls back both.
+    ///
+    /// ``SyncEngine/refreshFolder(key:)`` reconciles a folder by upserting
+    /// changed children and then tombstone-deleting vanished ones. When those
+    /// two phases were separate transactions, a transient failure on the
+    /// delete phase — after the upsert phase had already committed — left
+    /// vanished rows in the cache with no tombstone (invisible to
+    /// `itemsChangedAfter`'s incremental delta), while ``syncAnchorNs(accountAlias:)``
+    /// — the max `synced_at_ns` across the table, already advanced by the
+    /// committed upserts — had moved past them regardless of the delete
+    /// outcome. Folding both phases into one transaction means a delete-phase
+    /// failure rolls the upserts back too, so the anchor never advances over an
+    /// unreflected removal (#427 / review finding M2).
+    ///
+    /// Unlike ``batchUpsert(_:)`` / ``batchDelete(_:recordTombstones:)``, this
+    /// does not chunk: it exists for a single folder's reconcile pass, which is
+    /// bounded by one directory listing, and chunking would reintroduce the
+    /// exact split-transaction problem this method exists to close. This is a
+    /// deliberate trade-off: a very large first-time folder listing lands as
+    /// ONE WAL-held write transaction instead of the old 500-row chunks — a
+    /// larger memory/WAL burst than before, which matters in the FPE's
+    /// constrained-memory process — accepted in exchange for atomicity.
+    ///
+    /// `now` is read once and shared by both phases, so every upserted row's
+    /// `synced_at_ns` and every deleted row's tombstone `deleted_at_ns` come
+    /// from the same clock read (never `Date()` from a caller).
+    public func batchUpsertAndDelete(
+        upserts: [MetadataRecord],
+        deletes: [CacheKey],
+        recordTombstones: Bool
+    ) async throws {
+        guard !upserts.isEmpty || !deletes.isEmpty else { return }
+        let now = clock()
+        try await dbPool.write { db in
+            if !upserts.isEmpty {
+                try Self.upsertChunk(upserts, now: now, db: db)
+            }
+            if !deletes.isEmpty {
+                try Self.deleteChunk(deletes, recordTombstones: recordTombstones, nowNs: now, db: db)
+            }
+        }
+    }
 
-                    if key.path.isEmpty {
-                        // Empty path: wipe entire item — mirrors delete(key:) semantics.
-                        try db.execute(sql: """
-                        DELETE FROM path_metadata
-                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                        """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
-                    } else {
-                        let (exact, prefix) = Self.subtreeArguments(for: key)
-                        try db.execute(sql: """
-                        DELETE FROM path_metadata
-                        WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
-                          AND (\(Self.subtreeWhereSuffix))
-                        """, arguments: [
-                            key.accountAlias, key.workspaceID, key.itemID,
-                            exact, prefix,
-                        ])
-                    }
+    /// Per-chunk upsert body shared by ``batchUpsert(_:)`` and
+    /// ``batchUpsertAndDelete(upserts:deletes:recordTombstones:)``.
+    private static func upsertChunk(_ records: [MetadataRecord], now: Int64, db: Database) throws {
+        for record in records {
+            var copy = record
+            if copy.lastAccessedNs == 0 { copy.lastAccessedNs = now }
+            if copy.syncedAtNs == 0 { copy.syncedAtNs = now }
+            try copy.upsert(db)
+            // Clear any tombstone shadowing this identifier (see upsert).
+            try Self.clearTombstone(db, record: copy)
+        }
+    }
+
+    /// Per-chunk delete body shared by ``batchDelete(_:recordTombstones:)`` and
+    /// ``batchUpsertAndDelete(upserts:deletes:recordTombstones:)``.
+    private static func deleteChunk(
+        _ keys: [CacheKey],
+        recordTombstones: Bool,
+        nowNs: Int64,
+        db: Database
+    ) throws {
+        for key in keys {
+            // Collect the paths this key's delete will remove — INSIDE the
+            // transaction (not before, which would open a TOCTOU window) —
+            // so a tombstone can be written for each before the hard-delete,
+            // mirroring delete(key:).
+            let deletedPaths: [String]
+            if key.path.isEmpty {
+                deletedPaths = try String.fetchAll(db, sql: """
+                SELECT path FROM path_metadata
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
+            } else {
+                let (exact, prefix) = Self.subtreeArguments(for: key)
+                deletedPaths = try String.fetchAll(db, sql: """
+                SELECT path FROM path_metadata
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                  AND (\(Self.subtreeWhereSuffix))
+                """, arguments: [
+                    key.accountAlias, key.workspaceID, key.itemID,
+                    exact, prefix,
+                ])
+            }
+
+            if recordTombstones {
+                for path in deletedPaths {
+                    guard let identStr = Self.tombstoneIdentifierString(
+                        workspaceID: key.workspaceID,
+                        itemID: key.itemID,
+                        path: path
+                    ) else { continue }
+                    let tombstone = DeletionTombstoneRecord(
+                        accountAlias: key.accountAlias,
+                        identifierString: identStr,
+                        deletedAtNs: nowNs
+                    )
+                    try tombstone.save(db)
                 }
+            }
+
+            if key.path.isEmpty {
+                // Empty path: wipe entire item — mirrors delete(key:) semantics.
+                try db.execute(sql: """
+                DELETE FROM path_metadata
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                """, arguments: [key.accountAlias, key.workspaceID, key.itemID])
+            } else {
+                let (exact, prefix) = Self.subtreeArguments(for: key)
+                try db.execute(sql: """
+                DELETE FROM path_metadata
+                WHERE account_alias = ? AND workspace_id = ? AND item_id = ?
+                  AND (\(Self.subtreeWhereSuffix))
+                """, arguments: [
+                    key.accountAlias, key.workspaceID, key.itemID,
+                    exact, prefix,
+                ])
             }
         }
     }

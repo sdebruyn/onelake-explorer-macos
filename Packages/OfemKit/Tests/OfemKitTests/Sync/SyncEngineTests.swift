@@ -1203,6 +1203,69 @@ struct SyncEngineTests {
         #expect(!names.contains("gone.csv"))
     }
 
+    // MARK: - refreshFolder: delete-phase DB error rolls back atomically (#427)
+
+    /// Issue #427 / review finding M2: refreshFolder's upsert and delete phases
+    /// used to be separate transactions, and both swallowed DB errors (log-only).
+    /// A delete-phase failure after the upserts had already committed left
+    /// vanished rows in the cache with no tombstone while the sync anchor (the
+    /// max synced_at_ns, already advanced by the committed upserts) moved past
+    /// them regardless. This test installs a `BEFORE DELETE` trigger that fails
+    /// exactly the deletion of one vanished child — a stand-in for a transient
+    /// SQLITE_BUSY/SQLITE_FULL — and asserts the failure propagates AND the
+    /// whole reconcile (including the co-occurring upsert of a brand-new child)
+    /// rolled back, rather than leaving a partially-applied cache.
+    @Test("refreshFolder() propagates a delete-phase DB error and rolls back the co-committed upserts")
+    func refreshFolderDeletePhaseFailureRollsBackUpserts() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = CacheKey(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID, path: "")
+
+        // Seed a parent row plus two children.
+        let parent = MetadataRecord(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+                                    path: "", parentPath: "", name: "root", isDir: true)
+        try await store.upsert(parent)
+        for name in ["keep.csv", "gone.csv"] {
+            let r = MetadataRecord(accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+                                   path: name, parentPath: "", name: name, isDir: false)
+            try await store.upsert(r)
+        }
+
+        // A trigger that fails ONLY the "gone.csv" delete, so it fires deep
+        // inside the delete phase — after the upsert phase (below) has already
+        // run its INSERT/UPDATE statements in the SAME transaction.
+        try await store.dbPool.write { db in
+            try db.execute(sql: """
+            CREATE TEMP TRIGGER fail_gone_delete BEFORE DELETE ON path_metadata
+            WHEN OLD.path = 'gone.csv'
+            BEGIN SELECT RAISE(ABORT, 'issue-427 simulated delete-phase failure'); END;
+            """)
+        }
+
+        // Remote listing: keep.csv survives, gone.csv vanished, new.csv is a
+        // brand-new child — so this pass has both an upsert and a delete.
+        let listing = ListResult(entries: [
+            PathEntry(name: "keep.csv", isDirectory: false, contentLength: 10, eTag: "e1", lastModified: .distantPast),
+            PathEntry(name: "new.csv", isDirectory: false, contentLength: 20, eTag: "e2", lastModified: .distantPast),
+        ])
+        ol.listPathResults.append(.success(listing))
+
+        await #expect(throws: (any Error).self) {
+            try await engine.refreshFolder(key: key)
+        }
+
+        // The delete-phase failure must roll back the WHOLE reconcile
+        // transaction, not just the failing delete: new.csv must not have been
+        // committed, and gone.csv must still be present and un-tombstoned — no
+        // partial state where upserts landed but the vanished row silently
+        // dropped out of the incremental delta.
+        let children = try await store.children(of: key)
+        let names = Set(children.map(\.name))
+        #expect(names == ["keep.csv", "gone.csv"])
+    }
+
     // MARK: - refreshFolder: etag carry-over when unchanged
 
     @Test("refreshFolder() carries blob linkage when remote etag is unchanged")
