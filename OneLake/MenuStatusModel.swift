@@ -889,7 +889,10 @@ final class MenuStatusModel: ObservableObject {
     /// Optimistically updates the published `cacheMaxSizeGB` so the
     /// Stepper visibly tracks every click, then debounces the actual XPC call.
     func setCacheLimitGB(_ gb: Int) {
-        let clamped = max(1, min(100, gb))
+        // 0 is the "no limit" sentinel (CacheConfig.maxSizeGB) and must be
+        // preserved as-is, matching the FPE's setConfig clamp — otherwise
+        // this floor would silently turn "no limit" into "1 GB" (M9).
+        let clamped = gb == 0 ? 0 : max(CacheConfig.minSizeGB, min(CacheConfig.maxSizeGB, gb))
         setCacheLimitTask?.cancel()
         setCacheLimitTask = debouncedSet(.cacheMaxSize, debounce: MenuStatusModel.setCacheLimitDebounce, publish: {
             cacheMaxSizeGB = clamped
@@ -916,7 +919,9 @@ final class MenuStatusModel: ObservableObject {
 
     /// Stage a new "max parallel uploads per account" value.
     func setNetMaxUploads(_ n: Int) {
-        let clamped = max(1, min(16, n))
+        // M9: clamp through the same bounds the FPE's setConfig handler
+        // validates against, so the two never drift.
+        let clamped = max(NetConfig.minConcurrent, min(SetConfigLimits.maxUploadsPerAccount, n))
         setNetUploadsTask?.cancel()
         setNetUploadsTask = debouncedSet(.netMaxUploads, debounce: MenuStatusModel.setNetConcurrencyDebounce, publish: {
             netMaxUploads = clamped
@@ -927,7 +932,9 @@ final class MenuStatusModel: ObservableObject {
 
     /// Stage a new "max parallel downloads per account" value.
     func setNetMaxDownloads(_ n: Int) {
-        let clamped = max(1, min(32, n))
+        // M9: clamp through the same bounds the FPE's setConfig handler
+        // validates against, so the two never drift.
+        let clamped = max(NetConfig.minConcurrent, min(SetConfigLimits.maxDownloadsPerAccount, n))
         setNetDownloadsTask?.cancel()
         setNetDownloadsTask = debouncedSet(.netMaxDownloads, debounce: MenuStatusModel.setNetConcurrencyDebounce, publish: {
             netMaxDownloads = clamped

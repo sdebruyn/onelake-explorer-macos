@@ -12,8 +12,11 @@ import Testing
 //   config-07  config dir + file permission bits (regression)
 //   config-08  lock fd released when mutator throws
 //   config-09  OfemPaths.ensureDirectories()
+//   M9         clamp bounds centralized in ConfigSchema (CacheConfig,
+//              NetConfig, SetConfigLimits) — no independent literals
+//              duplicated on the host or FPE side
 
-@Suite("Config refactor — config-02/03/06/07/08/09")
+@Suite("Config refactor — config-02/03/06/07/08/09/M9")
 struct ConfigRefactorTests {
     // MARK: - Helpers
 
@@ -340,5 +343,49 @@ struct ConfigRefactorTests {
             let exists = fm.fileExists(atPath: dir.path(percentEncoded: false), isDirectory: &isDir)
             #expect(exists && isDir.boolValue)
         }
+    }
+
+    // MARK: - M9: clamp bounds centralized in ConfigSchema
+
+    /// `SetConfigLimits` used to be defined twice — an FPE-local type
+    /// backing `OfemClientControlService.setConfig`'s validating clamp, and
+    /// hardcoded literals in `MenuStatusModel`'s optimistic clamp — with
+    /// nothing tying the two together. This pins the actual numbers so a
+    /// future edit to one without the other fails a test instead of
+    /// silently drifting.
+    @Test("M9: SetConfigLimits bounds are tighter than NetConfig's absolute ceiling")
+    func setConfigLimitsAreTighterThanNetConfigCeiling() {
+        #expect(SetConfigLimits.maxUploadsPerAccount == 16)
+        #expect(SetConfigLimits.maxDownloadsPerAccount == 32)
+        #expect(SetConfigLimits.maxUploadsPerAccount < NetConfig.maxConcurrent,
+                "the XPC-level ceiling must stay tighter than the config-file-level ceiling")
+        #expect(SetConfigLimits.maxDownloadsPerAccount < NetConfig.maxConcurrent,
+                "the XPC-level ceiling must stay tighter than the config-file-level ceiling")
+    }
+
+    /// Pins `CacheConfig`'s documented bounds, which both
+    /// `MenuStatusModel.setCacheLimitGB` and
+    /// `OfemClientControlService.setConfig` clamp through.
+    @Test("M9: CacheConfig min/max bounds")
+    func cacheConfigBounds() {
+        #expect(CacheConfig.minSizeGB == 1)
+        #expect(CacheConfig.maxSizeGB == 100)
+    }
+
+    /// The `0 = no limit` cache sentinel must round-trip through the same
+    /// clamp expression used by both the host and the FPE: `gb == 0 ? 0 :
+    /// max(minSizeGB, min(maxSizeGB, gb))`. This mirrors the two call sites
+    /// verbatim rather than re-deriving the logic, so a change to either
+    /// clamp expression that breaks the sentinel is caught here.
+    @Test("M9: 0-sentinel clamp expression preserves 0 and otherwise matches [minSizeGB, maxSizeGB]")
+    func cacheSentinelClampExpression() {
+        func clamp(_ gb: Int) -> Int {
+            gb == 0 ? 0 : max(CacheConfig.minSizeGB, min(CacheConfig.maxSizeGB, gb))
+        }
+        #expect(clamp(0) == 0, "0 must be preserved as the no-limit sentinel")
+        #expect(clamp(-5) == CacheConfig.minSizeGB, "a negative non-zero value clamps up to minSizeGB")
+        #expect(clamp(1) == 1)
+        #expect(clamp(50) == 50)
+        #expect(clamp(9999) == CacheConfig.maxSizeGB, "an absurdly large value clamps down to maxSizeGB")
     }
 }

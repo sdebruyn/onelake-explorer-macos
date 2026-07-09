@@ -757,22 +757,6 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
     }
 }
 
-// MARK: - SetConfig concurrency limits (xpc-07/08)
-
-/// Per-field upper bounds for the XPC setConfig handler's concurrency fields.
-///
-/// These values are intentionally tighter than `NetConfig.maxConcurrent` (64)
-/// to avoid saturating the OneLake / Fabric endpoints from a single client.
-/// The XPC protocol comments document these numbers; keep them in sync.
-enum SetConfigLimits {
-    /// Maximum allowed concurrent uploads per account (maps to the protocol
-    /// comment "integer string, 1–16").
-    static let maxUploadsPerAccount = 16
-    /// Maximum allowed concurrent downloads per account (maps to the protocol
-    /// comment "integer string, 1–32").
-    static let maxDownloadsPerAccount = 32
-}
-
 // MARK: - SetConfig errors
 
 /// Errors returned when the host app sends a setConfig call with an unknown
