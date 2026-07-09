@@ -1,5 +1,14 @@
 # Telemetry design
 
+This document covers the App Insights telemetry pipeline (network events).
+It is a separate channel from the local system log (`os_log`, viewable in
+Console.app or a sysdiagnose): the "no file name / no folder path" principle
+below applies there too — FPE log statements redact `.path`-derived
+identifiers and filenames via `ItemIdentifier.opaqueLogPrefix` /
+`privacy: .private` rather than emitting them as `privacy: .public` — but
+enforcement lives in the FPE source (see `OneLakeFileProvider/FileProviderExtension.swift`
+header comment), not in this pipeline.
+
 ## Principles
 
 - **Opt-out**, enabled by default, clearly disclosed on first run and in README.
