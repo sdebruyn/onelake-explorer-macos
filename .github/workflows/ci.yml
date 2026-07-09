@@ -75,14 +75,18 @@ jobs:
         # on every run. The restore-key falls back to a prior run's cache when
         # Package.resolved has not changed, accepting a slightly stale build
         # artifact cache that re-increments on the next full build.
+        # "spm-build-" is this job's own prefix — the ofemkit-tests job below
+        # and release.yml cache a different path set (no DerivedData here) and
+        # must not share a key, or whichever job saves first silently wins and
+        # the others restore/overwrite the wrong contents.
         uses: actions/cache@v6.1.0
         with:
           path: |
             Packages/OfemKit/.build
             DerivedData/SourcePackages
-          key: spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
+          key: spm-build-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
           restore-keys: |
-            spm-${{ runner.os }}-
+            spm-build-${{ runner.os }}-
 
       - name: Install xcodegen and periphery
         run: brew install xcodegen periphery
@@ -312,13 +316,17 @@ jobs:
           swift --version
 
       - name: Cache SwiftPM build artifacts
+        # "spm-ofemkit-" is this job's own prefix — it caches only
+        # Packages/OfemKit/.build (no DerivedData/SourcePackages), which is a
+        # different path set than the build job above; sharing a key would let
+        # the first job to save silently overwrite the cache the other reads.
         uses: actions/cache@v6.1.0
         with:
           path: |
             Packages/OfemKit/.build
-          key: spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
+          key: spm-ofemkit-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
           restore-keys: |
-            spm-${{ runner.os }}-
+            spm-ofemkit-${{ runner.os }}-
 
       - name: Validate Package.resolved is in sync
         # Ensures the committed lockfile matches Package.swift before running

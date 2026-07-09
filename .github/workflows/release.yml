@@ -136,14 +136,18 @@ jobs:
       - name: Cache SwiftPM build artifacts
         # Cache .build and Xcode SourcePackages so MSAL, GRDB, and TOMLKit are
         # not re-resolved on every release run. Keyed on Package.resolved.
+        # "spm-release-" is this job's own prefix — it caches
+        # build/Release/SourcePackages, a different path than ci.yml's jobs
+        # (DerivedData/SourcePackages or no SourcePackages at all); sharing a
+        # key would let whichever job saves first silently win the cache slot.
         uses: actions/cache@v6.1.0
         with:
           path: |
             Packages/OfemKit/.build
             build/Release/SourcePackages
-          key: spm-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
+          key: spm-release-${{ runner.os }}-${{ hashFiles('Packages/OfemKit/Package.resolved') }}
           restore-keys: |
-            spm-${{ runner.os }}-
+            spm-release-${{ runner.os }}-
 
       - name: Install tools (xcodegen, create-dmg)
         run: brew install xcodegen create-dmg

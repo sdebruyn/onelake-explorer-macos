@@ -1,14 +1,15 @@
-# Safety-net workflow: force-pauses the ofemci Fabric capacity once a week.
+# Safety-net workflow: force-pauses the ofemci Fabric capacity once a day.
 # The integration workflow suspends the capacity after every run, but a crashed
 # or cancelled runner (or a manual resume) can leave it Active and billing.
-# This job acts as a backstop, ensuring the capacity is Paused every Monday.
+# This job acts as a backstop, ensuring the capacity is Paused daily — bounding
+# the worst-case billing exposure from a stuck runner to ~1 day instead of ~7.
 
 name: Pause CI Fabric capacity
 
 on:
-  # Runs Monday at 00:00 UTC (GitHub cron schedules are always UTC).
+  # Runs daily at 00:00 UTC (GitHub cron schedules are always UTC).
   schedule:
-    - cron: '0 0 * * 1'
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 permissions:

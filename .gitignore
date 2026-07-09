@@ -61,6 +61,10 @@ docs_build/site/
 OneLake.xcodeproj/
 OneLake.xcworkspace/
 
+# Source-file-list snapshot used by the Makefile to detect new/removed
+# source files and trigger an xcodegen regen (see the .source-manifest rule)
+.source-manifest
+
 # Local signing config — per-developer, not committed
 Local.xcconfig
 
