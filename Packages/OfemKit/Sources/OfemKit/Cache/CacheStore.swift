@@ -1790,6 +1790,19 @@ public actor CacheStore {
     /// `COLLATE NOCASE`) could never use that optimization against
     /// `idx_pm_path` in the first place. Enabling the pragma is therefore a
     /// net win for the index, not a tradeoff against it.
+    ///
+    /// Assumption: ``removeMaterialized(alias:identifierPrefix:)`` and
+    /// ``renamePathPrefix(accountAlias:workspaceID:itemID:oldPath:newPath:newName:)``'s
+    /// destination-tombstone clear build their LIKE prefix directly from
+    /// `workspaceID`/`itemID` GUIDs, with no case normalization anywhere in
+    /// this file. Both rely on Fabric never echoing a workspace/item GUID
+    /// back in different letter casing than when the row was first written.
+    /// This is not a new exposure from this pragma: the exact-match branch
+    /// in those same queries (`identifier_string = ?`) is BINARY-collated
+    /// and has always been case-sensitive regardless of `LIKE`'s
+    /// case-folding, so GUID-casing drift would already have broken exact
+    /// cleanup before #426 — this pragma only makes descendant matching
+    /// consistent with that pre-existing exact-match behaviour.
     private static func enableCaseSensitiveLike(_ db: Database) throws {
         try db.execute(sql: "PRAGMA case_sensitive_like = ON")
     }

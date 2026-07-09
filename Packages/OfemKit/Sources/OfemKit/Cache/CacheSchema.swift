@@ -9,8 +9,11 @@ import GRDB
 ///
 /// - `v1` — complete initial schema: `path_metadata`, `workspace_status`,
 ///   `deletion_tombstones`, and their associated indexes.
-/// - `v2` — adds `idx_pm_path` to guarantee a B-tree range scan for the
-///   `path LIKE 'prefix/%'` subtree queries in `delete(key:)` / `batchDelete`.
+/// - `v2` — adds `idx_pm_path` to back the `path LIKE 'prefix/%'` subtree
+///   queries in `delete(key:)` / `batchDelete` with a B-tree scan. That scan
+///   is only actually range-bound (rather than a row-by-row filter) once
+///   paired with `PRAGMA case_sensitive_like = ON`, added later by #426 —
+///   see the `idx_pm_path` bullet below.
 /// - `v3` — adds `item_type` column to `path_metadata`.
 /// - `v4` — adds `materialized_containers` table and `idx_mc_alias` index.
 /// - `v5` — adds `created_ns` column to `path_metadata` for creation timestamps.
