@@ -65,6 +65,33 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
 
+      - name: Load pinned Xcode version
+        # Single source of truth for the Xcode version, shared with ci.yml,
+        # codeql.yml, and release.yml — see .github/xcode-version. Without
+        # this, `make test-integration` (swift test) would silently float
+        # on whatever Xcode the runner image defaults to.
+        id: xcode
+        run: |
+          set -euo pipefail
+          version="$(cat .github/xcode-version)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "DEVELOPER_DIR=/Applications/Xcode_${version}.app/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Assert Xcode ${{ steps.xcode.outputs.version }} and Swift 6.1.2 are present
+        # Fail fast if the runner image no longer ships the pinned Xcode
+        # rather than silently falling back to a different Xcode version.
+        run: |
+          set -euo pipefail
+          xcode_app="/Applications/Xcode_${{ steps.xcode.outputs.version }}.app"
+          if [ ! -d "$xcode_app" ]; then
+            echo "ERROR: ${xcode_app} not found (pinned in .github/xcode-version)" >&2
+            echo "Available Xcode installations:" >&2
+            ls /Applications/Xcode*.app 2>/dev/null || echo "  (none found)" >&2
+            exit 1
+          fi
+          xcodebuild -version
+          swift --version
+
       - uses: azure/login@v3.0.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
