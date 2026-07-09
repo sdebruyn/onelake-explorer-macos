@@ -76,3 +76,170 @@ final class OfemControlInterfaceTests: XCTestCase {
         XCTAssertNotNil(iface2)
     }
 }
+
+// MARK: - M8: setClasses allowlist round-trip (anonymous NSXPCListener)
+
+/// A minimal `OfemClientControlProtocol` conformer exported over a real
+/// anonymous `NSXPCListener`, so `getEngineStatus`/`getBadgeStatus` actually
+/// cross the XPC wire through `OfemControlInterface.make()`'s `setClasses`
+/// allowlist — rather than calling the protocol methods in-process, which
+/// would never exercise the secure-coding wiring at all. Both replies carry
+/// a NON-empty `pausedWorkspaces` array so `XPCPausedWorkspace` (nested
+/// inside the top-level `NSArray`) is on the wire too: a class dropped from
+/// the allowlist decodes to `nil` at the boundary (see that file's header
+/// comment) rather than throwing, so the regression this guards against is
+/// a silent `nil`, not a crash — the round-trip must actually assert on the
+/// decoded nested value to catch it.
+private final class StubControlHandler: NSObject, OfemClientControlProtocol, @unchecked Sendable {
+    func getProtocolVersion(reply: @escaping (Int) -> Void) {
+        reply(ofemControlProtocolVersion)
+    }
+
+    func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
+        reply(XPCEngineStatus(
+            cacheBytes: 42,
+            cacheMaxBytes: 100,
+            cacheMaxSizeGB: 1,
+            telemetryEnabled: true,
+            netMaxUploads: 4,
+            netMaxDownloads: 8,
+            logLevel: "info",
+            pausedWorkspaces: [
+                XPCPausedWorkspace(
+                    accountAlias: "work",
+                    workspaceID: "ws-1234",
+                    reason: "capacity_paused",
+                    detectedAtSec: 1_700_000_000
+                ),
+            ]
+        ), nil)
+    }
+
+    func getBadgeStatus(reply: @escaping (XPCBadgeStatus?, Error?) -> Void) {
+        reply(XPCBadgeStatus(
+            needsSignIn: true,
+            pausedWorkspaces: [
+                XPCPausedWorkspace(
+                    accountAlias: "work",
+                    workspaceID: "ws-5678",
+                    reason: "capacity_paused",
+                    detectedAtSec: 1_700_000_001
+                ),
+            ]
+        ), nil)
+    }
+
+    func setConfig(key _: String, value _: String, reply: @escaping (Error?) -> Void) {
+        reply(nil)
+    }
+
+    func clearCache(reply: @escaping (Int64, Error?) -> Void) {
+        reply(0, nil)
+    }
+
+    func pollMaterialized(alias _: String, reply: @escaping (Bool, Error?) -> Void) {
+        reply(false, nil)
+    }
+
+    func reloadEngine(alias _: String, reply: @escaping (Error?) -> Void) {
+        reply(nil)
+    }
+}
+
+/// Accepts the incoming connection and wires the SAME `OfemControlInterface.make()`
+/// factory the FPE's real listener delegate uses (`OfemXPCListenerDelegate` in
+/// `OfemClientControlService.swift`) — no peer code-signing check here, since
+/// the test process connects to its own in-process anonymous listener.
+private final class StubListenerDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
+    func listener(_: NSXPCListener, shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
+        newConnection.exportedInterface = OfemControlInterface.make()
+        newConnection.exportedObject = StubControlHandler()
+        newConnection.resume()
+        return true
+    }
+}
+
+final class OfemControlInterfaceXPCRoundTripTests: XCTestCase {
+    /// Mirrors `OfemFPEClient.withProxy`: builds a fresh proxy bound to a
+    /// per-call error handler so a connection fault resumes the continuation
+    /// instead of hanging the test.
+    private func withStubProxy<T: Sendable>(
+        _ connection: NSXPCConnection,
+        _ body: @escaping (any OfemClientControlProtocol, OneShotContinuation<T>) -> Void
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { rawContinuation in
+            let cont = OneShotContinuation<T>(rawContinuation)
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+                cont.resume(throwing: error)
+            }) as? any OfemClientControlProtocol else {
+                cont.resume(throwing: NSError(domain: "OfemControlInterfaceXPCRoundTripTests", code: -1))
+                return
+            }
+            body(proxy, cont)
+        }
+    }
+
+    func testGetEngineStatusRoundTripDecodesNestedPausedWorkspace() async throws {
+        let delegate = StubListenerDelegate()
+        let listener = NSXPCListener.anonymous()
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = OfemControlInterface.make()
+        connection.resume()
+        defer { connection.invalidate() }
+
+        let status: XPCEngineStatus = try await withStubProxy(connection) { proxy, cont in
+            proxy.getEngineStatus { status, error in
+                if let error {
+                    cont.resume(throwing: error)
+                } else if let status {
+                    cont.resume(returning: status)
+                } else {
+                    cont.resume(throwing: NSError(domain: "test", code: -1))
+                }
+            }
+        }
+
+        // A dropped class in the allowlist decodes pausedWorkspaces to an
+        // empty array (or the whole reply to nil) instead of throwing — assert
+        // on the decoded nested value, not just "no error", to catch that.
+        XCTAssertEqual(status.pausedWorkspaces.count, 1)
+        XCTAssertEqual(status.pausedWorkspaces.first?.accountAlias, "work")
+        XCTAssertEqual(status.pausedWorkspaces.first?.workspaceID, "ws-1234")
+        XCTAssertEqual(status.pausedWorkspaces.first?.reason, "capacity_paused")
+    }
+
+    func testGetBadgeStatusRoundTripDecodesNestedPausedWorkspace() async throws {
+        let delegate = StubListenerDelegate()
+        let listener = NSXPCListener.anonymous()
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = OfemControlInterface.make()
+        connection.resume()
+        defer { connection.invalidate() }
+
+        let status: XPCBadgeStatus = try await withStubProxy(connection) { proxy, cont in
+            proxy.getBadgeStatus { status, error in
+                if let error {
+                    cont.resume(throwing: error)
+                } else if let status {
+                    cont.resume(returning: status)
+                } else {
+                    cont.resume(throwing: NSError(domain: "test", code: -1))
+                }
+            }
+        }
+
+        XCTAssertTrue(status.needsSignIn)
+        XCTAssertEqual(status.pausedWorkspaces.count, 1)
+        XCTAssertEqual(status.pausedWorkspaces.first?.accountAlias, "work")
+        XCTAssertEqual(status.pausedWorkspaces.first?.workspaceID, "ws-5678")
+        XCTAssertEqual(status.pausedWorkspaces.first?.reason, "capacity_paused")
+    }
+}

@@ -95,6 +95,50 @@ protocol EngineProviding: AnyObject, Sendable {
     /// Records that an enumeration failed with a `notAuthenticated` code so
     /// the host-app menu can surface a "Sign-in required" indicator.
     func markNeedsSignIn()
+
+    // MARK: - FPE operation seam (M7)
+
+    /// Resolves a single item's metadata via the engine.
+    ///
+    /// Covers `FileProviderExtension.item(for:)` and the metadata-only /
+    /// post-upload-refetch branches of `modifyItem`.
+    func resolveItem(identifier: ItemIdentifier, alias: String) async throws -> DomainItem
+
+    /// Creates a directory or file via the engine.
+    ///
+    /// Backs `FileProviderExtension.createItem`.
+    func createOfemItem(
+        parent: ItemIdentifier,
+        filename: String,
+        isDirectory: Bool,
+        uploadSource: URL?,
+        mayAlreadyExist: Bool,
+        alias: String
+    ) async throws -> DomainItem
+
+    /// Renames an item within its current parent directory via the engine.
+    ///
+    /// Backs `modifyItem`'s rename branch.
+    func renameOfemItem(key: CacheKey, newName: String) async throws -> MetadataRecord
+
+    /// Uploads new file contents via the engine, then re-fetches the item's
+    /// metadata so the returned version matches what subsequent enumeration
+    /// produces.
+    ///
+    /// Put and refetch are one seam call — not two — so both run against the
+    /// SAME `engine()` resolution, matching the pre-seam inlined code (which
+    /// captured `engine()` once and reused it for both steps). Splitting this
+    /// into separate `put` and `resolveItem` seam calls would let a
+    /// reload/teardown race between them turn a successfully committed
+    /// upload into a reported failure.
+    ///
+    /// Backs `modifyItem`'s content-bearing branch.
+    func putOfemContents(key: CacheKey, sourceURL: URL, identifier: ItemIdentifier, alias: String) async throws -> DomainItem
+
+    /// Deletes an item via the engine.
+    ///
+    /// Backs `FileProviderExtension.deleteItem`.
+    func deleteOfemItem(key: CacheKey) async throws
 }
 
 // MARK: - EngineProviding default implementations
@@ -108,6 +152,66 @@ extension EngineProviding {
     }
 
     func markNeedsSignIn() {}
+}
+
+// MARK: - EngineProviding FPE operation seam defaults (M7)
+
+/// Default implementations of the FPE operation seam: build the engine, then
+/// delegate to the same `ItemResolution` / `SyncEngine` calls that used to be
+/// inlined directly in `FileProviderExtension`'s work closures. Each is a
+/// byte-identical extraction — `FPEEngineHost` inherits these unchanged, so
+/// production behaviour is provably unaffected by the seam.
+///
+/// `MockEngineHost` provides its own conformance for these five methods (a
+/// per-operation `Result<T, Error>?` override, falling back to this same
+/// engine()+delegate shape when unset) so tests can stub a successful
+/// resolution without a live `OfemEngine`.
+extension EngineProviding {
+    func resolveItem(identifier: ItemIdentifier, alias: String) async throws -> DomainItem {
+        let engine = try await self.engine()
+        return try await ItemResolution.resolveItem(
+            identifier: identifier, alias: alias, sync: engine.sync, cache: engine.cache
+        )
+    }
+
+    func createOfemItem(
+        parent: ItemIdentifier,
+        filename: String,
+        isDirectory: Bool,
+        uploadSource: URL?,
+        mayAlreadyExist: Bool,
+        alias: String
+    ) async throws -> DomainItem {
+        let engine = try await self.engine()
+        return try await ItemResolution.createItem(
+            parent: parent,
+            filename: filename,
+            isDirectory: isDirectory,
+            uploadSource: uploadSource,
+            mayAlreadyExist: mayAlreadyExist,
+            alias: alias,
+            sync: engine.sync,
+            cache: engine.cache
+        )
+    }
+
+    func renameOfemItem(key: CacheKey, newName: String) async throws -> MetadataRecord {
+        let engine = try await self.engine()
+        return try await engine.sync.rename(key: key, newName: newName)
+    }
+
+    func putOfemContents(key: CacheKey, sourceURL: URL, identifier: ItemIdentifier, alias: String) async throws -> DomainItem {
+        let engine = try await self.engine()
+        try await engine.sync.put(key: key, sourceURL: sourceURL)
+        return try await ItemResolution.resolveItem(
+            identifier: identifier, alias: alias, sync: engine.sync, cache: engine.cache
+        )
+    }
+
+    func deleteOfemItem(key: CacheKey) async throws {
+        let engine = try await self.engine()
+        try await engine.sync.delete(key: key)
+    }
 }
 
 /// Per-domain engine container.

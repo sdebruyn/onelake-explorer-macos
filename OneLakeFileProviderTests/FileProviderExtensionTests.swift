@@ -6,6 +6,7 @@
 
 @preconcurrency import FileProvider
 import Foundation
+import OfemKit
 import XCTest
 
 final class FileProviderExtensionTests: XCTestCase {
@@ -389,6 +390,207 @@ final class FileProviderExtensionTests: XCTestCase {
             XCTAssertEqual(nsErr.domain, NSFileProviderErrorDomain)
             XCTAssertEqual(nsErr.code, NSFileProviderError.noSuchItem.rawValue)
         }
+    }
+
+    // MARK: - createItem — success returns an item (M7 happy path)
+
+    func testCreateItemSuccessReturnsItem() async {
+        let host = MockEngineHost(alias: "test")
+        let wsID = "00000000-0000-0000-0000-000000000001"
+        let itemID = "00000000-0000-0000-0000-000000000002"
+        let expected = DomainItem.synthetic(
+            identifier: .path(workspaceID: wsID, itemID: itemID, path: "new.txt"),
+            parentIdentifier: .item(workspaceID: wsID, itemID: itemID),
+            name: "new.txt",
+            isDirectory: false
+        )
+        host.createOfemItemResult = .success(expected)
+        let ext = makeExtension(host: host)
+        let template = MockFPItem(parentID: "\(wsID)/\(itemID)", filename: "new.txt")
+
+        var capturedItem: NSFileProviderItem?
+        var capturedError: Error?
+        _ = await withCheckedContinuation { cont in
+            _ = ext.createItem(
+                basedOn: template,
+                fields: [],
+                contents: nil,
+                options: [],
+                request: makeRequest()
+            ) { item, _, _, err in
+                capturedItem = item
+                capturedError = err
+                cont.resume(returning: ())
+            }
+        }
+
+        XCTAssertNil(capturedError)
+        XCTAssertEqual(capturedItem?.filename, "new.txt")
+    }
+
+    // MARK: - modifyItem — rename success returns the renamed item, fields empty
+
+    /// A successful rename must NOT leave `.filename` pending, and — since no
+    /// other field was changed in this call — must return an EMPTY fields set
+    /// (only a co-delivered non-rename field would stay pending).
+    func testModifyItemRenameSuccessReturnsRenamedItemFieldsEmpty() async {
+        let host = MockEngineHost(alias: "test")
+        let wsID = "00000000-0000-0000-0000-000000000001"
+        let itemID = "00000000-0000-0000-0000-000000000002"
+        let record = MetadataRecord(
+            accountAlias: "test",
+            workspaceID: wsID,
+            itemID: itemID,
+            path: "new.txt",
+            parentPath: "",
+            name: "new.txt",
+            isDir: false
+        )
+        host.renameOfemItemResult = .success(record)
+        let ext = makeExtension(host: host)
+        let originalIdentifierString = "\(wsID)/\(itemID)/old.txt"
+        let template = MockFPItem(
+            id: originalIdentifierString,
+            parentID: NSFileProviderItemIdentifier.rootContainer.rawValue,
+            filename: "new.txt"
+        )
+
+        var capturedItem: NSFileProviderItem?
+        var capturedFields: NSFileProviderItemFields = []
+        var capturedError: Error?
+        _ = await withCheckedContinuation { cont in
+            _ = ext.modifyItem(
+                template,
+                baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
+                changedFields: .filename,
+                contents: nil,
+                request: makeRequest()
+            ) { item, fields, _, err in
+                capturedItem = item
+                capturedFields = fields
+                capturedError = err
+                cont.resume(returning: ())
+            }
+        }
+
+        XCTAssertNil(capturedError)
+        XCTAssertTrue(capturedFields.isEmpty, "no non-rename fields were changed, so nothing should remain pending")
+        XCTAssertEqual(capturedItem?.filename, "new.txt")
+        XCTAssertEqual(capturedItem?.itemIdentifier.rawValue, originalIdentifierString,
+                       "the ORIGINAL identifier must be preserved so the framework registers a metadata change, not delete+add")
+    }
+
+    // MARK: - modifyItem — content-bearing success completes with no error
+
+    func testModifyItemContentSuccessCompletesNoError() async throws {
+        let host = MockEngineHost(alias: "test")
+        let wsID = "00000000-0000-0000-0000-000000000001"
+        let itemID = "00000000-0000-0000-0000-000000000002"
+        let expected = DomainItem.synthetic(
+            identifier: .path(workspaceID: wsID, itemID: itemID, path: "file.txt"),
+            parentIdentifier: .item(workspaceID: wsID, itemID: itemID),
+            name: "file.txt",
+            isDirectory: false
+        )
+        // putOfemContents does the put AND the post-upload refetch as a single
+        // seam call (see FPEEngineHost's doc), so only this one override is
+        // needed — resolveItemResult is not consulted on this branch.
+        host.putOfemContentsResult = .success(expected)
+        let ext = makeExtension(host: host)
+
+        let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("hello".utf8).write(to: tmpURL)
+        defer { try? FileManager.default.removeItem(at: tmpURL) }
+
+        let template = MockFPItem(
+            id: "\(wsID)/\(itemID)/file.txt",
+            parentID: NSFileProviderItemIdentifier.rootContainer.rawValue,
+            filename: "file.txt"
+        )
+
+        var capturedItem: NSFileProviderItem?
+        var capturedError: Error?
+        _ = await withCheckedContinuation { cont in
+            _ = ext.modifyItem(
+                template,
+                baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
+                changedFields: .contents,
+                contents: tmpURL,
+                request: makeRequest()
+            ) { item, _, _, err in
+                capturedItem = item
+                capturedError = err
+                cont.resume(returning: ())
+            }
+        }
+
+        XCTAssertNil(capturedError)
+        XCTAssertEqual(capturedItem?.filename, "file.txt")
+    }
+
+    // MARK: - modifyItem — metadata-only success returns the item
+
+    func testModifyItemMetadataOnlySuccessReturnsItem() async {
+        let host = MockEngineHost(alias: "test")
+        let wsID = "00000000-0000-0000-0000-000000000001"
+        let itemID = "00000000-0000-0000-0000-000000000002"
+        let expected = DomainItem.synthetic(
+            identifier: .path(workspaceID: wsID, itemID: itemID, path: "file.txt"),
+            parentIdentifier: .item(workspaceID: wsID, itemID: itemID),
+            name: "file.txt",
+            isDirectory: false
+        )
+        host.resolveItemResult = .success(expected)
+        let ext = makeExtension(host: host)
+        let template = MockFPItem(
+            id: "\(wsID)/\(itemID)/file.txt",
+            parentID: NSFileProviderItemIdentifier.rootContainer.rawValue,
+            filename: "file.txt"
+        )
+
+        var capturedItem: NSFileProviderItem?
+        var capturedFields: NSFileProviderItemFields = []
+        var capturedError: Error?
+        _ = await withCheckedContinuation { cont in
+            _ = ext.modifyItem(
+                template,
+                baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
+                changedFields: [.lastUsedDate],
+                contents: nil,
+                request: makeRequest()
+            ) { item, fields, _, err in
+                capturedItem = item
+                capturedFields = fields
+                capturedError = err
+                cont.resume(returning: ())
+            }
+        }
+
+        XCTAssertNil(capturedError)
+        XCTAssertTrue(capturedFields.isEmpty)
+        XCTAssertEqual(capturedItem?.filename, "file.txt")
+    }
+
+    // MARK: - deleteItem — success completes with no error
+
+    func testDeleteItemSuccessCompletesNoError() async {
+        let host = MockEngineHost(alias: "test")
+        host.deleteOfemItemResult = .success(())
+        let ext = makeExtension(host: host)
+        let itemID = NSFileProviderItemIdentifier("00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002/file.txt")
+
+        let result = await withCheckedContinuation { cont in
+            _ = ext.deleteItem(
+                identifier: itemID,
+                baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
+                options: [],
+                request: makeRequest()
+            ) { err in
+                cont.resume(returning: err)
+            }
+        }
+
+        XCTAssertNil(result as NSError?)
     }
 
     // MARK: - Helpers
