@@ -327,22 +327,33 @@ struct TelemetryClientTests {
         #expect(poison.count == 0, "the opt-out branch must never call makeLiveSink")
     }
 
-    @Test("concurrent opt-out/opt-in reconfigureSink calls never leave the client enabled with no live sink (#428 reentrancy regression)")
-    func reconfigureSinkConcurrentCallsNeverInconsistent() async {
-        // Independent review of #435 found a real reentrancy window: the
-        // opt-out branch used to call `await setOptOut(true)` — which
+    @Test("SinkState survives heavy concurrent opt-out/opt-in interleaving without corruption (#428 follow-up smoke test)")
+    func reconfigureSinkConcurrentInterleavingStaysConsistent() async {
+        // NOT a regression test: it would not have failed against the
+        // pre-fix, two-field (`sink` + `optOut`) implementation either.
+        // Independent review of #435 found a real reentrancy window there:
+        // the opt-out branch called `await setOptOut(true)` — which
         // suspends at a cross-actor `await batch.drain()` — and only AFTER
-        // that resumed did it separately write `sink = NoopTelemetrySink()`.
-        // A concurrent, all-synchronous opt-in call could land inside that
-        // suspension, flip the client to enabled, and then have its work
-        // clobbered by the opt-out call's late Noop write on resume —
-        // reintroducing #428 (opted in but mute) via a brand-new code path.
+        // that resumed did it separately write `sink = NoopTelemetrySink()`,
+        // so a concurrent, all-synchronous opt-in call could land inside
+        // that suspension and have its work clobbered on resume. But the
+        // introspection this test reads (`sinkIsNoopForTesting`) and the
+        // actual delivery target `flush()` uses were BOTH derived from the
+        // very same field either way — `sink` pre-fix, `sinkState`
+        // post-fix — so they can never independently disagree with each
+        // other from outside the actor, in either version. Reproducing the
+        // actual torn state (`optOut == false` while `sink is
+        // NoopTelemetrySink`) would require re-introducing the old
+        // two-field design by hand, which defeats the point: the fix's
+        // whole value is that this state is now structurally
+        // unrepresentable, not merely avoided by careful sequencing.
         //
-        // The fix collapses the flag and the sink into one `SinkState` field
-        // so every transition is a single atomic, await-free assignment.
-        // Run many iterations: actor scheduling is nondeterministic, so a
-        // single run is not guaranteed to exercise the interleaving that
-        // used to be racy.
+        // What this test DOES verify: that firing opposite-valued
+        // `reconfigureSink` calls concurrently, many times, never corrupts
+        // `sinkState` into something where the enabled/live-sink invariant
+        // fails to hold, and never crashes or deadlocks. Run many
+        // iterations — actor scheduling is nondeterministic, so a single
+        // run does not exercise every interleaving.
         for _ in 0 ..< 50 {
             let constructionSink = MemoryTelemetrySink()
             let client = TelemetryClient(
