@@ -2591,4 +2591,45 @@ struct SyncEngineTests {
             #expect(result.total == 90)
         }
     }
+
+    // MARK: - #461 review round 3: SyncEngine.MonotonicProgressClamp unit tests
+
+    /// Deterministic coverage of the high-water-mark clamp that keeps
+    /// `completed` from regressing across a silent Alamofire-level retry or
+    /// the 412-full-restart boundary, both of which restart the underlying
+    /// transfer from byte 0.
+    @Suite("SyncEngine.MonotonicProgressClamp (#461)")
+    struct MonotonicProgressClampTests {
+        @Test("an increasing sequence passes through unchanged")
+        func increasingSequencePassesThrough() {
+            let clamp = SyncEngine.MonotonicProgressClamp()
+            #expect(clamp.clamp(10) == 10)
+            #expect(clamp.clamp(20) == 20)
+            #expect(clamp.clamp(20) == 20)
+            #expect(clamp.clamp(500) == 500)
+        }
+
+        @Test("a value below the high-water mark is clamped up to it, never regressing")
+        func regressionIsClampedToHighWaterMark() {
+            let clamp = SyncEngine.MonotonicProgressClamp()
+            #expect(clamp.clamp(800) == 800)
+            // Simulates a silent Alamofire-level retry (or the 412 restart)
+            // resetting the underlying request's progress back toward 0.
+            #expect(clamp.clamp(0) == 800, "must not regress below the prior high-water mark")
+            #expect(clamp.clamp(400) == 800, "still clamped even partway back up")
+            #expect(clamp.clamp(900) == 900, "climbing past the high-water mark is reported normally")
+        }
+
+        @Test("a fresh instance per download starts its own high-water mark at zero")
+        func freshInstanceStartsAtZero() {
+            let first = SyncEngine.MonotonicProgressClamp()
+            #expect(first.clamp(1000) == 1000)
+
+            // A NEW download (a new performNetworkRead call) gets a NEW
+            // clamp instance, so it does not inherit the prior download's
+            // high-water mark.
+            let second = SyncEngine.MonotonicProgressClamp()
+            #expect(second.clamp(10) == 10)
+        }
+    }
 }

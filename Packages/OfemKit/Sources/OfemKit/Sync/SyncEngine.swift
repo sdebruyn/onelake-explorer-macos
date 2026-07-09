@@ -1999,6 +1999,35 @@ public actor SyncEngine {
         }
     }
 
+    /// Thread-safe, monotonically-non-decreasing clamp for one download's
+    /// progress `completed` value (#461 review round 3).
+    ///
+    /// The session's interceptor chain (`RetryAfterRetrier`,
+    /// `JitteredRetryPolicy`, `AuthenticationInterceptor`'s
+    /// 401→refresh→retry) can silently retry the SAME `DownloadRequest`
+    /// mid-transfer — which restarts from byte 0 and resets Alamofire's own
+    /// per-request `completedUnitCount` to 0 — without ever re-entering
+    /// `performNetworkRead`, so nothing else observes it happening. Without
+    /// this clamp the absolute `completed` reported to the caller would jump
+    /// backward every time that happens (and, separately, at the
+    /// 412-full-restart boundary, which also restarts from byte 0). `clamp(_:)`
+    /// is `@Sendable`-safe to call from Alamofire's own delivery queue.
+    final class MonotonicProgressClamp: @unchecked Sendable {
+        private let lock = NSLock()
+        private var highWaterMark: Int64 = 0
+
+        /// Returns the higher of `candidate` and every previously-clamped
+        /// value, and remembers it for the next call.
+        func clamp(_ candidate: Int64) -> Int64 {
+            lock.withLock {
+                if candidate > highWaterMark {
+                    highWaterMark = candidate
+                }
+                return highWaterMark
+            }
+        }
+    }
+
     /// Combines a single network attempt's own (completed, total) progress
     /// tick with the local resume offset to produce an ABSOLUTE pair for the
     /// whole file (#461, review round 2).
@@ -2046,6 +2075,14 @@ public actor SyncEngine {
     ///   values relative to this one request. The 412-retry-as-full-restart
     ///   branch below rewraps with a `rangeStart` of 0 — that attempt is a
     ///   fresh, unranged GET, so the original resume offset no longer applies.
+    ///   A single ``MonotonicProgressClamp`` is shared across both the primary
+    ///   attempt and that 412 retry, so `completed` can never regress across
+    ///   either boundary (#461 review round 3): the session's interceptor
+    ///   chain (`RetryAfterRetrier`, `JitteredRetryPolicy`,
+    ///   `AuthenticationInterceptor`'s 401→refresh→retry) can silently retry
+    ///   the SAME `DownloadRequest` mid-transfer — which restarts from byte 0
+    ///   and resets Alamofire's own per-request progress — without ever
+    ///   re-entering this function, so nothing else would catch it.
     private func performNetworkRead(
         key: CacheKey,
         spillURL: URL,
@@ -2053,13 +2090,20 @@ public actor SyncEngine {
         start: Date,
         onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
     ) async throws -> PathProperties {
+        // Fresh per call to this function (i.e. per open()/fetchContents
+        // attempt) — shared across the primary attempt and the 412-retry
+        // branch below so it survives any restart-from-byte-0 within THIS
+        // download without resetting; a NEW performNetworkRead call (a new
+        // fetch) always gets its own instance.
+        let progressClamp = MonotonicProgressClamp()
+
         func absoluteProgress(rangeStart: Int64) -> (@Sendable (Int64, Int64) -> Void)? {
             guard let onProgress else { return nil }
             return { @Sendable completedInRequest, totalInRequest in
                 let (completed, total) = Self.absoluteDownloadProgress(
                     rangeStart: rangeStart, completedInRequest: completedInRequest, totalInRequest: totalInRequest
                 )
-                onProgress(completed, total)
+                onProgress(progressClamp.clamp(completed), total)
             }
         }
 
