@@ -15,7 +15,7 @@ struct CacheSchemaTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let applied = try await store.appliedMigrations()
-        #expect(applied == ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"])
+        #expect(applied == ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"])
     }
 
     @Test("Fresh database creates sync_meta table")
@@ -64,6 +64,8 @@ struct CacheSchemaTests {
         #expect(indexes.contains("idx_pm_last_accessed"))
         // v2: subtree-delete supporting index.
         #expect(indexes.contains("idx_pm_path"))
+        // v9: GROUP BY blob_sha256 supporting index.
+        #expect(indexes.contains("idx_pm_blob_dedup"))
     }
 
     @Test("schema_version table is not created")
@@ -150,6 +152,31 @@ struct CacheSchemaTests {
         let fetched = try await store.fetch(key: key)
         #expect(fetched.subtreeEtag == "", "Pre-existing rows must default subtree_etag to ''")
     }
+
+    // MARK: - v9 migration: idx_pm_blob_dedup index (#449)
+
+    @Test("Fresh database applies v9 migration")
+    func freshDatabaseAppliesV9Migration() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let applied = try await store.appliedMigrations()
+        #expect(applied.contains("v9"))
+    }
+
+    @Test("deduplicatedBlobBytesSQL's GROUP BY is index-backed by idx_pm_blob_dedup")
+    func deduplicatedBlobBytesUsesIndex() async throws {
+        let store = try makeTempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let plan = try await store.explainQueryPlan(CacheReader.deduplicatedBlobBytesSQL)
+        #expect(
+            plan.contains("idx_pm_blob_dedup"),
+            "Expected GROUP BY blob_sha256 to be served by idx_pm_blob_dedup, got plan: \(plan)"
+        )
+        // A B-tree-backed GROUP BY should never need SQLite's own temp
+        // b-tree sort — that's precisely the full-scan cost this index exists
+        // to eliminate.
+        #expect(!plan.contains("USE TEMP B-TREE"), "GROUP BY should not need a temp b-tree, got plan: \(plan)")
+    }
 }
 
 // MARK: - CacheStore test-inspection helpers (actor-isolated, call with await)
@@ -177,5 +204,15 @@ extension CacheStore {
     /// Returns index names for `table` for test assertions.
     func indexes(on table: String) async throws -> [String] {
         try await dbPool.read { try $0.indexes(on: table).map(\.name) }
+    }
+
+    /// Returns the `EXPLAIN QUERY PLAN` output for `sql`, one line per plan
+    /// row, joined for easy substring assertions in tests.
+    func explainQueryPlan(_ sql: String) async throws -> String {
+        try await dbPool.read { db in
+            let rows = try Row.fetchAll(db, sql: "EXPLAIN QUERY PLAN " + sql)
+            return rows.map { (row: Row) -> String in row["detail"] as String }
+                .joined(separator: "\n")
+        }
     }
 }

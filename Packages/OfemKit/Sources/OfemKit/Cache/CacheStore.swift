@@ -217,22 +217,50 @@ public actor CacheStore {
     /// process's writes.  Use this in the host app, which only needs to read
     /// the workspace cache; the FPE is the sole writer.
     ///
+    /// `config.readonly = true` makes this an actual enforcement, not just an
+    /// API-shape convention: the connection is opened with `SQLITE_OPEN_READONLY`,
+    /// so a write attempted through it — including one that reached the raw
+    /// `Database` inside a `.read { }` closure, bypassing `CacheReader`'s
+    /// `DatabaseReader`-typed surface — is rejected by SQLite itself, not just
+    /// by the absence of a write method on `CacheReader`. `CacheReader` never
+    /// calls `.write()` (it only wraps `DatabaseReader`, which has no write
+    /// API), and its one host-app caller (`ChangeWatcher.getOrOpenCacheReader()`)
+    /// only ever reads through it — the FPE remains the sole writer.
+    ///
     /// Returns `nil` when the SQLite file cannot be opened (e.g. the FPE has
     /// not yet created the database).
     public static func openReadOnly(root: URL, logger: OfemLogger = .init()) -> CacheReader? {
+        guard let pool = openReadOnlyPool(root: root) else { return nil }
+        return CacheReader(db: pool, logger: logger)
+    }
+
+    /// Shared read-only pool construction for ``openReadOnly(root:logger:)``
+    /// and the DEBUG-only ``openReadOnlyPoolForTesting(root:)`` seam — kept in
+    /// one place so the two never drift apart.
+    private static func openReadOnlyPool(root: URL) -> DatabasePool? {
         let dbURL = root.appendingPathComponent(CacheStore.sqliteFile)
         guard FileManager.default.fileExists(atPath: dbURL.path) else { return nil }
         var config = Configuration()
+        config.readonly = true
         config.prepareDatabase { db in
             try db.execute(sql: "PRAGMA journal_mode = WAL")
             try db.execute(sql: "PRAGMA busy_timeout = \(CacheStore.busyTimeoutMs)")
             try Self.enableCaseSensitiveLike(db)
         }
-        guard let pool = try? DatabasePool(path: dbURL.path, configuration: config) else {
-            return nil
-        }
-        return CacheReader(db: pool, logger: logger)
+        return try? DatabasePool(path: dbURL.path, configuration: config)
     }
+
+    #if DEBUG
+        // periphery:ignore
+        /// Test-only: like ``openReadOnly(root:logger:)`` but returns the raw
+        /// `DatabasePool` instead of a `CacheReader`, so tests can assert that
+        /// a write attempted directly through the pool — not merely absent
+        /// from `CacheReader`'s API surface — is rejected by SQLite. Confirms
+        /// `config.readonly = true` above is real enforcement.
+        static func openReadOnlyPoolForTesting(root: URL) -> DatabasePool? {
+            openReadOnlyPool(root: root)
+        }
+    #endif
 
     // MARK: - Orphan sweep
 
