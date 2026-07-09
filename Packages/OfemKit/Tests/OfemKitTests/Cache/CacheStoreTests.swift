@@ -89,7 +89,9 @@ struct CacheStoreTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let key = CacheKey(accountAlias: "work", workspaceID: "ws1", itemID: "item1", path: "nope")
-        await #expect(throws: CacheError.notFound("work/ws1/item1/nope")) {
+        // The thrown error is redacted at the throw site (`CacheKey.opaqueLogPrefix`):
+        // no raw path in the payload, only the ws/item GUIDs.
+        await #expect(throws: CacheError.notFound(key.opaqueLogPrefix)) {
             try await store.fetch(key: key)
         }
     }
@@ -172,7 +174,7 @@ struct CacheStoreTests {
             path: "f.txt", parentPath: "", name: "f.txt", isDir: false
         ))
         try await store.delete(key: key)
-        await #expect(throws: CacheError.notFound("a/w/i/f.txt")) { try await store.fetch(key: key) }
+        await #expect(throws: CacheError.notFound(key.opaqueLogPrefix)) { try await store.fetch(key: key) }
     }
 
     @Test("Delete cascades to descendants")
@@ -191,7 +193,7 @@ struct CacheStoreTests {
 
         for path in ["dir", "dir/a.txt", "dir/b.txt", "dir/sub/c.txt"] {
             let k = CacheKey(accountAlias: alias, workspaceID: ws, itemID: item, path: path)
-            await #expect(throws: CacheError.notFound("\(alias)/\(ws)/\(item)/\(path)")) {
+            await #expect(throws: CacheError.notFound(k.opaqueLogPrefix)) {
                 try await store.fetch(key: k)
             }
         }
@@ -345,7 +347,7 @@ struct CacheStoreTests {
         ))
         // Must not throw and must delete only this row.
         try await store.delete(key: key)
-        await #expect(throws: CacheError.notFound("a/w/i/\(path)")) { try await store.fetch(key: key) }
+        await #expect(throws: CacheError.notFound(key.opaqueLogPrefix)) { try await store.fetch(key: key) }
     }
 
     // MARK: - Touch
@@ -372,7 +374,7 @@ struct CacheStoreTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let key = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "ghost.txt")
-        await #expect(throws: CacheError.notFound("a/w/i/ghost.txt")) {
+        await #expect(throws: CacheError.notFound(key.opaqueLogPrefix)) {
             try await store.touch(key: key)
         }
     }
@@ -460,7 +462,7 @@ struct CacheStoreTests {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let key = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "ghost.txt")
-        await #expect(throws: CacheError.notFound("a/w/i/ghost.txt")) {
+        await #expect(throws: CacheError.notFound(key.opaqueLogPrefix)) {
             try await store.storeBlob(key: key, data: Data("hello".utf8))
         }
     }
@@ -487,7 +489,7 @@ struct CacheStoreTests {
         try? FileManager.default.removeItem(at: shardDir)
 
         // loadBlob must throw notFound.
-        await #expect(throws: CacheError.notFound("blob for f.bin")) {
+        await #expect(throws: CacheError.notFound("blob for \(key.opaqueLogPrefix)")) {
             try await store.loadBlob(key: key)
         }
 

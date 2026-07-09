@@ -47,7 +47,7 @@ public enum ItemIdentifierParser {
 
         // Leading slash is always invalid.
         if raw.hasPrefix("/") {
-            throw FPError.invalidIdentifier("leading slash in \"\(raw)\"")
+            throw FPError.invalidIdentifier("leading slash")
         }
 
         // Split into at most 3 segments: workspace, item, path.
@@ -57,29 +57,29 @@ public enum ItemIdentifierParser {
         case 1:
             let ws = String(parts[0])
             if ws.isEmpty {
-                throw FPError.invalidIdentifier("empty workspace segment in \"\(raw)\"")
+                throw FPError.invalidIdentifier("empty workspace segment")
             }
-            try validateSegment(ws, label: "workspace", raw: raw)
+            try validateSegment(ws, label: "workspace")
             return .workspace(workspaceID: ws)
 
         case 2:
             let ws = String(parts[0])
             let item = String(parts[1])
             if ws.isEmpty || item.isEmpty {
-                throw FPError.invalidIdentifier("empty workspace or item segment in \"\(raw)\"")
+                throw FPError.invalidIdentifier("empty workspace or item segment")
             }
-            try validateSegment(ws, label: "workspace", raw: raw)
-            try validateSegment(item, label: "item", raw: raw)
+            try validateSegment(ws, label: "workspace")
+            try validateSegment(item, label: "item")
             return .item(workspaceID: ws, itemID: item)
 
         case 3:
             let ws = String(parts[0])
             let item = String(parts[1])
             if ws.isEmpty || item.isEmpty {
-                throw FPError.invalidIdentifier("empty workspace or item segment in \"\(raw)\"")
+                throw FPError.invalidIdentifier("empty workspace or item segment")
             }
-            try validateSegment(ws, label: "workspace", raw: raw)
-            try validateSegment(item, label: "item", raw: raw)
+            try validateSegment(ws, label: "workspace")
+            try validateSegment(item, label: "item")
 
             let rawPath = String(parts[2])
 
@@ -91,17 +91,15 @@ public enum ItemIdentifierParser {
             // Reject any empty segment in the path tail (sync-13).
             // "ws/item//file" would produce a malformed double-slash DFS URL.
             if rawPath.hasPrefix("/") || rawPath.contains("//") {
-                throw FPError.invalidIdentifier(
-                    "empty path segment in \"\(raw)\""
-                )
+                throw FPError.invalidIdentifier("empty path segment")
             }
 
-            try validatePathSegments(rawPath, raw: raw)
+            try validatePathSegments(rawPath)
 
             return .path(workspaceID: ws, itemID: item, path: rawPath)
 
         default:
-            throw FPError.invalidIdentifier("unexpected segment count in \"\(raw)\"")
+            throw FPError.invalidIdentifier("unexpected segment count (\(parts.count))")
         }
     }
 
@@ -114,28 +112,35 @@ public enum ItemIdentifierParser {
     /// - Leading or trailing ASCII whitespace
     /// - Backslash (`\`) — a path separator on Windows; illegal inside a
     ///   OneLake path segment regardless of platform
-    private static func validateSegment(_ segment: String, label: String, raw: String) throws {
+    ///
+    /// Deliberately does NOT embed the offending segment (or the full raw
+    /// identifier) in the thrown `FPError` — for a `.path` identifier's
+    /// `path` tail, that segment IS a human-readable file/folder name,
+    /// which must not appear unredacted in the system log (see
+    /// `docs/telemetry.md`). Redacting only at a downstream log call site
+    /// isn't enough: `FPError.invalidIdentifier`'s associated `String` would
+    /// still carry it, one bare `\(error)` interpolation away from leaking
+    /// (`FPError` is `CustomStringConvertible`). `label` (a fixed
+    /// "workspace"/"item"/"path" vocabulary) and the violated rule are
+    /// diagnostic enough without it.
+    private static func validateSegment(_ segment: String, label: String) throws {
         // Reject leading/trailing space (U+0020).  All other ASCII whitespace
         // (tab U+0009, CR U+000D, LF U+000A, etc.) is already caught by the
         // control-character gate below (v < 0x20), so they need no separate
         // check here.  Non-ASCII whitespace (e.g. U+00A0 NBSP) is outside the
         // stated ASCII scope and is not rejected.
         if segment.hasPrefix(" ") || segment.hasSuffix(" ") {
-            throw FPError.invalidIdentifier(
-                "\(label) segment has leading/trailing whitespace in \"\(raw)\""
-            )
+            throw FPError.invalidIdentifier("\(label) segment has leading/trailing whitespace")
         }
         for scalar in segment.unicodeScalars {
             let v = scalar.value
             if v < 0x20 || v == 0x7F {
                 throw FPError.invalidIdentifier(
-                    "\(label) segment contains control character U+\(String(v, radix: 16, uppercase: true)) in \"\(raw)\""
+                    "\(label) segment contains control character U+\(String(v, radix: 16, uppercase: true))"
                 )
             }
             if scalar == "\\" {
-                throw FPError.invalidIdentifier(
-                    "\(label) segment contains backslash in \"\(raw)\""
-                )
+                throw FPError.invalidIdentifier("\(label) segment contains backslash")
             }
         }
     }
@@ -144,16 +149,16 @@ public enum ItemIdentifierParser {
     ///
     /// Each component must pass the same rules as a standalone segment
     /// (no control chars, no leading/trailing whitespace, no backslash).
-    private static func validatePathSegments(_ path: String, raw: String) throws {
+    private static func validatePathSegments(_ path: String) throws {
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
         for component in components {
             let seg = String(component)
             // Empty component means double-slash — already caught above, but
             // guard here defensively.
             if seg.isEmpty {
-                throw FPError.invalidIdentifier("empty path segment in \"\(raw)\"")
+                throw FPError.invalidIdentifier("empty path segment")
             }
-            try validateSegment(seg, label: "path", raw: raw)
+            try validateSegment(seg, label: "path")
         }
     }
 }

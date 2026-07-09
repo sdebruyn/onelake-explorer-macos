@@ -304,7 +304,7 @@ struct CacheFixesTests {
 
         let key = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: "ghost.bin")
         // No upsert — the row does not exist.
-        await #expect(throws: CacheError.notFound("a/w/i/ghost.bin")) {
+        await #expect(throws: CacheError.notFound(key.opaqueLogPrefix)) {
             try await store.storeBlob(key: key, data: Data("bytes".utf8))
         }
 
@@ -471,7 +471,7 @@ struct CacheFixesTests {
         try await store.batchDelete(keys, recordTombstones: false)
 
         // All rows must be gone.
-        await #expect(throws: CacheError.notFound("a/w/i/file-0.txt")) {
+        await #expect(throws: CacheError.notFound(keys[0].opaqueLogPrefix)) {
             try await store.fetch(key: keys[0])
         }
     }
@@ -497,7 +497,7 @@ struct CacheFixesTests {
         // Subtree must be gone.
         for path in ["dir", "dir/a.txt", "dir/b.txt"] {
             let k = CacheKey(accountAlias: "a", workspaceID: "w", itemID: "i", path: path)
-            await #expect(throws: CacheError.notFound("a/w/i/\(path)")) { try await store.fetch(key: k) }
+            await #expect(throws: CacheError.notFound(k.opaqueLogPrefix)) { try await store.fetch(key: k) }
         }
         // Sibling row must survive.
         let other = try await store.fetch(
