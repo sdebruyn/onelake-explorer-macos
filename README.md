@@ -5,7 +5,11 @@
 <h3 align="center">OneLake Explorer for macOS</h3>
 
 <p align="center">
+  <a href="https://github.com/sdebruyn/onelake-explorer-macos/actions/workflows/ci.yml"><img src="https://github.com/sdebruyn/onelake-explorer-macos/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://codecov.io/gh/sdebruyn/onelake-explorer-macos"><img src="https://codecov.io/gh/sdebruyn/onelake-explorer-macos/graph/badge.svg" alt="Code coverage" /></a>
+  <a href="https://github.com/sdebruyn/onelake-explorer-macos/releases/latest"><img src="https://img.shields.io/github/v/release/sdebruyn/onelake-explorer-macos" alt="Latest release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/sdebruyn/onelake-explorer-macos" alt="License" /></a>
+  <a href="https://github.com/sdebruyn/homebrew-ofem"><img src="https://img.shields.io/badge/homebrew-tap-blue" alt="Homebrew tap" /></a>
 </p>
 
 **Browse Microsoft Fabric OneLake from Finder.** Like OneDrive or Google Drive — but for your data lake. Multiple accounts in multiple tenants, side by side, with a single Homebrew install.
@@ -13,6 +17,11 @@
 > Pre-release, under active development.
 
 📖 **Documentation, screenshots and walkthroughs: [ofem.debruyn.dev](https://ofem.debruyn.dev)**
+
+## Screenshot
+
+<!-- maintainer: add screenshot -->
+*A screenshot of OFEM mounted as a Finder sidebar item, browsing OneLake like any other cloud drive, goes here.*
 
 ## Install
 

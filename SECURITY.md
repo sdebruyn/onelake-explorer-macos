@@ -16,7 +16,7 @@ Do not file a public issue and do not discuss the problem in pull requests until
 
 - A description of the issue and its impact.
 - Steps to reproduce (a minimal proof-of-concept is great if you have one).
-- Affected OFEM version (`ofem --version`) and macOS version (`sw_vers`).
+- Affected OFEM version (menu bar icon → About OneLake, or `Get Info` on `OneLake.app` in Finder) and macOS version (`sw_vers`).
 - Your suggested fix, if you have one — optional.
 
 ### What to expect

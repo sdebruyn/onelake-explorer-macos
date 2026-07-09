@@ -21,6 +21,10 @@ Open the OneLake menu bar icon and uncheck **Send Anonymous Telemetry**.
 
 For development builds, you can set `OFEM_TELEMETRY=0` in the environment to disable telemetry for that process. The menu bar checkbox always reflects the current telemetry state.
 
+## This documentation site
+
+[ofem.debruyn.dev](https://ofem.debruyn.dev) (this docs site, separate from the app) uses self-hosted [Umami](https://umami.is) analytics for page views and outbound link clicks. No cookies, and it respects Do Not Track.
+
 ## Questions
 
 Open a [Discussion](https://github.com/sdebruyn/onelake-explorer-macos/discussions) or file an issue.

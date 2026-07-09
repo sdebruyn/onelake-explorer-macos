@@ -39,6 +39,9 @@ cask "ofem" do
     # Zapped only on explicit `brew uninstall --zap` to avoid data loss.
     "~/Library/CloudStorage/OneLake-*",
     "~/Library/Group Containers/6D79CUWZ4J.group.dev.debruyn.ofem",
-    "~/Library/Preferences/dev.debruyn.ofem.plist",
+    # Host app and FPE are both sandboxed, so their preferences live
+    # inside their own containers, not ~/Library/Preferences directly.
+    "~/Library/Containers/dev.debruyn.ofem",
+    "~/Library/Containers/dev.debruyn.ofem.fileprovider",
   ]
 end

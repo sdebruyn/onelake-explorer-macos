@@ -122,4 +122,4 @@ See [docs/packaging-homebrew.md](https://github.com/sdebruyn/onelake-explorer-ma
 
 ## Questions?
 
-Open a [Discussion](https://github.com/sdebruyn/onelake-explorer-macos/discussions) (once enabled) or an Issue. Don't email — keep the conversation public so the next person can find it.
+Open a [Discussion](https://github.com/sdebruyn/onelake-explorer-macos/discussions) or an Issue. Don't email — keep the conversation public so the next person can find it.
