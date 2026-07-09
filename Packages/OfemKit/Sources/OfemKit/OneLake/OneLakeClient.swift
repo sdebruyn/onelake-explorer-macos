@@ -54,6 +54,12 @@ public final class OneLakeClient: Sendable {
     private let logger: OfemLogger
     /// Effective chunk size for append operations. Overridable in tests.
     let chunkSize: Int
+    /// Directory ``doStreamRequest`` stages downloads in before copying them
+    /// into the caller's destination handle. Defaults to the system temp
+    /// directory; overridable in tests so a temp-file-leak assertion can
+    /// scope to an isolated directory instead of racing other suites that
+    /// scribble in the shared system temp dir under parallel test execution.
+    let downloadTempDirectory: URL
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "OneLakeClient")
 
@@ -70,16 +76,22 @@ public final class OneLakeClient: Sendable {
     ///   - logger: Structured logger for debug request/pagination traces.
     ///     Defaults to an ``OfemLogger`` with default ``LogConfiguration`` so
     ///     existing call sites compile unchanged.
+    ///   - downloadTempDirectory: Staging directory for ``doStreamRequest``.
+    ///     Defaults to `FileManager.default.temporaryDirectory`. Override in
+    ///     tests to assert no temp file leaks without scanning the shared
+    ///     system temp dir.
     public init(
         sessionPool: SessionPool,
         baseURL: URL = OneLakeClient.defaultBaseURL,
         chunkSize: Int = 4 * 1024 * 1024,
-        logger: OfemLogger = OfemLogger()
+        logger: OfemLogger = OfemLogger(),
+        downloadTempDirectory: URL = FileManager.default.temporaryDirectory
     ) {
         self.sessionPool = sessionPool
         self.baseURL = baseURL
         self.chunkSize = chunkSize
         self.logger = logger
+        self.downloadTempDirectory = downloadTempDirectory
     }
 
     // MARK: - ListPath
@@ -231,14 +243,25 @@ public final class OneLakeClient: Sendable {
 
     // MARK: - Read
 
-    /// Downloads a file or a byte range from a file, streaming the response
-    /// body directly into `destination` without buffering the whole file in
-    /// memory (net-19 / onelake-02: TRUE streaming via `URLSession.bytes`).
+    /// Downloads a file or a byte range from a file into `destination` without
+    /// buffering the whole payload in process memory at once (net-19 / onelake-02).
     ///
-    /// This overload uses ``HTTPClient/download(_:to:tokenProvider:alias:scope:idempotent:)``
-    /// under the hood, which writes bytes to `destination` as they arrive.
-    /// On retry the destination is truncated and restarted so a partial write
-    /// is never left on disk.
+    /// This overload uses ``doStreamRequest(alias:method:url:extraHeaders:destination:)``
+    /// under the hood: Alamofire downloads the response body to a private temp
+    /// file on disk, then the temp file is read back and copied into
+    /// `destination` in 64 KB chunks. This is **not** true end-to-end
+    /// streaming (`URLSession.bytes` writing straight into `destination` as
+    /// bytes arrive) — every download transiently needs ~2x the file's size
+    /// on disk (the temp file plus `destination`) and writes the payload
+    /// twice. The temp file is always removed before this method returns or
+    /// throws, on every exit path (M5 / #430). Genuine single-write
+    /// streaming is a larger change and is tracked as a follow-up.
+    ///
+    /// Retries are handled by the session's interceptor stack (see
+    /// ``SessionPool``); a retried request re-downloads from byte 0 into a
+    /// fresh temp file — there is no `resumeData` reuse, so `destination` is
+    /// never left with a partial write, but a retry after a large partial
+    /// transfer re-pays the bytes already transferred.
     ///
     /// Pass `range: nil` to download the entire file.
     /// Pass `ifMatch: ""` to skip the `If-Match` header.
@@ -888,13 +911,29 @@ public final class OneLakeClient: Sendable {
         )
     }
 
-    /// Downloads a DFS resource to a `FileHandle` without buffering all bytes
-    /// in memory at once.
+    /// Downloads a DFS resource to a `FileHandle` without buffering the whole
+    /// payload in process memory at once.
     ///
-    /// Uses Alamofire `DownloadRequest` with a temporary-file destination.  Once
+    /// Uses Alamofire `DownloadRequest` with a temporary-file destination. Once
     /// the download completes, the temporary file is read in 64 KB chunks and
-    /// forwarded into `fileHandle`, then the temporary file is removed.
+    /// forwarded into `fileHandle`. This is download-to-temp-then-copy, not
+    /// true streaming into `fileHandle` — see the doc on
+    /// ``read(alias:workspaceGUID:itemGUID:path:range:ifMatch:destination:)``
+    /// for the disk/write-amplification trade-off this implies.
+    ///
+    /// The temp file is removed on every exit path — success, the
+    /// nil-response guard, the `.failure` branch, and any error thrown from
+    /// the outer `do` block — via a single function-scope `defer` (M5 /
+    /// #430: it used to leak on the nil-response guard and outer-catch
+    /// paths).
+    ///
     /// Injects the `x-ms-version` header and maps errors to ``OneLakeError``.
+    ///
+    /// - Note: retries (see ``SessionPool``) restart the download from byte 0
+    ///   into a fresh temp file; there is no `resumeData` reuse. A file that
+    ///   fails late in the transfer re-pays the already-downloaded bytes on
+    ///   retry. Wiring `DownloadRequest` resume-data through the retry chain
+    ///   is tracked as a follow-up, out of scope for this fix.
     private func doStreamRequest(
         alias: String,
         method: String,
@@ -910,11 +949,17 @@ public final class OneLakeClient: Sendable {
         let httpMethod = HTTPMethod(rawValue: method)
 
         // Alamofire DownloadRequest streams to a temporary file URL.
-        let tmpURL = FileManager.default.temporaryDirectory
+        let tmpURL = downloadTempDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: false)
         let afDestination: DownloadRequest.Destination = { _, _ in
             (tmpURL, [.removePreviousFile, .createIntermediateDirectories])
         }
+        // Unconditional cleanup on every exit path (success, nil-response
+        // guard, .failure branch, or an error rethrown from an outer catch)
+        // — the temp file must never leak (M5 / #430). Best-effort: the
+        // success/failure branches below may already have removed it, so a
+        // missing file here is not an error.
+        defer { try? FileManager.default.removeItem(at: tmpURL) }
 
         do {
             let dl = session
@@ -928,7 +973,6 @@ public final class OneLakeClient: Sendable {
             case let .success(fileURL):
                 // Copy in 64 KB chunks so the FPE process does not map the
                 // entire file into its address space at once.
-                defer { try? FileManager.default.removeItem(at: fileURL) }
                 let src = try FileHandle(forReadingFrom: fileURL)
                 defer { try? src.close() }
                 let chunkSize = 65536
@@ -939,7 +983,6 @@ public final class OneLakeClient: Sendable {
                 }
                 return httpResponse
             case let .failure(afError):
-                try? FileManager.default.removeItem(at: tmpURL)
                 let mapped = HTTPClientError(
                     afError: afError,
                     response: httpResponse,
