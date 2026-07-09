@@ -59,7 +59,12 @@ jobs:
   build-app:
     name: Build, sign, notarize and publish app
     runs-on: macos-15
-    timeout-minutes: 90
+    # 150m budget: the two sequential notarytool waits below are each capped
+    # at 45m (90m combined in the worst case), leaving ~60m of headroom for
+    # Xcode setup, tests, archive/export/sign, DMG creation, and uploads —
+    # comfortably more than the ~35-40m those normally take. The old 90m
+    # budget left zero room for anything else if both waits ran long.
+    timeout-minutes: 150
     # contents:write is granted to this job (not the workflow) so only this
     # job can create releases — not any other potential future jobs.
     # On a dry run (workflow_dispatch) no release is created, but the job
@@ -67,11 +72,30 @@ jobs:
     # (narrower than the old workflow-level grant).
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dmg_sha256: ${{ steps.dmg_sha.outputs.sha256 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0
+
+      - name: Guard against pre-release tags
+        # Belt-and-suspenders check: the tag glob above only matches stable
+        # CalVer tags, but an explicit guard here ensures a pre-release tag
+        # (e.g. v2026.05.0-rc.1) can never accidentally publish to the stable
+        # Homebrew tap even if the glob were widened in the future. Runs
+        # first, right after checkout, so a bad tag fails fast before the
+        # signing certificate and notarytool key are ever touched.
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if echo "$tag" | grep -qE -- '-'; then
+            echo "ERROR: tag '$tag' looks like a pre-release. Aborting to protect the stable tap."
+            exit 1
+          fi
 
       - name: Load pinned Xcode version
         # Single source of truth for the Xcode version, shared with ci.yml
@@ -164,20 +188,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/notary"
           echo "$APPLE_API_KEY_JSON" | jq -r '.key' > "$RUNNER_TEMP/notary/key.p8"
           chmod 600 "$RUNNER_TEMP/notary/key.p8"
-
-      - name: Guard against pre-release tags
-        # Belt-and-suspenders check: the tag glob above only matches stable
-        # CalVer tags, but an explicit guard here ensures a pre-release tag
-        # (e.g. v2026.05.0-rc.1) can never accidentally publish to the stable
-        # Homebrew tap even if the glob were widened in the future.
-        if: github.event_name != 'workflow_dispatch'
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          if echo "$tag" | grep -qE -- '-'; then
-            echo "ERROR: tag '$tag' looks like a pre-release. Aborting to protect the stable tap."
-            exit 1
-          fi
 
       - name: Extract and validate version from tag
         id: version
@@ -455,8 +465,13 @@ jobs:
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
 
       # Upload the DMG as a workflow artifact so it is preserved even if a
-      # later step (notarize, cask push) fails — avoiding a full re-sign cycle.
+      # later step (DMG notarize/staple/verify, or the GitHub Release upload)
+      # fails — avoiding a full re-sign cycle. if: always() so this still
+      # runs when Create DMG succeeded but a later step didn't;
+      # if-no-files-found: warn keeps an earlier failure (before the DMG
+      # exists) from adding a spurious extra red step on top of the real one.
       - name: Upload DMG as workflow artifact
+        if: always()
         env:
           VERSION: ${{ steps.version.outputs.version }}
         uses: actions/upload-artifact@v7.0.1
@@ -464,6 +479,7 @@ jobs:
           name: OneLake-${{ steps.version.outputs.version }}-dmg
           path: dist-app/OneLake-${{ steps.version.outputs.version }}.dmg
           retention-days: 7
+          if-no-files-found: warn
 
       # Upload the DMG to the GitHub Release attached to the tag. Skipped
       # on a dry run, which has no tag/release to attach to. Release
@@ -477,19 +493,48 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
 
+      - name: Clean up keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain" 2>/dev/null || true
+
+      - name: Clean up notary key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/notary/key.p8"
+
+  # Bump the Homebrew cask in the homebrew-ofem tap. Split into its own job
+  # (rather than a step in build-app) so a cask-push failure — PAT expiry,
+  # a brew audit/style failure, or retry exhaustion racing a concurrent tap
+  # push — can be recovered with GitHub's "Re-run failed jobs" against just
+  # this job, instead of re-running the whole ~150m build/sign/notarize
+  # pipeline. This also keeps the GitHub Release (build-app, above) as the
+  # first public-facing step: the cask's download URL points at a release
+  # asset, so publishing the release before the cask bump means the cask
+  # never points at a URL that doesn't resolve yet. needs: build-app means
+  # this only runs after that job succeeds (default GitHub Actions
+  # behaviour for a job with unconditional `needs`).
+  publish-cask:
+    name: Publish Homebrew cask
+    needs: build-app
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
       # Update the Homebrew cask in the homebrew-ofem tap with the new
-      # version and the SHA-256 of the freshly notarized DMG. Skipped on
-      # a dry run: nothing to publish without a tag.
+      # version and the SHA-256 of the freshly notarized DMG.
       - name: Update Homebrew cask
-        if: github.event_name != 'workflow_dispatch'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          DMG_SHA256: ${{ steps.dmg_sha.outputs.sha256 }}
+          VERSION: ${{ needs.build-app.outputs.version }}
+          DMG_SHA256: ${{ needs.build-app.outputs.dmg_sha256 }}
           HOMEBREW_TAP_GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GH_TOKEN }}
         run: |
           set -euo pipefail
-          # VERSION was validated to be strict CalVer (YYYY.MM.PATCH) above;
-          # no sed metacharacters are possible in a string matching that regex.
+          # VERSION was validated to be strict CalVer (YYYY.MM.PATCH) in
+          # build-app; no sed metacharacters are possible in a string
+          # matching that regex.
           # Render the cask from the template by substituting placeholders.
           # Escape dots in the sed patterns so they match literals, not wildcards.
           sed \
@@ -549,12 +594,3 @@ jobs:
             fi
             sleep 10
           done
-
-      - name: Clean up keychain
-        if: always()
-        run: |
-          security delete-keychain "$RUNNER_TEMP/build.keychain" 2>/dev/null || true
-
-      - name: Clean up notary key
-        if: always()
-        run: rm -f "$RUNNER_TEMP/notary/key.p8"
