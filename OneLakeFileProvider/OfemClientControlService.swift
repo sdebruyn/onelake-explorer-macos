@@ -215,17 +215,25 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
 
     // MARK: - Handler Task tracking (M11)
 
-    /// Guards `activeTasks` and `isInvalidated`. XPC invokes every handler
-    /// verb from an arbitrary queue, and `cancelActiveTasks()` can run
-    /// concurrently with an in-flight verb call spawning a new Task, so all
-    /// access goes through this lock — mirrors `OfemFPEEnumerator`'s
-    /// `taskLock` discipline.
+    /// Guards `activeTasks`, `finishedBeforeRegistration`, and
+    /// `isInvalidated`. XPC invokes every handler verb from an arbitrary
+    /// queue, and `cancelActiveTasks()` can run concurrently with an
+    /// in-flight verb call spawning a new Task, so all access goes through
+    /// this lock — mirrors `OfemFPEEnumerator`'s `taskLock` discipline.
     private let tasksLock = NSLock()
     /// Every Task spawned by `runReplying`, keyed by a per-call `UUID` so
     /// concurrent calls — to the same verb or different ones — are tracked
     /// independently. Each entry is removed by its own Task's `defer` on
-    /// completion; `cancelActiveTasks()` drains whatever remains.
+    /// completion (via `untrack(_:)`); `cancelActiveTasks()` drains
+    /// whatever remains on teardown.
     private nonisolated(unsafe) var activeTasks: [UUID: Task<Void, Never>] = [:]
+    /// IDs of Tasks whose `defer` called `untrack(_:)` *before*
+    /// `runReplying` got back around to registering them in `activeTasks` —
+    /// the fast-finish race described on `runReplying`. `runReplying`
+    /// consumes (removes) its own ID from here instead of storing a handle
+    /// for a Task that has already finished; there would be nothing left
+    /// for `cancelActiveTasks()` to usefully cancel.
+    private nonisolated(unsafe) var finishedBeforeRegistration: Set<UUID> = []
     /// Set by `cancelActiveTasks()` under `tasksLock`. `runReplying` checks
     /// this under the same lock acquisition it uses to store a new Task's
     /// handle, so a Task whose creation races with `cancelActiveTasks()` is
@@ -237,16 +245,38 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
         super.init()
     }
 
+    /// Removes a completed Task's handle from `activeTasks`. Called from
+    /// the Task's own `defer` in `runReplying`.
+    ///
+    /// If the handle isn't there yet — `runReplying` hasn't reached its own
+    /// `tasksLock.withLock` registration step yet — records the ID in
+    /// `finishedBeforeRegistration` instead, so that pending registration
+    /// step knows not to store a handle for a Task that has already
+    /// finished (see `runReplying`).
     private func untrack(_ id: UUID) {
         tasksLock.withLock {
-            activeTasks.removeValue(forKey: id)
+            if activeTasks.removeValue(forKey: id) == nil {
+                finishedBeforeRegistration.insert(id)
+            }
         }
     }
 
-    /// Cancels every outstanding handler Task. Wired to the owning
+    /// Cancels every outstanding handler Task's cooperative-cancellation
+    /// flag and drops its tracking entry. Wired to the owning
     /// `NSXPCConnection`'s `invalidationHandler` in
-    /// `OfemXPCListenerDelegate` so no Task spawned by a handler verb
-    /// survives its connection's teardown.
+    /// `OfemXPCListenerDelegate`, so no Task's *bookkeeping* survives its
+    /// connection's teardown.
+    ///
+    /// `task.cancel()` only sets `Task.isCancelled`; it does not interrupt
+    /// work already in flight. Whether a given verb's `operation` actually
+    /// stops early depends on that verb: read-only verbs (`getEngineStatus`,
+    /// `getBadgeStatus`) check `Task.isCancelled` and bail out;
+    /// state-mutating verbs (`setConfig`, `reloadEngine`, `clearCache`) run
+    /// to completion by design — see each verb's own comment. Either way
+    /// the eventual reply is safe: `replyOnce` still fires exactly once,
+    /// and a reply delivered to an already-invalidated `NSXPCConnection` is
+    /// a no-op (the host's `withProxy` continuation was already resumed by
+    /// the connection's own error handler).
     func cancelActiveTasks() {
         tasksLock.withLock {
             isInvalidated = true
@@ -271,17 +301,29 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
     /// wins, and the other is a silent no-op. A genuine double reply is
     /// therefore structurally impossible, not merely unlikely.
     ///
-    /// The Task is created *and* registered in `activeTasks` while holding
-    /// `tasksLock` — not created first and separately locked to store —
-    /// so two races are closed at once:
+    /// The Task is created *outside* `tasksLock`, then registered under a
+    /// separate `tasksLock.withLock` — matching `OfemFPEEnumerator`'s
+    /// create-then-lock ordering, rather than creating the Task from inside
+    /// the locked block (which would let its own `defer`-triggered
+    /// `untrack(_:)` call re-enter `tasksLock` while this method might
+    /// still be holding it — safe only because `Task {}` never runs its
+    /// body inline, which is a fragile invariant to lean on rather than a
+    /// structural guarantee).
+    ///
+    /// This ordering reopens a race the enumerator doesn't have to deal
+    /// with — it never removes its own single-slot handle, so it can't
+    /// race its own removal — but `activeTasks` here supports many
+    /// concurrent in-flight verb calls via a dictionary, which does need
+    /// self-removal. Two races are closed:
     /// - a Task created concurrently with `cancelActiveTasks()` is
     ///   cancelled immediately instead of stored (`isInvalidated` check,
-    ///   mirroring `OfemFPEEnumerator`);
+    ///   same as the enumerator);
     /// - a Task fast enough to run to completion and call `untrack(_:)`
-    ///   before this method would otherwise get around to storing its
-    ///   handle cannot slip past it: `untrack(_:)` needs the same lock, so
-    ///   it simply blocks until this call finishes storing (or discarding)
-    ///   the handle first.
+    ///   before this method reaches its own registration step would
+    ///   otherwise leave a permanently-orphaned entry once this method
+    ///   *did* go on to store it. `untrack(_:)` records that case in
+    ///   `finishedBeforeRegistration`; this method consumes that record
+    ///   instead of storing a handle for a Task that's already done.
     private func runReplying<Reply>(
         reply: @escaping Reply,
         onTeardown: @escaping @Sendable (Reply) -> Void,
@@ -290,16 +332,19 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
         let rb = ReplyBox(fn: reply)
         let replyOnce = ReplyOnce()
         let taskID = UUID()
-        tasksLock.withLock {
-            let task = Task { [self] in
-                defer {
-                    replyOnce.callOnce { onTeardown(rb.fn) }
-                    untrack(taskID)
-                }
-                await operation(rb.fn, replyOnce)
+        let task = Task { [self] in
+            defer {
+                replyOnce.callOnce { onTeardown(rb.fn) }
+                untrack(taskID)
             }
+            await operation(rb.fn, replyOnce)
+        }
+        tasksLock.withLock {
             if isInvalidated {
                 task.cancel()
+            } else if finishedBeforeRegistration.remove(taskID) != nil {
+                // Already ran to completion before we got here — nothing
+                // left to track or cancel.
             } else {
                 activeTasks[taskID] = task
             }
@@ -333,11 +378,14 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
     func getEngineStatus(reply: @escaping (XPCEngineStatus?, Error?) -> Void) {
         // xpc-02 / M11: reply-once guard via runReplying — fires exactly
         // once on every path, including Task cancellation or connection
-        // teardown.
+        // teardown. Read-only, so cancellation is genuinely safe: the
+        // Task.isCancelled check below actually skips the remaining work
+        // (unlike the mutating verbs — see clearCache's comment).
         runReplying(
             reply: reply,
             onTeardown: { fn in fn(nil, NSFileProviderError(.cannotSynchronize)) },
             operation: { fn, replyOnce in
+                guard !Task.isCancelled else { return }
                 do {
                     // Read config snapshot via the shared configStore — does NOT
                     // require the engine to be built yet (cheaper for first call).
@@ -350,6 +398,7 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
                     var pausedWorkspaces: [XPCPausedWorkspace] = []
 
                     if let engine = self.engineHost.existingEngine() {
+                        guard !Task.isCancelled else { return }
                         cacheBytes = (try? await engine.cache.blobBytes()) ?? -1
 
                         // Query the workspace_status table for paused entries.
@@ -394,11 +443,14 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
     func getBadgeStatus(reply: @escaping (XPCBadgeStatus?, Error?) -> Void) {
         // xpc-02 / M11: reply-once guard via runReplying — fires exactly
         // once on every path, including Task cancellation or connection
-        // teardown.
+        // teardown. Read-only, so cancellation is genuinely safe: the
+        // Task.isCancelled check below actually skips the remaining work
+        // (unlike the mutating verbs — see clearCache's comment).
         runReplying(
             reply: reply,
             onTeardown: { fn in fn(nil, NSFileProviderError(.cannotSynchronize)) },
             operation: { fn, replyOnce in
+                guard !Task.isCancelled else { return }
                 // Engine-optional, mirroring getEngineStatus's existingEngine() branch,
                 // so the badge still reports needsSignIn before the engine has ever
                 // been built. Deliberately skips blobBytes() and the config snapshot
@@ -530,7 +582,14 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
 
         // xpc-02 / M11: reply-once guard via runReplying — fires exactly
         // once on every path, including Task cancellation or connection
-        // teardown.
+        // teardown. Deliberately does NOT check Task.isCancelled: this
+        // writes the persisted config file and then reloads the engine —
+        // interrupting that halfway would risk a written-but-unapplied (or
+        // worse, partially-written) config. cancelActiveTasks() still
+        // clears this Task's tracking entry on teardown, it just doesn't
+        // stop the write/reload in flight; the eventual reply is a safe
+        // no-op if the connection is already gone (see cancelActiveTasks's
+        // doc comment).
         runReplying(
             reply: reply,
             onTeardown: { fn in fn(NSFileProviderError(.cannotSynchronize)) },
@@ -577,11 +636,19 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
 
     func pollMaterialized(alias: String, reply: @escaping (Bool, Error?) -> Void) {
         // xpc-02 / M11: reply-once guard via runReplying — fires exactly
-        // once on every path.
+        // once on every path. Only a pre-flight Task.isCancelled check:
+        // skips *starting* refreshMaterialized if already cancelled, but
+        // does not attempt to interrupt it mid-pass once started —
+        // refreshMaterialized's own per-key error handling already treats
+        // cancellation as a non-fatal per-key error and runs the pass to
+        // completion regardless (see its doc comment in SyncEngine.swift),
+        // so an isCancelled check partway through would not change its
+        // behaviour.
         runReplying(
             reply: reply,
             onTeardown: { fn in fn(false, NSFileProviderError(.cannotSynchronize)) },
             operation: { fn, replyOnce in
+                guard !Task.isCancelled else { return }
                 do {
                     let engine = try await self.engineHost.engine()
                     // Read the materialized-container set for `alias` from the
@@ -617,7 +684,11 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
 
     func reloadEngine(alias: String, reply: @escaping (Error?) -> Void) {
         // xpc-02 / M11: reply-once guard via runReplying — fires exactly
-        // once on every path.
+        // once on every path. Deliberately does NOT check Task.isCancelled:
+        // reloadEngine() shuts the current engine down and rebuilds lazily
+        // on next use — interrupting that halfway would leave the engine in
+        // an inconsistent shutdown state. cancelActiveTasks() still clears
+        // this Task's tracking entry on teardown; see its doc comment.
         runReplying(
             reply: reply,
             onTeardown: { fn in fn(NSFileProviderError(.cannotSynchronize)) },
@@ -636,7 +707,12 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
     func clearCache(reply: @escaping (Int64, Error?) -> Void) {
         // xpc-02 / M11: reply-once guard via runReplying — fires exactly
         // once on every path, including Task cancellation or connection
-        // teardown.
+        // teardown. Deliberately does NOT check Task.isCancelled: this
+        // wipes the on-disk blob cache, and interrupting a wipe halfway
+        // could leave it in a partially-cleared state — worse than letting
+        // it finish and delivering (or safely discarding) a late reply.
+        // cancelActiveTasks() still clears this Task's tracking entry on
+        // teardown; it just doesn't stop the wipe in flight.
         runReplying(
             reply: reply,
             onTeardown: { fn in fn(0, NSFileProviderError(.cannotSynchronize)) },

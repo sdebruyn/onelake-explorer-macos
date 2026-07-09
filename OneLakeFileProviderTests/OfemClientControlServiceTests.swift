@@ -241,6 +241,37 @@ final class OfemControlXPCHandlerReplyOnceTests: XCTestCase {
 
         await engine.shutdown()
     }
+
+    func testGetBadgeStatus_repliesViaOnTeardownFallback_whenCalledAfterInvalidation() {
+        // Simulates a verb call arriving after the owning NSXPCConnection has
+        // already invalidated (e.g. the host app quit mid-flight):
+        // cancelActiveTasks() runs first, so runReplying's registration step
+        // cancels getBadgeStatus's Task before its body ever runs. The
+        // Task.isCancelled guard at the top of getBadgeStatus's operation
+        // then bails immediately, and the reply comes from runReplying's
+        // onTeardown fallback — not from getBadgeStatus's normal success path.
+        let host = MockEngineHost(alias: "post-invalidation-test")
+        let handler = OfemControlXPCHandler(engineHost: host)
+        handler.cancelActiveTasks()
+
+        let replyCount = ReplyCounter()
+        let exp = expectation(description: "getBadgeStatus replies")
+        handler.getBadgeStatus { status, error in
+            replyCount.increment()
+            // The normal (non-cancelled) success path for a cold
+            // MockEngineHost returns a non-nil status and a nil error (see
+            // testGetBadgeStatus_needsSignInFalseByDefault above) —
+            // asserting the opposite here proves the onTeardown fallback
+            // fired, not the success path.
+            XCTAssertNil(status)
+            XCTAssertNotNil(error)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 2)
+
+        XCTAssertEqual(replyCount.value, 1,
+                       "a verb arriving after invalidation must still reply exactly once")
+    }
 }
 
 /// Thread-safe reply-invocation counter. Mirrors `RecordingTelemetrySink`'s
