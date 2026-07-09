@@ -50,6 +50,13 @@ bootstrap: ## Write Local.xcconfig from the sample (first-time setup)
 # for the "new/removed file" regen case below — see .source-manifest.
 XCODEGEN_SOURCE_DIRS := OneLake OneLakeFileProvider Shared OneLakeHostTests OneLakeFileProviderTests
 
+# Filesystem/editor noise that can appear and disappear inside a source
+# directory without any actual source change (Finder's .DS_Store, editor
+# swap files) — excluded from the snapshot below so it can't trip the
+# list-diff guard into a spurious (harmless but noisy) regen. Mirrors the
+# same noise patterns already ignored elsewhere in .gitignore.
+XCODEGEN_SOURCE_NOISE := .DS_Store *.swp *.swo *~
+
 # FORCE lets .source-manifest's recipe (a cheap `find`) run on every
 # invocation while .source-manifest itself still behaves as a normal
 # mtime-based prerequisite for the project.pbxproj rule below.
@@ -66,7 +73,7 @@ FORCE:
 # below reacts to, so an ordinary content edit correctly does NOT trigger
 # a regen, while a new or deleted source file does.
 .source-manifest: FORCE
-	@find $(XCODEGEN_SOURCE_DIRS) -type f 2>/dev/null | sort > $@.tmp
+	@find $(XCODEGEN_SOURCE_DIRS) -type f $(foreach n,$(XCODEGEN_SOURCE_NOISE),-not -name '$(n)') 2>/dev/null | sort > $@.tmp
 	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
 	@rm -f $@.tmp
 
@@ -92,7 +99,12 @@ OneLake.xcodeproj/project.pbxproj: project.yml .source-manifest
 
 # Phony alias — forces regeneration regardless of timestamps. Useful for
 # `make gen` after adding new source files or editing project.yml explicitly.
-gen: bootstrap ## Regenerate OneLake.xcodeproj from project.yml (force)
+# Depends on .source-manifest so this run also refreshes the snapshot to the
+# current file list; otherwise a contributor following this target's own
+# "run after adding source files" advice would leave the manifest stale,
+# and the *next* build would trip the list-diff guard for a no-op, redundant
+# (if harmless) xcodegen pass.
+gen: bootstrap .source-manifest ## Regenerate OneLake.xcodeproj from project.yml (force)
 	@command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed; run: make bootstrap && brew install xcodegen"; exit 1; }
 	xcodegen generate --spec project.yml --project-root . --project .
 

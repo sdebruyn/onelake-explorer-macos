@@ -62,8 +62,11 @@ OneLake.xcodeproj/
 OneLake.xcworkspace/
 
 # Source-file-list snapshot used by the Makefile to detect new/removed
-# source files and trigger an xcodegen regen (see the .source-manifest rule)
-.source-manifest
+# source files and trigger an xcodegen regen (see the .source-manifest rule).
+# The trailing "*" also covers the .tmp scratch file the recipe writes before
+# the atomic rename — an interrupted recipe run would otherwise leave that
+# behind as a stray untracked file.
+.source-manifest*
 
 # Local signing config — per-developer, not committed
 Local.xcconfig
