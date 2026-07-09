@@ -2103,6 +2103,18 @@ public actor SyncEngine {
                 let (completed, total) = Self.absoluteDownloadProgress(
                     rangeStart: rangeStart, completedInRequest: completedInRequest, totalInRequest: totalInRequest
                 )
+                // `total` is intentionally passed through unclamped — only
+                // `completed` is high-water-marked. A silently-retried SAME
+                // request reporting a SMALLER totalInRequest than an earlier
+                // tick (near-impossible; would almost always trip an
+                // etag/412 mismatch first) could transiently let the clamped
+                // `completed` exceed a shrunk `total` mid-download. That's a
+                // theoretical visual glitch only, not a correctness issue: a
+                // second high-water-mark on `total` would add its own
+                // cross-clamp subtleties for a scenario this unlikely, and
+                // fetchContents' completion step forces both totalUnitCount
+                // and completedUnitCount to actualBytes regardless (#461
+                // review round 3 addendum).
                 onProgress(progressClamp.clamp(completed), total)
             }
         }
