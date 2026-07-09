@@ -233,6 +233,13 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
     /// consumes (removes) its own ID from here instead of storing a handle
     /// for a Task that has already finished; there would be nothing left
     /// for `cancelActiveTasks()` to usefully cancel.
+    ///
+    /// Only ever populated pre-invalidation (`untrack(_:)` skips the insert
+    /// once `isInvalidated` is true — see its doc comment) and drained by
+    /// either `runReplying`'s registration step or, for the narrow window
+    /// where invalidation lands between that check and registration,
+    /// `runReplying`'s own `isInvalidated` branch. Never left to grow
+    /// unboundedly.
     private nonisolated(unsafe) var finishedBeforeRegistration: Set<UUID> = []
     /// Set by `cancelActiveTasks()` under `tasksLock`. `runReplying` checks
     /// this under the same lock acquisition it uses to store a new Task's
@@ -248,16 +255,24 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
     /// Removes a completed Task's handle from `activeTasks`. Called from
     /// the Task's own `defer` in `runReplying`.
     ///
-    /// If the handle isn't there yet — `runReplying` hasn't reached its own
-    /// `tasksLock.withLock` registration step yet — records the ID in
-    /// `finishedBeforeRegistration` instead, so that pending registration
-    /// step knows not to store a handle for a Task that has already
-    /// finished (see `runReplying`).
+    /// A miss (the handle isn't in `activeTasks`) has two possible causes,
+    /// and they need different handling:
+    /// - the genuine fast-finish race: `runReplying` hasn't reached its own
+    ///   `tasksLock.withLock` registration step yet. Record the ID in
+    ///   `finishedBeforeRegistration` so that pending registration step
+    ///   knows not to store a handle for a Task that has already finished.
+    /// - post-invalidation: `cancelActiveTasks()` already ran — either it
+    ///   drained this ID out of `activeTasks` via `removeAll()`, or
+    ///   registration hasn't happened yet and will see `isInvalidated` and
+    ///   skip storing entirely. Either way nothing will ever consume an
+    ///   entry inserted here, so inserting one would leak it permanently.
+    ///   `isInvalidated` only ever transitions false → true, so checking it
+    ///   here reliably distinguishes the two cases.
     private func untrack(_ id: UUID) {
         tasksLock.withLock {
-            if activeTasks.removeValue(forKey: id) == nil {
-                finishedBeforeRegistration.insert(id)
-            }
+            guard activeTasks.removeValue(forKey: id) == nil else { return }
+            guard !isInvalidated else { return }
+            finishedBeforeRegistration.insert(id)
         }
     }
 
@@ -342,6 +357,15 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
         tasksLock.withLock {
             if isInvalidated {
                 task.cancel()
+                // Belt-and-suspenders: closes the narrow window where this
+                // Task finished and untrack(_:) inserted into
+                // finishedBeforeRegistration *before* isInvalidated flipped
+                // true, but cancelActiveTasks() then ran before this
+                // registration step did. untrack(_:) itself won't have
+                // leaked a fresh entry here (it now skips inserting once
+                // isInvalidated is true), so this only ever mops up that
+                // one pre-existing race window — never grows the set.
+                finishedBeforeRegistration.remove(taskID)
             } else if finishedBeforeRegistration.remove(taskID) != nil {
                 // Already ran to completion before we got here — nothing
                 // left to track or cancel.
