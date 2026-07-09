@@ -258,10 +258,12 @@ public final class OneLakeClient: Sendable {
     /// streaming is a larger change and is tracked as a follow-up.
     ///
     /// Retries are handled by the session's interceptor stack (see
-    /// ``SessionPool``); a retried request re-downloads from byte 0 into a
-    /// fresh temp file — there is no `resumeData` reuse, so `destination` is
-    /// never left with a partial write, but a retry after a large partial
-    /// transfer re-pays the bytes already transferred.
+    /// ``SessionPool``); a retried request re-downloads from byte 0,
+    /// overwriting the same staged temp file in place (Alamofire's
+    /// `.removePreviousFile` destination option) — there is no `resumeData`
+    /// reuse, so `destination` is never left with a partial write, but a
+    /// retry after a large partial transfer re-pays the bytes already
+    /// transferred.
     ///
     /// Pass `range: nil` to download the entire file.
     /// Pass `ifMatch: ""` to skip the `If-Match` header.
@@ -929,11 +931,12 @@ public final class OneLakeClient: Sendable {
     ///
     /// Injects the `x-ms-version` header and maps errors to ``OneLakeError``.
     ///
-    /// - Note: retries (see ``SessionPool``) restart the download from byte 0
-    ///   into a fresh temp file; there is no `resumeData` reuse. A file that
-    ///   fails late in the transfer re-pays the already-downloaded bytes on
-    ///   retry. Wiring `DownloadRequest` resume-data through the retry chain
-    ///   is tracked as a follow-up, out of scope for this fix.
+    /// - Note: retries (see ``SessionPool``) restart the download from byte
+    ///   0, overwriting the same staged temp file in place
+    ///   (`.removePreviousFile`); there is no `resumeData` reuse. A file
+    ///   that fails late in the transfer re-pays the already-downloaded
+    ///   bytes on retry. Wiring `DownloadRequest` resume-data through the
+    ///   retry chain is tracked as a follow-up, out of scope for this fix.
     private func doStreamRequest(
         alias: String,
         method: String,
@@ -954,11 +957,12 @@ public final class OneLakeClient: Sendable {
         let afDestination: DownloadRequest.Destination = { _, _ in
             (tmpURL, [.removePreviousFile, .createIntermediateDirectories])
         }
-        // Unconditional cleanup on every exit path (success, nil-response
-        // guard, .failure branch, or an error rethrown from an outer catch)
-        // — the temp file must never leak (M5 / #430). Best-effort: the
-        // success/failure branches below may already have removed it, so a
-        // missing file here is not an error.
+        // This defer is the single, unconditional cleanup site for every
+        // exit path (success, nil-response guard, .failure branch, or an
+        // error rethrown from an outer catch) — the temp file must never
+        // leak (M5 / #430). Neither branch below removes tmpURL itself;
+        // try? because the file may legitimately not exist yet (e.g. the
+        // nil-response guard fires before Alamofire ever wrote anything).
         defer { try? FileManager.default.removeItem(at: tmpURL) }
 
         do {
