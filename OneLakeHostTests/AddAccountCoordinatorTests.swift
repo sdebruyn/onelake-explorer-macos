@@ -48,29 +48,6 @@ private final class MockDomainRegistrar: DomainRegistrar, @unchecked Sendable {
     }
 }
 
-// MARK: - Helpers
-
-/// Polls `condition` until it returns true or `timeout` elapses. Used
-/// instead of a Combine `$phase.sink` subscription so tests aren't tied to
-/// Combine's `@Published` projection — see the identical helper in
-/// MenuStatusModelExtendedTests.swift.
-///
-/// `@MainActor`-isolated (matching every call site, which is always a
-/// `@MainActor` test method) so the non-escaping `condition` closure —
-/// which reads `@MainActor`-isolated coordinator state — never has to
-/// cross an actor boundary.
-@MainActor
-private func waitUntil(
-    timeout: Duration = .seconds(3),
-    interval: Duration = .milliseconds(20),
-    _ condition: () -> Bool
-) async {
-    let deadline = ContinuousClock.now + timeout
-    while !condition(), ContinuousClock.now < deadline {
-        try? await Task.sleep(for: interval)
-    }
-}
-
 // MARK: - Tests
 
 @MainActor

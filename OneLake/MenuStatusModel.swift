@@ -286,11 +286,7 @@ final class MenuStatusModel {
 
     // MARK: Private
 
-    /// `private(set)` (not `private`) so tests can `await refreshTask?.value`
-    /// to deterministically wait for a `refresh()` call to complete, instead
-    /// of content-polling a published property whose value may be identical
-    /// across refreshes (e.g. a throttled secondary-account sweep).
-    private(set) var refreshTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
     private var autoRefreshTask: Task<Void, Never>?
     private var backgroundRefreshTask: Task<Void, Never>?
     /// In-flight debounce timer for setCacheLimitGB.
@@ -397,6 +393,17 @@ final class MenuStatusModel {
         refreshTask = Task { [weak self] in
             await self?.doRefresh(full: full)
         }
+    }
+
+    /// Awaits completion of the `refresh()` call currently in flight, if any.
+    /// Internal (not private) so tests can synchronize on a full `doRefresh()`
+    /// pass — including its secondary-account sweep — without content-polling
+    /// a property whose value may be identical across refreshes (e.g. a
+    /// throttled secondary-account sweep). `refresh()` reassigns `refreshTask`
+    /// synchronously, so calling this immediately after `refresh()` always
+    /// awaits that specific call, not a stale prior one.
+    func awaitCurrentRefresh() async {
+        await refreshTask?.value
     }
 
     /// Refresh now, then repeatedly every `interval` for the whole process
@@ -537,7 +544,7 @@ final class MenuStatusModel {
                 guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
 
                 // Capture auth state from the first account's status reply.
-                if applyFullEngineStatus(status, firstAlias: firstAlias) {
+                if applyFullEngineStatus(status) {
                     needsSignInSet.insert(firstAlias)
                 }
             } catch {
@@ -640,7 +647,7 @@ final class MenuStatusModel {
     ///
     /// - Returns: `status.needsSignIn`, so the caller can fold it into its own
     ///   `needsSignInSet` alongside the secondary-account sweep results.
-    private func applyFullEngineStatus(_ status: XPCEngineStatus, firstAlias _: String) -> Bool {
+    private func applyFullEngineStatus(_ status: XPCEngineStatus) -> Bool {
         if !isFenced(.cacheMaxSize) {
             cacheBytes = status.cacheBytes
             cacheMaxBytes = status.cacheMaxBytes

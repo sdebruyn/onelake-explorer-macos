@@ -138,27 +138,7 @@ private func makeAccount(alias: String) -> Account {
     )
 }
 
-/// Polls `condition` until it returns true or `timeout` elapses. Used
-/// instead of a fixed sleep so tests aren't tied to a specific timing
-/// value (T2) — see the identical helper in MenuStatusModelExtendedTests.swift.
-///
-/// `@MainActor`-isolated (matching every call site, which is always a
-/// `@MainActor` test method) so the non-escaping `condition` closure —
-/// which reads `@MainActor`-isolated model/fake state — never has to
-/// cross an actor boundary. Without this, Swift 6 strict concurrency
-/// rejects the closure as a non-`Sendable` value being "sent" into a
-/// nonisolated `async` function.
-@MainActor
-private func waitUntil(
-    timeout: Duration = .seconds(3),
-    interval: Duration = .milliseconds(10),
-    _ condition: () -> Bool
-) async {
-    let deadline = ContinuousClock.now + timeout
-    while !condition(), ContinuousClock.now < deadline {
-        try? await Task.sleep(for: interval)
-    }
-}
+// waitUntil lives in TestHelpers.swift, shared across the test target.
 
 // MARK: - Tests
 
@@ -237,12 +217,17 @@ final class MenuStatusModelAutoRefreshTests: XCTestCase, @unchecked Sendable {
         // accountsNeedingSignIn is unsuitable for content-polling here — its
         // value is identical across all five iterations once "second" is
         // throttled, so a `waitUntil` on its content could pass before the
-        // corresponding refresh() has actually finished. Await refreshTask
-        // directly instead: safe because refresh() reassigns refreshTask
-        // synchronously before this call returns.
+        // corresponding refresh() has actually finished. Even the call
+        // counters aren't safe to poll: getEngineStatus("first") is invoked
+        // early in doRefresh, well before the secondary-account sweep that
+        // this test is actually asserting on, so polling for it to tick would
+        // let the next refresh() fire mid-sweep and cancel it. Await the
+        // whole doRefresh pass directly instead: safe because refresh()
+        // reassigns the underlying Task synchronously before this call
+        // returns.
         for _ in 0 ..< 5 {
             model.refresh()
-            await model.refreshTask?.value
+            await model.awaitCurrentRefresh()
         }
 
         // The secondary sweep always uses getBadgeStatus (#397), never
@@ -283,12 +268,12 @@ final class MenuStatusModelAutoRefreshTests: XCTestCase, @unchecked Sendable {
         )
 
         // See the comment in testDoRefresh_secondaryAccountThrottled_notCheckedEveryTick
-        // for why this awaits refreshTask directly rather than polling content.
+        // for why this awaits the whole refresh directly rather than polling content.
         model.refresh()
-        await model.refreshTask?.value
+        await model.awaitCurrentRefresh()
         try? await Task.sleep(for: .milliseconds(60)) // > secondaryAccountCheckInterval
         model.refresh()
-        await model.refreshTask?.value
+        await model.awaitCurrentRefresh()
 
         let secondCallCount = engineProvider.calledBadgeAliases.count(where: { $0 == "second" })
         XCTAssertEqual(
