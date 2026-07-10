@@ -46,7 +46,7 @@ public actor CacheStore {
 
     // Internal so test targets can run direct SQL assertions.
     let dbPool: DatabasePool
-    private let blobs: BlobShardCache
+    let blobs: BlobShardCache
     /// LRU eviction threshold for blob bytes. `var` (not `let`) so
     /// ``setMaxBlobBytes(_:)`` can update the budget live. Actor isolation
     /// serialises reads and writes made from actor-isolated code (e.g. the
@@ -58,16 +58,16 @@ public actor CacheStore {
     /// `dbPool.write { }` passes, for exactly this reason; do not reintroduce
     /// a direct `maxBlobBytes` reference inside a `dbPool.write { }` /
     /// `dbPool.read { }` closure.
-    private var maxBlobBytes: Int64
+    var maxBlobBytes: Int64
 
     /// Clock injection seam: returns the current time as Unix nanoseconds.
     /// Defaults to wall clock; override in tests for deterministic ordering.
-    private let clock: () -> Int64
+    let clock: () -> Int64
 
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "CacheStore")
+    static let log = Logger(subsystem: "dev.debruyn.ofem", category: "CacheStore")
 
     /// Structured logger for debug-level cache diagnostics.
-    private let logger: OfemLogger
+    let logger: OfemLogger
 
     // MARK: - Public state
 
@@ -1679,7 +1679,7 @@ public actor CacheStore {
     /// the two copies.
     ///
     /// `static` so it can be called from inside `dbPool.write` Sendable closures.
-    private static func inClauseBinding(_ shas: [String]) -> (placeholders: String, arguments: StatementArguments) {
+    static func inClauseBinding(_ shas: [String]) -> (placeholders: String, arguments: StatementArguments) {
         (shas.map { _ in "?" }.joined(separator: ", "), StatementArguments(shas))
     }
 
@@ -1692,7 +1692,7 @@ public actor CacheStore {
     /// - Parameters:
     ///   - shas: Candidate SHA-256 values; duplicates are tolerated and ignored.
     ///   - onDeleted: Called with the SHA of each file that was actually unlinked.
-    private func deleteUnreferencedBlobs(shas: [String], onDeleted: ((String) -> Void)? = nil) async {
+    func deleteUnreferencedBlobs(shas: [String], onDeleted: ((String) -> Void)? = nil) async {
         guard !shas.isEmpty else { return }
 
         // Build a set of SHAs that still have at least one DB reference.
