@@ -534,50 +534,8 @@ final class MenuStatusModel: ObservableObject {
                 // awaiting the XPC reply (stale-snapshot guard for app-07).
                 guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
 
-                if !isFenced(.cacheMaxSize) {
-                    cacheBytes = status.cacheBytes
-                    cacheMaxBytes = status.cacheMaxBytes
-                    if status.cacheMaxSizeGB > 0 {
-                        cacheMaxSizeGB = status.cacheMaxSizeGB
-                    }
-                }
-                if !isFenced(.telemetry) {
-                    telemetryEnabled = status.telemetryEnabled
-                }
-                if status.netMaxUploads > 0, !isFenced(.netMaxUploads) {
-                    netMaxUploads = status.netMaxUploads
-                }
-                if status.netMaxDownloads > 0, !isFenced(.netMaxDownloads) {
-                    netMaxDownloads = status.netMaxDownloads
-                }
-                if !status.logLevel.isEmpty, !isFenced(.logLevel) {
-                    logLevel = status.logLevel
-                }
-                if status.materializedPollIntervalS > 0, !isFenced(.materializedPollInterval) {
-                    materializedPollIntervalS = status.materializedPollIntervalS
-                    ChangeWatcher.shared.materializedPollInterval = .seconds(status.materializedPollIntervalS)
-                }
-                if !isFenced(.selfHealInterval) {
-                    // 0 from an older FPE means "not yet available"; preserve the last-known
-                    // value so the UI does not snap back. Once populated, publish verbatim
-                    // (0 = disabled is a valid user choice).
-                    if status.selfHealIntervalM > 0 || selfHealIntervalM == 0 {
-                        selfHealIntervalM = status.selfHealIntervalM
-                    }
-                }
-
-                // Mark that at least one successful status reply has been applied.
-                // Settings rows that cannot use a sibling field's non-zero value as
-                // a "loaded" proxy (e.g. selfHealIntervalM may be 0 when disabled)
-                // should gate on this flag instead. Only the full getEngineStatus
-                // reply actually populates the cache/config fields this flag
-                // guards, so the badge-only branch below leaves it untouched.
-                engineStatusReceived = true
-
-                pausedWorkspaces = mapPausedWorkspaces(status.pausedWorkspaces)
-
                 // Capture auth state from the first account's status reply.
-                if status.needsSignIn {
+                if applyFullEngineStatus(status, firstAlias: firstAlias) {
                     needsSignInSet.insert(firstAlias)
                 }
             } catch {
@@ -665,6 +623,65 @@ final class MenuStatusModel: ObservableObject {
             lastSecondaryAccountCheckAt = now
         }
         accountsNeedingSignIn = needsSignInSet
+    }
+
+    /// Applies a full `getEngineStatus` reply to the write-fence-gated fields,
+    /// plus `engineStatusReceived` and `pausedWorkspaces`. Extracted from the
+    /// `full` branch of `doRefresh` so the apply logic reads independently of
+    /// the fetch/guard/error-handling around it.
+    ///
+    /// The stale-snapshot generation guard (`myGeneration == refreshGeneration`)
+    /// deliberately stays in `doRefresh` rather than moving in here: its
+    /// `return` aborts the rest of `doRefresh`, including the secondary-account
+    /// sweep below it — a helper-local `return` would only abort this method,
+    /// silently changing that behaviour.
+    ///
+    /// - Returns: `status.needsSignIn`, so the caller can fold it into its own
+    ///   `needsSignInSet` alongside the secondary-account sweep results.
+    private func applyFullEngineStatus(_ status: XPCEngineStatus, firstAlias _: String) -> Bool {
+        if !isFenced(.cacheMaxSize) {
+            cacheBytes = status.cacheBytes
+            cacheMaxBytes = status.cacheMaxBytes
+            if status.cacheMaxSizeGB > 0 {
+                cacheMaxSizeGB = status.cacheMaxSizeGB
+            }
+        }
+        if !isFenced(.telemetry) {
+            telemetryEnabled = status.telemetryEnabled
+        }
+        if status.netMaxUploads > 0, !isFenced(.netMaxUploads) {
+            netMaxUploads = status.netMaxUploads
+        }
+        if status.netMaxDownloads > 0, !isFenced(.netMaxDownloads) {
+            netMaxDownloads = status.netMaxDownloads
+        }
+        if !status.logLevel.isEmpty, !isFenced(.logLevel) {
+            logLevel = status.logLevel
+        }
+        if status.materializedPollIntervalS > 0, !isFenced(.materializedPollInterval) {
+            materializedPollIntervalS = status.materializedPollIntervalS
+            ChangeWatcher.shared.materializedPollInterval = .seconds(status.materializedPollIntervalS)
+        }
+        if !isFenced(.selfHealInterval) {
+            // 0 from an older FPE means "not yet available"; preserve the last-known
+            // value so the UI does not snap back. Once populated, publish verbatim
+            // (0 = disabled is a valid user choice).
+            if status.selfHealIntervalM > 0 || selfHealIntervalM == 0 {
+                selfHealIntervalM = status.selfHealIntervalM
+            }
+        }
+
+        // Mark that at least one successful status reply has been applied.
+        // Settings rows that cannot use a sibling field's non-zero value as
+        // a "loaded" proxy (e.g. selfHealIntervalM may be 0 when disabled)
+        // should gate on this flag instead. Only the full getEngineStatus
+        // reply actually populates the cache/config fields this flag
+        // guards, so the badge-only branch in doRefresh leaves it untouched.
+        engineStatusReceived = true
+
+        pausedWorkspaces = mapPausedWorkspaces(status.pausedWorkspaces)
+
+        return status.needsSignIn
     }
 
     /// Maps `XPCPausedWorkspace` entries to `PausedWorkspaceInfo`. Shared by
