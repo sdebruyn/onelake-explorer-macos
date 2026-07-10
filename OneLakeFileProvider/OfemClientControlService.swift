@@ -491,107 +491,74 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
         )
     }
 
+    // MARK: - setConfig helpers
+
+    /// Parses `value` as `Int`, returning `SetConfigError.invalidValue` on failure.
+    /// Shared by the integer-typed config keys to avoid repeating the guard+error in each case.
+    private static func intRequired(key: String, value: String) -> Result<Int, SetConfigError> {
+        guard let n = Int(value) else {
+            return .failure(.invalidValue(key: key, value: value, reason: "expected an integer"))
+        }
+        return .success(n)
+    }
+
+    /// Validates a raw (key, value) XPC pair and resolves it to a typed `ValidatedConfig`.
+    ///
+    /// Pure and synchronous — called by `setConfig` before any Task is spawned so the async
+    /// mutator closure captures only a `Sendable` value, never a closure. The switch covers
+    /// every `OfemConfigKey` case without a `default:` arm so a new key added to `OfemConfigKey`
+    /// that lacks a matching arm here fails the build rather than silently falling through
+    /// to `.unknownKey` at runtime (xpc-10).
+    private static func validateConfig(key: String, value: String) -> Result<ValidatedConfig, SetConfigError> {
+        guard let configKey = OfemConfigKey(rawValue: key) else {
+            return .failure(.unknownKey(key))
+        }
+        switch configKey {
+        case .telemetry:
+            guard ["on", "off"].contains(value) else {
+                return .failure(.invalidValue(key: key, value: value,
+                                              reason: "expected \"on\" or \"off\""))
+            }
+            return .success(.telemetry(value == "on"))
+        case .cacheMaxSizeGB:
+            // 0 = "no limit" sentinel; positives clamped to [minSizeGB, maxSizeGB] (M9).
+            return Self.intRequired(key: key, value: value)
+                .map { .cacheMaxSizeGB(CacheConfig.clampSizeGB($0)) }
+        case .netMaxUploads:
+            // xpc-07: per-protocol cap (16 uploads) tighter than maxConcurrent (64); same clamp as M9.
+            return Self.intRequired(key: key, value: value)
+                .map { .netMaxUploads(SetConfigLimits.clampUploads($0)) }
+        case .netMaxDownloads:
+            // xpc-08: see clampUploads above.
+            return Self.intRequired(key: key, value: value)
+                .map { .netMaxDownloads(SetConfigLimits.clampDownloads($0)) }
+        case .logLevel:
+            let allowed = ["debug", "info", "warn", "error"]
+            guard allowed.contains(value) else {
+                return .failure(.invalidValue(key: key, value: value,
+                                              reason: "expected one of \(allowed.joined(separator: ", "))"))
+            }
+            return .success(.logLevel(value))
+        case .syncMaterializedPollIntervalS:
+            return Self.intRequired(key: key, value: value).map {
+                let clamped = max(SyncConfig.minMaterializedPollIntervalS,
+                                  min(SyncConfig.maxMaterializedPollIntervalS, $0))
+                return .syncMaterializedPollIntervalS(clamped)
+            }
+        case .syncSelfHealIntervalM:
+            // 0 is the "disabled" sentinel and is preserved as-is.
+            return Self.intRequired(key: key, value: value)
+                .map { .syncSelfHealIntervalM(clampedSelfHealIntervalM($0)) }
+        }
+    }
+
     // MARK: - setConfig
 
-    // Validates and dispatches every XPC config key through one switch; extracting
-    // per-key handlers is a real follow-up (tracked separately), not in scope here.
-    // swiftlint:disable:next function_body_length cyclomatic_complexity
     func setConfig(key: String, value: String, reply: @escaping (Error?) -> Void) {
-        // Validate-first: resolve (key, value) synchronously to a plain Sendable
-        // value before spinning up any Task. Validation never mutates state
-        // captured by the async mutator closure, so the closure stays
-        // `@Sendable`-safe.
-        //
-        // `ValidatedConfig` is a Sendable enum of plain value-typed cases;
-        // the async Task captures only the resolved case, not any closures.
-        enum ValidatedConfig: Sendable {
-            case telemetry(Bool)
-            case cacheMaxSizeGB(Int)
-            case netMaxUploads(Int)
-            case netMaxDownloads(Int)
-            case logLevel(String)
-            case syncMaterializedPollIntervalS(Int)
-            case syncSelfHealIntervalM(Int)
-        }
-
-        // Decode the raw wire key into the shared `OfemConfigKey` enum first,
-        // then switch over THAT — with no `default:` arm — so a case added to
-        // `OfemConfigKey` without a matching arm here fails the build instead
-        // of silently falling through to `.unknownKey` at runtime (xpc-10).
-        // `key: String` on the wire is unchanged; only local dispatch changes.
-        let result: Result<ValidatedConfig, SetConfigError>
-        if let configKey = OfemConfigKey(rawValue: key) {
-            switch configKey {
-            case .telemetry:
-                guard value == "on" || value == "off" else {
-                    result = .failure(.invalidValue(key: key, value: value,
-                                                    reason: "expected \"on\" or \"off\""))
-                    break
-                }
-                result = .success(.telemetry(value == "on"))
-            case .cacheMaxSizeGB:
-                guard let gb = Int(value) else {
-                    result = .failure(.invalidValue(key: key, value: value,
-                                                    reason: "expected an integer"))
-                    break
-                }
-                // CacheConfig.clampSizeGB preserves the 0 "no limit" sentinel
-                // and clamps positive values to [minSizeGB, maxSizeGB] — the
-                // same expression the host's optimistic clamp uses (M9).
-                let clamped = CacheConfig.clampSizeGB(gb)
-                result = .success(.cacheMaxSizeGB(clamped))
-            case .netMaxUploads:
-                guard let n = Int(value) else {
-                    result = .failure(.invalidValue(key: key, value: value,
-                                                    reason: "expected an integer"))
-                    break
-                }
-                // xpc-07: SetConfigLimits.clampUploads is per-protocol
-                // (16 uploads); the shared NetConfig.maxConcurrent (64) is
-                // the absolute ceiling for any concurrency field — the XPC
-                // protocol caps uploads more tightly to avoid swamping the
-                // endpoint. Same clamp the host's optimistic clamp uses (M9).
-                result = .success(.netMaxUploads(SetConfigLimits.clampUploads(n)))
-            case .netMaxDownloads:
-                guard let n = Int(value) else {
-                    result = .failure(.invalidValue(key: key, value: value,
-                                                    reason: "expected an integer"))
-                    break
-                }
-                // xpc-08: SetConfigLimits.clampDownloads — see clampUploads above.
-                result = .success(.netMaxDownloads(SetConfigLimits.clampDownloads(n)))
-            case .logLevel:
-                let allowed = ["debug", "info", "warn", "error"]
-                guard allowed.contains(value) else {
-                    result = .failure(.invalidValue(key: key, value: value,
-                                                    reason: "expected one of \(allowed.joined(separator: ", "))"))
-                    break
-                }
-                result = .success(.logLevel(value))
-            case .syncMaterializedPollIntervalS:
-                guard let n = Int(value) else {
-                    result = .failure(.invalidValue(key: key, value: value,
-                                                    reason: "expected an integer"))
-                    break
-                }
-                let clamped = max(SyncConfig.minMaterializedPollIntervalS,
-                                  min(SyncConfig.maxMaterializedPollIntervalS, n))
-                result = .success(.syncMaterializedPollIntervalS(clamped))
-            case .syncSelfHealIntervalM:
-                guard let n = Int(value) else {
-                    result = .failure(.invalidValue(key: key, value: value,
-                                                    reason: "expected an integer"))
-                    break
-                }
-                // 0 is the "disabled" sentinel and is preserved as-is.
-                // Non-zero values are clamped to [min, max].
-                let clamped = n == 0 ? 0 : max(SyncConfig.minSelfHealIntervalM,
-                                               min(SyncConfig.maxSelfHealIntervalM, n))
-                result = .success(.syncSelfHealIntervalM(clamped))
-            }
-        } else {
-            result = .failure(.unknownKey(key))
-        }
+        // Validate-first: resolve (key, value) to a plain Sendable value before
+        // spinning up any Task. `ValidatedConfig` is a Sendable enum; the async
+        // Task captures only the resolved case, not any closures.
+        let result = Self.validateConfig(key: key, value: value)
 
         let validated: ValidatedConfig
         switch result {
@@ -604,28 +571,19 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
             // boundary rather than an opaque SwiftErrorDomain blob.
             reply(err.asNSError())
             return
-        case let .success(value):
-            validated = value
+        case let .success(v):
+            validated = v
         }
 
-        // xpc-02 / M11: reply-once guard via runReplying — fires exactly
-        // once on every path, including Task cancellation or connection
-        // teardown. Deliberately does NOT check Task.isCancelled: this
-        // writes the persisted config file and then reloads the engine —
-        // interrupting that halfway would risk a written-but-unapplied (or
-        // worse, partially-written) config. cancelActiveTasks() still
-        // clears this Task's tracking entry on teardown, it just doesn't
-        // stop the write/reload in flight; the eventual reply is a safe
-        // no-op if the connection is already gone (see cancelActiveTasks's
-        // doc comment).
+        // xpc-02 / M11: reply-once guard via runReplying — fires exactly once.
+        // Does NOT check Task.isCancelled (write + reload must complete atomically).
         runReplying(
             reply: reply,
             onTeardown: { fn in fn(NSFileProviderError(.cannotSynchronize)) },
             operation: { fn, replyOnce in
                 do {
                     let configStore = try self.engineHost.configStore()
-                    // The mutator closure captures only `validated` — a Sendable
-                    // enum of plain value-typed cases — so it is `@Sendable`-safe.
+                    // `validated` is Sendable (value-typed enum) — `@Sendable`-safe capture.
                     try await configStore.updateAndSave { cfg in
                         switch validated {
                         case let .telemetry(flag): cfg.telemetry = flag
@@ -637,18 +595,14 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
                         case let .syncSelfHealIntervalM(n): cfg.sync.selfHealIntervalM = n
                         }
                     }
-
                     Self.log.info(
                         "setConfig: key='\(key, privacy: .public)' value='\(value, privacy: .public)' applied"
                     )
-
-                    // Reload the engine so the new config values take effect
-                    // without waiting for the FPE process to terminate.
-                    // OfemEngine reads the config snapshot once at init, so the
-                    // reload mechanism is: shut down the current engine, clear
-                    // _engine and _buildError, and let the next use rebuild lazily.
+                    // Reload the engine so the new config values take effect without waiting
+                    // for the FPE process to terminate. OfemEngine reads the config snapshot
+                    // once at init; reload shuts down the current engine and lets the next
+                    // use rebuild lazily.
                     await self.engineHost.reloadEngine()
-
                     replyOnce.callOnce { fn(nil) }
                 } catch {
                     Self.log.error(
@@ -759,6 +713,26 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
             }
         )
     }
+}
+
+// MARK: - ValidatedConfig
+
+/// Typed result of per-key XPC config validation. `Sendable` because all cases hold
+/// value types; `setConfig` captures one of these in the async Task body.
+private enum ValidatedConfig {
+    case telemetry(Bool)
+    case cacheMaxSizeGB(Int)
+    case netMaxUploads(Int)
+    case netMaxDownloads(Int)
+    case logLevel(String)
+    case syncMaterializedPollIntervalS(Int)
+    case syncSelfHealIntervalM(Int)
+}
+
+/// Clamps a raw self-heal interval: 0 (the "disabled" sentinel) is preserved as-is;
+/// non-zero values are clamped to [minSelfHealIntervalM, maxSelfHealIntervalM].
+private func clampedSelfHealIntervalM(_ n: Int) -> Int {
+    n == 0 ? 0 : max(SyncConfig.minSelfHealIntervalM, min(SyncConfig.maxSelfHealIntervalM, n))
 }
 
 // MARK: - SetConfig errors
