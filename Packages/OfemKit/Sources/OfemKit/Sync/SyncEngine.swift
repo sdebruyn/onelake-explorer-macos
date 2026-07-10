@@ -219,8 +219,10 @@ public actor SyncEngine {
     ) {
         self.cache = cache
         // Resolve the default inside the init body: the default-argument
-        // expression is evaluated in the caller's scope, where the private
-        // global `currentNowNs()` is not visible. `nil` ⇒ real wall clock.
+        // expression is evaluated in the caller's scope, where the internal
+        // `currentNowNs()` is not visible to callers outside this module
+        // (this `init` is `public`, called from other targets). `nil` ⇒
+        // real wall clock.
         self.nowNsProvider = nowNsProvider ?? { currentNowNs() }
         self.blobFreshnessTTL = blobFreshnessTTL
         self.onelake = onelake
