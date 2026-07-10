@@ -362,6 +362,11 @@ extension SyncEngine {
     /// (using ``ResumePlan`` for clean state representation), and returns a
     /// file URL alongside the metadata record just written for it. All
     /// blocking filesystem I/O runs off the actor via `Task.detached` (sync-14).
+    ///
+    /// The 412-resume-discard-retry state machine needs to stay in one place
+    /// to reason about correctness; splitting would scatter the resume logic
+    /// across functions.
+    // swiftlint:disable:next function_body_length
     private func performDownload(
         key: CacheKey,
         start: Date,

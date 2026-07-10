@@ -493,6 +493,9 @@ final class OfemControlXPCHandler: NSObject, OfemClientControlProtocol, @uncheck
 
     // MARK: - setConfig
 
+    // Validates and dispatches every XPC config key through one switch; extracting
+    // per-key handlers is a real follow-up (tracked separately), not in scope here.
+    // swiftlint:disable:next function_body_length cyclomatic_complexity
     func setConfig(key: String, value: String, reply: @escaping (Error?) -> Void) {
         // Validate-first: resolve (key, value) synchronously to a plain Sendable
         // value before spinning up any Task. Validation never mutates state

@@ -419,6 +419,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         )
     }
 
+    // Rename, reparent, and content-replace branches remain long after the
+    // parse-prologue extraction (#472); further split is a follow-up, not
+    // blocking here.
+    // swiftlint:disable:next function_body_length cyclomatic_complexity
     func modifyItem(
         _ item: NSFileProviderItem,
         baseVersion _: NSFileProviderItemVersion,

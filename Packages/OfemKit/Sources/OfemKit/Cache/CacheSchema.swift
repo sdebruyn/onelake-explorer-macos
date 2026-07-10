@@ -64,6 +64,10 @@ public enum CacheSchema {
     /// GRDB's migrator tracks which migrations have already run in the
     /// `grdb_migrations` table and skips them automatically — no hand-rolled
     /// idempotency guards are needed.
+    ///
+    /// One migration per schema version, registered linearly in order;
+    /// splitting the function would only obscure that order.
+    // swiftlint:disable:next function_body_length
     public static func migrator() -> DatabaseMigrator {
         var m = DatabaseMigrator()
 

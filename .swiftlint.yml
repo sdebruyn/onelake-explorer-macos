@@ -16,17 +16,6 @@ excluded:
 
 # Disable rules that are too noisy or conflict with this codebase's patterns.
 disabled_rules:
-  # Size rules: async/sync engine code and test suites legitimately exceed
-  # default thresholds. Enforcing them here adds churn with no safety value.
-  - file_length
-  - function_body_length
-  - type_body_length
-  - cyclomatic_complexity
-  - function_parameter_count
-
-  # Tuple size: some XPC/FP types intentionally return 3-member tuples.
-  - large_tuple
-
   # Stylistic: fully managed by SwiftFormat — disabling here prevents the two
   # tools from fighting each other (SwiftLint autocorrect would produce a tree
   # that SwiftFormat immediately reformats back, and vice versa).
@@ -41,6 +30,10 @@ disabled_rules:
 # omitted here because listing them under opt_in_rules is redundant.
 opt_in_rules:
   - non_optional_string_data_conversion
+  # Correctness: an unguarded force-unwrap that traps faults the Finder mount
+  # (the FPE process dies, macOS shows the volume as unavailable). `error`
+  # severity so a regression fails CI, not just a local warning.
+  - force_unwrapping
 
 # ── Rule configuration ────────────────────────────────────────────────────────
 
@@ -67,11 +60,35 @@ type_name:
     error: 80
 
 line_length:
-  # Warning threshold catches most overlong lines; the error threshold is
-  # set high because os.log interpolated strings cannot be broken across
-  # lines and legitimately exceed 200 characters in this codebase.
   warning: 160
-  error: 400
+  error: 240
   ignores_comments: true
   ignores_urls: true
+
+file_length:
+  warning: 600
+  error: 1150
+
+type_body_length:
+  warning: 400
+  error: 700
+
+function_body_length:
+  warning: 60
+  error: 100
+
+cyclomatic_complexity:
+  warning: 12
+  error: 20
+
+function_parameter_count:
+  warning: 6
+  error: 8
+
+large_tuple:
+  warning: 3
+  error: 4
+
+force_unwrapping:
+  severity: error   # WITHOUT this it defaults to warning and never blocks CI
 

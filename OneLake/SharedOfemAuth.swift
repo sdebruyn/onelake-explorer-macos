@@ -166,6 +166,9 @@ final class SharedOfemAuth {
             let oauthError = nsError.userInfo[MSALOAuthErrorKey] as? String ?? "(none)"
             let correlationID = nsError.userInfo[MSALCorrelationIDKey] as? String ?? "(none)"
             Self.log.error(
+                // os.log interpolated string with privacy:.public fields; breaking it
+                // across lines would fragment the log line macOS emits.
+                // swiftlint:disable:next line_length
                 "SharedOfemAuth.signIn: MSAL error code=\(nsError.code, privacy: .public) internalCode=\(internalCode, privacy: .public) oauthError=\(oauthError, privacy: .public) correlationID=\(correlationID, privacy: .public) description=\(description, privacy: .public)"
             )
             throw nsError
@@ -308,6 +311,9 @@ final class SharedOfemAuth {
             let oauthError = nsError.userInfo[MSALOAuthErrorKey] as? String ?? "(none)"
             let correlationID = nsError.userInfo[MSALCorrelationIDKey] as? String ?? "(none)"
             Self.log.error(
+                // os.log interpolated string with privacy:.public fields; breaking it
+                // across lines would fragment the log line macOS emits.
+                // swiftlint:disable:next line_length
                 "SharedOfemAuth.reSignIn: MSAL error (storage) code=\(nsError.code, privacy: .public) internalCode=\(internalCode, privacy: .public) oauthError=\(oauthError, privacy: .public) correlationID=\(correlationID, privacy: .public) description=\(description, privacy: .public)"
             )
             throw nsError
