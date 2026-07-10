@@ -593,6 +593,129 @@ final class FileProviderExtensionTests: XCTestCase {
         XCTAssertNil(result as NSError?)
     }
 
+    // MARK: - modifyItem — reparent with co-delivered rename leaves both fields pending
+
+    /// Branch A with `wantsRename` set: the inline `if wantsRename` at the
+    /// reparent path must insert `.filename` into `pendingFields` so the
+    /// framework also retries the rename once reparent is supported.
+    func testModifyItemReparentAndRenameLeavesBothFieldsPending() async {
+        let host = MockEngineHost(alias: "test")
+        let ext = makeExtension(host: host)
+        let template = MockFPItem(
+            parentID: NSFileProviderItemIdentifier.rootContainer.rawValue,
+            filename: "new.txt"
+        )
+
+        var capturedItem: NSFileProviderItem?
+        var capturedFields: NSFileProviderItemFields = []
+        _ = await withCheckedContinuation { cont in
+            _ = ext.modifyItem(
+                template,
+                baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
+                changedFields: [.parentItemIdentifier, .filename],
+                contents: nil,
+                request: makeRequest()
+            ) { item, fields, _, _ in
+                capturedItem = item
+                capturedFields = fields
+                cont.resume(returning: ())
+            }
+        }
+
+        XCTAssertNotNil(capturedItem)
+        XCTAssertTrue(capturedFields.contains(.parentItemIdentifier),
+                      ".parentItemIdentifier must remain pending when reparent is not supported")
+        XCTAssertTrue(capturedFields.contains(.filename),
+                      ".filename must also remain pending when reparent and rename are co-delivered")
+    }
+
+    // MARK: - modifyItem — .contents changed but URL nil acknowledges synchronously
+
+    /// Branch D: `changedFields` includes `.contents` but `contents` is nil.
+    /// The branch must complete synchronously with `completionHandler(item, [], false, nil)`
+    /// and return a zero-unit Progress — no async operation is started.
+    func testModifyItemContentsNilAcknowledgesSynchronously() async {
+        let host = MockEngineHost(alias: "test")
+        let ext = makeExtension(host: host)
+        let template = MockFPItem(
+            parentID: NSFileProviderItemIdentifier.rootContainer.rawValue,
+            filename: "file.txt"
+        )
+
+        var capturedItem: NSFileProviderItem?
+        var capturedFields: NSFileProviderItemFields = [.filename] // sentinel — must be overwritten with []
+        var capturedError: Error?
+        _ = await withCheckedContinuation { cont in
+            _ = ext.modifyItem(
+                template,
+                baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
+                changedFields: .contents,
+                contents: nil,
+                request: makeRequest()
+            ) { item, fields, _, err in
+                capturedItem = item
+                capturedFields = fields
+                capturedError = err
+                cont.resume(returning: ())
+            }
+        }
+
+        XCTAssertNil(capturedError)
+        XCTAssertNotNil(capturedItem, "item must be echoed back on the nil-URL content branch")
+        XCTAssertTrue(capturedFields.isEmpty, "nil-URL content branch must acknowledge with no pending fields")
+    }
+
+    // MARK: - modifyItem — rename with co-delivered non-rename field leaves non-rename field pending
+
+    /// `nonRenameFields = changedFields.subtracting([.filename])` must be returned
+    /// as the pending-fields set on rename success. A co-delivered `.lastUsedDate`
+    /// must remain pending while `.filename` must NOT remain pending after a
+    /// successful rename.
+    func testModifyItemRenameWithCoDeliveredFieldLeavesNonRenameFieldPending() async {
+        let host = MockEngineHost(alias: "test")
+        let wsID = "00000000-0000-0000-0000-000000000001"
+        let itemID = "00000000-0000-0000-0000-000000000002"
+        let record = MetadataRecord(
+            accountAlias: "test",
+            workspaceID: wsID,
+            itemID: itemID,
+            path: "new.txt",
+            parentPath: "",
+            name: "new.txt",
+            isDir: false
+        )
+        host.renameOfemItemResult = .success(record)
+        let ext = makeExtension(host: host)
+        let originalIdentifierString = "\(wsID)/\(itemID)/old.txt"
+        let template = MockFPItem(
+            id: originalIdentifierString,
+            parentID: NSFileProviderItemIdentifier.rootContainer.rawValue,
+            filename: "new.txt"
+        )
+
+        var capturedFields: NSFileProviderItemFields = []
+        var capturedError: Error?
+        _ = await withCheckedContinuation { cont in
+            _ = ext.modifyItem(
+                template,
+                baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
+                changedFields: [.filename, .lastUsedDate],
+                contents: nil,
+                request: makeRequest()
+            ) { _, fields, _, err in
+                capturedFields = fields
+                capturedError = err
+                cont.resume(returning: ())
+            }
+        }
+
+        XCTAssertNil(capturedError)
+        XCTAssertTrue(capturedFields.contains(.lastUsedDate),
+                      ".lastUsedDate must remain pending — it was co-delivered but not applied by the rename")
+        XCTAssertFalse(capturedFields.contains(.filename),
+                       ".filename must NOT remain pending after a successful rename")
+    }
+
     // MARK: - Helpers
 
     private func makeExtension(host: MockEngineHost) -> FileProviderExtension {
