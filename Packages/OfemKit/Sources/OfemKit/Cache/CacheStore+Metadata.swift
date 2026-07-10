@@ -3,7 +3,7 @@ import GRDB
 
 // MARK: - CacheStore+Metadata
 
-extension CacheStore {
+public extension CacheStore {
     // MARK: - Metadata: upsert
 
     /// Inserts or updates the metadata row for `record`.
@@ -11,7 +11,7 @@ extension CacheStore {
     /// If `lastAccessedNs` or `syncedAtNs` are zero, the current wall-clock
     /// time is substituted so eviction and reconciliation always have a
     /// timestamp to work with.
-    public func upsert(_ record: MetadataRecord) async throws {
+    func upsert(_ record: MetadataRecord) async throws {
         try validateKey(CacheKey(
             accountAlias: record.accountAlias,
             workspaceID: record.workspaceID,
@@ -44,7 +44,7 @@ extension CacheStore {
     ///
     /// Large batches are chunked into sub-transactions of up to
     /// ``batchChunkSize`` rows to bound WAL growth.
-    public func batchUpsert(_ records: [MetadataRecord]) async throws {
+    func batchUpsert(_ records: [MetadataRecord]) async throws {
         guard !records.isEmpty else { return }
         let now = clock()
         for chunk in records.chunked(by: Self.batchChunkSize) {
@@ -72,7 +72,7 @@ extension CacheStore {
     ///
     /// Large batches are chunked into sub-transactions of up to
     /// ``batchChunkSize`` keys to bound WAL growth.
-    public func batchDelete(_ keys: [CacheKey], recordTombstones: Bool) async throws {
+    func batchDelete(_ keys: [CacheKey], recordTombstones: Bool) async throws {
         guard !keys.isEmpty else { return }
         // One clock read for the whole batch so every tombstone shares a single
         // deleted_at_ns source with synced_at_ns (never Date() from a caller).
@@ -111,7 +111,7 @@ extension CacheStore {
     /// `now` is read once and shared by both phases, so every upserted row's
     /// `synced_at_ns` and every deleted row's tombstone `deleted_at_ns` come
     /// from the same clock read (never `Date()` from a caller).
-    public func batchUpsertAndDelete(
+    func batchUpsertAndDelete(
         upserts: [MetadataRecord],
         deletes: [CacheKey],
         recordTombstones: Bool
@@ -213,14 +213,14 @@ extension CacheStore {
     /// Fetches the metadata row for `key`.
     ///
     /// Throws ``CacheError/notFound(_:)`` when the row does not exist.
-    public func fetch(key: CacheKey) async throws -> MetadataRecord {
+    func fetch(key: CacheKey) async throws -> MetadataRecord {
         try await reader().fetch(key: key)
     }
 
     // MARK: - Metadata: children
 
     /// Returns every direct child of the directory identified by `key`.
-    public func children(of key: CacheKey) async throws -> [MetadataRecord] {
+    func children(of key: CacheKey) async throws -> [MetadataRecord] {
         try await reader().children(of: key)
     }
 
@@ -229,7 +229,7 @@ extension CacheStore {
     /// Returns the `subtree_etag` of each key in `keys` that has a row, keyed by
     /// ``CacheKey/stableKeyString``, in a single read transaction. Delegates to
     /// ``CacheReader/subtreeEtags(for:)``.
-    public func subtreeEtags(for keys: [CacheKey]) async throws -> [String: String] {
+    func subtreeEtags(for keys: [CacheKey]) async throws -> [String: String] {
         try await reader().subtreeEtags(for: keys)
     }
 
@@ -238,7 +238,7 @@ extension CacheStore {
     /// Bumps `last_accessed_ns` for `key` to the current time.
     ///
     /// Throws ``CacheError/notFound(_:)`` when the row does not exist.
-    public func touch(key: CacheKey) async throws {
+    func touch(key: CacheKey) async throws {
         try validateKey(key)
         let nowNs = clock()
         let affected = try await dbPool.write { db -> Int in
@@ -275,7 +275,7 @@ extension CacheStore {
     /// harvests from a listing it just performed, so a missing row simply means
     /// the container row has not been written yet and will pick the etag up on
     /// its next full upsert.
-    public func updateSubtreeEtag(key: CacheKey, etag: String) async throws {
+    func updateSubtreeEtag(key: CacheKey, etag: String) async throws {
         try validateKey(key)
         try await dbPool.write { db in
             try db.execute(sql: """
@@ -301,7 +301,7 @@ extension CacheStore {
     /// Set-based: all tombstone inserts happen in one transaction; ref-count
     /// checks for blob deletion use a single grouped query rather than one
     /// round-trip per SHA.
-    public func delete(key: CacheKey) async throws {
+    func delete(key: CacheKey) async throws {
         try validateKey(key)
 
         // 1. Collect paths and SHA-256 digests of rows that will be deleted,
@@ -390,7 +390,7 @@ extension CacheStore {
 
     // periphery:ignore
     /// Returns item roots that had at least one cache hit at or after `since`.
-    public func hotItems(since: Date) async throws -> [CacheKey] {
+    func hotItems(since: Date) async throws -> [CacheKey] {
         try await reader().hotItems(since: since)
     }
 
@@ -399,7 +399,7 @@ extension CacheStore {
     /// Returns the sync anchor for `accountAlias` — the newest of any
     /// `synced_at_ns` and any `deleted_at_ns` — or `0` when neither table has a
     /// row. Delegates to ``CacheReader``.
-    public func syncAnchorNs(accountAlias: String) async throws -> Int64 {
+    func syncAnchorNs(accountAlias: String) async throws -> Int64 {
         try await reader().syncAnchorNs(accountAlias: accountAlias)
     }
 
@@ -411,7 +411,7 @@ extension CacheStore {
     ///   whose `deleted_at_ns` is strictly greater than `ns`.
     ///
     /// Delegates to ``CacheReader``.
-    public func itemsChangedAfter(
+    func itemsChangedAfter(
         accountAlias: String,
         ns: Int64
     ) async throws -> (updated: [MetadataRecord], deletedIdentifierStrings: [String]) {
@@ -446,7 +446,7 @@ extension CacheStore {
     /// - Returns: The updated ``MetadataRecord`` at `newPath`, read back inside
     ///   the same write transaction (no actor hop, no TOCTOU window), or `nil`
     ///   when no row existed at `oldPath` to rename.
-    public func renamePathPrefix(
+    func renamePathPrefix(
         accountAlias: String,
         workspaceID: String,
         itemID: String,
@@ -555,7 +555,7 @@ extension CacheStore {
     ///   - alias: The account alias (non-empty).
     ///   - identifiers: The complete set of materialized container identifier
     ///     strings for this alias (as produced by `ItemIdentifier.identifierString`).
-    public func setMaterialized(alias: String, identifiers: [String]) async throws {
+    func setMaterialized(alias: String, identifiers: [String]) async throws {
         guard !alias.isEmpty else { throw CacheError.missingArgument("alias") }
         let nowNs = clock()
         try await dbPool.write { db in
@@ -578,7 +578,7 @@ extension CacheStore {
     /// Returns the materialized-container set for `alias` as ``CacheKey`` values.
     ///
     /// Delegates to ``CacheReader/materializedContainers(alias:)``.
-    public func materializedContainers(alias: String) async throws -> [CacheKey] {
+    func materializedContainers(alias: String) async throws -> [CacheKey] {
         try await reader().materializedContainers(alias: alias)
     }
 
@@ -596,7 +596,7 @@ extension CacheStore {
     /// the anchoring is defensive) is never removed. Race-safe by eventual
     /// consistency — no locking; if a concurrent refresh re-materializes a
     /// container after this deletes, the next reconcile removes it again.
-    public func removeMaterialized(alias: String, identifierPrefix: String) async throws {
+    func removeMaterialized(alias: String, identifierPrefix: String) async throws {
         guard !alias.isEmpty else { throw CacheError.missingArgument("alias") }
         guard !identifierPrefix.isEmpty else { throw CacheError.missingArgument("identifierPrefix") }
         try await dbPool.write { db in

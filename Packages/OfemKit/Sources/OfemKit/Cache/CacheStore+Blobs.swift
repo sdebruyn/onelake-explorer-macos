@@ -4,7 +4,7 @@ import os.log
 
 // MARK: - CacheStore+Blobs
 
-extension CacheStore {
+public extension CacheStore {
     // MARK: - Blob: store
 
     /// Writes `data` to the blob store and updates the `blob_sha256` /
@@ -19,7 +19,7 @@ extension CacheStore {
     /// will be reclaimed by the next orphan sweep (same guarantee as a crash
     /// mid-write).
     // periphery:ignore
-    public func storeBlob(key: CacheKey, data: Data) async throws {
+    func storeBlob(key: CacheKey, data: Data) async throws {
         try validateKey(key)
         let nowNs = clock()
         let (sha, size) = try blobs.store(data)
@@ -69,7 +69,7 @@ extension CacheStore {
     /// If `touch` finds the row gone (concurrent delete), it throws `notFound`;
     /// `clearBlobLink` is also called in that path to handle any dangling link.
     // periphery:ignore
-    public func loadBlob(key: CacheKey) async throws -> Data {
+    func loadBlob(key: CacheKey) async throws -> Data {
         try validateKey(key)
         let record = try await fetch(key: key)
         guard !record.blobSHA256.isEmpty else {
@@ -115,7 +115,7 @@ extension CacheStore {
     /// `SyncEngine`'s own callers now use ``blobURL(record:)`` (they already
     /// have the record); this key-based entry point remains the minimal
     /// public API for a caller that only has a `CacheKey`.
-    public func blobURL(key: CacheKey) async throws -> URL? {
+    func blobURL(key: CacheKey) async throws -> URL? {
         try validateKey(key)
         let record = try await fetch(key: key)
         return blobURL(record: record)
@@ -128,7 +128,7 @@ extension CacheStore {
     /// e.g. `SyncEngine.open`'s freshness check — should use this instead of
     /// re-fetching via `blobURL(key:)`. Pure path computation, no
     /// database I/O, so unlike `blobURL(key:)` it cannot throw.
-    public func blobURL(record: MetadataRecord) -> URL? {
+    func blobURL(record: MetadataRecord) -> URL? {
         guard !record.blobSHA256.isEmpty else { return nil }
         return blobs.fileURL(sha256: record.blobSHA256)
     }
@@ -168,7 +168,7 @@ extension CacheStore {
     /// - Throws: `CacheError.notFound` when the row has no blob or the blob
     ///   file cannot be accessed AND the copy fallback also fails.
     @discardableResult
-    public func handoffBlob(key: CacheKey, to destURL: URL) async throws -> Bool {
+    func handoffBlob(key: CacheKey, to destURL: URL) async throws -> Bool {
         try validateKey(key)
         let record = try await fetch(key: key)
         return try await handoffBlob(record: record, to: destURL)
@@ -181,7 +181,7 @@ extension CacheStore {
     /// `fetchContents`, which now gets it from `SyncEngine.openReturningRecord`
     /// — should use this instead of re-fetching via `handoffBlob(key:to:)`.
     @discardableResult
-    public func handoffBlob(record: MetadataRecord, to destURL: URL) async throws -> Bool {
+    func handoffBlob(record: MetadataRecord, to destURL: URL) async throws -> Bool {
         let key = CacheKey(
             accountAlias: record.accountAlias, workspaceID: record.workspaceID,
             itemID: record.itemID, path: record.path
@@ -236,7 +236,7 @@ extension CacheStore {
     ///   (e.g. `SyncEngine.performDownload`, to complete the in-memory record
     ///   it already holds) don't have to re-fetch the row.
     @discardableResult
-    public func storeBlobFromURL(_ sourceURL: URL, key: CacheKey) async throws -> (sha256: String, size: Int64) {
+    func storeBlobFromURL(_ sourceURL: URL, key: CacheKey) async throws -> (sha256: String, size: Int64) {
         try validateKey(key)
         let nowNs = clock()
         let (sha, size) = try blobs.storeFromURL(sourceURL)
@@ -263,7 +263,7 @@ extension CacheStore {
     // MARK: - Blob: blobBytes
 
     /// Returns the deduplicated on-disk byte total for all cached blobs.
-    public func blobBytes() async throws -> Int64 {
+    func blobBytes() async throws -> Int64 {
         try await reader().blobBytes()
     }
 
@@ -271,7 +271,7 @@ extension CacheStore {
 
     // periphery:ignore
     /// Walks the blob root and returns the file count and total bytes on disk.
-    public func diskUsage() async throws -> (count: Int, bytes: Int64) {
+    func diskUsage() async throws -> (count: Int, bytes: Int64) {
         try blobs.diskUsage()
     }
 
@@ -293,7 +293,7 @@ extension CacheStore {
     /// The DB clear is the authoritative step; blob files that remain on disk
     /// after `wipeAll()` partial failures become unreferenced orphans that the
     /// next init-time sweep will reclaim.
-    public func wipe() async throws -> (count: Int, bytes: Int64) {
+    func wipe() async throws -> (count: Int, bytes: Int64) {
         // Snapshot count and bytes from the DB in the same write transaction that
         // clears the blob columns.  This guarantees that the returned values match
         // what was removed — no filesystem walk, no APFS timing window.
@@ -338,7 +338,7 @@ extension CacheStore {
     /// the two copies.
     ///
     /// `static` so it can be called from inside `dbPool.write` Sendable closures.
-    static func inClauseBinding(_ shas: [String]) -> (placeholders: String, arguments: StatementArguments) {
+    internal static func inClauseBinding(_ shas: [String]) -> (placeholders: String, arguments: StatementArguments) {
         (shas.map { _ in "?" }.joined(separator: ", "), StatementArguments(shas))
     }
 
@@ -351,7 +351,7 @@ extension CacheStore {
     /// - Parameters:
     ///   - shas: Candidate SHA-256 values; duplicates are tolerated and ignored.
     ///   - onDeleted: Called with the SHA of each file that was actually unlinked.
-    func deleteUnreferencedBlobs(shas: [String], onDeleted: ((String) -> Void)? = nil) async {
+    internal func deleteUnreferencedBlobs(shas: [String], onDeleted: ((String) -> Void)? = nil) async {
         guard !shas.isEmpty else { return }
 
         // Build a set of SHAs that still have at least one DB reference.

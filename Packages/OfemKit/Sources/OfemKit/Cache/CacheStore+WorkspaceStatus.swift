@@ -3,12 +3,12 @@ import GRDB
 
 // MARK: - CacheStore+WorkspaceStatus
 
-extension CacheStore {
+public extension CacheStore {
     // MARK: - Workspace purge
 
     /// Returns the distinct workspace IDs the cache holds `path_metadata` rows
     /// for, under `accountAlias`. Delegates to ``CacheReader/workspaceIDs(accountAlias:)``.
-    public func workspaceIDs(accountAlias: String) async throws -> [String] {
+    func workspaceIDs(accountAlias: String) async throws -> [String] {
         try await reader().workspaceIDs(accountAlias: accountAlias)
     }
 
@@ -41,7 +41,7 @@ extension CacheStore {
     ///
     /// Returns the number of deleted `path_metadata` rows.
     @discardableResult
-    public func purgeWorkspaceRows(accountAlias: String, workspaceID: String) async throws -> Int {
+    func purgeWorkspaceRows(accountAlias: String, workspaceID: String) async throws -> Int {
         guard !accountAlias.isEmpty else { throw CacheError.missingArgument("accountAlias") }
         guard !workspaceID.isEmpty else { throw CacheError.missingArgument("workspaceID") }
         return try await dbPool.write { db -> Int in
@@ -65,7 +65,7 @@ extension CacheStore {
     /// When the new state matches the persisted state, `detected_at_ns` is
     /// preserved (continuous pause). On a state change the new `detectedAtNs`
     /// is recorded.
-    public func setWorkspaceStatus(_ status: WorkspaceStatusRecord) async throws {
+    func setWorkspaceStatus(_ status: WorkspaceStatusRecord) async throws {
         guard !status.accountAlias.isEmpty, !status.workspaceID.isEmpty else {
             throw CacheError.missingArgument("accountAlias and workspaceID")
         }
@@ -97,14 +97,14 @@ extension CacheStore {
     /// Reads the persisted status for the given workspace.
     ///
     /// Throws ``CacheError/notFound(_:)`` when no row exists.
-    public func workspaceStatus(accountAlias: String, workspaceID: String) async throws -> WorkspaceStatusRecord {
+    func workspaceStatus(accountAlias: String, workspaceID: String) async throws -> WorkspaceStatusRecord {
         try await reader().workspaceStatus(accountAlias: accountAlias, workspaceID: workspaceID)
     }
 
     // periphery:ignore
     /// Returns all persisted workspace status rows ordered by
     /// `(account_alias, workspace_id)`.
-    public func allWorkspaceStatuses() async throws -> [WorkspaceStatusRecord] {
+    func allWorkspaceStatuses() async throws -> [WorkspaceStatusRecord] {
         try await reader().allWorkspaceStatuses()
     }
 
@@ -112,7 +112,7 @@ extension CacheStore {
     /// ordered by `(account_alias, workspace_id)`.
     ///
     /// Used by the menu-bar host to build the paused-workspaces badge.
-    public func listPausedWorkspaces() async throws -> [WorkspaceStatusRecord] {
+    func listPausedWorkspaces() async throws -> [WorkspaceStatusRecord] {
         try await dbPool.read { db in
             try WorkspaceStatusRecord
                 .filter(WorkspaceStatusRecord.Columns.state == WorkspaceStatusRecord.State.paused.rawValue)

@@ -3,14 +3,14 @@ import GRDB
 
 // MARK: - CacheStore+Tombstones
 
-extension CacheStore {
+public extension CacheStore {
     /// Time-to-live for deletion tombstones. A tombstone older than this is
     /// eligible for TTL purge (``purgeExpiredTombstones(accountAlias:)``), which
     /// bounds otherwise-unbounded tombstone growth. A hardcoded constant, not a
     /// config knob: 30 days comfortably exceeds any realistic client offline
     /// window, and the safety of the purge rests on the FPE lagging-client guard,
     /// not on tuning this value.
-    public static let tombstoneTTLNs: Int64 = 30 * 24 * 60 * 60 * 1_000_000_000
+    static let tombstoneTTLNs: Int64 = 30 * 24 * 60 * 60 * 1_000_000_000
 
     // MARK: - Deletion tombstones
 
@@ -19,7 +19,7 @@ extension CacheStore {
     /// Called by `delete(key:)` before the hard-delete, and by `SyncEngine.rename`
     /// for the OLD identifier after a re-key, so the change path can surface the
     /// removal to the File Provider framework.
-    public func recordDeletion(accountAlias: String, identifierString: String) async throws {
+    func recordDeletion(accountAlias: String, identifierString: String) async throws {
         guard !accountAlias.isEmpty else { throw CacheError.missingArgument("accountAlias") }
         guard !identifierString.isEmpty else { throw CacheError.missingArgument("identifierString") }
         let nowNs = clock()
@@ -63,7 +63,7 @@ extension CacheStore {
     /// serialiser it never races the tombstone writers (`delete`, `batchDelete`,
     /// `recordDeletion`).
     @discardableResult
-    public func purgeExpiredTombstones(accountAlias: String) async throws -> Int {
+    func purgeExpiredTombstones(accountAlias: String) async throws -> Int {
         guard !accountAlias.isEmpty else { throw CacheError.missingArgument("accountAlias") }
         let cutoff = clock() - Self.tombstoneTTLNs
         return try await dbPool.write { db -> Int in
@@ -102,7 +102,7 @@ extension CacheStore {
 
     /// Returns the tombstone-purge watermark for `accountAlias` (0 if never
     /// purged). Delegates to ``CacheReader/tombstonesPurgedThroughNs(accountAlias:)``.
-    public func tombstonesPurgedThroughNs(accountAlias: String) async throws -> Int64 {
+    func tombstonesPurgedThroughNs(accountAlias: String) async throws -> Int64 {
         try await reader().tombstonesPurgedThroughNs(accountAlias: accountAlias)
     }
 
@@ -113,7 +113,7 @@ extension CacheStore {
     ///
     /// Mirrors ``ItemIdentifier/identifierString`` without importing the full
     /// FileProvider framework from the cache layer.
-    static func identifierString(workspaceID: String, itemID: String, path: String) -> String {
+    internal static func identifierString(workspaceID: String, itemID: String, path: String) -> String {
         if path.isEmpty {
             return "\(workspaceID)/\(itemID)"
         }
@@ -132,7 +132,7 @@ extension CacheStore {
     ///   `.item` identifier form). An empty path is the item-listing root row,
     ///   which is never a delta item, so it returns `nil`.
     /// - Every other row is a real path and maps through ``identifierString``.
-    static func tombstoneIdentifierString(workspaceID: String, itemID: String, path: String) -> String? {
+    internal static func tombstoneIdentifierString(workspaceID: String, itemID: String, path: String) -> String? {
         if workspaceID == VirtualIDs.workspaceID { return nil }
         if itemID == VirtualIDs.itemID { return path.isEmpty ? nil : "\(workspaceID)/\(path)" }
         return identifierString(workspaceID: workspaceID, itemID: itemID, path: path)
@@ -144,7 +144,7 @@ extension CacheStore {
     /// (``tombstoneIdentifierString(workspaceID:itemID:path:)`` returns `nil`).
     /// Called from within the same write transaction as the upsert so a
     /// re-created path never stays hidden behind its old tombstone.
-    static func clearTombstone(_ db: Database, record: MetadataRecord) throws {
+    internal static func clearTombstone(_ db: Database, record: MetadataRecord) throws {
         guard let identStr = tombstoneIdentifierString(
             workspaceID: record.workspaceID,
             itemID: record.itemID,
