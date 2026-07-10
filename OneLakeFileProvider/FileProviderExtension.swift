@@ -419,10 +419,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         )
     }
 
-    // Rename, reparent, and content-replace branches remain long after the
-    // parse-prologue extraction (#472); further split is a follow-up, not
-    // blocking here.
-    // swiftlint:disable:next function_body_length cyclomatic_complexity
     func modifyItem(
         _ item: NSFileProviderItem,
         baseVersion _: NSFileProviderItemVersion,
@@ -451,92 +447,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         }
 
         if wantsRename {
-            guard let ofemID = parseModifyItemIdentifier(
-                item.itemIdentifier.rawValue, completionHandler: completionHandler
-            ) else {
-                return Progress(totalUnitCount: 0)
-            }
-            guard case let .path(wsID, itemID, path) = ofemID else {
-                completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
-                return Progress(totalUnitCount: 0)
-            }
-            let newFilename = item.filename
-            // Reject an empty filename or one containing a path separator before
-            // touching the engine. An empty name yields a trailing-slash
-            // destination (the empty-filename class fixed in a0b2e66/ab283ce);
-            // a "/"-containing name would silently turn a same-directory rename
-            // into a cross-directory move on DFS. macOS should never send one,
-            // but guard rather than rely on that.
-            guard !newFilename.isEmpty, !newFilename.contains("/") else {
-                FileProviderExtension.log.error(
-                    "modifyItem \(ofemID.opaqueLogPrefix, privacy: .public) — rejecting invalid rename filename"
-                )
-                completionHandler(nil, [], false, NSFileProviderError(.filenameCollision))
-                return Progress(totalUnitCount: 0)
-            }
-            // Preserve the original identifier so the success path can return it
-            // unchanged; returning a new (path-derived) identifier would make the
-            // framework treat the rename as delete-old + add-new.
-            let originalIdentifier = ofemID
-            // Any non-filename fields delivered in the same modifyItem (e.g. a
-            // coalesced [.filename, .contents] from a save-then-rename) must stay
-            // pending so the framework re-issues a dedicated modifyItem for them;
-            // acking [] would tell the framework those changes applied → data loss.
-            let nonRenameFields = changedFields.subtracting([.filename])
-            let aliasCopy = alias
-            FileProviderExtension.log.debug(
-                "modifyItem \(ofemID.opaqueLogPrefix, privacy: .public) — rename to \(newFilename, privacy: .private)"
-            )
-
-            // A rename failure does NOT surface as an error result: it leaves ALL
-            // changed fields pending so the framework retries rather than treating
-            // the item as renamed (or, for a co-delivered .contents, as uploaded)
-            // locally. That diverges from `runFPEOperation`'s standard
-            // classify-and-fail catch, so non-cancellation errors — INCLUDING a
-            // `host.engine()` failure, resolved inside this same do/catch rather
-            // than left to the shared harness — are caught HERE and folded into
-            // a `.pending` outcome. That covers an invalidated host, a
-            // build-error back-off window, or a transient engine build failure
-            // during a rename; only `CancellationError` propagates to the
-            // shared catch.
-            return runFPEOperation(
-                logContext: "modifyItem rename failed",
-                work: { host, _ -> RenameOutcome in
-                    do {
-                        let key = CacheKey(
-                            accountAlias: aliasCopy,
-                            workspaceID: wsID,
-                            itemID: itemID,
-                            path: path
-                        )
-                        let updated = try await host.renameOfemItem(key: key, newName: newFilename)
-                        // Return the ORIGINAL identifier with the new filename/size/
-                        // dates so the framework registers a metadata change, not a
-                        // delete+add (see DomainItem.from(record:overridingIdentifier:)).
-                        let fpeItem = OfemFPEItem(
-                            from: try DomainItem.from(record: updated, overridingIdentifier: originalIdentifier)
-                        )
-                        return .renamed(fpeItem, nonRenameFields)
-                    } catch let cancellationError as CancellationError {
-                        throw cancellationError
-                    } catch {
-                        FileProviderExtension.log.error(
-                            "modifyItem rename failed: \(error.localizedDescription, privacy: .public)"
-                        )
-                        return .pending
-                    }
-                },
-                complete: { result in
-                    switch result {
-                    case let .success(.renamed(fpeItem, fields)):
-                        completionHandler(fpeItem, fields, false, nil)
-                    case .success(.pending):
-                        completionHandler(item, changedFields, false, nil)
-                    case let .failure(error):
-                        completionHandler(nil, [], false, error)
-                    }
-                }
-            )
+            return handleModifyItemRename(item, changedFields: changedFields, completionHandler: completionHandler)
         }
 
         // Metadata-only modifications (mtime, tags, lastUsedDate, favoriteRank).
@@ -547,25 +458,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             FileProviderExtension.log.debug(
                 "modifyItem \(opaqueLogIdentifier(item.itemIdentifier.rawValue), privacy: .public) — metadata-only (fields=\(changedFields.rawValue, privacy: .public)), acknowledging"
             )
-            guard let ofemID = parseModifyItemIdentifier(
-                item.itemIdentifier.rawValue, completionHandler: completionHandler
-            ) else {
-                return Progress(totalUnitCount: 0)
-            }
-
-            let aliasCopy = alias
-            return runFPEOperation(
-                logContext: "modifyItem(metadata) fetch failed",
-                work: { host, _ in
-                    OfemFPEItem(from: try await host.resolveItem(identifier: ofemID, alias: aliasCopy))
-                },
-                complete: { result in
-                    switch result {
-                    case let .success(existing): completionHandler(existing, [], false, nil)
-                    case let .failure(error): completionHandler(nil, [], false, error)
-                    }
-                }
-            )
+            return handleModifyItemMetadata(item, completionHandler: completionHandler)
         }
 
         // Content-bearing modification.
@@ -579,6 +472,154 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             return Progress(totalUnitCount: 0)
         }
 
+        return handleModifyItemContentReplace(item, contentsURL: contentsURL, completionHandler: completionHandler)
+    }
+
+    /// Shared identifier-parse prologue for `modifyItem`'s three branches
+    /// (rename / metadata-only / content-bearing). On parse failure it fires
+    /// `completionHandler` with the standard `.noSuchItem` outcome and
+    /// returns `nil`; callers should return `Progress(totalUnitCount: 0)`
+    /// in that case. Scoped to `modifyItem`'s completion-handler shape —
+    /// other call sites in this file use different signatures.
+    private func parseModifyItemIdentifier(
+        _ rawValue: String,
+        completionHandler: @escaping (
+            NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?
+        ) -> Void
+    ) -> ItemIdentifier? {
+        do {
+            return try parseOfemItemIdentifier(rawValue)
+        } catch {
+            completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
+            return nil
+        }
+    }
+
+    // MARK: - modifyItem branch helpers
+
+    private func handleModifyItemRename(
+        _ item: NSFileProviderItem,
+        changedFields: NSFileProviderItemFields,
+        completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
+    ) -> Progress {
+        guard let ofemID = parseModifyItemIdentifier(
+            item.itemIdentifier.rawValue, completionHandler: completionHandler
+        ) else {
+            return Progress(totalUnitCount: 0)
+        }
+        guard case let .path(wsID, itemID, path) = ofemID else {
+            completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
+            return Progress(totalUnitCount: 0)
+        }
+        let newFilename = item.filename
+        // Reject an empty filename or one containing a path separator before
+        // touching the engine. An empty name yields a trailing-slash
+        // destination (the empty-filename class fixed in a0b2e66/ab283ce);
+        // a "/"-containing name would silently turn a same-directory rename
+        // into a cross-directory move on DFS. macOS should never send one,
+        // but guard rather than rely on that.
+        guard !newFilename.isEmpty, !newFilename.contains("/") else {
+            FileProviderExtension.log.error(
+                "modifyItem \(ofemID.opaqueLogPrefix, privacy: .public) — rejecting invalid rename filename"
+            )
+            completionHandler(nil, [], false, NSFileProviderError(.filenameCollision))
+            return Progress(totalUnitCount: 0)
+        }
+        // Preserve the original identifier so the success path can return it
+        // unchanged; returning a new (path-derived) identifier would make the
+        // framework treat the rename as delete-old + add-new.
+        let originalIdentifier = ofemID
+        // Any non-filename fields delivered in the same modifyItem (e.g. a
+        // coalesced [.filename, .contents] from a save-then-rename) must stay
+        // pending so the framework re-issues a dedicated modifyItem for them;
+        // acking [] would tell the framework those changes applied → data loss.
+        let nonRenameFields = changedFields.subtracting([.filename])
+        let aliasCopy = alias
+        FileProviderExtension.log.debug(
+            "modifyItem \(ofemID.opaqueLogPrefix, privacy: .public) — rename to \(newFilename, privacy: .private)"
+        )
+
+        // A rename failure does NOT surface as an error result: it leaves ALL
+        // changed fields pending so the framework retries rather than treating
+        // the item as renamed (or, for a co-delivered .contents, as uploaded)
+        // locally. That diverges from `runFPEOperation`'s standard
+        // classify-and-fail catch, so non-cancellation errors — INCLUDING a
+        // `host.engine()` failure, resolved inside this same do/catch rather
+        // than left to the shared harness — are caught HERE and folded into
+        // a `.pending` outcome. That covers an invalidated host, a
+        // build-error back-off window, or a transient engine build failure
+        // during a rename; only `CancellationError` propagates to the
+        // shared catch.
+        return runFPEOperation(
+            logContext: "modifyItem rename failed",
+            work: { host, _ -> RenameOutcome in
+                do {
+                    let key = CacheKey(
+                        accountAlias: aliasCopy,
+                        workspaceID: wsID,
+                        itemID: itemID,
+                        path: path
+                    )
+                    let updated = try await host.renameOfemItem(key: key, newName: newFilename)
+                    // Return the ORIGINAL identifier with the new filename/size/
+                    // dates so the framework registers a metadata change, not a
+                    // delete+add (see DomainItem.from(record:overridingIdentifier:)).
+                    let fpeItem = OfemFPEItem(
+                        from: try DomainItem.from(record: updated, overridingIdentifier: originalIdentifier)
+                    )
+                    return .renamed(fpeItem, nonRenameFields)
+                } catch let cancellationError as CancellationError {
+                    throw cancellationError
+                } catch {
+                    FileProviderExtension.log.error(
+                        "modifyItem rename failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                    return .pending
+                }
+            },
+            complete: { result in
+                switch result {
+                case let .success(.renamed(fpeItem, fields)):
+                    completionHandler(fpeItem, fields, false, nil)
+                case .success(.pending):
+                    completionHandler(item, changedFields, false, nil)
+                case let .failure(error):
+                    completionHandler(nil, [], false, error)
+                }
+            }
+        )
+    }
+
+    private func handleModifyItemMetadata(
+        _ item: NSFileProviderItem,
+        completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
+    ) -> Progress {
+        guard let ofemID = parseModifyItemIdentifier(
+            item.itemIdentifier.rawValue, completionHandler: completionHandler
+        ) else {
+            return Progress(totalUnitCount: 0)
+        }
+
+        let aliasCopy = alias
+        return runFPEOperation(
+            logContext: "modifyItem(metadata) fetch failed",
+            work: { host, _ in
+                OfemFPEItem(from: try await host.resolveItem(identifier: ofemID, alias: aliasCopy))
+            },
+            complete: { result in
+                switch result {
+                case let .success(existing): completionHandler(existing, [], false, nil)
+                case let .failure(error): completionHandler(nil, [], false, error)
+                }
+            }
+        )
+    }
+
+    private func handleModifyItemContentReplace(
+        _ item: NSFileProviderItem,
+        contentsURL: URL,
+        completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
+    ) -> Progress {
         guard let ofemID = parseModifyItemIdentifier(
             item.itemIdentifier.rawValue, completionHandler: completionHandler
         ) else {
@@ -626,26 +667,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 }
             }
         )
-    }
-
-    /// Shared identifier-parse prologue for `modifyItem`'s three branches
-    /// (rename / metadata-only / content-bearing). On parse failure it fires
-    /// `completionHandler` with the standard `.noSuchItem` outcome and
-    /// returns `nil`; callers should return `Progress(totalUnitCount: 0)`
-    /// in that case. Scoped to `modifyItem`'s completion-handler shape —
-    /// other call sites in this file use different signatures.
-    private func parseModifyItemIdentifier(
-        _ rawValue: String,
-        completionHandler: @escaping (
-            NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?
-        ) -> Void
-    ) -> ItemIdentifier? {
-        do {
-            return try parseOfemItemIdentifier(rawValue)
-        } catch {
-            completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
-            return nil
-        }
     }
 
     func deleteItem(
