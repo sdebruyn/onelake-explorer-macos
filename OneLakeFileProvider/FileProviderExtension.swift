@@ -447,11 +447,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         }
 
         if wantsRename {
-            let ofemID: ItemIdentifier
-            do {
-                ofemID = try parseOfemItemIdentifier(item.itemIdentifier.rawValue)
-            } catch {
-                completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
+            guard let ofemID = parseModifyItemIdentifier(
+                item.itemIdentifier.rawValue, completionHandler: completionHandler
+            ) else {
                 return Progress(totalUnitCount: 0)
             }
             guard case let .path(wsID, itemID, path) = ofemID else {
@@ -545,11 +543,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             FileProviderExtension.log.debug(
                 "modifyItem \(opaqueLogIdentifier(item.itemIdentifier.rawValue), privacy: .public) — metadata-only (fields=\(changedFields.rawValue, privacy: .public)), acknowledging"
             )
-            let ofemID: ItemIdentifier
-            do {
-                ofemID = try parseOfemItemIdentifier(item.itemIdentifier.rawValue)
-            } catch {
-                completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
+            guard let ofemID = parseModifyItemIdentifier(
+                item.itemIdentifier.rawValue, completionHandler: completionHandler
+            ) else {
                 return Progress(totalUnitCount: 0)
             }
 
@@ -579,11 +575,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             return Progress(totalUnitCount: 0)
         }
 
-        let ofemID: ItemIdentifier
-        do {
-            ofemID = try parseOfemItemIdentifier(item.itemIdentifier.rawValue)
-        } catch {
-            completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
+        guard let ofemID = parseModifyItemIdentifier(
+            item.itemIdentifier.rawValue, completionHandler: completionHandler
+        ) else {
             return Progress(totalUnitCount: 0)
         }
 
@@ -628,6 +622,26 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 }
             }
         )
+    }
+
+    /// Shared identifier-parse prologue for `modifyItem`'s three branches
+    /// (rename / metadata-only / content-bearing). On parse failure it fires
+    /// `completionHandler` with the standard `.noSuchItem` outcome and
+    /// returns `nil`; callers should return `Progress(totalUnitCount: 0)`
+    /// in that case. Scoped to `modifyItem`'s completion-handler shape —
+    /// other call sites in this file use different signatures.
+    private func parseModifyItemIdentifier(
+        _ rawValue: String,
+        completionHandler: @escaping (
+            NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?
+        ) -> Void
+    ) -> ItemIdentifier? {
+        do {
+            return try parseOfemItemIdentifier(rawValue)
+        } catch {
+            completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
+            return nil
+        }
     }
 
     func deleteItem(
