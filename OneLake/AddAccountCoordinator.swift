@@ -37,8 +37,9 @@ protocol DomainRegistrar: Sendable {
 
 extension SharedOfemAuth: SignInProvider {}
 
-// `OfemFPEClient: @unchecked Sendable` is declared in MenuStatusModel.swift,
-// which is the canonical location for all OfemFPEClient protocol conformances.
+// `DomainRegistrar: Sendable` is satisfied because `OfemFPEClient` is
+// `@MainActor final class` (already `Sendable`). See MenuStatusModel.swift,
+// the canonical location for all OfemFPEClient protocol conformances.
 extension OfemFPEClient: DomainRegistrar {}
 
 // MARK: - AddAccountCoordinator

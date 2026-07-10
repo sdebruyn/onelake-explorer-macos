@@ -98,25 +98,11 @@ extension DomainSyncManager: DomainManager {}
 
 extension SharedOfemAuth: ReSignInProvider {}
 
-// MARK: - Sendable conformances for global-actor-isolated classes
-
-//
 // `EngineStatusProvider: Sendable` and `DomainManager: Sendable` require their
 // conforming types to be `Sendable`. Both `OfemFPEClient` and `DomainSyncManager`
-// are `@MainActor final class` — all state is confined to the main actor and
-// never shared concurrently. `@unchecked Sendable` is the correct annotation:
-// the actor isolation is the guard, not lock-based internal state.
-
-/// `OfemFPEClient` is `@MainActor`-isolated and all stored properties
-/// (`[String: XPCConnectionBox]`, `[String: Task<XPCConnectionBox, Error>]`)
-/// are themselves `Sendable`. Conforming to `@unchecked Sendable` here
-/// satisfies `EngineStatusProvider: Sendable` without altering the class
-/// declaration, keeping the conformance co-located with its use.
-extension OfemFPEClient: @unchecked Sendable {}
-
-/// `DomainSyncManager` is `@MainActor`-isolated and carries no mutable stored
-/// properties beyond those guarded by that isolation. See OfemFPEClient above.
-extension DomainSyncManager: @unchecked Sendable {}
+// are `@MainActor final class`, which is already `Sendable` — the actor
+// isolation confines all state, so no explicit `@unchecked Sendable`
+// conformance is needed here.
 
 // MARK: - MenuStatusModel
 
