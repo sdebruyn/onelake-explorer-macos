@@ -16,8 +16,8 @@ import SwiftUI
 
 /// The Settings scene's root tab container.
 struct SettingsView: View {
-    @ObservedObject private var model = MenuStatusModel.shared
-    @ObservedObject private var loginItem = LoginItemManager.shared
+    private let model = MenuStatusModel.shared
+    private let loginItem = LoginItemManager.shared
 
     var body: some View {
         TabView {
@@ -57,8 +57,8 @@ struct SettingsView: View {
 // MARK: - General
 
 private struct GeneralSettingsTab: View {
-    @ObservedObject var model: MenuStatusModel
-    @ObservedObject var loginItem: LoginItemManager
+    let model: MenuStatusModel
+    let loginItem: LoginItemManager
 
     var body: some View {
         Form {
@@ -99,7 +99,7 @@ private struct GeneralSettingsTab: View {
 // MARK: - Storage
 
 private struct CacheSettingsTab: View {
-    @ObservedObject var model: MenuStatusModel
+    let model: MenuStatusModel
     @State private var showingClearConfirm = false
 
     /// True once the FPE has returned a non-zero cacheMaxSizeGB.
@@ -231,7 +231,7 @@ private struct CacheSettingsTab: View {
 // MARK: - Network
 
 private struct NetworkSettingsTab: View {
-    @ObservedObject var model: MenuStatusModel
+    let model: MenuStatusModel
 
     /// True once the FPE status has been fetched and the net values are loaded.
     /// The controls are read-only until then to prevent the hardcoded
@@ -317,7 +317,7 @@ private struct NetworkSettingsTab: View {
 // MARK: - Advanced
 
 private struct AdvancedSettingsTab: View {
-    @ObservedObject var model: MenuStatusModel
+    let model: MenuStatusModel
 
     /// True once the FPE status has been fetched and the log level is loaded.
     private var logLevelLoaded: Bool {

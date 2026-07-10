@@ -11,6 +11,7 @@
 
 import AppKit
 import Foundation
+import Observation
 import OfemKit
 import os.log
 
@@ -49,7 +50,8 @@ extension OfemFPEClient: DomainRegistrar {}
 /// The View creates and owns an instance; it reads `phase` for rendering
 /// and calls `startLogin` / `cancel`. All state mutations are `@MainActor`.
 @MainActor
-final class AddAccountCoordinator: ObservableObject {
+@Observable
+final class AddAccountCoordinator {
     // MARK: - Phase
 
     enum Phase: Equatable {
@@ -68,7 +70,7 @@ final class AddAccountCoordinator: ObservableObject {
         }
     }
 
-    @Published private(set) var phase: Phase = .idle
+    private(set) var phase: Phase = .idle
 
     // MARK: - Dependencies
 
