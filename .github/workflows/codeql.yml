@@ -97,7 +97,7 @@ jobs:
         # Xcode projects and produces "No source code was seen" errors.
         # security-and-quality enables the full extended query suite for
         # deeper analysis on every PR and every push to main.
-        uses: github/codeql-action/init@v4.36.2
+        uses: github/codeql-action/init@v4.37.0
         with:
           languages: swift
           build-mode: manual
@@ -124,6 +124,6 @@ jobs:
             build
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v4.36.2
+        uses: github/codeql-action/analyze@v4.37.0
         with:
           category: "/language:swift"
