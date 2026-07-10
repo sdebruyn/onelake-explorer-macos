@@ -624,7 +624,9 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable 
 
         coordinator.startLogin(alias: "work", tenant: nil, clientID: nil, window: window)
         // readyToDismiss arrives after successDisplayDuration (~1.2s) + task time.
-        await waitUntil(timeout: .seconds(4)) {
+        // Coarser interval than the default 20ms: the transition can't land before
+        // that ~1.2s floor, so a tight poll here only adds needless wakeups.
+        await waitUntil(timeout: .seconds(4), interval: .milliseconds(100)) {
             if case .readyToDismiss = coordinator.phase { return true }
             return false
         }

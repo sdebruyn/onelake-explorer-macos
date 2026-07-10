@@ -395,6 +395,7 @@ final class MenuStatusModel {
         }
     }
 
+    // periphery:ignore - only test callers remain; exclude_tests: true hides them from periphery
     /// Awaits completion of the `refresh()` call currently in flight, if any.
     /// Internal (not private) so tests can synchronize on a full `doRefresh()`
     /// pass — including its secondary-account sweep — without content-polling
