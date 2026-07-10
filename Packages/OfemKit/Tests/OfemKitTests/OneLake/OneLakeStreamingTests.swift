@@ -189,6 +189,139 @@ struct OneLakeStreamTempFileCleanupTests {
     }
 }
 
+// MARK: - OneLakeStreamProgressTests (#461)
+
+/// `doStreamRequest`'s `onProgress` callback, attached via Alamofire's
+/// `DownloadRequest.downloadProgress`.
+@Suite("OneLakeClient — doStreamRequest incremental download progress (#461)")
+struct OneLakeStreamProgressTests {
+    private static let wsGUID = "ws-guid-progress"
+    private static let itemGUID = "item-guid-progress"
+
+    /// Isolated staging directory + mock session, matching
+    /// `OneLakeStreamTempFileCleanupTests.makeClient(stubs:)`.
+    private func makeClient(stubs: [MockURLProtocol.StubResponse]) async -> (OneLakeClient, String, URL) {
+        let queueID = UUID().uuidString
+        MockURLProtocol.registerQueue(id: queueID, stubs: stubs)
+        let session = makeMockSession(queueID: queueID)
+        let pool = SessionPool(tokenProvider: NoopTokenProvider())
+        await pool._setSessionForTesting(session, alias: "test", scope: .oneLake)
+        let stagingDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ofem-stream-progress-\(UUID().uuidString)", isDirectory: true)
+        let client = OneLakeClient(
+            sessionPool: pool,
+            baseURL: streamBaseURL,
+            downloadTempDirectory: stagingDir
+        )
+        return (client, queueID, stagingDir)
+    }
+
+    /// #461 review round 1: an earlier version of this test asserted ≥2
+    /// ticks for a 3-chunk body, but that failed deterministically on real
+    /// CI — the URL Loading System can coalesce `bodyChunks` delivered
+    /// back-to-back (even with `MockURLProtocol`'s inter-chunk delay, see
+    /// `NetTestHelpers.startLoading()`) into a single `didWriteData` /
+    /// `downloadProgress` tick for a small payload, which is outside this
+    /// test's control. This is now a SMOKE test for the real Alamofire
+    /// wiring end to end (≥1 tick, correct final byte count, and — as a
+    /// bonus check only when more than one tick did land — monotonically
+    /// increasing). The actual ≥2-ticks/monotonic guarantee and the
+    /// completed-never-exceeds-total invariant are pinned deterministically
+    /// by `SyncEngineTests`'s unit tests on `SyncEngine.absoluteDownloadProgress`,
+    /// which don't depend on real chunked delivery.
+    @Test("downloadProgress fires at least once for a multi-chunk body, reaching the full byte count")
+    func multiChunkProgressFiresAtLeastOnce() async throws {
+        let chunks = [
+            Data(repeating: 0x41, count: 4096),
+            Data(repeating: 0x42, count: 4096),
+            Data(repeating: 0x43, count: 4096),
+        ]
+        let full = chunks.reduce(into: Data()) { $0.append($1) }
+        let (client, queueID, stagingDir) = await makeClient(stubs: [
+            .init(status: 200, body: full, bodyChunks: chunks),
+        ])
+        defer {
+            MockURLProtocol.clearQueue(id: queueID)
+            try? FileManager.default.removeItem(at: stagingDir)
+        }
+
+        let (destURL, handle) = try makeTempFileHandle(prefix: "ofem-stream-progress-dest")
+        defer {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: destURL)
+        }
+
+        let recorder = ProgressTickRecorder()
+        _ = try await client.read(
+            alias: "test",
+            workspaceGUID: Self.wsGUID,
+            itemGUID: Self.itemGUID,
+            path: "Files/a.txt",
+            destination: handle,
+            onProgress: { completed, total in
+                recorder.record(completed, total)
+            }
+        )
+
+        // downloadProgress's closure is dispatched relative to the request's
+        // own completion asynchronously — see the doc comment on
+        // `HTTPRetryTests.declaredContentLengthOverCapIsPreflightRejected`
+        // for the same caveat on the DataRequest side. Poll briefly for at
+        // least one tick to land rather than asserting immediately after
+        // the await.
+        var ticks = recorder.ticks
+        var iterations = 0
+        while ticks.isEmpty, iterations < 200 {
+            try? await Task.sleep(nanoseconds: 2_000_000)
+            ticks = recorder.ticks
+            iterations += 1
+        }
+
+        #expect(!ticks.isEmpty, "expected at least 1 progress tick for a 3-chunk body")
+        if ticks.count > 1 {
+            var previousCompleted: Int64 = -1
+            for tick in ticks {
+                #expect(tick.completed > previousCompleted, "completed bytes must strictly increase: \(ticks)")
+                previousCompleted = tick.completed
+            }
+        }
+        #expect(ticks.last?.completed == Int64(full.count))
+
+        try handle.close()
+        #expect(try Data(contentsOf: destURL) == full)
+    }
+
+    @Test("onProgress defaulting to nil registers no downloadProgress handler — existing callers are unchanged")
+    func nilProgressIsUnobserved() async throws {
+        let payload = Data("no progress observer attached".utf8)
+        let (client, queueID, stagingDir) = await makeClient(stubs: [
+            .init(status: 200, body: payload),
+        ])
+        defer {
+            MockURLProtocol.clearQueue(id: queueID)
+            try? FileManager.default.removeItem(at: stagingDir)
+        }
+
+        let (destURL, handle) = try makeTempFileHandle(prefix: "ofem-stream-progress-dest-nil")
+        defer {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: destURL)
+        }
+
+        // No onProgress argument at all — exercises the default-nil path.
+        _ = try await client.read(
+            alias: "test",
+            workspaceGUID: Self.wsGUID,
+            itemGUID: Self.itemGUID,
+            path: "Files/a.txt",
+            destination: handle
+        )
+
+        try handle.close()
+        #expect(try Data(contentsOf: destURL) == payload)
+    }
+}
+
 // MARK: - OneLakeStatusMappingTests
 
 @Suite("OneLakeError — status coverage")

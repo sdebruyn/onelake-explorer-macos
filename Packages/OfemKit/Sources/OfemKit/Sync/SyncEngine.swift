@@ -1206,8 +1206,8 @@ public actor SyncEngine {
     /// any caller that only needs the file (matching `blobURL(key:)` /
     /// `handoffBlob(key:to:)` below) and is exercised extensively by the
     /// `open()` test suite.
-    public func open(key: CacheKey) async throws -> URL {
-        try await performOpen(key: key).url
+    public func open(key: CacheKey, onProgress: (@Sendable (Int64, Int64) -> Void)? = nil) async throws -> URL {
+        try await performOpen(key: key, onProgress: onProgress).url
     }
 
     /// Like ``open(key:)`` but also returns the ``MetadataRecord`` describing
@@ -1220,11 +1220,25 @@ public actor SyncEngine {
     /// re-download the next cycle. Re-fetching after `open()` instead would
     /// fix the staleness but re-read the row a second time; returning the
     /// record `open()` already has in hand needs neither.
-    public func openReturningRecord(key: CacheKey) async throws -> (url: URL, record: MetadataRecord) {
-        try await performOpen(key: key)
+    ///
+    /// - Parameter onProgress: Optional incremental download-progress callback
+    ///   (#461), forwarded to a fresh download only — a cache-hit / offline-stale
+    ///   / freshness-revalidated return below never calls it, since the FPE
+    ///   already reports completion for those synchronously once this returns.
+    ///   When multiple callers coalesce onto the same in-flight download (see
+    ///   below), only the FIRST caller's `onProgress` is wired in; late joiners
+    ///   still get the correct final bytes, just no incremental ticks.
+    public func openReturningRecord(
+        key: CacheKey,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
+    ) async throws -> (url: URL, record: MetadataRecord) {
+        try await performOpen(key: key, onProgress: onProgress)
     }
 
-    private func performOpen(key: CacheKey) async throws -> OpenResult {
+    private func performOpen(
+        key: CacheKey,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
+    ) async throws -> OpenResult {
         let start = Date()
         try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)
 
@@ -1346,7 +1360,7 @@ public actor SyncEngine {
                 // in the same actor turn as task completion — no ordering gap.
                 self.cleanupInflight(keyString: keyString, generation: gen)
             }
-            return try await self.performDownload(key: key, start: start, cached: cached)
+            return try await self.performDownload(key: key, start: start, cached: cached, onProgress: onProgress)
         }
         inFlightDownloads[keyString] = task
 
@@ -1802,7 +1816,12 @@ public actor SyncEngine {
     /// (using ``ResumePlan`` for clean state representation), and returns a
     /// file URL alongside the metadata record just written for it. All
     /// blocking filesystem I/O runs off the actor via `Task.detached` (sync-14).
-    private func performDownload(key: CacheKey, start: Date, cached: MetadataRecord?) async throws -> OpenResult {
+    private func performDownload(
+        key: CacheKey,
+        start: Date,
+        cached: MetadataRecord?,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
+    ) async throws -> OpenResult {
         try await acquireDownloadSlot(alias: key.accountAlias)
         defer { releaseDownloadSlot(alias: key.accountAlias) }
 
@@ -1828,7 +1847,7 @@ public actor SyncEngine {
 
         // Perform the download, handling 412 on the resume path.
         let props = try await performNetworkRead(
-            key: key, spillURL: spillURL, plan: plan, start: start
+            key: key, spillURL: spillURL, plan: plan, start: start, onProgress: onProgress
         )
         await offlineTracker.observe(nil)
 
@@ -1980,18 +1999,126 @@ public actor SyncEngine {
         }
     }
 
+    /// Thread-safe, monotonically-non-decreasing clamp for one download's
+    /// progress `completed` value (#461 review round 3).
+    ///
+    /// The session's interceptor chain (`RetryAfterRetrier`,
+    /// `JitteredRetryPolicy`, `AuthenticationInterceptor`'s
+    /// 401→refresh→retry) can silently retry the SAME `DownloadRequest`
+    /// mid-transfer — which restarts from byte 0 and resets Alamofire's own
+    /// per-request `completedUnitCount` to 0 — without ever re-entering
+    /// `performNetworkRead`, so nothing else observes it happening. Without
+    /// this clamp the absolute `completed` reported to the caller would jump
+    /// backward every time that happens (and, separately, at the
+    /// 412-full-restart boundary, which also restarts from byte 0). `clamp(_:)`
+    /// is `@Sendable`-safe to call from Alamofire's own delivery queue.
+    final class MonotonicProgressClamp: @unchecked Sendable {
+        private let lock = NSLock()
+        private var highWaterMark: Int64 = 0
+
+        /// Returns the higher of `candidate` and every previously-clamped
+        /// value, and remembers it for the next call.
+        func clamp(_ candidate: Int64) -> Int64 {
+            lock.withLock {
+                if candidate > highWaterMark {
+                    highWaterMark = candidate
+                }
+                return highWaterMark
+            }
+        }
+    }
+
+    /// Combines a single network attempt's own (completed, total) progress
+    /// tick with the local resume offset to produce an ABSOLUTE pair for the
+    /// whole file (#461, review round 2).
+    ///
+    /// Alamofire's `totalUnitCount` for a ranged/resumed request only covers
+    /// the bytes THIS request returns (the remaining range), not the full
+    /// file — adding `rangeStart` (bytes already on disk from a prior
+    /// attempt) reconstructs the true total live, from data the progress
+    /// tick itself carries. This deliberately does NOT use a value sourced
+    /// before the download started (e.g. a cached row's stale
+    /// `contentLength`): if the remote size changed since that row was
+    /// written — most plausible exactly on the 412-resume-discard-retry path,
+    /// which exists BECAUSE the remote object changed — a fixed pre-download
+    /// total could report `completed > total` or land short of 100%.
+    ///
+    /// - Returns: `total == 0` when Alamofire hasn't reported a positive
+    ///   total for this request yet (e.g. chunked transfer encoding) —
+    ///   callers treat that as "indeterminate" rather than inventing a
+    ///   number. A hostile/corrupted header that would overflow `Int64` when
+    ///   added to `rangeStart` degrades the same way (this is a UI hint, not
+    ///   correctness-critical, so it silently drops to indeterminate rather
+    ///   than throwing).
+    static func absoluteDownloadProgress(
+        rangeStart: Int64,
+        completedInRequest: Int64,
+        totalInRequest: Int64
+    ) -> (completed: Int64, total: Int64) {
+        let (completed, completedOverflowed) = rangeStart.addingReportingOverflow(completedInRequest)
+        guard !completedOverflowed else { return (0, 0) }
+        guard totalInRequest > 0 else { return (completed, 0) }
+        let (total, totalOverflowed) = rangeStart.addingReportingOverflow(totalInRequest)
+        return (completed, totalOverflowed ? 0 : total)
+    }
+
     /// Issues the network read for a single download attempt. Handles the 412
     /// precondition-failed path by resetting to a full restart and retrying
     /// once (sync-02/sync-09/sync-23).
     ///
     /// All blocking FileHandle operations run off the actor via `Task.detached`
     /// (sync-14).
+    ///
+    /// - Parameter onProgress: Forwarded to `onelake.read(...)`, wrapped per
+    ///   attempt via ``absoluteDownloadProgress(rangeStart:completedInRequest:totalInRequest:)``
+    ///   so the caller sees an ABSOLUTE (completed, total) pair rather than
+    ///   values relative to this one request. The 412-retry-as-full-restart
+    ///   branch below rewraps with a `rangeStart` of 0 — that attempt is a
+    ///   fresh, unranged GET, so the original resume offset no longer applies.
+    ///   A single ``MonotonicProgressClamp`` is shared across both the primary
+    ///   attempt and that 412 retry, so `completed` can never regress across
+    ///   either boundary (#461 review round 3): the session's interceptor
+    ///   chain (`RetryAfterRetrier`, `JitteredRetryPolicy`,
+    ///   `AuthenticationInterceptor`'s 401→refresh→retry) can silently retry
+    ///   the SAME `DownloadRequest` mid-transfer — which restarts from byte 0
+    ///   and resets Alamofire's own per-request progress — without ever
+    ///   re-entering this function, so nothing else would catch it.
     private func performNetworkRead(
         key: CacheKey,
         spillURL: URL,
         plan: ResumePlan,
-        start: Date
+        start: Date,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
     ) async throws -> PathProperties {
+        // Fresh per call to this function (i.e. per open()/fetchContents
+        // attempt) — shared across the primary attempt and the 412-retry
+        // branch below so it survives any restart-from-byte-0 within THIS
+        // download without resetting; a NEW performNetworkRead call (a new
+        // fetch) always gets its own instance.
+        let progressClamp = MonotonicProgressClamp()
+
+        func absoluteProgress(rangeStart: Int64) -> (@Sendable (Int64, Int64) -> Void)? {
+            guard let onProgress else { return nil }
+            return { @Sendable completedInRequest, totalInRequest in
+                let (completed, total) = Self.absoluteDownloadProgress(
+                    rangeStart: rangeStart, completedInRequest: completedInRequest, totalInRequest: totalInRequest
+                )
+                // `total` is intentionally passed through unclamped — only
+                // `completed` is high-water-marked. A silently-retried SAME
+                // request reporting a SMALLER totalInRequest than an earlier
+                // tick (near-impossible; would almost always trip an
+                // etag/412 mismatch first) could transiently let the clamped
+                // `completed` exceed a shrunk `total` mid-download. That's a
+                // theoretical visual glitch only, not a correctness issue: a
+                // second high-water-mark on `total` would add its own
+                // cross-clamp subtleties for a scenario this unlikely, and
+                // fetchContents' completion step forces both totalUnitCount
+                // and completedUnitCount to actualBytes regardless (#461
+                // review round 3 addendum).
+                onProgress(progressClamp.clamp(completed), total)
+            }
+        }
+
         // Open the spill file, seek to the resume offset, and hold the handle
         // open for the streaming read. Single FD open per attempt — the handle
         // is passed directly to onelake.read() and closed exactly once on all
@@ -2020,7 +2147,8 @@ public actor SyncEngine {
                 path: key.path,
                 range: plan.range,
                 ifMatch: plan.ifMatch,
-                destination: spillHandle
+                destination: spillHandle,
+                onProgress: absoluteProgress(rangeStart: plan.rangeStart)
             )
             try? spillHandle.close()
             return props
@@ -2057,7 +2185,10 @@ public actor SyncEngine {
                         path: key.path,
                         range: nil,
                         ifMatch: "",
-                        destination: freshHandle
+                        destination: freshHandle,
+                        // Full restart from byte 0 — the original rangeStart no
+                        // longer applies (#461).
+                        onProgress: absoluteProgress(rangeStart: 0)
                     )
                     try? freshHandle.close()
                     return props

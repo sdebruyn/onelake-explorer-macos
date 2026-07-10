@@ -29,11 +29,20 @@ final class MockURLProtocol: URLProtocol {
         let status: Int
         let body: Data
         let headers: [String: String]
+        /// When non-nil, `startLoading()` delivers these chunks via separate
+        /// `didLoad:` calls instead of `body` in one shot (#461) — each
+        /// chunk lands as its own `URLSessionDownloadDelegate.didWriteData`
+        /// tick, so a `DownloadRequest.downloadProgress` handler observes one
+        /// progress call per chunk rather than a single all-at-once callback.
+        /// `body` should still equal the concatenation of `bodyChunks` for
+        /// callers that also assert on the full response.
+        let bodyChunks: [Data]?
 
-        init(status: Int, body: Data = Data(), headers: [String: String] = [:]) {
+        init(status: Int, body: Data = Data(), headers: [String: String] = [:], bodyChunks: [Data]? = nil) {
             self.status = status
             self.body = body
             self.headers = headers
+            self.bodyChunks = bodyChunks
         }
 
         init(status: Int, body: String, headers: [String: String] = [:]) {
@@ -130,7 +139,24 @@ final class MockURLProtocol: URLProtocol {
             headerFields: stub.headers
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: stub.body)
+        if let chunks = stub.bodyChunks, !chunks.isEmpty {
+            for (index, chunk) in chunks.enumerated() {
+                if index > 0 {
+                    // #461 review round 1 (observed on real CI): chunks
+                    // delivered back-to-back with no gap can be coalesced by
+                    // the URL Loading System into a single didWriteData /
+                    // downloadProgress tick, especially for a small payload.
+                    // A short sleep between deliveries gives it a chance to
+                    // flush a separate progress notification per chunk.
+                    // startLoading() runs off the caller's thread, so this
+                    // does not block the test's own Task.
+                    Thread.sleep(forTimeInterval: 0.02)
+                }
+                client?.urlProtocol(self, didLoad: chunk)
+            }
+        } else {
+            client?.urlProtocol(self, didLoad: stub.body)
+        }
         client?.urlProtocolDidFinishLoading(self)
     }
 
@@ -195,6 +221,28 @@ struct QueueIDAdapter: RequestAdapter {
         var req = urlRequest
         req.setValue(queueID, forHTTPHeaderField: MockURLProtocol.queueIDHeader)
         completion(.success(req))
+    }
+}
+
+// MARK: - ProgressTickRecorder
+
+/// Records `(completed, total)` progress ticks under an `NSLock` — an
+/// `onProgress` callback threaded through `OneLakeClient`/`SyncEngine` is
+/// `@Sendable` and, in production, is invoked from Alamofire's own delivery
+/// queue (`.main` by default) rather than the calling task (mirrors
+/// `ResponseSizeGuard` in `HTTPRequestCore.swift`). Shared between
+/// `OneLakeStreamingTests.swift` and `SyncEngineTests.swift` (#461 review
+/// round 1 — was duplicated per-file).
+final class ProgressTickRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _ticks: [(completed: Int64, total: Int64)] = []
+
+    func record(_ completed: Int64, _ total: Int64) {
+        lock.withLock { _ticks.append((completed, total)) }
+    }
+
+    var ticks: [(completed: Int64, total: Int64)] {
+        lock.withLock { _ticks }
     }
 }
 

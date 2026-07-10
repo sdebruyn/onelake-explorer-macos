@@ -2446,4 +2446,190 @@ struct SyncEngineTests {
         #expect(record.contentLength == 505,
                 "row.contentLength must come from totalLength, not the overflowing rangeStart + Content-Length sum")
     }
+
+    // MARK: - #461: resumed download progress accounts for plan.rangeStart
+
+    /// A resumed download's `onProgress` callback must report an ABSOLUTE
+    /// completed byte count — `plan.rangeStart` (the local resume offset)
+    /// plus the bytes delivered by THIS network attempt — not bytes relative
+    /// to this request alone, which would regress the FPE's progress bar
+    /// back down on every resume instead of continuing from where the prior
+    /// attempt left off (#461).
+    @Test("open() with onProgress reports absolute completed bytes on a resumed download, floored at plan.rangeStart")
+    func resumedDownloadProgressAccountsForRangeStart() async throws {
+        let ol = MockOneLakeClient()
+        let (engine, store) = try makeEngine(onelake: ol)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+
+        let key = Self.baseKey
+
+        let existing = MetadataRecord(
+            accountAlias: Self.alias, workspaceID: Self.wsID, itemID: Self.itID,
+            path: Self.path, parentPath: "Files", name: "data.csv", isDir: false,
+            contentLength: 505, etag: "etag-v1"
+        )
+        try await store.upsert(existing)
+
+        // Same partial spill + etag sidecar setup as the C6/C8 resume tests
+        // above: a 500-byte spill file gives PartialManager.rangeStart(for:)
+        // a hasPartial == true resume with rangeStart == 500.
+        let scratchDir = store.root.appending(path: "scratch", directoryHint: .isDirectory)
+        let partialsDir = scratchDir.appendingPathComponent("\(ProcessInfo.processInfo.processIdentifier)")
+        try FileManager.default.createDirectory(at: partialsDir, withIntermediateDirectories: true)
+        let shadow = PartialManager(scratchDir: partialsDir)
+        try Data(repeating: 0, count: 500).write(to: shadow.partialURL(for: key))
+        try shadow.storeEtag("etag-v1", for: key)
+
+        // The remaining 5 bytes of the file. MockOneLakeClient.read(destination:)
+        // reports progress relative to THESE 5 bytes only (a midpoint tick and
+        // a final tick) — exactly like a real ranged GET's Content-Length only
+        // covers the returned range, not the full file.
+        let tailBody = Data("hello".utf8)
+        let props = PathProperties(
+            isDirectory: false, contentLength: 5, eTag: "etag-v1",
+            lastModified: Date(), contentType: "text/csv", totalLength: 505
+        )
+        ol.readResults.append(.success((tailBody, props)))
+
+        let recorder = ProgressTickRecorder()
+        _ = try await engine.openReturningRecord(key: key) { completed, total in
+            recorder.record(completed, total)
+        }
+
+        let ticks = recorder.ticks
+        #expect(ticks.count == 2, "expected the mock's midpoint + final ticks, got \(ticks)")
+        for tick in ticks {
+            #expect(tick.completed >= 500,
+                    "resumed download's completed bytes must be floored at rangeStart (500), got \(tick.completed)")
+        }
+        #expect(ticks.last?.completed == 505,
+                "final tick must reach rangeStart (500) + this request's bytes (5)")
+        // total is rangeStart (500) + THIS request's own live total (5, from
+        // props.contentLength above) — 505 for both ticks here, not a
+        // pre-download hint (#461 review round 2).
+        #expect(ticks.allSatisfy { $0.total == 505 })
+    }
+
+    // MARK: - #461 review round 2: SyncEngine.absoluteDownloadProgress unit tests
+
+    /// Deterministic, non-networked coverage of the pure wrapping function
+    /// behind every `onProgress` tick — the CI-flaky Alamofire-integration
+    /// path (`OneLakeStreamProgressTests` in `OneLakeStreamingTests.swift`)
+    /// only smoke-tests that real chunked delivery reaches this function at
+    /// all; the actual guarantees (absolute byte accounting, the
+    /// completed-never-exceeds-total invariant, indeterminate handling, and
+    /// overflow safety) are pinned here instead.
+    @Suite("SyncEngine.absoluteDownloadProgress (#461)")
+    struct AbsoluteDownloadProgressTests {
+        @Test("a fresh (non-resumed) download passes completed/total through unchanged")
+        func freshDownloadPassesThrough() {
+            let result = SyncEngine.absoluteDownloadProgress(rangeStart: 0, completedInRequest: 40, totalInRequest: 100)
+            #expect(result.completed == 40)
+            #expect(result.total == 100)
+        }
+
+        @Test("a resumed download adds rangeStart to both completed and total")
+        func resumedDownloadAddsRangeStart() {
+            let result = SyncEngine.absoluteDownloadProgress(rangeStart: 500, completedInRequest: 2, totalInRequest: 5)
+            #expect(result.completed == 502)
+            #expect(result.total == 505)
+        }
+
+        @Test("completed never exceeds total, by construction, across a range of inputs")
+        func completedNeverExceedsTotal() {
+            let cases: [(rangeStart: Int64, completedInRequest: Int64, totalInRequest: Int64)] = [
+                (0, 0, 0), (0, 100, 100), (500, 0, 505), (500, 505, 505), (1, 1, 1), (12345, 6789, 20000),
+            ]
+            for testCase in cases {
+                let result = SyncEngine.absoluteDownloadProgress(
+                    rangeStart: testCase.rangeStart,
+                    completedInRequest: testCase.completedInRequest,
+                    totalInRequest: testCase.totalInRequest
+                )
+                if result.total > 0 {
+                    #expect(result.completed <= result.total, "completed must never exceed total: \(testCase) -> \(result)")
+                }
+            }
+        }
+
+        @Test("an unknown per-request total (<= 0) reports indeterminate (total == 0), not a fabricated number")
+        func unknownTotalReportsIndeterminate() {
+            let zero = SyncEngine.absoluteDownloadProgress(rangeStart: 500, completedInRequest: 10, totalInRequest: 0)
+            #expect(zero.completed == 510)
+            #expect(zero.total == 0)
+
+            let negative = SyncEngine.absoluteDownloadProgress(rangeStart: 500, completedInRequest: 10, totalInRequest: -1)
+            #expect(negative.completed == 510)
+            #expect(negative.total == 0)
+        }
+
+        @Test("an overflowing completed addition degrades to indeterminate rather than trapping")
+        func overflowingCompletedDegradesToIndeterminate() {
+            let result = SyncEngine.absoluteDownloadProgress(
+                rangeStart: Int64.max - 5, completedInRequest: 10, totalInRequest: 20
+            )
+            #expect(result.completed == 0)
+            #expect(result.total == 0)
+        }
+
+        @Test("an overflowing total addition still reports completed but drops total to indeterminate")
+        func overflowingTotalDropsToIndeterminateButKeepsCompleted() {
+            let result = SyncEngine.absoluteDownloadProgress(
+                rangeStart: Int64.max - 5, completedInRequest: 3, totalInRequest: 20
+            )
+            #expect(result.completed == Int64.max - 2)
+            #expect(result.total == 0)
+        }
+
+        @Test("a 412-retry-as-full-restart re-wrap with rangeStart 0 matches a fresh download")
+        func fullRestartRewrapMatchesFreshDownload() {
+            // Mirrors performNetworkRead's 412 branch: the retry passes
+            // rangeStart: 0 regardless of the original (now-stale) resume
+            // offset, since that attempt is a brand-new unranged GET.
+            let result = SyncEngine.absoluteDownloadProgress(rangeStart: 0, completedInRequest: 30, totalInRequest: 90)
+            #expect(result.completed == 30)
+            #expect(result.total == 90)
+        }
+    }
+
+    // MARK: - #461 review round 3: SyncEngine.MonotonicProgressClamp unit tests
+
+    /// Deterministic coverage of the high-water-mark clamp that keeps
+    /// `completed` from regressing across a silent Alamofire-level retry or
+    /// the 412-full-restart boundary, both of which restart the underlying
+    /// transfer from byte 0.
+    @Suite("SyncEngine.MonotonicProgressClamp (#461)")
+    struct MonotonicProgressClampTests {
+        @Test("an increasing sequence passes through unchanged")
+        func increasingSequencePassesThrough() {
+            let clamp = SyncEngine.MonotonicProgressClamp()
+            #expect(clamp.clamp(10) == 10)
+            #expect(clamp.clamp(20) == 20)
+            #expect(clamp.clamp(20) == 20)
+            #expect(clamp.clamp(500) == 500)
+        }
+
+        @Test("a value below the high-water mark is clamped up to it, never regressing")
+        func regressionIsClampedToHighWaterMark() {
+            let clamp = SyncEngine.MonotonicProgressClamp()
+            #expect(clamp.clamp(800) == 800)
+            // Simulates a silent Alamofire-level retry (or the 412 restart)
+            // resetting the underlying request's progress back toward 0.
+            #expect(clamp.clamp(0) == 800, "must not regress below the prior high-water mark")
+            #expect(clamp.clamp(400) == 800, "still clamped even partway back up")
+            #expect(clamp.clamp(900) == 900, "climbing past the high-water mark is reported normally")
+        }
+
+        @Test("a fresh instance per download starts its own high-water mark at zero")
+        func freshInstanceStartsAtZero() {
+            let first = SyncEngine.MonotonicProgressClamp()
+            #expect(first.clamp(1000) == 1000)
+
+            // A NEW download (a new performNetworkRead call) gets a NEW
+            // clamp instance, so it does not inherit the prior download's
+            // high-water mark.
+            let second = SyncEngine.MonotonicProgressClamp()
+            #expect(second.clamp(10) == 10)
+        }
+    }
 }

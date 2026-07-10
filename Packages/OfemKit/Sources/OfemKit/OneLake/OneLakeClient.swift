@@ -271,6 +271,10 @@ public final class OneLakeClient: Sendable {
     /// - Parameters:
     /// - destination: An open `FileHandle` (writable, positioned at offset 0)
     ///   that receives the response body bytes.
+    /// - onProgress: Optional incremental-progress callback (#461); default
+    ///   `nil` leaves every existing caller byte-for-byte unchanged. See
+    ///   ``doStreamRequest(alias:method:url:extraHeaders:destination:onProgress:)``
+    ///   for exactly what `(completed, total)` mean.
     /// - Returns: The response headers parsed as ``PathProperties``; the caller
     ///   does not need a follow-up HEAD request after a full GET.
     public func read(
@@ -280,7 +284,8 @@ public final class OneLakeClient: Sendable {
         path: String,
         range: Range<Int64>? = nil,
         ifMatch: String = "",
-        destination: FileHandle
+        destination: FileHandle,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
     ) async throws -> PathProperties {
         guard !workspaceGUID.isEmpty, !itemGUID.isEmpty else {
             throw OneLakeError.missingArgument("workspaceGUID and itemGUID required")
@@ -303,7 +308,8 @@ public final class OneLakeClient: Sendable {
             method: "GET",
             url: url,
             extraHeaders: extra.isEmpty ? nil : extra,
-            destination: destination
+            destination: destination,
+            onProgress: onProgress
         )
         logRejectedHeaders(response)
         return propertiesFromHeaders(response.allHeaderFields)
@@ -945,12 +951,17 @@ public final class OneLakeClient: Sendable {
     ///   that fails late in the transfer re-pays the already-downloaded
     ///   bytes on retry. Wiring `DownloadRequest` resume-data through the
     ///   retry chain is tracked as a follow-up, out of scope for this fix.
+    ///
+    /// - Parameter onProgress: Optional, attached via `DownloadRequest.downloadProgress`
+    ///   before the result is awaited (#461). Default `nil` is byte-for-byte
+    ///   the prior behaviour — no `downloadProgress` handler is registered at all.
     private func doStreamRequest(
         alias: String,
         method: String,
         url: URL,
         extraHeaders: [String: String]?,
-        destination fileHandle: FileHandle
+        destination fileHandle: FileHandle,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
     ) async throws -> HTTPURLResponse {
         var headers = HTTPHeaders()
         headers.add(name: "x-ms-version", value: oneLakeDFSAPIVersion)
@@ -977,6 +988,16 @@ public final class OneLakeClient: Sendable {
             let dl = session
                 .download(url, method: httpMethod, headers: headers, to: afDestination)
                 .validate()
+            if let onProgress {
+                // Attached before awaiting the result below (onelake-progress-01).
+                // completedUnitCount/totalUnitCount as reported by Alamofire for
+                // THIS request only — a ranged/resumed request's totalUnitCount
+                // is the remaining bytes, not the full file size; reconciling
+                // that against the real file size is the caller's job (SyncEngine).
+                _ = dl.downloadProgress { progress in
+                    onProgress(progress.completedUnitCount, progress.totalUnitCount)
+                }
+            }
             let result = await dl.serializingDownloadedFileURL().result
             guard let httpResponse = dl.response else {
                 throw HTTPClientError.transport(URLError(.badServerResponse))
