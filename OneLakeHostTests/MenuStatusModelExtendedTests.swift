@@ -12,7 +12,6 @@
 //     (waitUntil) instead of sleeping a fixed duration tied to the
 //     production debounce value.
 
-import Combine
 import OfemKit
 import XCTest
 
@@ -136,11 +135,10 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
     private var engineProvider: FakeEngineStatusProvider!
     private var domainManager: FakeDomainManager!
     private var model: MenuStatusModel!
-    private var cancellables = Set<AnyCancellable>()
 
-    /// setUp and tearDown override nonisolated XCTestCase methods, so they
-    /// cannot be marked @MainActor. XCTest always runs them on the main thread;
-    /// MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
+    /// setUp overrides a nonisolated XCTestCase method and cannot be marked
+    /// @MainActor. XCTest always runs setUp on the main thread; this is asserted
+    /// via MainActor.assumeIsolated to satisfy Swift 6 strict concurrency.
     override func setUp() {
         super.setUp()
         MainActor.assumeIsolated {
@@ -155,26 +153,14 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    override func tearDown() {
-        MainActor.assumeIsolated {
-            cancellables.removeAll()
-        }
-        super.tearDown()
-    }
-
     // MARK: - Refresh with injected fakes
 
     func testRefresh_populatesAccounts() async {
         accountProvider.accounts = [makeAccount(alias: "work")]
         accountProvider.defaultAccountAlias = "work"
 
-        let exp = expectation(description: "accounts published")
-        model.$accounts.dropFirst().sink { accounts in
-            if !accounts.isEmpty { exp.fulfill() }
-        }.store(in: &cancellables)
-
         model.refresh()
-        await fulfillment(of: [exp], timeout: 2)
+        await waitUntil { !model.accounts.isEmpty }
         XCTAssertEqual(model.accounts.count, 1)
         XCTAssertEqual(model.accounts.first?.alias, "work")
         XCTAssertEqual(model.defaultAccount, "work")
@@ -208,12 +194,9 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         accountProvider.accounts = [makeAccount(alias: "work")]
         accountProvider.shouldThrowOnSetDefault = false
 
-        let exp = expectation(description: "setDefaultAccount completes")
         // Wait for refresh after action.
-        model.$defaultAccount.dropFirst().sink { _ in exp.fulfill() }.store(in: &cancellables)
-
         model.setDefaultAccount(alias: "work")
-        await fulfillment(of: [exp], timeout: 2)
+        await waitUntil { model.defaultAccount == "work" }
         XCTAssertNil(model.lastActionError, "No error should be set on success")
     }
 
@@ -221,13 +204,8 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         accountProvider.accounts = [makeAccount(alias: "work")]
         accountProvider.shouldThrowOnSetDefault = true
 
-        let exp = expectation(description: "lastActionError set")
-        model.$lastActionError.dropFirst().sink { error in
-            if error != nil { exp.fulfill() }
-        }.store(in: &cancellables)
-
         model.setDefaultAccount(alias: "work")
-        await fulfillment(of: [exp], timeout: 2)
+        await waitUntil { model.lastActionError != nil }
         XCTAssertNotNil(model.lastActionError, "Error should be surfaced to the UI")
     }
 
@@ -253,13 +231,8 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         accountProvider.accounts = [makeAccount(alias: "work")]
         accountProvider.shouldThrowOnRemove = true
 
-        let exp = expectation(description: "lastActionError set")
-        model.$lastActionError.dropFirst().sink { error in
-            if error != nil { exp.fulfill() }
-        }.store(in: &cancellables)
-
         model.removeAccount(alias: "work")
-        await fulfillment(of: [exp], timeout: 2)
+        await waitUntil { model.lastActionError != nil }
         XCTAssertNotNil(model.lastActionError,
                         "Sign-out failure should be visible to the user")
     }
@@ -286,13 +259,8 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         accountProvider.accounts = [makeAccount(alias: "work")]
         engineProvider.shouldThrowOnClearCache = true
 
-        let exp = expectation(description: "lastActionError set")
-        model.$lastActionError.dropFirst().sink { error in
-            if error != nil { exp.fulfill() }
-        }.store(in: &cancellables)
-
         model.cacheClear()
-        await fulfillment(of: [exp], timeout: 2)
+        await waitUntil { model.lastActionError != nil }
         XCTAssertNotNil(model.lastActionError,
                         "Cache clear failure should be surfaced")
     }
@@ -407,13 +375,8 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         accountProvider.accounts = [makeAccount(alias: "work")]
         engineProvider.statusToReturn = status
 
-        let exp = expectation(description: "accountsNeedingSignIn populated")
-        model.$accountsNeedingSignIn.dropFirst().sink { set in
-            if !set.isEmpty { exp.fulfill() }
-        }.store(in: &cancellables)
-
         model.refresh()
-        await fulfillment(of: [exp], timeout: 2)
+        await waitUntil { !model.accountsNeedingSignIn.isEmpty }
 
         let label = model.headerLabel
         XCTAssertTrue(
@@ -441,13 +404,8 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         accountProvider.accounts = [makeAccount(alias: "work")]
         engineProvider.statusToReturn = status
 
-        let exp = expectation(description: "accountsNeedingSignIn populated")
-        model.$accountsNeedingSignIn.dropFirst().sink { set in
-            if !set.isEmpty { exp.fulfill() }
-        }.store(in: &cancellables)
-
         model.refresh()
-        await fulfillment(of: [exp], timeout: 2)
+        await waitUntil { !model.accountsNeedingSignIn.isEmpty }
 
         let label = model.headerLabel
         XCTAssertTrue(label.contains("sign-in"),
@@ -477,13 +435,8 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         accountProvider.accounts = [makeAccount(alias: "work")]
         engineProvider.statusToReturn = status
 
-        let exp = expectation(description: "refresh completes with work account")
-        model.$accounts.dropFirst().sink { accounts in
-            if !accounts.isEmpty { exp.fulfill() }
-        }.store(in: &cancellables)
-
         model.refresh()
-        await fulfillment(of: [exp], timeout: 2)
+        await waitUntil { !model.accounts.isEmpty }
 
         XCTAssertEqual(
             model.accountStatusLabel(alias: "work"),
@@ -510,13 +463,8 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         accountProvider.accounts = [makeAccount(alias: "work")]
         engineProvider.statusToReturn = status
 
-        let exp = expectation(description: "accountsNeedingSignIn populated")
-        model.$accountsNeedingSignIn.dropFirst().sink { set in
-            if !set.isEmpty { exp.fulfill() }
-        }.store(in: &cancellables)
-
         model.refresh()
-        await fulfillment(of: [exp], timeout: 2)
+        await waitUntil { !model.accountsNeedingSignIn.isEmpty }
 
         XCTAssertEqual(
             model.accountStatusLabel(alias: "work"),
@@ -551,13 +499,8 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
         accountProvider.accounts = [makeAccount(alias: "corp")]
         engineProvider.statusToReturn = status
 
-        let exp = expectation(description: "accountsNeedingSignIn populated")
-        model.$accountsNeedingSignIn.dropFirst().sink { set in
-            if set.contains("corp") { exp.fulfill() }
-        }.store(in: &cancellables)
-
         model.refresh()
-        await fulfillment(of: [exp], timeout: 2)
+        await waitUntil { model.accountsNeedingSignIn.contains("corp") }
 
         XCTAssertTrue(
             model.accountNeedsSignIn(alias: "corp"),
@@ -603,19 +546,12 @@ final class MenuStatusModelExtendedTests: XCTestCase, @unchecked Sendable {
             domainManager: FakeDomainManager()
         )
 
-        let exp = expectation(description: "accountsNeedingSignIn updated")
-        var cancellable: AnyCancellable?
-        cancellable = localModel.$accountsNeedingSignIn.dropFirst().sink { set in
-            // Wait until both accounts have been queried (corp must be in the set,
-            // personal must not be).
-            if set.contains("corp"), !set.contains("personal") {
-                exp.fulfill()
-                cancellable?.cancel()
-            }
-        }
-
         localModel.refresh()
-        await fulfillment(of: [exp], timeout: 3)
+        // Wait until both accounts have been queried (corp must be in the set,
+        // personal must not be).
+        await waitUntil(timeout: .seconds(3)) {
+            localModel.accountsNeedingSignIn.contains("corp") && !localModel.accountsNeedingSignIn.contains("personal")
+        }
 
         XCTAssertEqual(
             localModel.accountStatusLabel(alias: "corp"),
@@ -683,15 +619,14 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable 
     private var signInProvider: MockSignInProvider!
     private var domainRegistrar: MockDomainRegistrar!
     private var coordinator: AddAccountCoordinator!
-    private var cancellables = Set<AnyCancellable>()
 
     // Reuse the mocks declared in AddAccountCoordinatorTests.swift via @testable import.
     // Since the test bundle includes both files we can reference the private types by
     // redeclaring compatible local versions here.
 
-    /// setUp and tearDown override nonisolated XCTestCase methods, so they
-    /// cannot be marked @MainActor. XCTest always runs them on the main thread;
-    /// MainActor.assumeIsolated asserts this invariant and satisfies Swift 6.
+    /// setUp overrides a nonisolated XCTestCase method and cannot be marked
+    /// @MainActor. XCTest always runs setUp on the main thread; this is asserted
+    /// via MainActor.assumeIsolated to satisfy Swift 6 strict concurrency.
     override func setUp() {
         super.setUp()
         MainActor.assumeIsolated {
@@ -704,27 +639,18 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable 
         }
     }
 
-    override func tearDown() {
-        MainActor.assumeIsolated {
-            cancellables.removeAll()
-        }
-        super.tearDown()
-    }
-
     // MARK: - readyToDismiss after success (host-16)
 
     func testStartLogin_success_transitionsToReadyToDismiss() async {
         let window = NSWindow()
         signInProvider.behaviour = .succeed(username: "alice@contoso.com")
 
-        let exp = expectation(description: "phase becomes .readyToDismiss")
-        coordinator.$phase.sink { phase in
-            if case .readyToDismiss = phase { exp.fulfill() }
-        }.store(in: &cancellables)
-
         coordinator.startLogin(alias: "work", tenant: nil, clientID: nil, window: window)
         // readyToDismiss arrives after successDisplayDuration (~1.2s) + task time.
-        await fulfillment(of: [exp], timeout: 4)
+        await waitUntil(timeout: .seconds(4)) {
+            if case .readyToDismiss = coordinator.phase { return true }
+            return false
+        }
 
         if case let .readyToDismiss(username) = coordinator.phase {
             XCTAssertEqual(username, "alice@contoso.com")
@@ -739,20 +665,14 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable 
         let window = NSWindow()
         signInProvider.behaviour = .cancel // throws CancellationError
 
-        // Collect all phases after .waiting to avoid the initial .idle triggering
-        // the expectation before startLogin runs.
-        var sawWaiting = false
-        let exp = expectation(description: "phase returns to idle after CancellationError")
-        coordinator.$phase.sink { phase in
-            if phase == .waiting { sawWaiting = true }
-            // Only fulfil after we saw .waiting, so we know the task ran.
-            if phase == .idle, sawWaiting { exp.fulfill() }
-        }.store(in: &cancellables)
-
         coordinator.startLogin(alias: "work", tenant: nil, clientID: nil, window: window)
-        // The mock throws CancellationError synchronously; the coordinator should
-        // reset to .idle so the Sign In button is not permanently disabled (host-04).
-        await fulfillment(of: [exp], timeout: 3)
+        // startLogin() sets phase = .waiting synchronously before spawning the
+        // sign-in Task (see AddAccountCoordinator.startLogin), so by the time
+        // this call returns, phase is already .waiting — never the pre-call
+        // .idle default. Polling for .idle from here on can therefore only
+        // observe the *post*-CancellationError reset (host-04), matching the
+        // original sink's sawWaiting guard without needing one.
+        await waitUntil(timeout: .seconds(3)) { coordinator.phase == .idle }
         XCTAssertEqual(coordinator.phase, .idle,
                        "CancellationError from provider must not leave phase as .waiting (host-04)")
     }
@@ -765,10 +685,11 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable 
         var capturedAlias = ""
         signInProvider.onSignIn = { alias, _, _, _ in capturedAlias = alias }
 
-        let exp = expectation(description: "success")
-        coordinator.$phase.sink { if case .success = $0 { exp.fulfill() } }.store(in: &cancellables)
         coordinator.startLogin(alias: "  work  ", tenant: nil, clientID: nil, window: window)
-        await fulfillment(of: [exp], timeout: 2)
+        await waitUntil {
+            if case .success = coordinator.phase { return true }
+            return false
+        }
         XCTAssertEqual(capturedAlias, "work", "Alias should be trimmed before passing to signIn")
     }
 
@@ -778,10 +699,11 @@ final class AddAccountCoordinatorExtendedTests: XCTestCase, @unchecked Sendable 
         var capturedTenant: String? = "NOT_SET"
         signInProvider.onSignIn = { _, tenant, _, _ in capturedTenant = tenant }
 
-        let exp = expectation(description: "success")
-        coordinator.$phase.sink { if case .success = $0 { exp.fulfill() } }.store(in: &cancellables)
         coordinator.startLogin(alias: "work", tenant: "   ", clientID: nil, window: window)
-        await fulfillment(of: [exp], timeout: 2)
+        await waitUntil {
+            if case .success = coordinator.phase { return true }
+            return false
+        }
         XCTAssertNil(capturedTenant, "Blank tenant should be normalised to nil")
     }
 }

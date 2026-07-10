@@ -284,7 +284,11 @@ final class MenuStatusModel: ObservableObject {
 
     // MARK: Private
 
-    private var refreshTask: Task<Void, Never>?
+    /// `private(set)` (not `private`) so tests can `await refreshTask?.value`
+    /// to deterministically wait for a `refresh()` call to complete, instead
+    /// of content-polling a published property whose value may be identical
+    /// across refreshes (e.g. a throttled secondary-account sweep).
+    private(set) var refreshTask: Task<Void, Never>?
     private var autoRefreshTask: Task<Void, Never>?
     private var backgroundRefreshTask: Task<Void, Never>?
     /// In-flight debounce timer for setCacheLimitGB.

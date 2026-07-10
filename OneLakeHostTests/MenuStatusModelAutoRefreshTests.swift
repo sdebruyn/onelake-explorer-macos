@@ -22,7 +22,6 @@
 // fakes in MenuStatusModelExtendedTests.swift, matching this test target's
 // existing per-file convention (see AddAccountCoordinatorExtendedTests).
 
-import Combine
 import OfemKit
 import XCTest
 
@@ -229,22 +228,22 @@ final class MenuStatusModelAutoRefreshTests: XCTestCase, @unchecked Sendable {
             domainManager: NoOpDomainManager()
         )
 
-        var completedRefreshes = 0
-        var cancellable: AnyCancellable?
-        cancellable = model.$accountsNeedingSignIn.dropFirst().sink { _ in
-            completedRefreshes += 1
-        }
-
         // Five consecutive, fully-sequential refreshes, all well within the
         // 30 s default secondaryAccountCheckInterval: only the first is
         // expected to check "second". The remaining four should reuse the
         // last-known membership instead of round-tripping — and paying
         // blobBytes() — again.
-        for i in 0 ..< 5 {
+        //
+        // accountsNeedingSignIn is unsuitable for content-polling here — its
+        // value is identical across all five iterations once "second" is
+        // throttled, so a `waitUntil` on its content could pass before the
+        // corresponding refresh() has actually finished. Await refreshTask
+        // directly instead: safe because refresh() reassigns refreshTask
+        // synchronously before this call returns.
+        for _ in 0 ..< 5 {
             model.refresh()
-            await waitUntil { completedRefreshes == i + 1 }
+            await model.refreshTask?.value
         }
-        cancellable?.cancel()
 
         // The secondary sweep always uses getBadgeStatus (#397), never
         // getEngineStatus — assert against calledBadgeAliases.
@@ -283,18 +282,13 @@ final class MenuStatusModelAutoRefreshTests: XCTestCase, @unchecked Sendable {
             secondaryAccountCheckInterval: .milliseconds(30)
         )
 
-        var completedRefreshes = 0
-        var cancellable: AnyCancellable?
-        cancellable = model.$accountsNeedingSignIn.dropFirst().sink { _ in
-            completedRefreshes += 1
-        }
-
+        // See the comment in testDoRefresh_secondaryAccountThrottled_notCheckedEveryTick
+        // for why this awaits refreshTask directly rather than polling content.
         model.refresh()
-        await waitUntil { completedRefreshes == 1 }
+        await model.refreshTask?.value
         try? await Task.sleep(for: .milliseconds(60)) // > secondaryAccountCheckInterval
         model.refresh()
-        await waitUntil { completedRefreshes == 2 }
-        cancellable?.cancel()
+        await model.refreshTask?.value
 
         let secondCallCount = engineProvider.calledBadgeAliases.count(where: { $0 == "second" })
         XCTAssertEqual(

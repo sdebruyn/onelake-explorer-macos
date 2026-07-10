@@ -5,7 +5,6 @@
 // no MSAL / FPE / Keychain stack is required.
 
 import AppKit
-import Combine
 import OfemKit
 import XCTest
 
@@ -49,6 +48,29 @@ private final class MockDomainRegistrar: DomainRegistrar, @unchecked Sendable {
     }
 }
 
+// MARK: - Helpers
+
+/// Polls `condition` until it returns true or `timeout` elapses. Used
+/// instead of a Combine `$phase.sink` subscription so tests aren't tied to
+/// Combine's `@Published` projection — see the identical helper in
+/// MenuStatusModelExtendedTests.swift.
+///
+/// `@MainActor`-isolated (matching every call site, which is always a
+/// `@MainActor` test method) so the non-escaping `condition` closure —
+/// which reads `@MainActor`-isolated coordinator state — never has to
+/// cross an actor boundary.
+@MainActor
+private func waitUntil(
+    timeout: Duration = .seconds(3),
+    interval: Duration = .milliseconds(20),
+    _ condition: () -> Bool
+) async {
+    let deadline = ContinuousClock.now + timeout
+    while !condition(), ContinuousClock.now < deadline {
+        try? await Task.sleep(for: interval)
+    }
+}
+
 // MARK: - Tests
 
 @MainActor
@@ -85,17 +107,17 @@ final class AddAccountCoordinatorTests: XCTestCase, @unchecked Sendable {
         signInProvider.behaviour = .succeed(username: "alice@contoso.com")
 
         // Start login and wait for the task to complete.
-        let expectation = expectation(description: "phase becomes .success")
-        let observation = coordinator.$phase.sink { phase in
-            if case .success = phase { expectation.fulfill() }
-        }
         coordinator.startLogin(alias: "work", tenant: nil, clientID: nil, window: window)
-        await fulfillment(of: [expectation], timeout: 2)
-        observation.cancel()
+        await waitUntil {
+            switch coordinator.phase {
+            case .success, .readyToDismiss: true
+            default: false
+            }
+        }
 
         // The coordinator transitions .success → .readyToDismiss after a brief pause.
-        // Accept either phase here since the check runs just after the .success
-        // expectation fires (before the 1.2s sleep in the coordinator elapses).
+        // Accept either phase here since the poll above stops at the first of the
+        // two (before the 1.2s sleep in the coordinator elapses).
         switch coordinator.phase {
         case let .success(username), let .readyToDismiss(username):
             XCTAssertEqual(username, "alice@contoso.com")
@@ -126,13 +148,11 @@ final class AddAccountCoordinatorTests: XCTestCase, @unchecked Sendable {
         let window = NSWindow()
         signInProvider.behaviour = .fail(TestError.oops)
 
-        let expectation = expectation(description: "phase becomes .failure")
-        let observation = coordinator.$phase.sink { phase in
-            if case .failure = phase { expectation.fulfill() }
-        }
         coordinator.startLogin(alias: "work", tenant: nil, clientID: nil, window: window)
-        await fulfillment(of: [expectation], timeout: 2)
-        observation.cancel()
+        await waitUntil {
+            if case .failure = coordinator.phase { return true }
+            return false
+        }
 
         if case let .failure(msg) = coordinator.phase {
             XCTAssertFalse(msg.isEmpty, "Error message should not be empty")
@@ -146,13 +166,11 @@ final class AddAccountCoordinatorTests: XCTestCase, @unchecked Sendable {
         let window = NSWindow()
         signInProvider.behaviour = .fail(TestError.oops)
 
-        let expectation = expectation(description: "phase becomes .failure")
-        let observation = coordinator.$phase.sink { phase in
-            if case .failure = phase { expectation.fulfill() }
-        }
         coordinator.startLogin(alias: "work", tenant: nil, clientID: nil, window: window)
-        await fulfillment(of: [expectation], timeout: 2)
-        observation.cancel()
+        await waitUntil {
+            if case .failure = coordinator.phase { return true }
+            return false
+        }
 
         XCTAssertTrue(domainRegistrar.registeredAliases.isEmpty,
                       "Domain must not be registered on failure")
