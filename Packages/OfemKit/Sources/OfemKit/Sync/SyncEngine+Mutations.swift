@@ -3,14 +3,14 @@ import os.log
 
 // MARK: - SyncEngine+Mutations
 
-extension SyncEngine {
+public extension SyncEngine {
     // MARK: - Delete
 
     /// Removes a file or directory from OneLake and the local cache.
     ///
     /// macOS metadata files are dropped from the local cache only (no remote
     /// call, no telemetry).
-    public func delete(key: CacheKey) async throws {
+    func delete(key: CacheKey) async throws {
         let start = Date()
 
         // sync-05: surface cache read error — treating a DB failure as
@@ -74,7 +74,7 @@ extension SyncEngine {
     // MARK: - Mkdir
 
     /// Creates a directory on OneLake and upserts the matching cache row.
-    public func mkdir(key: CacheKey) async throws {
+    func mkdir(key: CacheKey) async throws {
         let start = Date()
         try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)
 
@@ -132,7 +132,7 @@ extension SyncEngine {
     ///   - newName: The new leaf name (final path segment, no `"/"`).
     /// - Returns: The updated ``MetadataRecord`` under the new path so the FPE
     ///   can build a fresh ``OfemFPEItem`` without an additional cache lookup.
-    public func rename(key: CacheKey, newName: String) async throws -> MetadataRecord {
+    func rename(key: CacheKey, newName: String) async throws -> MetadataRecord {
         let start = Date()
         try await pauseManager.guardPaused(workspaceID: key.workspaceID, alias: key.accountAlias)
 
