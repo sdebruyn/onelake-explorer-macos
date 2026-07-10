@@ -608,6 +608,8 @@ public extension CacheStore {
         }
     }
 
+    // MARK: - Private helpers
+
     // MARK: Batch chunk size
 
     /// Maximum number of rows per sub-transaction in batchUpsert / batchDelete.
