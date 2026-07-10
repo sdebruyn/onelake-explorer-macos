@@ -28,6 +28,7 @@
 import AppKit
 @preconcurrency import FileProvider
 import Foundation
+import Observation
 import OfemKit
 import os.log
 
@@ -106,23 +107,24 @@ extension SharedOfemAuth: ReSignInProvider {}
 
 // MARK: - MenuStatusModel
 
-/// Published state for the menu-bar dropdown.
+/// Observable state for the menu-bar dropdown.
 /// All mutations happen on the main actor; no locking needed.
 ///
 /// Owned as a singleton at the App level so both the MenuBarExtra label
 /// (icon state) and the menu content read from the same instance. Using a
 /// class-level `shared` rather than SwiftUI DI keeps the lifetime explicit
-/// and avoids the `@EnvironmentObject` / optional-unwrap dance across scenes.
+/// and avoids an optional-unwrap dance across scenes.
 @MainActor
-final class MenuStatusModel: ObservableObject {
-    /// Single shared instance. Owned (via @StateObject) by OneLakeApp so it
-    /// lives for the full process lifetime. MenuBarView receives it as an
-    /// @ObservedObject — it observes but does not own.
+@Observable
+final class MenuStatusModel {
+    /// Single shared instance. Owned (via @State) by OneLakeApp so it
+    /// lives for the full process lifetime. MenuBarView receives it as a
+    /// plain `let` — it observes (via Observation) but does not own.
     ///
     /// Initialised lazily on the main actor: `@MainActor` static stored
     /// properties are guaranteed by Swift to be initialised on the main actor,
     /// so `MenuStatusModel()` runs on the main actor and can safely touch
-    /// `@Published` stored properties.
+    /// its observable stored properties.
     @MainActor
     static let shared = MenuStatusModel()
 
@@ -159,51 +161,51 @@ final class MenuStatusModel: ObservableObject {
         self.secondaryAccountCheckInterval = secondaryAccountCheckInterval
     }
 
-    // MARK: Published
+    // MARK: Observable state
 
-    @Published private(set) var cacheBytes: Int64 = -1
-    @Published private(set) var cacheMaxBytes: Int64 = 0
+    private(set) var cacheBytes: Int64 = -1
+    private(set) var cacheMaxBytes: Int64 = 0
     /// User-editable LRU ceiling in whole gigabytes; the menubar Stepper
     /// reads and writes this. Mirrors `cacheMaxBytes` (the byte-level
     /// counterpart used for the live used/limit math) but kept in GBs
     /// so the Stepper round-trips cleanly without losing precision.
     /// 0 means "unknown / not yet fetched"; once populated stays in [1, 100].
-    @Published private(set) var cacheMaxSizeGB: Int = 0
-    @Published private(set) var pausedWorkspaces: [PausedWorkspaceInfo] = []
-    @Published private(set) var accounts: [AccountInfo] = []
-    @Published private(set) var defaultAccount: String = ""
-    @Published private(set) var telemetryEnabled: Bool = true
+    private(set) var cacheMaxSizeGB: Int = 0
+    private(set) var pausedWorkspaces: [PausedWorkspaceInfo] = []
+    private(set) var accounts: [AccountInfo] = []
+    private(set) var defaultAccount: String = ""
+    private(set) var telemetryEnabled: Bool = true
     /// Aliases for accounts whose token can no longer be acquired silently.
     /// Each entry is the account alias. Empty when all accounts are healthy.
-    @Published private(set) var accountsNeedingSignIn: Set<String> = []
+    private(set) var accountsNeedingSignIn: Set<String> = []
 
     /// Max parallel uploads per account (Settings → Network).
-    @Published private(set) var netMaxUploads: Int = 0
+    private(set) var netMaxUploads: Int = 0
     /// Max parallel downloads per account (Settings → Network).
-    @Published private(set) var netMaxDownloads: Int = 0
+    private(set) var netMaxDownloads: Int = 0
     /// FPE log level (Settings → Advanced). One of "debug", "info", "warn", "error".
-    @Published private(set) var logLevel: String = ""
+    private(set) var logLevel: String = ""
 
     /// Materialized-container poll interval in seconds (Settings → Advanced).
     /// 0 means "not yet fetched"; once populated stays in [30, 600].
-    @Published private(set) var materializedPollIntervalS: Int = 0
+    private(set) var materializedPollIntervalS: Int = 0
 
     /// Self-heal full-refresh interval in minutes (Settings → Advanced).
     /// 0 means "not yet fetched or disabled". Once populated stays in [10, 60]
     /// (enabled) or 0 (disabled).
-    @Published private(set) var selfHealIntervalM: Int = 0
+    private(set) var selfHealIntervalM: Int = 0
 
     /// True once at least one successful `getEngineStatus` reply has been
     /// applied to this model. Settings rows that can legitimately hold the
     /// disabled-sentinel value (e.g. `selfHealIntervalM == 0`) should gate
     /// their "loaded" state on this flag rather than on a sibling field's
     /// non-zero value, to avoid invisible coupling between unrelated knobs.
-    @Published private(set) var engineStatusReceived: Bool = false
+    private(set) var engineStatusReceived: Bool = false
 
     /// Last action error for display to the user. nil if the last action succeeded.
     /// Set by destructive actions (removeAccount, cacheClear, setDefaultAccount)
     /// when they fail so the UI can surface a non-intrusive inline message.
-    @Published private(set) var lastActionError: String? = nil
+    private(set) var lastActionError: String?
 
     // MARK: Computed conveniences
 
@@ -393,6 +395,18 @@ final class MenuStatusModel: ObservableObject {
         }
     }
 
+    // periphery:ignore - only test callers remain; exclude_tests: true hides them from periphery
+    /// Awaits completion of the `refresh()` call currently in flight, if any.
+    /// Internal (not private) so tests can synchronize on a full `doRefresh()`
+    /// pass — including its secondary-account sweep — without content-polling
+    /// a property whose value may be identical across refreshes (e.g. a
+    /// throttled secondary-account sweep). `refresh()` reassigns `refreshTask`
+    /// synchronously, so calling this immediately after `refresh()` always
+    /// awaits that specific call, not a stale prior one.
+    func awaitCurrentRefresh() async {
+        await refreshTask?.value
+    }
+
     /// Refresh now, then repeatedly every `interval` for the whole process
     /// lifetime, independent of dropdown/Settings visibility.
     ///
@@ -530,50 +544,8 @@ final class MenuStatusModel: ObservableObject {
                 // awaiting the XPC reply (stale-snapshot guard for app-07).
                 guard myGeneration == refreshGeneration, !Task.isCancelled else { return }
 
-                if !isFenced(.cacheMaxSize) {
-                    cacheBytes = status.cacheBytes
-                    cacheMaxBytes = status.cacheMaxBytes
-                    if status.cacheMaxSizeGB > 0 {
-                        cacheMaxSizeGB = status.cacheMaxSizeGB
-                    }
-                }
-                if !isFenced(.telemetry) {
-                    telemetryEnabled = status.telemetryEnabled
-                }
-                if status.netMaxUploads > 0, !isFenced(.netMaxUploads) {
-                    netMaxUploads = status.netMaxUploads
-                }
-                if status.netMaxDownloads > 0, !isFenced(.netMaxDownloads) {
-                    netMaxDownloads = status.netMaxDownloads
-                }
-                if !status.logLevel.isEmpty, !isFenced(.logLevel) {
-                    logLevel = status.logLevel
-                }
-                if status.materializedPollIntervalS > 0, !isFenced(.materializedPollInterval) {
-                    materializedPollIntervalS = status.materializedPollIntervalS
-                    ChangeWatcher.shared.materializedPollInterval = .seconds(status.materializedPollIntervalS)
-                }
-                if !isFenced(.selfHealInterval) {
-                    // 0 from an older FPE means "not yet available"; preserve the last-known
-                    // value so the UI does not snap back. Once populated, publish verbatim
-                    // (0 = disabled is a valid user choice).
-                    if status.selfHealIntervalM > 0 || selfHealIntervalM == 0 {
-                        selfHealIntervalM = status.selfHealIntervalM
-                    }
-                }
-
-                // Mark that at least one successful status reply has been applied.
-                // Settings rows that cannot use a sibling field's non-zero value as
-                // a "loaded" proxy (e.g. selfHealIntervalM may be 0 when disabled)
-                // should gate on this flag instead. Only the full getEngineStatus
-                // reply actually populates the cache/config fields this flag
-                // guards, so the badge-only branch below leaves it untouched.
-                engineStatusReceived = true
-
-                pausedWorkspaces = mapPausedWorkspaces(status.pausedWorkspaces)
-
                 // Capture auth state from the first account's status reply.
-                if status.needsSignIn {
+                if applyFullEngineStatus(status) {
                     needsSignInSet.insert(firstAlias)
                 }
             } catch {
@@ -661,6 +633,65 @@ final class MenuStatusModel: ObservableObject {
             lastSecondaryAccountCheckAt = now
         }
         accountsNeedingSignIn = needsSignInSet
+    }
+
+    /// Applies a full `getEngineStatus` reply to the write-fence-gated fields,
+    /// plus `engineStatusReceived` and `pausedWorkspaces`. Extracted from the
+    /// `full` branch of `doRefresh` so the apply logic reads independently of
+    /// the fetch/guard/error-handling around it.
+    ///
+    /// The stale-snapshot generation guard (`myGeneration == refreshGeneration`)
+    /// deliberately stays in `doRefresh` rather than moving in here: its
+    /// `return` aborts the rest of `doRefresh`, including the secondary-account
+    /// sweep below it — a helper-local `return` would only abort this method,
+    /// silently changing that behaviour.
+    ///
+    /// - Returns: `status.needsSignIn`, so the caller can fold it into its own
+    ///   `needsSignInSet` alongside the secondary-account sweep results.
+    private func applyFullEngineStatus(_ status: XPCEngineStatus) -> Bool {
+        if !isFenced(.cacheMaxSize) {
+            cacheBytes = status.cacheBytes
+            cacheMaxBytes = status.cacheMaxBytes
+            if status.cacheMaxSizeGB > 0 {
+                cacheMaxSizeGB = status.cacheMaxSizeGB
+            }
+        }
+        if !isFenced(.telemetry) {
+            telemetryEnabled = status.telemetryEnabled
+        }
+        if status.netMaxUploads > 0, !isFenced(.netMaxUploads) {
+            netMaxUploads = status.netMaxUploads
+        }
+        if status.netMaxDownloads > 0, !isFenced(.netMaxDownloads) {
+            netMaxDownloads = status.netMaxDownloads
+        }
+        if !status.logLevel.isEmpty, !isFenced(.logLevel) {
+            logLevel = status.logLevel
+        }
+        if status.materializedPollIntervalS > 0, !isFenced(.materializedPollInterval) {
+            materializedPollIntervalS = status.materializedPollIntervalS
+            ChangeWatcher.shared.materializedPollInterval = .seconds(status.materializedPollIntervalS)
+        }
+        if !isFenced(.selfHealInterval) {
+            // 0 from an older FPE means "not yet available"; preserve the last-known
+            // value so the UI does not snap back. Once populated, publish verbatim
+            // (0 = disabled is a valid user choice).
+            if status.selfHealIntervalM > 0 || selfHealIntervalM == 0 {
+                selfHealIntervalM = status.selfHealIntervalM
+            }
+        }
+
+        // Mark that at least one successful status reply has been applied.
+        // Settings rows that cannot use a sibling field's non-zero value as
+        // a "loaded" proxy (e.g. selfHealIntervalM may be 0 when disabled)
+        // should gate on this flag instead. Only the full getEngineStatus
+        // reply actually populates the cache/config fields this flag
+        // guards, so the badge-only branch in doRefresh leaves it untouched.
+        engineStatusReceived = true
+
+        pausedWorkspaces = mapPausedWorkspaces(status.pausedWorkspaces)
+
+        return status.needsSignIn
     }
 
     /// Maps `XPCPausedWorkspace` entries to `PausedWorkspaceInfo`. Shared by
@@ -845,7 +876,7 @@ final class MenuStatusModel: ObservableObject {
     ///   - key: The write-fence key for this field.
     ///   - debounce: How long to wait, after the optimistic publish, before
     ///     the XPC write actually fires.
-    ///   - publish: Applies the optimistic value to the `@Published`
+    ///   - publish: Applies the optimistic value to the observable
     ///     property (and any synchronous side effect, e.g. updating
     ///     `ChangeWatcher`'s cadence). Runs immediately, before debouncing.
     ///   - write: The XPC write to perform once the debounce settles.

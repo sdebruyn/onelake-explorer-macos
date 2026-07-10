@@ -22,11 +22,12 @@ import os.log
 import SwiftUI
 
 struct MenuBarView: View {
-    // The model is owned at the App level (OneLakeApp @StateObject) so
+    // The model is owned at the App level (OneLakeApp @State) so
     // post-action refreshes are visible in both the icon label and the menu
-    // without waiting for the next open. @ObservedObject observes but does
-    // NOT take ownership — lifetime is managed by OneLakeApp.
-    @ObservedObject var model: MenuStatusModel
+    // without waiting for the next open. This plain `let` observes (via
+    // Observation) but does NOT take ownership — lifetime is managed by
+    // OneLakeApp.
+    let model: MenuStatusModel
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
 
@@ -166,12 +167,12 @@ struct MenuBarView: View {
 
 private struct AccountSubmenu: View {
     let account: AccountInfo
-    // @ObservedObject is the correct, safe, observation-aware choice here.
+    // A plain `let` is the correct, safe, observation-aware choice here.
     // SwiftUI Views are structs; AppKit may retain them as part of an open
     // NSMenu, so `unowned` would trap if the model were ever deallocated.
-    // The singleton lives for the process lifetime but the semantics are
-    // safer and change observation works correctly with @ObservedObject.
-    @ObservedObject var model: MenuStatusModel
+    // The singleton lives for the process lifetime and Observation tracks
+    // property reads through this reference correctly without @ObservedObject.
+    let model: MenuStatusModel
     @Environment(\.openWindow) private var openWindow
 
     private static let log = Logger(subsystem: ofemSubsystem, category: "menubar-view")

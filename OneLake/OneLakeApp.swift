@@ -181,10 +181,11 @@ struct OneLakeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     /// Single shared model owned here (app lifetime). MenuBarView receives it
-    /// as @ObservedObject so it observes without taking ownership. Owning it
-    /// at the App level also lets the MenuBarExtra label view below read the
-    /// same published state, so the icon updates live after every action.
-    @StateObject private var statusModel = MenuStatusModel.shared
+    /// as a plain `let` so it observes (via Observation) without taking
+    /// ownership. Owning it at the App level also lets the MenuBarExtra label
+    /// view below read the same observable state, so the icon updates live
+    /// after every action.
+    @State private var statusModel = MenuStatusModel.shared
 
     init() {
         OneLakeApp.log.info("OneLake host app launching")

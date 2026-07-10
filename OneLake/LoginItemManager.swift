@@ -15,6 +15,7 @@
 
 import AppKit
 import Foundation
+import Observation
 import os.log
 import ServiceManagement
 
@@ -23,16 +24,17 @@ import ServiceManagement
 /// The singleton is accessed from the main actor only; all SMAppService
 /// calls are synchronous and short (no I/O).
 @MainActor
-final class LoginItemManager: ObservableObject {
+@Observable
+final class LoginItemManager {
     static let shared = LoginItemManager()
 
     private static let log = Logger(subsystem: ofemSubsystem, category: "login-item")
 
-    // MARK: Published
+    // MARK: Observable state
 
     /// True when the OneLake app is registered as a login item with launchd
     /// (i.e. it will launch at the next login). Refreshed on every action.
-    @Published private(set) var isRegistered: Bool = false
+    private(set) var isRegistered: Bool = false
 
     // MARK: Init
 

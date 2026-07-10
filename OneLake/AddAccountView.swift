@@ -28,7 +28,7 @@ struct AddAccountView: View {
     @State private var tenant: String = ""
     @State private var customClientID: String = ""
     @State private var showAdvanced: Bool = false
-    @StateObject private var coordinator = AddAccountCoordinator()
+    @State private var coordinator = AddAccountCoordinator()
 
     // The follow-on docs page that describes when and how to bring
     // your own Entra App Registration. Linked from the Advanced
