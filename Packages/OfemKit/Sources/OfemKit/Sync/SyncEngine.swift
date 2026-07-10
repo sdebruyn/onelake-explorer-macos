@@ -62,7 +62,7 @@ public actor SyncEngine {
     /// behaviour).
     public static let defaultBlobFreshnessTTL: Duration = .seconds(60)
 
-    // MARK: - Dependencies (private — callers must go through SyncEngine API)
+    // MARK: - Dependencies (internal — callers should still go through SyncEngine API)
 
     //
     // sync-19: these were `nonisolated let` with default (internal) access,
@@ -70,19 +70,25 @@ public actor SyncEngine {
     // invariants by calling the clients directly. Made `private` now;
     // `nonisolated` is still required for wiring in init (which runs before
     // the actor is fully initialised).
+    //
+    // M10a (#466): promoted back to `internal` ahead of splitting this file
+    // into `SyncEngine+*.swift` family extensions, which need to reference
+    // this state from other files. The sync-19 guidance still holds as a
+    // convention — callers outside `SyncEngine`'s own extensions should go
+    // through its API, not this state directly.
 
-    private nonisolated let cache: CacheStore
-    private nonisolated let onelake: any OneLakeClientProtocol
-    private nonisolated let fabric: any FabricClientProtocol
+    nonisolated let cache: CacheStore
+    nonisolated let onelake: any OneLakeClientProtocol
+    nonisolated let fabric: any FabricClientProtocol
 
-    private let logger: OfemLogger
-    private let telemetry: TelemetryClient?
+    let logger: OfemLogger
+    let telemetry: TelemetryClient?
 
     // MARK: - Internal state
 
-    private let pauseManager: PauseManager
-    private let offlineTracker: OfflineTracker
-    private let partials: PartialManager
+    let pauseManager: PauseManager
+    let offlineTracker: OfflineTracker
+    let partials: PartialManager
 
     /// Per-account semaphores for downloads, uploads, and materialized-set refreshes.
     ///
@@ -91,11 +97,11 @@ public actor SyncEngine {
     /// (typically 1-3) so the unbounded-map concern is negligible in practice.
     /// A future `forgetAccount(alias:)` hook can prune entries on sign-out
     /// (sync-16).
-    private var downloadSlots: [String: AsyncSemaphore] = [:]
-    private var uploadSlots: [String: AsyncSemaphore] = [:]
-    private var refreshSlots: [String: AsyncSemaphore] = [:]
-    private let maxDownloads: Int
-    private let maxUploads: Int
+    var downloadSlots: [String: AsyncSemaphore] = [:]
+    var uploadSlots: [String: AsyncSemaphore] = [:]
+    var refreshSlots: [String: AsyncSemaphore] = [:]
+    let maxDownloads: Int
+    let maxUploads: Int
 
     /// In-flight download tasks keyed by ``CacheKey/stableKeyString``.
     ///
@@ -104,30 +110,30 @@ public actor SyncEngine {
     /// VALUE is delivered (not when the spawning frame unwinds) so a second
     /// caller that arrives while the task is still running always finds the
     /// entry (sync-24 fix).
-    private var inFlightDownloads: [String: Task<OpenResult, any Error>] = [:]
+    var inFlightDownloads: [String: Task<OpenResult, any Error>] = [:]
 
     /// Generation counter per key — incremented each time a new download task is
     /// spawned for a key. Used to guard against a stale cleanup (from a previous,
     /// now-cancelled task) removing an entry that belongs to a newer task.
-    private var downloadGenerations: [String: UInt64] = [:]
+    var downloadGenerations: [String: UInt64] = [:]
 
     /// Per-container timestamp (Unix nanoseconds) of the last self-heal forced
     /// full re-list in ``refreshMaterialized`` (#380). Keyed by
     /// ``CacheKey/stableKeyString``. Absent ⇒ never self-healed yet ⇒ the first
     /// poll forces a list and records the timestamp, so steady-state self-heals
     /// land roughly one interval apart rather than all firing on poll 1.
-    private var lastSelfHealNs: [String: Int64] = [:]
+    var lastSelfHealNs: [String: Int64] = [:]
 
     /// Injectable time source (Unix nanoseconds) used by the self-heal floor so
     /// tests can drive elapsed time deterministically instead of sleeping on the
     /// wall clock. Defaults to the real clock.
-    private nonisolated let nowNsProvider: @Sendable () -> Int64
+    nonisolated let nowNsProvider: @Sendable () -> Int64
 
     /// ``defaultBlobFreshnessTTL`` (or the constructor-supplied override) used
     /// to gate ``open(key:)``'s freshness HEAD. Converted to nanoseconds
     /// inline where compared, mirroring how ``refreshMaterialized`` derives
     /// its self-heal threshold from `selfHealIntervalMinutes`.
-    private nonisolated let blobFreshnessTTL: Duration
+    nonisolated let blobFreshnessTTL: Duration
 
     /// Account aliases with a ``refreshMaterialized`` pass currently in flight
     /// (#380). The production caller `pollMaterialized` spawns an unstructured
@@ -137,7 +143,7 @@ public actor SyncEngine {
     /// suspension points and break the "a parent vouched THIS pass" guarantee.
     /// A second pass for an alias already in flight returns early: the in-flight
     /// pass already covers this poll's freshness.
-    private var refreshInFlightAliases: Set<String> = []
+    var refreshInFlightAliases: Set<String> = []
 
     /// Minimum gap between Fabric item-listing refreshes for a single
     /// materialized workspace container (F6/C16). A workspace container is
@@ -145,26 +151,26 @@ public actor SyncEngine {
     /// without this throttle ``refreshMaterialized`` would issue one Fabric REST
     /// call per materialized workspace on every poll. 60 s mirrors the host
     /// working-set poll cadence (`OfemWorkingSetEnumerator.workspaceRefreshInterval`).
-    private static let itemListThrottleNs: Int64 = 60 * 1_000_000_000
+    static let itemListThrottleNs: Int64 = 60 * 1_000_000_000
 
     /// Unix-nanosecond timestamp of the last SUCCESSFUL Fabric item-listing
     /// refresh per `(alias, workspaceID)`, gating ``refreshItemListing`` by
     /// ``itemListThrottleNs``. Keyed by ``itemListKey(alias:workspaceID:)``.
     /// Stamped only after a successful list so a thrown attempt stays due.
-    private var lastItemListNs: [String: Int64] = [:]
+    var lastItemListNs: [String: Int64] = [:]
 
     /// `(alias, workspaceID)` pairs with a ``refreshItemListing`` in flight, so
     /// overlapping poll-path refreshes for the same workspace coalesce instead
     /// of each reading pre-upsert discovery state and double-writing. Mirrors
     /// ``refreshInFlightAliases``. Keyed by ``itemListKey(alias:workspaceID:)``.
-    private var itemListInFlight: Set<String> = []
+    var itemListInFlight: Set<String> = []
 
     /// Minimum gap between tombstone TTL purges for a single account alias.
     /// `refreshMaterialized` is the throttle host (the poll tick already fires
     /// ~every 60 s per alias), so the purge rides that cadence at most once per
     /// day instead of adding its own loop. 24 h is far tighter than the 30-day
     /// tombstone TTL, so the purge horizon never lags materially behind the TTL.
-    private static let tombstonePurgeThrottleNs: Int64 = 24 * 60 * 60 * 1_000_000_000
+    static let tombstonePurgeThrottleNs: Int64 = 24 * 60 * 60 * 1_000_000_000
 
     /// Unix-nanosecond timestamp of the last SUCCESSFUL tombstone purge per
     /// account alias, gating ``purgeExpiredTombstonesThrottled(alias:)`` by
@@ -172,9 +178,9 @@ public actor SyncEngine {
     /// thrown attempt (e.g. a transient SQLite error) stays due next poll —
     /// mirrors the stamp-after-success policy of ``lastItemListNs`` /
     /// ``lastSelfHealNs``.
-    private var lastTombstonePurgeNs: [String: Int64] = [:]
+    var lastTombstonePurgeNs: [String: Int64] = [:]
 
-    private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "SyncEngine")
+    static let log = Logger(subsystem: "dev.debruyn.ofem", category: "SyncEngine")
 
     // MARK: - Init
 
@@ -1183,7 +1189,12 @@ public actor SyncEngine {
     /// Threaded through internally so ``openReturningRecord(key:)`` gets both
     /// from the single read/write pass ``open(key:)`` already performs,
     /// instead of the caller fetching the row again afterward.
-    private typealias OpenResult = (url: URL, record: MetadataRecord)
+    ///
+    /// M10a (#466): `internal`, not `private` — the `inFlightDownloads`
+    /// property above stores a `Task<OpenResult, any Error>` and, ahead of
+    /// the upcoming family-extension split, needs to see this type once it
+    /// and `OpenResult` no longer share a file.
+    typealias OpenResult = (url: URL, record: MetadataRecord)
 
     // periphery:ignore - only test callers remain; exclude_tests: true hides them from periphery
     /// Downloads a file, serving from the local blob cache when fresh.
@@ -1474,12 +1485,12 @@ public actor SyncEngine {
             )
             row.etag = props.eTag
             if props.contentLength != 0 { row.contentLength = props.contentLength }
-            row.lastModifiedNs = dateToNs(props.lastModified) ?? 0
+            row.lastModifiedNs = dateToNsOrNil(props.lastModified) ?? 0
             row.contentType = props.contentType
             // Capture real creation time from the HEAD response when available.
             // The entryChanged createdNs guard will fire a metadata update so
             // Finder refreshes the displayed Date Created without a re-download.
-            if let cd = props.creationDate { row.createdNs = dateToNs(cd) ?? cached?.createdNs ?? 0 }
+            if let cd = props.creationDate { row.createdNs = dateToNsOrNil(cd) ?? cached?.createdNs ?? 0 }
         } catch {
             // sync-12: log HEAD failure so the empty-etag outcome is detectable.
             logger.warn("put: post-upload HEAD failed; row will have empty etag",
@@ -1946,7 +1957,7 @@ public actor SyncEngine {
             isDir: false,
             contentLength: expectedTotal > 0 ? expectedTotal : spillSize,
             etag: props.eTag,
-            lastModifiedNs: dateToNs(props.lastModified) ?? 0,
+            lastModifiedNs: dateToNsOrNil(props.lastModified) ?? 0,
             contentType: props.contentType,
             lastAccessedNs: nowNs,
             syncedAtNs: nowNs,
@@ -1954,7 +1965,7 @@ public actor SyncEngine {
             // Capture real creation time from GET/HEAD response header. The
             // entryChanged createdNs guard triggers a metadata-only update so
             // Finder refreshes Date Created without forcing a re-download.
-            createdNs: props.creationDate.flatMap { dateToNs($0) } ?? cached?.createdNs ?? 0
+            createdNs: props.creationDate.flatMap { dateToNsOrNil($0) } ?? cached?.createdNs ?? 0
         )
         if row.name.isEmpty { row.name = Enumerator.baseName(key.path) }
 
@@ -2260,7 +2271,7 @@ public actor SyncEngine {
     /// Indexes cache rows by their `path` (the workspace/item GUID for discovery
     /// rows, or the relative path for folder children). Used to look up each
     /// freshly-listed candidate's prior state before deciding whether to upsert.
-    private static func indexByPath(_ rows: [MetadataRecord]) -> [String: MetadataRecord] {
+    static func indexByPath(_ rows: [MetadataRecord]) -> [String: MetadataRecord] {
         var byPath: [String: MetadataRecord] = [:]
         byPath.reserveCapacity(rows.count)
         for r in rows {
@@ -2280,7 +2291,7 @@ public actor SyncEngine {
     /// row (and `syncedAtNs`) stays exactly as-is — bumping it on every poll
     /// would shift the working-set delta baseline forward and produce a phantom
     /// `didUpdate` for every unchanged entry.
-    private static func classifyUpserts(
+    static func classifyUpserts(
         candidates: [MetadataRecord],
         cachedByPath: [String: MetadataRecord]
     ) -> (batch: [MetadataRecord], added: Int, updated: Int) {
@@ -2325,18 +2336,17 @@ public actor SyncEngine {
         var candidates: [MetadataRecord] = []
         candidates.reserveCapacity(remoteChildren.count)
 
-        // `dateToNs` is overloaded by return type: the file-private
-        // `(Date?) -> Int64?` in this file (keeps `nil` for a nil / out-of-range
-        // date) and the global `CacheModels.dateToNs` `(Date?) -> Int64` (folds
-        // both to `0`). In this `static` context the bare name resolves to the
-        // global — which would reset `createdNs` to `0` on every row instead of
-        // carrying the cached value forward. DFS listings never return a
-        // creationDate, so `entry.creationDate` is always `nil`; the global's
-        // `nil -> 0` fold short-circuits the `?? cur?.createdNs` fallback and
-        // silently drops the creation time captured earlier via HEAD/GET (#371).
-        // Bind explicitly to the nil-preserving overload so that fallback keeps
-        // working (this also drops the non-optional `?? 0` warning below).
-        let toNs: (Date?) -> Int64? = dateToNs
+        // `dateToNsOrNil` (renamed from the file-private `dateToNs` — see its
+        // doc comment) keeps `nil` for a nil / out-of-range date, unlike the
+        // global `CacheModels.dateToNs` `(Date?) -> Int64`, which folds both
+        // to `0`. DFS listings never return a creationDate, so
+        // `entry.creationDate` is always `nil`; the global's `nil -> 0` fold
+        // would short-circuit the `?? cur?.createdNs` fallback below and
+        // silently drop the creation time captured earlier via HEAD/GET
+        // (#371). Bind explicitly to the nil-preserving overload so that
+        // fallback keeps working (this also drops the non-optional `?? 0`
+        // warning below).
+        let toNs: (Date?) -> Int64? = dateToNsOrNil
 
         for (relPath, entry) in remoteChildren {
             let name = Enumerator.baseName(relPath)
@@ -2570,7 +2580,7 @@ public actor SyncEngine {
     /// Handles the common error path for remote operations: observes offline
     /// state, marks workspace paused when appropriate, emits a failure telemetry
     /// event, and always rethrows.
-    private func withRemoteOperationError(
+    func withRemoteOperationError(
         error: any Error,
         key: CacheKey,
         eventName: String,
@@ -2591,7 +2601,7 @@ public actor SyncEngine {
     // MARK: - Batch cache helpers
 
     /// Upserts all records in one GRDB transaction.
-    private func batchUpsert(_ records: [MetadataRecord], context: String) async {
+    func batchUpsert(_ records: [MetadataRecord], context: String) async {
         guard !records.isEmpty else { return }
         do {
             try await cache.batchUpsert(records)
@@ -2605,7 +2615,7 @@ public actor SyncEngine {
     /// `recordTombstones` is passed through to ``CacheStore/batchDelete(_:recordTombstones:)``:
     /// `true` for remote-reconcile deletes that Finder must see as removals,
     /// which is every call site in this engine.
-    private func batchDelete(_ keys: [CacheKey], recordTombstones: Bool, context: String) async {
+    func batchDelete(_ keys: [CacheKey], recordTombstones: Bool, context: String) async {
         guard !keys.isEmpty else { return }
         do {
             try await cache.batchDelete(keys, recordTombstones: recordTombstones)
@@ -2617,7 +2627,7 @@ public actor SyncEngine {
     // MARK: - Telemetry helpers (sync-06)
 
     /// Outcome descriptor for telemetry emission.
-    private enum TrackOutcome {
+    enum TrackOutcome {
         case success(bytes: Int64? = nil)
         case successWithCode(_ code: String)
         case failed(_ code: String)
@@ -2626,7 +2636,7 @@ public actor SyncEngine {
 
     /// Emits a telemetry event with common fields pre-filled (sync-06: single
     /// helper replaces 15+ near-identical construction sites).
-    private func track(
+    func track(
         eventName: String,
         alias: String,
         start: Date,
@@ -2678,7 +2688,7 @@ public actor SyncEngine {
         await track(event)
     }
 
-    private func track(_ event: TelemetryEvent) async {
+    func track(_ event: TelemetryEvent) async {
         await telemetry?.track(event)
     }
 
@@ -2751,7 +2761,7 @@ private actor DiffTotalCounter {
 /// is intentional and documented here rather than as a magic literal — sync-07).
 private let elapsedMsMinimum: Int64 = 1
 
-private func elapsedMs(since start: Date) -> Int64 {
+func elapsedMs(since start: Date) -> Int64 {
     let d = Int64(Date().timeIntervalSince(start) * 1000)
     return max(elapsedMsMinimum, d)
 }
@@ -2761,14 +2771,14 @@ private func elapsedMs(since start: Date) -> Int64 {
 /// Returns the current time as Unix nanoseconds, clamped to `Int64` range.
 ///
 /// Replaces the six `dateToNs(Date())!` force-unwraps throughout `SyncEngine`.
-/// `dateToNs` returns `nil` only for a `nil` input; passing `Date()` (never
+/// `dateToNsOrNil` returns `nil` only for a `nil` input; passing `Date()` (never
 /// nil) could only fail if the clock is radically wrong. Clamping to `0`
 /// (the "unknown" sentinel) avoids both the force-unwrap and a crash (sync-21).
-private func currentNowNs() -> Int64 {
-    dateToNs(Date()) ?? 0
+func currentNowNs() -> Int64 {
+    dateToNsOrNil(Date()) ?? 0
 }
 
-// MARK: - dateToNs (nonisolated helper)
+// MARK: - dateToNsOrNil (nonisolated helper)
 
 /// Converts `date` to Unix nanoseconds, or `nil` if `date` is `nil` or out of
 /// `Int64` range.
@@ -2785,13 +2795,21 @@ private func currentNowNs() -> Int64 {
 /// `nil` in that case (and symmetrically near `Int64.max`) so callers never see
 /// an overflowed value.
 ///
+/// M10a (#466): renamed from `dateToNs` to `dateToNsOrNil` and promoted to
+/// `internal`, ahead of the upcoming family-extension split. The old
+/// file-private name would, once cross-file-visible, collide with the
+/// module-wide, non-optional `CacheModels.dateToNs(_:) -> Int64` — an
+/// ambiguous-overload compile error at call sites outside `SyncEngine`
+/// (`CacheReader`, `PauseManager`) that only ever intend the `CacheModels`
+/// one. The new name sidesteps that collision.
+///
 /// The upper-bound check must use `<`, not `<=`: `Double(Int64.max)` rounds
 /// *up* to exactly `2^63` (one past `Int64.max`, since `Int64.max` itself isn't
 /// exactly representable as a `Double`), so a date whose nanosecond value lands
 /// on that rounded boundary would pass an `<=` guard and then trap in
 /// `Int64(ns)`. Several call sites feed this remote, attacker-influenced
 /// timestamps (DFS `lastModified` / `creationDate`), so the boundary matters.
-private func dateToNs(_ date: Date?) -> Int64? {
+func dateToNsOrNil(_ date: Date?) -> Int64? {
     guard let d = date else { return nil }
     let ns = d.timeIntervalSince1970 * 1_000_000_000
     guard ns >= Double(Int64.min), ns < Double(Int64.max) else { return nil }
