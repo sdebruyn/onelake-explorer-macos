@@ -59,6 +59,8 @@ actor PauseManager {
     /// `errorCode` above is always checked first).
     // swiftlint:disable:next force_try
     private static let pausedCapacityPattern = try! NSRegularExpression( // safe: literal pattern, never fails
+        // Regex literal cannot be broken across lines without altering the pattern.
+        // swiftlint:disable:next line_length
         pattern: #"(?i)(capacity\s+not\s+active|capacity\s+is\s+not\s+active|fabric\s+capacity\s+is\s+(currently\s+)?paused|capacity\s+is\s+(currently\s+)?paused|capacity\s+suspended|capacity\s+has\s+been\s+paused|capacity\s+\S+\s+is\s+currently\s+not\s+available|capacity\s+is\s+(currently\s+)?not\s+available)"#,
         options: []
     )

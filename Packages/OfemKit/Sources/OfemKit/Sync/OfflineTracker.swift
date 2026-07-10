@@ -60,9 +60,11 @@ actor OfflineTracker {
 
     /// Feeds the outcome of a single outbound call.
     func observe(_ error: (any Error)?) {
-        if error == nil {
+        guard let error else {
             markOnline()
-        } else if OfflineTracker.isOfflineError(error!) {
+            return
+        }
+        if OfflineTracker.isOfflineError(error) {
             markOffline()
         }
         // Other errors (404, 403, etc.) don't change offline state.

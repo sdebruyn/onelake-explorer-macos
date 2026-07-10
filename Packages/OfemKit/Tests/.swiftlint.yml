@@ -1,0 +1,9 @@
+parent_config:
+  file: ../../../.swiftlint.yml
+
+disabled_rules:
+  - force_unwrapping   # test stubs legitimately force-unwrap known-good literals
+                        # (HTTPURLResponse/Data); a crash here fails the test, it
+                        # does not fault the live Finder mount.
+  - file_length         # Swift Testing's one-@Suite-struct-per-file shape yields
+  - type_body_length    # long single-type spans, not god-type complexity risk.

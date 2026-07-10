@@ -453,6 +453,9 @@ final class BlockingListMockOneLakeClient: OneLakeClientProtocol, @unchecked Sen
         (Data(), PathProperties.make())
     }
 
+    // Mock protocol conformance signature; splitting the parameter list would
+    // reduce readability for a one-line stub.
+    // swiftlint:disable:next line_length
     func read(alias _: String, workspaceGUID _: String, itemGUID _: String, path _: String, range _: Range<Int64>?, ifMatch _: String, destination _: FileHandle, onProgress _: (@Sendable (Int64, Int64) -> Void)?) async throws -> PathProperties {
         PathProperties.make()
     }

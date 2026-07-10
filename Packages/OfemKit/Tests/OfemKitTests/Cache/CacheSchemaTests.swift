@@ -261,6 +261,8 @@ struct CacheSchemaTests {
         // extract, return a `Sendable` value) — rather than returned across
         // the closure boundary directly, which the generic
         // `pool.read<T: Sendable>` overload cannot accept.
+        // 5-member SQL row tuple, test-only decode of a `path_metadata` row.
+        // swiftlint:disable:next large_tuple
         let dataRow: (etag: String, contentLength: Int64, itemType: String, createdNs: Int64, subtreeEtag: String)? =
             try await pool.read { db in
                 guard let row = try Row.fetchOne(db, sql: """
