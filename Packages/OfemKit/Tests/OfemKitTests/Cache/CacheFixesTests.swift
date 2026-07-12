@@ -308,7 +308,10 @@ struct CacheFixesTests {
             try await store.storeBlob(key: key, data: Data("bytes".utf8))
         }
 
-        // The orphan blob on disk must be cleaned up by the sweep.
+        // The orphan blob on disk must be cleaned up by the sweep. Age it first
+        // so the sweep's grace window treats it as a stale crash-orphan rather
+        // than a maybe-in-flight blob it would spare.
+        try ageOrphanBlobFiles(in: store)
         try await store.sweepOrphans()
         let (diskCount, _) = try await store.diskUsage()
         #expect(diskCount == 0, "Orphan blob must be reclaimed by sweep after storeBlob on missing row")
@@ -417,6 +420,9 @@ struct CacheFixesTests {
         // Re-open and run sweep explicitly.
         let store2 = try CacheStore(root: tmp)
         defer { try? FileManager.default.removeItem(at: store2.root) }
+        // Age the orphan so the sweep's grace window reaps it (a fresh file is
+        // spared as a maybe-in-flight blob).
+        try ageOrphanBlobFiles(in: store2)
         // sweepOrphans must not throw — it is the same code path as the init-time sweep.
         try await store2.sweepOrphans()
 

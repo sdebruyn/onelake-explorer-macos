@@ -669,6 +669,9 @@ struct CacheStoreTests {
         // Task started at init time may not have completed yet.
         let store2 = try CacheStore(root: tmp)
         defer { try? FileManager.default.removeItem(at: store2.root) }
+        // Age the orphan so the sweep's grace window treats it as a stale
+        // crash-orphan (a fresh file is spared as a maybe-in-flight blob).
+        try ageOrphanBlobFiles(in: store2)
         try await store2.sweepOrphans()
         let (diskCount, _) = try await store2.diskUsage()
         #expect(diskCount == 0)

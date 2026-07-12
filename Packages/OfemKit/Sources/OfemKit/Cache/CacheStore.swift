@@ -34,6 +34,19 @@ public actor CacheStore {
     /// SQLite busy-wait timeout in milliseconds.
     private static let busyTimeoutMs: Int = 5000
 
+    /// Grace window for the init-time orphan sweep, in seconds.
+    ///
+    /// A blob file or `*.tmp` scratch file whose modification time is within
+    /// this interval of the sweep is spared: it may belong to a concurrent,
+    /// in-flight ``storeBlob(key:data:)`` / ``storeBlobFromURL(_:key:)`` whose
+    /// disk write has landed but whose DB commit (or, for a `*.tmp`, whose
+    /// rename into the shard) has not happened yet. Genuine crash-orphans were
+    /// written by a prior process and are older than this window, so they are
+    /// still reclaimed. Comfortably larger than any realistic file-write→DB-
+    /// commit gap; a spuriously spared orphan self-heals on a later sweep,
+    /// whereas a spuriously deleted valid blob is the bug this window closes.
+    private static let orphanSweepGraceInterval: TimeInterval = 60
+
     // MARK: - Private state
 
     // Internal so test targets can run direct SQL assertions.
@@ -134,10 +147,12 @@ public actor CacheStore {
         //
         // The sweep logs warnings on failure rather than discarding them with
         // try? — errors are surfaced to the log but do not abort the actor.
-        // The sweep uses a write transaction to query referenced SHAs, which
-        // serialises it against any in-flight storeBlob/storeBlobFromURL write
-        // transaction — ensuring a blob whose disk file was written but whose
-        // DB UPDATE has not yet committed is never mistaken for an orphan.
+        // The sweep spares any blob (or *.tmp) file modified within
+        // orphanSweepGraceInterval of it, so a blob written by a concurrent,
+        // in-flight storeBlob/storeBlobFromURL — whose disk file exists but
+        // whose DB UPDATE has not yet committed — is never mistaken for an
+        // orphan and deleted. Only files older than that window (genuine
+        // crash-orphans from a prior process) are reaped.
         let blobsCapture = blobs
         let dbCapture = dbPool
         Task { [blobsCapture, dbCapture] in
@@ -284,17 +299,42 @@ public actor CacheStore {
     /// Called once at initialisation time to reconcile shard-dir contents
     /// against DB references and eliminate files orphaned by prior crashes
     /// or bugs.
+    ///
+    /// ## Concurrency invariant
+    ///
+    /// A blob written by a concurrent, in-flight ``storeBlob(key:data:)`` /
+    /// ``storeBlobFromURL(_:key:)`` — or after this sweep started — is **never**
+    /// deleted. Both write the blob file first and commit the `blob_sha256` row
+    /// second, so between those two non-atomic steps the file exists on disk
+    /// with no DB reference and is, by DB state alone, indistinguishable from a
+    /// genuine orphan. The sweep therefore reaps only files whose modification
+    /// time predates a cutoff of `now - orphanSweepGraceInterval`; anything
+    /// newer (ties included) is spared. Genuine crash-orphans come from a prior
+    /// process and are older than the window, so they are still reclaimed. The
+    /// write-transaction referenced query below is a secondary guard that
+    /// serialises against a concurrent DB commit; on its own it does not cover
+    /// the file-written-before-commit gap — the grace window does.
     private static func sweepOrphanBlobs(blobs: BlobShardCache, dbPool: DatabasePool) throws {
         // Walk the blob root and collect all SHA-256 values present on disk.
         guard FileManager.default.fileExists(atPath: blobs.blobRoot.path) else { return }
 
+        // Files modified at/after this cutoff are spared — see the concurrency
+        // invariant above. Captured once, up front, so a file written while the
+        // walk is still running is measured against a stable boundary.
+        let cutoff = Date().addingTimeInterval(-orphanSweepGraceInterval)
+
         let enumerator = FileManager.default.enumerator(
             at: blobs.blobRoot,
-            includingPropertiesForKeys: [.isRegularFileKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
         )
         var onDisk: [String] = []
         while let url = enumerator?.nextObject() as? URL {
+            // Spare anything freshly written: it may belong to a concurrent
+            // in-flight store (its blob or its *.tmp scratch file), not a stale
+            // orphan. This is the primary guard for the file-before-commit gap.
+            if isWithinGraceWindow(url, cutoff: cutoff) { continue }
+
             // Remove orphaned *.tmp scratch files — written by BlobShardCache.store
             // but never renamed into place (crash mid-write).  They are never DB-
             // referenced and must not accumulate.
@@ -316,14 +356,13 @@ public actor CacheStore {
 
         // Ask the DB which of those are actually referenced.
         //
-        // Use a write transaction (not a snapshot read) so that a concurrent
-        // storeBlob that has already written the blob file but not yet committed
-        // its DB UPDATE is guaranteed to finish before this query runs.  A
-        // snapshot read would see stale DB state — it would miss the just-written
-        // SHA and incorrectly identify the blob as an orphan, deleting it while
-        // storeBlob is still mid-execution.  The write serialiser blocks here
-        // until any in-flight storeBlob/storeBlobFromURL write transaction commits,
-        // matching the same pattern used by deleteUnreferencedBlobs.
+        // Secondary guard: use a write transaction (not a snapshot read) so a
+        // concurrent storeBlob that has already committed serialises ahead of
+        // this query rather than being missed by a stale snapshot. The primary
+        // protection against the file-written-but-not-yet-committed window is the
+        // grace cutoff above; this serialiser only narrows the DB-visibility race
+        // for candidates already older than that window. Matches the pattern used
+        // by deleteUnreferencedBlobs.
         let referenced: Set<String> = try dbPool.write { db in
             let rows = try String.fetchAll(db, sql: """
             SELECT DISTINCT blob_sha256 FROM path_metadata WHERE blob_sha256 != ''
@@ -338,6 +377,19 @@ public actor CacheStore {
                 Self.log.warning("CacheStore: sweep failed to delete sha=\(sha, privacy: .public): \(error, privacy: .public)")
             }
         }
+    }
+
+    /// Returns `true` when `url` is inside the sweep's grace window — its
+    /// modification time is unknown, or at/after `cutoff` — and must therefore
+    /// be spared. An unreadable mtime is treated as fresh: keeping a file a
+    /// concurrent writer may have just produced is safer than deleting it.
+    private static func isWithinGraceWindow(_ url: URL, cutoff: Date) -> Bool {
+        guard let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+              let mtime = vals.contentModificationDate
+        else {
+            return true
+        }
+        return mtime >= cutoff
     }
 
     // MARK: - Private helpers
