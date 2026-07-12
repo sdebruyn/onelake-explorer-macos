@@ -38,7 +38,11 @@ func makeTempStore(
 /// the fixture is reaped regardless of the exact grace interval.
 func ageOrphanBlobFiles(in store: CacheStore, to date: Date = Date(timeIntervalSince1970: 0)) throws {
     let fm = FileManager.default
-    guard let enumerator = fm.enumerator(at: store.blobRoot, includingPropertiesForKeys: [.isRegularFileKey]) else { return }
+    guard let enumerator = fm.enumerator(
+        at: store.blobRoot,
+        includingPropertiesForKeys: [.isRegularFileKey],
+        options: [.skipsHiddenFiles]
+    ) else { return }
     while let url = enumerator.nextObject() as? URL {
         guard let vals = try? url.resourceValues(forKeys: [.isRegularFileKey]), vals.isRegularFile == true else { continue }
         try fm.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
