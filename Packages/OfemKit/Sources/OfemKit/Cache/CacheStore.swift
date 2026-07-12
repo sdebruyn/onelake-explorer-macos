@@ -45,6 +45,11 @@ public actor CacheStore {
     /// still reclaimed. Comfortably larger than any realistic file-write→DB-
     /// commit gap; a spuriously spared orphan self-heals on a later sweep,
     /// whereas a spuriously deleted valid blob is the bug this window closes.
+    ///
+    /// 60 s is a deliberate, probabilistic bound rather than a proof: a
+    /// write→commit stall beyond it is unrealistic given the 5 s DB busy
+    /// timeout (``busyTimeoutMs``), and a genuine orphan younger than the
+    /// window is merely deferred to a later launch's sweep, never lost.
     private static let orphanSweepGraceInterval: TimeInterval = 60
 
     // MARK: - Private state
@@ -302,18 +307,30 @@ public actor CacheStore {
     ///
     /// ## Concurrency invariant
     ///
-    /// A blob written by a concurrent, in-flight ``storeBlob(key:data:)`` /
-    /// ``storeBlobFromURL(_:key:)`` — or after this sweep started — is **never**
-    /// deleted. Both write the blob file first and commit the `blob_sha256` row
-    /// second, so between those two non-atomic steps the file exists on disk
-    /// with no DB reference and is, by DB state alone, indistinguishable from a
-    /// genuine orphan. The sweep therefore reaps only files whose modification
-    /// time predates a cutoff of `now - orphanSweepGraceInterval`; anything
-    /// newer (ties included) is spared. Genuine crash-orphans come from a prior
-    /// process and are older than the window, so they are still reclaimed. The
-    /// write-transaction referenced query below is a secondary guard that
-    /// serialises against a concurrent DB commit; on its own it does not cover
-    /// the file-written-before-commit gap — the grace window does.
+    /// A blob *written* by a concurrent, in-flight ``storeBlob(key:data:)`` /
+    /// ``storeBlobFromURL(_:key:)`` — one whose file lands on disk while, or
+    /// after, this sweep runs — is spared. Both operations write the blob file
+    /// first and commit the `blob_sha256` row second, so between those two
+    /// non-atomic steps the file exists on disk with no DB reference and is, by
+    /// DB state alone, indistinguishable from a genuine orphan. The sweep
+    /// therefore reaps only files whose modification time predates a cutoff of
+    /// `now - orphanSweepGraceInterval`; anything newer (ties included) is
+    /// spared. A freshly written blob has a fresh mtime and is kept; genuine
+    /// crash-orphans come from a prior process, predate the window, and are
+    /// still reclaimed. The write-transaction referenced query below is a
+    /// secondary guard that serialises against a concurrent DB commit; on its
+    /// own it does not cover the file-written-before-commit gap — the grace
+    /// window does.
+    ///
+    /// Known limitation (out of scope here, self-healing): an *old* (> grace)
+    /// unreferenced orphan that a concurrent store re-references via
+    /// ``BlobShardCache/store(_:)``'s dedup path — which reuses the existing
+    /// file and so does **not** refresh its mtime — can still be deleted if the
+    /// sweep's referenced-SELECT transaction commits before that store's
+    /// `blob_sha256` UPDATE. The write-txn serialises the two but does not order
+    /// them, so the sweep may unlink a blob that is about to be referenced. This
+    /// race is pre-existing and heals on the next fetch (cache miss →
+    /// re-download); it is tracked separately, not addressed by this guard.
     private static func sweepOrphanBlobs(blobs: BlobShardCache, dbPool: DatabasePool) throws {
         // Walk the blob root and collect all SHA-256 values present on disk.
         guard FileManager.default.fileExists(atPath: blobs.blobRoot.path) else { return }
@@ -330,10 +347,14 @@ public actor CacheStore {
         )
         var onDisk: [String] = []
         while let url = enumerator?.nextObject() as? URL {
+            // Read the prefetched resource values once (the enumerator loaded
+            // both keys above) so the grace check does not re-stat the file.
+            let vals = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey])
+
             // Spare anything freshly written: it may belong to a concurrent
             // in-flight store (its blob or its *.tmp scratch file), not a stale
             // orphan. This is the primary guard for the file-before-commit gap.
-            if isWithinGraceWindow(url, cutoff: cutoff) { continue }
+            if isWithinGraceWindow(mtime: vals?.contentModificationDate, cutoff: cutoff) { continue }
 
             // Remove orphaned *.tmp scratch files — written by BlobShardCache.store
             // but never renamed into place (crash mid-write).  They are never DB-
@@ -342,8 +363,7 @@ public actor CacheStore {
                 try? FileManager.default.removeItem(at: url)
                 continue
             }
-            guard let vals = try? url.resourceValues(forKeys: [.isRegularFileKey]),
-                  vals.isRegularFile == true else { continue }
+            guard vals?.isRegularFile == true else { continue }
             // Reconstruct SHA from shard-prefix + filename using the single
             // source-of-truth helper on BlobShardCache (not an ad-hoc `prefix(2)`).
             let shard = url.deletingLastPathComponent().lastPathComponent
@@ -379,16 +399,13 @@ public actor CacheStore {
         }
     }
 
-    /// Returns `true` when `url` is inside the sweep's grace window — its
-    /// modification time is unknown, or at/after `cutoff` — and must therefore
-    /// be spared. An unreadable mtime is treated as fresh: keeping a file a
-    /// concurrent writer may have just produced is safer than deleting it.
-    private static func isWithinGraceWindow(_ url: URL, cutoff: Date) -> Bool {
-        guard let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
-              let mtime = vals.contentModificationDate
-        else {
-            return true
-        }
+    /// Returns `true` when a file whose modification time is `mtime` falls
+    /// inside the sweep's grace window — `mtime` is `nil` (unreadable) or
+    /// at/after `cutoff` — and must therefore be spared. An unreadable mtime is
+    /// treated as fresh: keeping a file a concurrent writer may have just
+    /// produced is safer than deleting it.
+    private static func isWithinGraceWindow(mtime: Date?, cutoff: Date) -> Bool {
+        guard let mtime else { return true }
         return mtime >= cutoff
     }
 
