@@ -588,8 +588,8 @@ final class ChangeWatcher {
     /// change the domain set between the poll check and the signal.
     ///
     /// Marked `nonisolated` so tests can call it directly from a non-`@MainActor`
-    /// context without wrapping in `MainActor.run`. The method accesses no class
-    /// state; all collaborators are passed as parameters.
+    /// context without wrapping in `MainActor.run`. The method accesses no mutable
+    /// class state; all collaborators are passed as parameters.
     ///
     /// - Parameters:
     ///   - accounts:            The accounts to poll this iteration.

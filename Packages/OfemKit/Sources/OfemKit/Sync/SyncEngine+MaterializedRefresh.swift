@@ -181,7 +181,7 @@ extension SyncEngine {
                     thresholdNs: selfHealNsThreshold
                 )
                 if healDue {
-                    logger.info("self-heal due", metadata: ["alias": alias, "key": keyString])
+                    logger.info("self-heal due", metadata: ["alias": alias, "key": key.opaqueLogPrefix])
                 }
 
                 if Self.shouldSkip(
@@ -348,8 +348,10 @@ extension SyncEngine {
                         // gate has already decided this key needs a list; the
                         // container refresh just performs it.
                         diff = try await self.refreshMaterializedContainer(key: key)
+                    } catch is CancellationError {
+                        return (keyString, false, 0)
                     } catch {
-                        localLogger.warn("refresh container error", error: error, metadata: ["key": keyString])
+                        localLogger.warn("refresh container error", error: error, metadata: ["key": key.opaqueLogPrefix])
                         return (keyString, false, 0)
                     }
                     return (keyString, true, diff.total)

@@ -429,7 +429,7 @@ public actor OfemAuth: TokenProvider {
                 )
                 throw OfemAuthError.configRejection(alias)
             }
-            Self.fileLogger.warn("token silent refresh failed", metadata: ["alias": alias])
+            Self.fileLogger.warn("token silent refresh failed", error: error, metadata: ["alias": alias])
             throw OfemAuthError.silentTokenFailed(alias)
         }
     }
