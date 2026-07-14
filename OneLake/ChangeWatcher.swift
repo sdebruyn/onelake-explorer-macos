@@ -230,6 +230,14 @@ final class ChangeWatcher {
     static let shared = ChangeWatcher()
 
     private static let log = Logger(subsystem: ofemSubsystem, category: "change-watcher")
+    private nonisolated static let fileLogger: OfemLogger = {
+        let paths = OfemPaths()
+        return OfemLogger(configuration: LogConfiguration(
+            subsystem: ofemSubsystem,
+            category: "change-watcher",
+            fileWriter: RotatingFileWriter(logDirectory: paths.logDir)
+        ))
+    }()
 
     /// How often the working set is signalled and the workspace-set cache is
     /// checked for changes.
@@ -407,6 +415,7 @@ final class ChangeWatcher {
             Self.log.info(
                 "ChangeWatcher: workspace set changed for \(alias, privacy: .public) — remounting domain"
             )
+            Self.fileLogger.info("workspace set changed, remounting", metadata: ["alias": alias])
             remountInFlight.insert(alias)
             await DomainSyncManager.shared.removeDomain(alias: alias)
             await DomainSyncManager.shared.addDomain(alias: alias)
@@ -579,8 +588,8 @@ final class ChangeWatcher {
     /// change the domain set between the poll check and the signal.
     ///
     /// Marked `nonisolated` so tests can call it directly from a non-`@MainActor`
-    /// context without wrapping in `MainActor.run`. The method accesses no class
-    /// state; all collaborators are passed as parameters.
+    /// context without wrapping in `MainActor.run`. The method accesses no mutable
+    /// class state; all collaborators are passed as parameters.
     ///
     /// - Parameters:
     ///   - accounts:            The accounts to poll this iteration.
@@ -617,6 +626,7 @@ final class ChangeWatcher {
                 continue
             }
             log.info("pollOnce: delta for \(alias, privacy: .public) — signalling .workingSet")
+            ChangeWatcher.fileLogger.info("materialized poll delta", metadata: ["alias": alias])
             await signaller.signal(domain: domain)
         }
     }

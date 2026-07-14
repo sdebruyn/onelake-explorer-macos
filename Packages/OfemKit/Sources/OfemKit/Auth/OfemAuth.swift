@@ -61,6 +61,14 @@ public actor OfemAuth: TokenProvider {
     private var inFlightTokenTasks: [String: Task<AccessToken, Error>] = [:]
 
     private static let log = Logger(subsystem: "dev.debruyn.ofem", category: "OfemAuth")
+    private static let fileLogger: OfemLogger = {
+        let paths = OfemPaths()
+        return OfemLogger(configuration: LogConfiguration(
+            subsystem: "dev.debruyn.ofem",
+            category: "auth",
+            fileWriter: RotatingFileWriter(logDirectory: paths.logDir)
+        ))
+    }()
 
     // MARK: - Initialisation
 
@@ -271,7 +279,7 @@ public actor OfemAuth: TokenProvider {
             throw OfemAuthError.unknownAlias(alias)
         }
         guard !cfg.homeAccountID.isEmpty else {
-            Self.log.warning("OfemAuth: account \(alias, privacy: .public) has no homeAccountID; re-auth required")
+            Self.fileLogger.warn("token missing homeAccountID", metadata: ["alias": alias])
             throw OfemAuthError.interactionRequired
         }
         guard !scope.scopes.isEmpty else {
@@ -394,11 +402,11 @@ public actor OfemAuth: TokenProvider {
             return try await client.acquireTokenSilent(scopes: scopes, homeAccountID: homeAccountID)
         } catch {
             if isInteractionRequired(error) {
-                Self.log.info("OfemAuth: silent acquisition for \(alias, privacy: .public) requires interaction")
+                Self.fileLogger.info("token interaction required", metadata: ["alias": alias])
                 throw OfemAuthError.interactionRequired
             }
             if case MsalAuthClientError.accountNotFound = error {
-                Self.log.warning("OfemAuth: account \(alias, privacy: .public) not in MSAL cache; re-auth required")
+                Self.fileLogger.warn("token account not in MSAL cache", metadata: ["alias": alias])
                 throw OfemAuthError.interactionRequired
             }
             // invalid_grant (-42004) arrives under MSALErrorInternal (-50000), not
@@ -407,7 +415,7 @@ public actor OfemAuth: TokenProvider {
             // is no longer valid (admin password reset, MFA re-enrollment, Conditional
             // Access policy change). The user can self-recover by signing in again.
             if isInvalidGrant(error) {
-                Self.log.info("OfemAuth: invalid_grant for \(alias, privacy: .public); re-auth required")
+                Self.fileLogger.info("token invalid grant", metadata: ["alias": alias])
                 throw OfemAuthError.interactionRequired
             }
             // Distinguish a permanent config rejection (invalid_client -42003) from
@@ -421,10 +429,7 @@ public actor OfemAuth: TokenProvider {
                 )
                 throw OfemAuthError.configRejection(alias)
             }
-            // Log the underlying error before stripping it from the thrown case.
-            // The error is .private so UPN / tenant detail stays out of unredacted
-            // logs; alias is .public (not PII).
-            Self.log.error("OfemAuth: silent token for \(alias, privacy: .public) failed: \(error, privacy: .private)")
+            Self.fileLogger.warn("token silent refresh failed", error: error, metadata: ["alias": alias])
             throw OfemAuthError.silentTokenFailed(alias)
         }
     }
