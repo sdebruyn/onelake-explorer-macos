@@ -129,6 +129,9 @@ struct SyncEngineOrphanedItemCleanupTests {
 
         // The now-orphaned blob file is reclaimed by the sweep (same code path as
         // the init-time sweep) — matching cache-20's storeBlob-orphan pattern.
+        // Age it first so the sweep's grace window treats it as a stale
+        // crash-orphan rather than a maybe-in-flight blob it would spare.
+        try ageOrphanBlobFiles(in: store)
         try await store.sweepOrphans()
         let (diskCount, _) = try await store.diskUsage()
         #expect(diskCount == 0, "the vanished item's orphan blob must be reclaimed by the sweep")
