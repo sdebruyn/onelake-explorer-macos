@@ -177,6 +177,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     /// `completedUnitCount` on it exactly as before.
     private func runFPEOperation<Success>(
         logContext: String,
+        logMetadata: [String: String] = [:],
         work: @escaping (any EngineProviding, Progress) async throws -> Success,
         complete: @escaping (Result<Success, Error>) -> Void
     ) -> Progress {
@@ -201,6 +202,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 FileProviderExtension.log.error(
                     "\(logContext, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
+                hostCopy.fileLogger.error(logContext, error: error, metadata: logMetadata)
                 ch.value(.failure(nsFileProviderError(for: code)))
             }
         }
@@ -220,6 +222,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         do {
             ofemID = try parseOfemItemIdentifier(identifier.rawValue)
         } catch {
+            engineHost.fileLogger.warn("item(for:) parse failed", error: error, metadata: ["alias": alias])
             completionHandler(nil, NSFileProviderError(.noSuchItem))
             return Progress(totalUnitCount: 0)
         }
@@ -232,7 +235,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         let aliasCopy = alias
         return runFPEOperation(
-            logContext: "item(for:) failed for \(aliasCopy)/\(ofemID.opaqueLogPrefix)",
+            logContext: "item(for:) failed",
+            logMetadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")],
             work: { host, _ in
                 OfemFPEItem(from: try await host.resolveItem(identifier: ofemID, alias: aliasCopy))
             },
@@ -257,6 +261,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         do {
             ofemID = try parseOfemItemIdentifier(itemIdentifier.rawValue)
         } catch {
+            engineHost.fileLogger.warn("fetchContents: parse failed", error: error, metadata: ["alias": alias])
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
             return Progress(totalUnitCount: 0)
         }
@@ -264,6 +269,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         // Only file-level paths make sense for content fetch.
         guard case let .path(wsID, itemID, path) = ofemID else {
             // root / workspace / item root don't have file contents.
+            engineHost.fileLogger.warn(
+                "fetchContents: identifier is not a path",
+                metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+            )
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
             return Progress(totalUnitCount: 0)
         }
@@ -276,6 +285,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             FileProviderExtension.log.error(
                 "fetchContents: temp dir failed: \(error.localizedDescription, privacy: .public)"
             )
+            engineHost.fileLogger.warn("fetchContents scratch directory failed", error: error, metadata: ["alias": alias])
             // Scratch dir failure is a retriable infrastructure error, not noSuchItem.
             completionHandler(nil, nil, nsFileProviderError(for: FPError.classify(error)))
             return Progress(totalUnitCount: 0)
@@ -283,7 +293,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
         let aliasCopy = alias
         return runFPEOperation(
-            logContext: "fetchContents failed for \(aliasCopy)/\(ofemID.opaqueLogPrefix)",
+            logContext: "fetchContents failed",
+            logMetadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")],
             work: { host, progress -> (URL, OfemFPEItem) in
                 let engine = try await host.engine()
                 // Download (or serve from cache) first, then build the
@@ -380,6 +391,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 template.parentItemIdentifier.rawValue
             )
         } catch {
+            engineHost.fileLogger.warn("createItem: parent parse failed", error: error, metadata: ["alias": alias])
             completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
             return Progress(totalUnitCount: 0)
         }
@@ -395,13 +407,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             "createItem \(filename, privacy: .private) isDir=\(isDir, privacy: .public) parent=\(parentID.opaqueLogPrefix, privacy: .public) fields=\(fieldsCopy.rawValue, privacy: .public) options=\(optionsCopy.rawValue, privacy: .public)"
         )
 
+        engineHost.fileLogger.info(
+            "createItem starting",
+            metadata: ["alias": aliasCopy, "parent": parentID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+        )
+
         return runFPEOperation(
             logContext: "createItem failed",
+            logMetadata: ["alias": aliasCopy, "parent": parentID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")],
             work: { host, _ in
                 // Collapse the FileProvider create semantics into plain-Swift
                 // parameters before crossing into OfemKit: `.contents` present
                 // AND a source URL → upload; otherwise placeholder-only (nil).
-                OfemFPEItem(from: try await host.createOfemItem(
+                let item = OfemFPEItem(from: try await host.createOfemItem(
                     parent: parentID,
                     filename: filename,
                     isDirectory: isDir,
@@ -409,6 +427,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     mayAlreadyExist: optionsCopy.contains(.mayAlreadyExist),
                     alias: aliasCopy
                 ))
+                host.fileLogger.info(
+                    "createItem succeeded",
+                    metadata: ["alias": aliasCopy, "parent": parentID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+                )
+                return item
             },
             complete: { result in
                 switch result {
@@ -490,6 +513,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         do {
             return try parseOfemItemIdentifier(rawValue)
         } catch {
+            engineHost.fileLogger.warn("modifyItem: identifier parse failed", error: error, metadata: ["alias": alias])
             completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
             return nil
         }
@@ -508,6 +532,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             return Progress(totalUnitCount: 0)
         }
         guard case let .path(wsID, itemID, path) = ofemID else {
+            engineHost.fileLogger.warn(
+                "rename: identifier is not a path",
+                metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+            )
             completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
             return Progress(totalUnitCount: 0)
         }
@@ -521,6 +549,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         guard !newFilename.isEmpty, !newFilename.contains("/") else {
             FileProviderExtension.log.error(
                 "modifyItem \(ofemID.opaqueLogPrefix, privacy: .public) — rejecting invalid rename filename"
+            )
+            engineHost.fileLogger.warn(
+                "rename: invalid filename rejected",
+                metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
             )
             completionHandler(nil, [], false, NSFileProviderError(.filenameCollision))
             return Progress(totalUnitCount: 0)
@@ -539,6 +571,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             "modifyItem \(ofemID.opaqueLogPrefix, privacy: .public) — rename to \(newFilename, privacy: .private)"
         )
 
+        engineHost.fileLogger.info("rename starting", metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
+
         // A rename failure does NOT surface as an error result: it leaves ALL
         // changed fields pending so the framework retries rather than treating
         // the item as renamed (or, for a co-delivered .contents, as uploaded)
@@ -551,7 +585,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         // during a rename; only `CancellationError` propagates to the
         // shared catch.
         return runFPEOperation(
-            logContext: "modifyItem rename failed",
+            logContext: "rename failed",
+            logMetadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")],
             work: { host, _ -> RenameOutcome in
                 do {
                     let key = CacheKey(
@@ -561,6 +596,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                         path: path
                     )
                     let updated = try await host.renameOfemItem(key: key, newName: newFilename)
+                    host.fileLogger.info(
+                        "rename succeeded",
+                        metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+                    )
                     // Return the ORIGINAL identifier with the new filename/size/
                     // dates so the framework registers a metadata change, not a
                     // delete+add (see DomainItem.from(record:overridingIdentifier:)).
@@ -573,6 +612,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 } catch {
                     FileProviderExtension.log.error(
                         "modifyItem rename failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                    host.fileLogger.warn(
+                        "rename failed, pending retry",
+                        error: error,
+                        metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
                     )
                     return .pending
                 }
@@ -627,6 +671,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         }
 
         guard case let .path(wsID, itemID, path) = ofemID else {
+            engineHost.fileLogger.warn(
+                "upload: identifier is not a path",
+                metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+            )
             completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
             return Progress(totalUnitCount: 0)
         }
@@ -637,8 +685,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             "modifyItem \(ofemID.opaqueLogPrefix, privacy: .public)"
         )
 
+        engineHost.fileLogger.info("upload starting", metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
+
         return runFPEOperation(
-            logContext: "modifyItem failed",
+            logContext: "upload failed",
+            logMetadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")],
             work: { host, progress -> OfemFPEItem in
                 let fileSize: Int64 = if let attrs = try? FileManager.default.attributesOfItem(atPath: contentsURL.path),
                                          let sz = attrs[.size] as? NSNumber
@@ -657,6 +708,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 let updated = try await host.putOfemContents(
                     key: key, sourceURL: contentsURL, identifier: ofemID, alias: aliasCopy
                 )
+                host.fileLogger.info("upload succeeded", metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
                 progress.completedUnitCount = progress.totalUnitCount
                 return OfemFPEItem(from: updated)
             },
@@ -680,11 +732,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         do {
             ofemID = try parseOfemItemIdentifier(identifier.rawValue)
         } catch {
+            engineHost.fileLogger.warn("deleteItem: parse failed", error: error, metadata: ["alias": alias])
             completionHandler(NSFileProviderError(.noSuchItem))
             return Progress(totalUnitCount: 0)
         }
 
         guard case let .path(wsID, itemID, path) = ofemID else {
+            engineHost.fileLogger.warn(
+                "deleteItem: identifier is not a path",
+                metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+            )
             completionHandler(NSFileProviderError(.noSuchItem))
             return Progress(totalUnitCount: 0)
         }
@@ -695,11 +752,18 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             "deleteItem \(ofemID.opaqueLogPrefix, privacy: .public)"
         )
 
+        engineHost.fileLogger.info("deleteItem starting", metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
+
         return runFPEOperation(
             logContext: "deleteItem failed",
+            logMetadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")],
             work: { host, _ in
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
                 try await host.deleteOfemItem(key: key)
+                host.fileLogger.info(
+                    "deleteItem succeeded",
+                    metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+                )
             },
             complete: { result in
                 switch result {
@@ -849,6 +913,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         do {
             ofemID = try parseOfemItemIdentifier(containerItemIdentifier.rawValue)
         } catch {
+            engineHost.fileLogger.warn("enumerator(for:) parse failed", error: error, metadata: ["alias": alias])
             throw NSFileProviderError(.noSuchItem)
         }
 
