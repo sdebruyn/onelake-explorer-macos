@@ -93,9 +93,9 @@ struct CacheSweepGraceTests {
         #expect(!exists(loose), "a stale unreferenced orphan must still be reaped")
     }
 
-    // MARK: - A referenced blob always survives (baseline)
+    // MARK: - A referenced blob always survives (DB-reference guard)
 
-    @Test("a referenced blob survives the sweep (grace window is the first gate; DB reference is the second)")
+    @Test("a referenced blob outside the grace window is protected by the DB-reference guard")
     func referencedBlobSurvives() async throws {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -109,11 +109,10 @@ struct CacheSweepGraceTests {
         ))
         try await store.storeBlob(key: key, data: content)
 
-        // The blob is protected by two layers: (1) the grace window — the blob
-        // was just written so its mtime is "now", well within the 60 s window —
-        // and (2) the DB reference (blob_sha256 row). In this scenario the grace
-        // window is the active gate; the DB guard kicks in only for blobs older
-        // than the window. Both layers are correct; only the ordering differs.
+        // Age the blob past the grace window so it reaches the SELECT DISTINCT
+        // blob_sha256 query. The blob_sha256 row written by storeBlob must prevent
+        // deletion — a regression that removed the DB check would delete it.
+        try ageOrphanBlobFiles(in: store)
         try await store.sweepOrphans()
 
         let record = try await store.fetch(key: key)

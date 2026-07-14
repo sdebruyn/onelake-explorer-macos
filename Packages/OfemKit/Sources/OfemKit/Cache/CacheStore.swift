@@ -160,7 +160,7 @@ public actor CacheStore {
         // crash-orphans from a prior process) are reaped.
         let blobsCapture = blobs
         let dbCapture = dbPool
-        Task { [blobsCapture, dbCapture] in
+        Task.detached { [blobsCapture, dbCapture] in
             do {
                 try Self.sweepOrphanBlobs(blobs: blobsCapture, dbPool: dbCapture)
             } catch {
@@ -356,6 +356,7 @@ public actor CacheStore {
             // orphan. This is the primary guard for the file-before-commit gap.
             if isWithinGraceWindow(mtime: vals?.contentModificationDate, cutoff: cutoff) { continue }
 
+            guard vals?.isRegularFile == true else { continue }
             // Remove orphaned *.tmp scratch files — written by BlobShardCache.store
             // but never renamed into place (crash mid-write).  They are never DB-
             // referenced and must not accumulate.
@@ -363,7 +364,6 @@ public actor CacheStore {
                 try? FileManager.default.removeItem(at: url)
                 continue
             }
-            guard vals?.isRegularFile == true else { continue }
             // Reconstruct SHA from shard-prefix + filename using the single
             // source-of-truth helper on BlobShardCache (not an ad-hoc `prefix(2)`).
             let shard = url.deletingLastPathComponent().lastPathComponent
