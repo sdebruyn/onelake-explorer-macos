@@ -230,7 +230,7 @@ final class ChangeWatcher {
     static let shared = ChangeWatcher()
 
     private static let log = Logger(subsystem: ofemSubsystem, category: "change-watcher")
-    private static let fileLogger: OfemLogger = {
+    private nonisolated(unsafe) static let fileLogger: OfemLogger = {
         let paths = OfemPaths()
         return OfemLogger(configuration: LogConfiguration(
             subsystem: ofemSubsystem,
