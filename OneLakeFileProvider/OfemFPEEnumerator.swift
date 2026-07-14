@@ -305,7 +305,8 @@ func serveCacheDelta(
     previousNs: Int64,
     observer: NSFileProviderChangeObserver,
     log: Logger,
-    logPrefix: String
+    logPrefix: String,
+    fileLogger: OfemLogger? = nil
 ) async throws {
     // INTENTIONAL asymmetry between these two reads — do not "unify" them:
     // `currentNs` is `try?`-defaulted to 0 because a failed/stale anchor read
@@ -322,6 +323,7 @@ func serveCacheDelta(
         log.debug(
             "\(logPrefix, privacy: .public): expiring anchor (previous=\(previousNs, privacy: .public) purgedThrough=\(purgedThroughNs, privacy: .public))"
         )
+        fileLogger?.warn("sync anchor expired; forcing full re-enumeration", metadata: ["alias": alias])
         observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
         return
     case let .serve(ns):
@@ -512,6 +514,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
                 Self.log.error(
                     "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateItems failed — container=\(containerLogID, privacy: .public) error=\(error.localizedDescription, privacy: .public) code=\(code.rawValue, privacy: .public)"
                 )
+                hostCopy.fileLogger.error("enumerateItems failed", error: error, metadata: ["alias": aliasCopy, "container": containerLogID])
                 // Surface auth-error state so the host-app menu bar can show
                 // a "Sign-in required" indicator for this account.
                 if code == .notAuthenticated {
@@ -597,7 +600,8 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
                     previousNs: previousNs,
                     observer: obs.value,
                     log: Self.log,
-                    logPrefix: "OfemFPEEnumerator[\(aliasCopy)] enumerateChanges container=\(containerLogID)"
+                    logPrefix: "OfemFPEEnumerator[\(aliasCopy)] enumerateChanges container=\(containerLogID)",
+                    fileLogger: hostCopy.fileLogger
                 )
             } catch is CancellationError {
                 obs.value.finishEnumeratingWithError(CocoaError(.userCancelled))
@@ -606,6 +610,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
                 Self.log.error(
                     "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges failed — container=\(containerLogID, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
                 )
+                hostCopy.fileLogger.error("enumerateChanges failed", error: error, metadata: ["alias": aliasCopy, "container": containerLogID])
                 // Surface auth-error state so the host-app menu bar can show
                 // a "Sign-in required" indicator. Token expiry in steady state
                 // surfaces here, not in enumerateItems, so this is the critical
@@ -969,7 +974,8 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                     previousNs: previousNs,
                     observer: obs.value,
                     log: Self.log,
-                    logPrefix: "WorkingSet[\(aliasCopy)] enumerateChanges"
+                    logPrefix: "WorkingSet[\(aliasCopy)] enumerateChanges",
+                    fileLogger: hostCopy.fileLogger
                 )
             } catch is CancellationError {
                 // The enumerator was invalidated while the task was in flight.
@@ -982,6 +988,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                 Self.log.error(
                     "WorkingSet[\(aliasCopy, privacy: .public)]: enumerateChanges failed — error=\(error.localizedDescription, privacy: .public)"
                 )
+                hostCopy.fileLogger.error("working-set enumerateChanges failed", error: error, metadata: ["alias": aliasCopy])
                 // Mirror OfemFPEEnumerator.enumerateChanges: surface auth failures
                 // so the host-app menu bar can show "Sign-in required".
                 // Also reset the shared throttle on auth failure so the next

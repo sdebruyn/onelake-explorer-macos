@@ -96,6 +96,9 @@ protocol EngineProviding: AnyObject, Sendable {
     /// the host-app menu can surface a "Sign-in required" indicator.
     func markNeedsSignIn()
 
+    /// The file-sink structured logger for this domain.
+    var fileLogger: OfemLogger { get }
+
     // MARK: - FPE operation seam (M7)
 
     /// Resolves a single item's metadata via the engine.
@@ -152,6 +155,10 @@ extension EngineProviding {
     }
 
     func markNeedsSignIn() {}
+
+    var fileLogger: OfemLogger {
+        OfemLogger()
+    }
 }
 
 // MARK: - EngineProviding FPE operation seam defaults (M7)
@@ -229,6 +236,10 @@ final class FPEEngineHost: EngineProviding {
 
     /// Per-host structured logger that writes to the shared on-disk log file.
     private let hostLogger: OfemLogger
+
+    var fileLogger: OfemLogger {
+        hostLogger
+    }
 
     // periphery:ignore
     /// Identifier of the File Provider domain this host serves. Retained for
