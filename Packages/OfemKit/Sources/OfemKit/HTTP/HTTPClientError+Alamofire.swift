@@ -1,6 +1,16 @@
 import Alamofire
 import Foundation
 
+// MARK: - Paused-capacity x-ms-error-code values
+
+private let pausedCapacityMsErrorCodes: Set<String> = [
+    "capacitypaused",
+    "capacitysuspended",
+    "capacitynotactive",
+    "workspacecapacitypaused",
+    "capacityassignmentpaused",
+]
+
 // MARK: - HTTPClientError initialiser from Alamofire errors
 
 extension HTTPClientError {
@@ -52,11 +62,13 @@ extension HTTPClientError {
             let status = resp.statusCode
             let phrase = HTTPURLResponse.localizedString(forStatusCode: status)
             let statusStr = "\(status) \(phrase)"
+            let msErrorCode = resp.value(forHTTPHeaderField: "x-ms-error-code")
             let ae = APIError(
                 statusCode: status,
                 status: statusStr,
                 body: body ?? Data(),
-                attempts: retryCount + 1
+                attempts: retryCount + 1,
+                msErrorCode: msErrorCode
             )
             if let sentinel = ae.sentinel {
                 // For body-relevant sentinels (401/403/429/5xx) carry the APIError
@@ -65,11 +77,18 @@ extension HTTPClientError {
                 // bare typed case so their consumers (e.g. SyncEngine.notFound) are
                 // unaffected and the body is not needlessly retained.
                 //
+                // 404 is conditionally body-relevant: only when x-ms-error-code
+                // signals a paused capacity. An unconditional 404 body would map it
+                // to apiError(…) instead of .notFound, breaking the catch in
+                // SyncEngine+Mutations that treats delete-404 as idempotent success.
+                //
                 // Match on the sentinel case (not raw status codes) so the
                 // body-relevant set stays in sync with sentinel(for:) — a drift
                 // would silently strip a body PauseManager needs.
                 let bodyRelevant = switch sentinel {
                 case .unauthorized, .forbidden, .throttled, .serverError:
+                    true
+                case .notFound where msErrorCode.map { pausedCapacityMsErrorCodes.contains($0.lowercased()) } == true:
                     true
                 default:
                     false

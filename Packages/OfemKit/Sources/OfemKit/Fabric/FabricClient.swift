@@ -320,7 +320,7 @@ public final class FabricClient: Sendable {
             url: url,
             headers: urlRequest.headers,
             body: nil,
-            onFailure: { afError in self.logRawFailure(alias: alias, afError: afError) },
+            logger: logger,
             mapError: FabricError.from
         )
 
@@ -330,17 +330,6 @@ public final class FabricClient: Sendable {
             "status": "\(httpResponse.statusCode)",
         ])
         return (data, httpResponse)
-    }
-
-    /// Logs the raw `AFError` before ``FabricError`` classification (fabric-05),
-    /// so a fast failure (e.g. a 404 without a network round-trip) is
-    /// observable in unredacted DEBUG streams.
-    private func logRawFailure(alias: String, afError: AFError) {
-        #if DEBUG
-            Self.log.debug(
-                "FabricClient[D]: raw error before FabricError.from alias=\(alias, privacy: .public) error=\(String(describing: afError), privacy: .public)"
-            )
-        #endif
     }
 
     /// Logs a single pagination page's metadata in a canonical way so the
