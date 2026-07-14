@@ -277,6 +277,34 @@ struct PauseManagerTests {
         #expect(status.probedAtNs > 0)
     }
 
+    // MARK: - Header-based detection (x-ms-error-code, empty body)
+
+    @Test("isPausedCapacityError returns true for 404 with msErrorCode CapacityNotActive and empty body")
+    func capacityNotActive404ViaHeader() throws {
+        let (mgr, store) = try makeManager()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let ae = APIError(
+            statusCode: 404, status: "404 Not Found",
+            body: Data(),
+            msErrorCode: "CapacityNotActive"
+        )
+        let err = HTTPClientError.sentinelWithBody(.notFound, ae)
+        #expect(mgr.isPausedCapacityError(err))
+    }
+
+    @Test("isPausedCapacityError returns false for 404 with msErrorCode PathNotFound")
+    func pathNotFound404ViaHeader() throws {
+        let (mgr, store) = try makeManager()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let ae = APIError(
+            statusCode: 404, status: "404 Not Found",
+            body: Data(),
+            msErrorCode: "PathNotFound"
+        )
+        let err = HTTPClientError.sentinelWithBody(.notFound, ae)
+        #expect(!mgr.isPausedCapacityError(err))
+    }
+
     // MARK: - Helpers
 
     private func makeAPIError(body: String) -> HTTPClientError {

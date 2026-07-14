@@ -923,6 +923,7 @@ public final class OneLakeClient: Sendable {
             headers: headers,
             body: body,
             idempotent: idempotent,
+            logger: logger,
             mapError: OneLakeError.from
         )
     }

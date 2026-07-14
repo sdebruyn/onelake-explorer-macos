@@ -107,18 +107,26 @@ public struct APIError: Sendable, CustomStringConvertible {
     /// Number of attempts made before this error was surfaced.
     public let attempts: Int
 
+    /// The value of the `x-ms-error-code` response header, if present.
+    ///
+    /// Carried alongside the body so ``PauseManager/isPausedCapacityError(_:)``
+    /// can detect a paused-capacity 404 even when the body is empty.
+    public let msErrorCode: String?
+
     public init(
         statusCode: Int,
         status: String,
         body: Data,
         retryAfter: Duration = .zero,
-        attempts: Int = 1
+        attempts: Int = 1,
+        msErrorCode: String? = nil
     ) {
         self.statusCode = statusCode
         self.status = status
         self.body = body
         self.retryAfter = retryAfter
         self.attempts = attempts
+        self.msErrorCode = msErrorCode
     }
 
     /// The typed sentinel that `statusCode` maps to.
@@ -130,10 +138,11 @@ public struct APIError: Sendable, CustomStringConvertible {
         let bodyStr = String(data: body.prefix(256), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? "<non-UTF-8 body>"
         let attemptsSuffix = attempts > 1 ? " after \(attempts) attempts" : ""
+        let codeSuffix = msErrorCode.map { " [\($0)]" } ?? ""
         if bodyStr.isEmpty {
-            return "HTTP \(status)\(attemptsSuffix)"
+            return "HTTP \(status)\(attemptsSuffix)\(codeSuffix)"
         }
-        return "HTTP \(status)\(attemptsSuffix): \(bodyStr)"
+        return "HTTP \(status)\(attemptsSuffix)\(codeSuffix): \(bodyStr)"
     }
 }
 
