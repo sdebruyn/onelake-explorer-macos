@@ -269,7 +269,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         // Only file-level paths make sense for content fetch.
         guard case let .path(wsID, itemID, path) = ofemID else {
             // root / workspace / item root don't have file contents.
-            engineHost.fileLogger.warn("fetchContents: identifier is not a path", metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
+            engineHost.fileLogger.warn(
+                "fetchContents: identifier is not a path",
+                metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+            )
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
             return Progress(totalUnitCount: 0)
         }
@@ -404,7 +407,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             "createItem \(filename, privacy: .private) isDir=\(isDir, privacy: .public) parent=\(parentID.opaqueLogPrefix, privacy: .public) fields=\(fieldsCopy.rawValue, privacy: .public) options=\(optionsCopy.rawValue, privacy: .public)"
         )
 
-        engineHost.fileLogger.info("createItem starting", metadata: ["alias": aliasCopy, "parent": parentID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
+        engineHost.fileLogger.info(
+            "createItem starting",
+            metadata: ["alias": aliasCopy, "parent": parentID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+        )
 
         return runFPEOperation(
             logContext: "createItem failed",
@@ -421,7 +427,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     mayAlreadyExist: optionsCopy.contains(.mayAlreadyExist),
                     alias: aliasCopy
                 ))
-                host.fileLogger.info("createItem succeeded", metadata: ["alias": aliasCopy, "parent": parentID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
+                host.fileLogger.info(
+                    "createItem succeeded",
+                    metadata: ["alias": aliasCopy, "parent": parentID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+                )
                 return item
             },
             complete: { result in
@@ -523,7 +532,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             return Progress(totalUnitCount: 0)
         }
         guard case let .path(wsID, itemID, path) = ofemID else {
-            engineHost.fileLogger.warn("rename: identifier is not a path", metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
+            engineHost.fileLogger.warn(
+                "rename: identifier is not a path",
+                metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+            )
             completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
             return Progress(totalUnitCount: 0)
         }
@@ -537,6 +549,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         guard !newFilename.isEmpty, !newFilename.contains("/") else {
             FileProviderExtension.log.error(
                 "modifyItem \(ofemID.opaqueLogPrefix, privacy: .public) — rejecting invalid rename filename"
+            )
+            engineHost.fileLogger.warn(
+                "rename: invalid filename rejected",
+                metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
             )
             completionHandler(nil, [], false, NSFileProviderError(.filenameCollision))
             return Progress(totalUnitCount: 0)
@@ -580,7 +596,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                         path: path
                     )
                     let updated = try await host.renameOfemItem(key: key, newName: newFilename)
-                    host.fileLogger.info("rename succeeded", metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
+                    host.fileLogger.info(
+                        "rename succeeded",
+                        metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+                    )
                     // Return the ORIGINAL identifier with the new filename/size/
                     // dates so the framework registers a metadata change, not a
                     // delete+add (see DomainItem.from(record:overridingIdentifier:)).
@@ -594,7 +613,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     FileProviderExtension.log.error(
                         "modifyItem rename failed: \(error.localizedDescription, privacy: .public)"
                     )
-                    host.fileLogger.warn("rename failed, pending retry", error: error, metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
+                    host.fileLogger.warn(
+                        "rename failed, pending retry",
+                        error: error,
+                        metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+                    )
                     return .pending
                 }
             },
@@ -648,7 +671,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         }
 
         guard case let .path(wsID, itemID, path) = ofemID else {
-            engineHost.fileLogger.warn("upload: identifier is not a path", metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
+            engineHost.fileLogger.warn(
+                "upload: identifier is not a path",
+                metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+            )
             completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
             return Progress(totalUnitCount: 0)
         }
@@ -712,7 +738,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         }
 
         guard case let .path(wsID, itemID, path) = ofemID else {
-            engineHost.fileLogger.warn("deleteItem: identifier is not a path", metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
+            engineHost.fileLogger.warn(
+                "deleteItem: identifier is not a path",
+                metadata: ["alias": alias, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+            )
             completionHandler(NSFileProviderError(.noSuchItem))
             return Progress(totalUnitCount: 0)
         }
@@ -731,7 +760,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             work: { host, _ in
                 let key = cacheKey(alias: aliasCopy, workspaceID: wsID, itemID: itemID, path: path)
                 try await host.deleteOfemItem(key: key)
-                host.fileLogger.info("deleteItem succeeded", metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
+                host.fileLogger.info(
+                    "deleteItem succeeded",
+                    metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")]
+                )
             },
             complete: { result in
                 switch result {

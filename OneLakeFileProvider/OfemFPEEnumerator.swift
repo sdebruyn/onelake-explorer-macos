@@ -306,7 +306,7 @@ func serveCacheDelta(
     observer: NSFileProviderChangeObserver,
     log: Logger,
     logPrefix: String,
-    fileLogger: OfemLogger? = nil
+    fileLogger: OfemLogger = OfemLogger()
 ) async throws {
     // INTENTIONAL asymmetry between these two reads — do not "unify" them:
     // `currentNs` is `try?`-defaulted to 0 because a failed/stale anchor read
@@ -323,7 +323,10 @@ func serveCacheDelta(
         log.debug(
             "\(logPrefix, privacy: .public): expiring anchor (previous=\(previousNs, privacy: .public) purgedThrough=\(purgedThroughNs, privacy: .public))"
         )
-        fileLogger?.warn("sync anchor expired; forcing full re-enumeration", metadata: ["alias": alias])
+        fileLogger.warn(
+            "sync anchor expired; forcing full re-enumeration",
+            metadata: ["alias": alias, "previousNs": String(previousNs), "purgedThroughNs": String(purgedThroughNs)]
+        )
         observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
         return
     case let .serve(ns):
@@ -514,7 +517,11 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
                 Self.log.error(
                     "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateItems failed — container=\(containerLogID, privacy: .public) error=\(error.localizedDescription, privacy: .public) code=\(code.rawValue, privacy: .public)"
                 )
-                hostCopy.fileLogger.error("enumerateItems failed", error: error, metadata: ["alias": aliasCopy, "container": containerLogID.replacingOccurrences(of: "/", with: ":")])
+                hostCopy.fileLogger.error(
+                    "enumerateItems failed",
+                    error: error,
+                    metadata: ["alias": aliasCopy, "container": containerLogID.replacingOccurrences(of: "/", with: ":")]
+                )
                 // Surface auth-error state so the host-app menu bar can show
                 // a "Sign-in required" indicator for this account.
                 if code == .notAuthenticated {
@@ -610,7 +617,11 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
                 Self.log.error(
                     "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges failed — container=\(containerLogID, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
                 )
-                hostCopy.fileLogger.error("enumerateChanges failed", error: error, metadata: ["alias": aliasCopy, "container": containerLogID.replacingOccurrences(of: "/", with: ":")])
+                hostCopy.fileLogger.error(
+                    "enumerateChanges failed",
+                    error: error,
+                    metadata: ["alias": aliasCopy, "container": containerLogID.replacingOccurrences(of: "/", with: ":")]
+                )
                 // Surface auth-error state so the host-app menu bar can show
                 // a "Sign-in required" indicator. Token expiry in steady state
                 // surfaces here, not in enumerateItems, so this is the critical
@@ -962,6 +973,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                             return
                         }
                         // Non-auth errors: proceed with the existing cache.
+                        hostCopy.fileLogger.error("workspace refresh failed", error: error, metadata: ["alias": aliasCopy])
                     }
                 }
 
