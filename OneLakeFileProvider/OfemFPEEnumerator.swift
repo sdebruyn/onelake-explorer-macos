@@ -514,7 +514,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
                 Self.log.error(
                     "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateItems failed — container=\(containerLogID, privacy: .public) error=\(error.localizedDescription, privacy: .public) code=\(code.rawValue, privacy: .public)"
                 )
-                hostCopy.fileLogger.error("enumerateItems failed", error: error, metadata: ["alias": aliasCopy, "container": containerLogID])
+                hostCopy.fileLogger.error("enumerateItems failed", error: error, metadata: ["alias": aliasCopy, "container": containerLogID.replacingOccurrences(of: "/", with: ":")])
                 // Surface auth-error state so the host-app menu bar can show
                 // a "Sign-in required" indicator for this account.
                 if code == .notAuthenticated {
@@ -610,7 +610,7 @@ final class OfemFPEEnumerator: NSObject, NSFileProviderEnumerator, @unchecked Se
                 Self.log.error(
                     "OfemFPEEnumerator[\(aliasCopy, privacy: .public)]: enumerateChanges failed — container=\(containerLogID, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
                 )
-                hostCopy.fileLogger.error("enumerateChanges failed", error: error, metadata: ["alias": aliasCopy, "container": containerLogID])
+                hostCopy.fileLogger.error("enumerateChanges failed", error: error, metadata: ["alias": aliasCopy, "container": containerLogID.replacingOccurrences(of: "/", with: ":")])
                 // Surface auth-error state so the host-app menu bar can show
                 // a "Sign-in required" indicator. Token expiry in steady state
                 // surfaces here, not in enumerateItems, so this is the critical
