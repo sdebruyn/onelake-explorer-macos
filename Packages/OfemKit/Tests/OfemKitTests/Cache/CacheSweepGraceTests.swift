@@ -95,7 +95,7 @@ struct CacheSweepGraceTests {
 
     // MARK: - A referenced blob always survives (baseline)
 
-    @Test("a referenced blob survives the sweep")
+    @Test("a referenced blob survives the sweep (grace window is the first gate; DB reference is the second)")
     func referencedBlobSurvives() async throws {
         let store = try makeTempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
@@ -109,6 +109,11 @@ struct CacheSweepGraceTests {
         ))
         try await store.storeBlob(key: key, data: content)
 
+        // The blob is protected by two layers: (1) the grace window — the blob
+        // was just written so its mtime is "now", well within the 60 s window —
+        // and (2) the DB reference (blob_sha256 row). In this scenario the grace
+        // window is the active gate; the DB guard kicks in only for blobs older
+        // than the window. Both layers are correct; only the ordering differs.
         try await store.sweepOrphans()
 
         let record = try await store.fetch(key: key)
@@ -143,5 +148,19 @@ struct CacheSweepGraceTests {
         try await store.sweepOrphans()
 
         #expect(!exists(tmp), "a stale *.tmp scratch file must still be reaped")
+    }
+
+    // MARK: - nil mtime is treated as fresh (unit-level pin)
+
+    @Test("isWithinGraceWindow returns true when mtime is nil")
+    func nilMtimeTreatedAsFresh() {
+        // When reading resource values fails mid-walk (file deleted between
+        // enumeration and the stat, or an attribute-read error), the sweep
+        // receives contentModificationDate == nil. Treating that as "within the
+        // grace window" (i.e. returning true and sparing the file) is the safe
+        // choice: it avoids deleting a blob that a concurrent writer may have
+        // just produced and whose mtime simply could not be read.
+        let cutoff = Date()
+        #expect(CacheStore.isWithinGraceWindow(mtime: nil, cutoff: cutoff))
     }
 }

@@ -404,7 +404,7 @@ public actor CacheStore {
     /// at/after `cutoff` — and must therefore be spared. An unreadable mtime is
     /// treated as fresh: keeping a file a concurrent writer may have just
     /// produced is safer than deleting it.
-    private static func isWithinGraceWindow(mtime: Date?, cutoff: Date) -> Bool {
+    static func isWithinGraceWindow(mtime: Date?, cutoff: Date) -> Bool {
         guard let mtime else { return true }
         return mtime >= cutoff
     }
