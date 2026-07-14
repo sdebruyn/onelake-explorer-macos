@@ -96,23 +96,23 @@ public struct OfemLogger: Sendable {
 
     /// Logs a warning-level message, extracting `errorCode` and `errorDescription` from `error`.
     public func warn(_ message: String, error: Swift.Error, metadata: [String: String] = [:]) {
-        var m = metadata
-        let ns = error as NSError
-        m["errorCode"] = "\(ns.domain).\(ns.code)"
-        m["errorDescription"] = ns.localizedDescription
-        warn(message, metadata: m)
+        warn(message, metadata: errorFields(error, metadata))
     }
 
     /// Logs an error-level message, extracting `errorCode` and `errorDescription` from `error`.
     public func error(_ message: String, error: Swift.Error, metadata: [String: String] = [:]) {
+        self.error(message, metadata: errorFields(error, metadata))
+    }
+
+    // MARK: - Core
+
+    private func errorFields(_ error: Swift.Error, _ metadata: [String: String]) -> [String: String] {
         var m = metadata
         let ns = error as NSError
         m["errorCode"] = "\(ns.domain).\(ns.code)"
         m["errorDescription"] = ns.localizedDescription
-        self.error(message, metadata: m)
+        return m
     }
-
-    // MARK: - Core
 
     private func log(level: LogLevel, message: String, metadata: [String: String]) {
         guard level >= configuration.level else { return }
