@@ -227,6 +227,9 @@ final class FPEEngineHost: EngineProviding {
     /// The account alias this host serves.
     let alias: String
 
+    /// Per-host structured logger that writes to the shared on-disk log file.
+    private let hostLogger: OfemLogger
+
     // periphery:ignore
     /// Identifier of the File Provider domain this host serves. Retained for
     /// diagnostics.
@@ -316,7 +319,8 @@ final class FPEEngineHost: EngineProviding {
         let cacheLogger = OfemLogger(configuration: LogConfiguration(
             subsystem: "dev.debruyn.ofem",
             category: "cache",
-            level: cacheLogLevel
+            level: cacheLogLevel,
+            fileWriter: RotatingFileWriter(logDirectory: paths.logDir)
         ))
         let candidate = try CacheStore(root: paths.cacheDir, maxBlobBytes: cfg.cache.maxBytes, logger: cacheLogger)
 
@@ -517,6 +521,13 @@ final class FPEEngineHost: EngineProviding {
     init(alias: String, domain: NSFileProviderDomain) {
         self.alias = alias
         self.domainIdentifier = domain.identifier
+        let paths = OfemPaths()
+        self.hostLogger = OfemLogger(configuration: LogConfiguration(
+            subsystem: OfemPaths.bundleID,
+            category: "engine-host",
+            level: .info,
+            fileWriter: RotatingFileWriter(logDirectory: paths.logDir)
+        ))
         // Register this host instance in the process-wide reference count so
         // the last shutdown() can call shutdownSharedSubsystems() automatically.
         Self.activeHostLock.withLock { Self._activeHostCount += 1 }
@@ -855,6 +866,7 @@ final class FPEEngineHost: EngineProviding {
             Self.log.error(
                 "FPEEngineHost[\(self.alias, privacy: .public)]: engine build failed: \(error.localizedDescription, privacy: .public)"
             )
+            hostLogger.error("engine build failed", error: error, metadata: ["alias": alias])
             throw error
         }
     }

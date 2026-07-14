@@ -89,10 +89,27 @@ public struct OfemLogger: Sendable {
         log(level: .warn, message: message, metadata: metadata)
     }
 
-    // periphery:ignore
     /// Logs an error-level message.
     public func error(_ message: String, metadata: [String: String] = [:]) {
         log(level: .error, message: message, metadata: metadata)
+    }
+
+    /// Logs a warning-level message, extracting `errorCode` and `errorDescription` from `error`.
+    public func warn(_ message: String, error: Swift.Error, metadata: [String: String] = [:]) {
+        var m = metadata
+        let ns = error as NSError
+        m["errorCode"] = "\(ns.domain).\(ns.code)"
+        m["errorDescription"] = ns.localizedDescription
+        warn(message, metadata: m)
+    }
+
+    /// Logs an error-level message, extracting `errorCode` and `errorDescription` from `error`.
+    public func error(_ message: String, error: Swift.Error, metadata: [String: String] = [:]) {
+        var m = metadata
+        let ns = error as NSError
+        m["errorCode"] = "\(ns.domain).\(ns.code)"
+        m["errorDescription"] = ns.localizedDescription
+        self.error(message, metadata: m)
     }
 
     // MARK: - Core

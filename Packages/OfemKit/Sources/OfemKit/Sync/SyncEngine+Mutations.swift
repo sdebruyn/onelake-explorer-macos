@@ -20,7 +20,7 @@ public extension SyncEngine {
         do {
             cached = try await cache.fetch(key: key)
         } catch {
-            Self.log.warning("delete: cache read failed, assuming isDir=false err=\(error, privacy: .public)")
+            logger.warn("delete: cache read failed, assuming isDir=false", error: error)
             cached = nil
         }
         let isDir = cached?.isDir ?? false
@@ -28,7 +28,7 @@ public extension SyncEngine {
 
         if isMacOSMetadata(key.path) {
             do { try await cache.delete(key: key) } catch {
-                Self.log.warning("delete: macOS metadata cache delete failed err=\(error, privacy: .public)")
+                logger.warn("delete: macOS metadata cache delete failed", error: error)
             }
             return
         }
@@ -65,7 +65,7 @@ public extension SyncEngine {
         await offlineTracker.observe(nil)
 
         do { try await cache.delete(key: key) } catch {
-            Self.log.warning("delete: cache delete failed err=\(error, privacy: .public)")
+            logger.warn("delete: cache delete failed", error: error)
         }
 
         await track(eventName: eventName, alias: key.accountAlias, start: start, outcome: .success())
@@ -111,7 +111,7 @@ public extension SyncEngine {
             itemType: mkdirItemType
         )
         do { try await cache.upsert(row) } catch {
-            Self.log.warning("mkdir: upsert failed err=\(error, privacy: .public)")
+            logger.warn("mkdir: upsert failed", error: error)
         }
 
         await track(eventName: "folder_create", alias: key.accountAlias, start: start, outcome: .success())
