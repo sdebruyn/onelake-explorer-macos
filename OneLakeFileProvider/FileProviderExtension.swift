@@ -282,6 +282,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             FileProviderExtension.log.error(
                 "fetchContents: temp dir failed: \(error.localizedDescription, privacy: .public)"
             )
+            engineHost.fileLogger.warn("fetchContents scratch directory failed", error: error, metadata: ["alias": alias])
             // Scratch dir failure is a retriable infrastructure error, not noSuchItem.
             completionHandler(nil, nil, nsFileProviderError(for: FPError.classify(error)))
             return Progress(totalUnitCount: 0)
@@ -593,6 +594,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     FileProviderExtension.log.error(
                         "modifyItem rename failed: \(error.localizedDescription, privacy: .public)"
                     )
+                    host.fileLogger.warn("rename failed, pending retry", error: error, metadata: ["alias": aliasCopy, "id": ofemID.opaqueLogPrefix.replacingOccurrences(of: "/", with: ":")])
                     return .pending
                 }
             },
