@@ -42,6 +42,14 @@ final class DomainSyncManager {
         subsystem: ofemSubsystem,
         category: "domain-sync"
     )
+    private static let fileLogger: OfemLogger = {
+        let paths = OfemPaths()
+        return OfemLogger(configuration: LogConfiguration(
+            subsystem: ofemSubsystem,
+            category: "domain-sync",
+            fileWriter: RotatingFileWriter(logDirectory: paths.logDir)
+        ))
+    }()
 
     /// Identifier prefix every OFEM-owned domain carries. Anything
     /// without this prefix is left alone — even if it lives in our
@@ -93,6 +101,7 @@ final class DomainSyncManager {
         do {
             try await NSFileProviderManager.add(makeDomain(alias: alias))
             Self.log.info("Added File Provider domain \(id, privacy: .public)")
+            Self.fileLogger.info("domain added", metadata: ["alias": alias, "domain": id])
         } catch {
             // "Already exists" is expected on idempotent calls; treat
             // all failures as non-fatal so callers don't need to handle them.
@@ -128,6 +137,7 @@ final class DomainSyncManager {
         do {
             try await NSFileProviderManager.remove(domain, mode: .preserveDownloadedUserData)
             Self.log.info("Removed File Provider domain \(id, privacy: .public)")
+            Self.fileLogger.info("domain removed", metadata: ["alias": alias, "domain": id])
         } catch {
             Self.log.notice(
                 "NSFileProviderManager.remove(\(id, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)"
@@ -188,6 +198,7 @@ final class DomainSyncManager {
                     mode: .preserveDownloadedUserData
                 )
                 Self.log.info("Removed orphan domain \(id, privacy: .public)")
+                Self.fileLogger.info("orphan domain removed", metadata: ["domain": id])
             } catch {
                 Self.log.notice(
                     "NSFileProviderManager.remove(\(id, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)"
