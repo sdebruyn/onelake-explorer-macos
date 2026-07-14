@@ -89,13 +89,30 @@ public struct OfemLogger: Sendable {
         log(level: .warn, message: message, metadata: metadata)
     }
 
-    // periphery:ignore
     /// Logs an error-level message.
     public func error(_ message: String, metadata: [String: String] = [:]) {
         log(level: .error, message: message, metadata: metadata)
     }
 
+    /// Logs a warning-level message, extracting `errorCode` and `errorDescription` from `error`.
+    public func warn(_ message: String, error: Swift.Error, metadata: [String: String] = [:]) {
+        warn(message, metadata: errorFields(error, metadata))
+    }
+
+    /// Logs an error-level message, extracting `errorCode` and `errorDescription` from `error`.
+    public func error(_ message: String, error: Swift.Error, metadata: [String: String] = [:]) {
+        self.error(message, metadata: errorFields(error, metadata))
+    }
+
     // MARK: - Core
+
+    private func errorFields(_ error: Swift.Error, _ metadata: [String: String]) -> [String: String] {
+        var m = metadata
+        let ns = error as NSError
+        m["errorCode"] = "\(ns.domain).\(ns.code)"
+        m["errorDescription"] = String(describing: error)
+        return m
+    }
 
     private func log(level: LogLevel, message: String, metadata: [String: String]) {
         guard level >= configuration.level else { return }
@@ -103,7 +120,7 @@ public struct OfemLogger: Sendable {
         // os.Logger — visible in Console.app, `log stream`, and Instruments.
         //
         // Static format strings and the level label use .public; dynamic
-        // values (call-site messages) use a compile-time #if DEBUG gate:
+        // values (call-site messages and metadata) use a compile-time #if DEBUG gate:
         //   DEBUG build   → .public  (un-redacted for local development)
         //   release build → .private (redacted; matches telemetry privacy stance)
         //
@@ -113,28 +130,34 @@ public struct OfemLogger: Sendable {
         //
         // Mapping: warn → .error, error → .error.  .fault is reserved for
         // programmer faults and is always persisted to disk unconditionally.
+        //
+        // Metadata is appended as key=value pairs so Console.app and `log stream`
+        // retain the same context that the JSON file sink writes. Without this,
+        // loggers without a fileWriter (e.g. the default OfemLogger()) would drop
+        // metadata entirely.
         let levelLabel = Self.levelLabel(level)
+        let metaSuffix = metadata.isEmpty ? "" : " " + metadata.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
         #if DEBUG
             switch level {
             case .debug:
-                osLogger.debug("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
+                osLogger.debug("[\(levelLabel, privacy: .public)] \(message, privacy: .public)\(metaSuffix, privacy: .public)")
             case .info:
-                osLogger.info("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
+                osLogger.info("[\(levelLabel, privacy: .public)] \(message, privacy: .public)\(metaSuffix, privacy: .public)")
             case .warn:
-                osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
+                osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .public)\(metaSuffix, privacy: .public)")
             case .error:
-                osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .public)")
+                osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .public)\(metaSuffix, privacy: .public)")
             }
         #else
             switch level {
             case .debug:
-                osLogger.debug("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
+                osLogger.debug("[\(levelLabel, privacy: .public)] \(message, privacy: .private)\(metaSuffix, privacy: .private)")
             case .info:
-                osLogger.info("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
+                osLogger.info("[\(levelLabel, privacy: .public)] \(message, privacy: .private)\(metaSuffix, privacy: .private)")
             case .warn:
-                osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
+                osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .private)\(metaSuffix, privacy: .private)")
             case .error:
-                osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .private)")
+                osLogger.error("[\(levelLabel, privacy: .public)] \(message, privacy: .private)\(metaSuffix, privacy: .private)")
             }
         #endif
 

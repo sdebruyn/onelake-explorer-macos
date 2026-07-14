@@ -1,5 +1,4 @@
 import Foundation
-import os.log
 
 // MARK: - SyncEngine+Discovery
 
@@ -45,7 +44,7 @@ extension SyncEngine {
             syncedAtNs: nowNs
         )
         do { try await cache.upsert(root) } catch {
-            Self.log.warning("listWorkspaces: upsert root failed err=\(error, privacy: .public)")
+            logger.warn("listWorkspaces: upsert root failed", error: error)
         }
 
         let seen = Set(ws.map(\.id))
@@ -87,8 +86,9 @@ extension SyncEngine {
         if droppedCount == 0 {
             await purgeRemovedWorkspaces(alias: alias, seen: seen)
         } else {
-            Self.log.warning(
-                "listWorkspaces: skipping purgeRemovedWorkspaces — incomplete listing alias=\(alias, privacy: .public) droppedCount=\(droppedCount, privacy: .public)"
+            logger.warn(
+                "listWorkspaces: skipping purgeRemovedWorkspaces — incomplete listing",
+                metadata: ["alias": alias, "droppedCount": "\(droppedCount)"]
             )
         }
 
@@ -219,7 +219,7 @@ extension SyncEngine {
             syncedAtNs: nowNs
         )
         do { try await cache.upsert(root) } catch {
-            Self.log.warning("reconcileItemListing: upsert root failed err=\(error, privacy: .public)")
+            logger.warn("reconcileItemListing: upsert root failed", error: error)
         }
 
         let seen = Set(storageItems.map(\.id))
@@ -353,8 +353,10 @@ extension SyncEngine {
             do {
                 try await cache.removeMaterialized(alias: alias, identifierPrefix: identifierPrefix)
             } catch {
-                Self.log.warning(
-                    "purgeRemovedItems: removeMaterialized failed prefix=\(identifierPrefix, privacy: .public) err=\(error, privacy: .public)"
+                logger.warn(
+                    "purgeRemovedItems: removeMaterialized failed",
+                    error: error,
+                    metadata: ["prefix": identifierPrefix]
                 )
             }
         }
@@ -403,15 +405,19 @@ extension SyncEngine {
             do {
                 _ = try await cache.purgeWorkspaceRows(accountAlias: alias, workspaceID: workspaceID)
             } catch {
-                Self.log.warning(
-                    "purgeRemovedWorkspaces: purgeWorkspaceRows failed workspaceID=\(workspaceID, privacy: .public) err=\(error, privacy: .public)"
+                logger.warn(
+                    "purgeRemovedWorkspaces: purgeWorkspaceRows failed",
+                    error: error,
+                    metadata: ["workspaceID": workspaceID]
                 )
             }
             do {
                 try await cache.removeMaterialized(alias: alias, identifierPrefix: workspaceID)
             } catch {
-                Self.log.warning(
-                    "purgeRemovedWorkspaces: removeMaterialized failed workspaceID=\(workspaceID, privacy: .public) err=\(error, privacy: .public)"
+                logger.warn(
+                    "purgeRemovedWorkspaces: removeMaterialized failed",
+                    error: error,
+                    metadata: ["workspaceID": workspaceID]
                 )
             }
         }
