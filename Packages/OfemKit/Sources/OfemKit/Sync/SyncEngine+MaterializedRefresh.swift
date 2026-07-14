@@ -95,6 +95,7 @@ extension SyncEngine {
         guard !refreshInFlightAliases.contains(alias) else { return false }
         refreshInFlightAliases.insert(alias)
         defer { refreshInFlightAliases.remove(alias) }
+        logger.info("materialized refresh start", metadata: ["alias": alias, "keys": "\(keys.count)"])
 
         // Bound tombstone growth: TTL-purge expired tombstones for this alias,
         // throttled to at most once per 24 h. Runs at the top of the pass (inside
@@ -179,6 +180,9 @@ extension SyncEngine {
                     last: lastSelfHealNs[keyString],
                     thresholdNs: selfHealNsThreshold
                 )
+                if healDue {
+                    logger.info("self-heal due", metadata: ["alias": alias, "key": key.opaqueLogPrefix])
+                }
 
                 if Self.shouldSkip(
                     parentVouched: parentVouched,
@@ -195,6 +199,12 @@ extension SyncEngine {
                 toList.append(key)
             }
 
+            logger.info("refresh wave", metadata: [
+                "alias": alias,
+                "depth": "\(Self.containerDepth(of: wave[0]))",
+                "listed": "\(toList.count)",
+                "skipped": "\(wave.count - toList.count)",
+            ])
             guard !toList.isEmpty else { continue }
 
             // Fan the wave out concurrently. Each task reports (keyString,
@@ -218,7 +228,9 @@ extension SyncEngine {
             }
         }
 
-        return await counter.total > 0
+        let changed = await counter.total > 0
+        logger.info("materialized refresh done", metadata: ["alias": alias, "changed": "\(changed)"])
+        return changed
     }
 
     /// TTL-purges expired deletion tombstones for `alias`, throttled to at most
@@ -316,7 +328,8 @@ extension SyncEngine {
     /// avoids the Swift 6 "sending 'group'" diagnostic that the diff-total
     /// accumulation sidesteps via ``DiffTotalCounter`` in the caller.
     private func runWave(toList: [CacheKey], semaphore: AsyncSemaphore) async -> [(String, Bool, Int)] {
-        await withTaskGroup(of: (String, Bool, Int).self) { group -> [(String, Bool, Int)] in
+        let localLogger = logger
+        return await withTaskGroup(of: (String, Bool, Int).self) { group -> [(String, Bool, Int)] in
             for key in toList {
                 group.addTask {
                     let keyString = key.stableKeyString
@@ -335,11 +348,10 @@ extension SyncEngine {
                         // gate has already decided this key needs a list; the
                         // container refresh just performs it.
                         diff = try await self.refreshMaterializedContainer(key: key)
+                    } catch is CancellationError {
+                        return (keyString, false, 0)
                     } catch {
-                        // Offline, cancellation, or workspace-paused: silent no-op.
-                        // refreshFolder rethrows before its destructive reconcile,
-                        // so the cache is intact — and this key vouches for nothing
-                        // (listedOK == false).
+                        localLogger.warn("refresh container error", error: error, metadata: ["key": key.opaqueLogPrefix])
                         return (keyString, false, 0)
                     }
                     return (keyString, true, diff.total)

@@ -765,6 +765,14 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
         subsystem: "dev.debruyn.ofem.fileprovider",
         category: "working-set"
     )
+    private static let fileLogger: OfemLogger = {
+        let paths = OfemPaths()
+        return OfemLogger(configuration: LogConfiguration(
+            subsystem: "dev.debruyn.ofem.fileprovider",
+            category: "working-set",
+            fileWriter: RotatingFileWriter(logDirectory: paths.logDir)
+        ))
+    }()
 
     /// At most one workspace-list refresh per this interval per alias.
     /// Shared across all enumerator instances for the same alias via the
@@ -935,6 +943,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                 // the delta. The stamp is written only on success (stamp-after-
                 // success policy). Auth failures reset the stamp.
                 if shouldRefresh {
+                    Self.fileLogger.info("working-set workspace refresh", metadata: ["alias": aliasCopy])
                     do {
                         _ = try await engine.sync.listWorkspaces(alias: aliasCopy)
                         // Stamp only after a successful refresh.
@@ -942,12 +951,14 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                         Self.log.debug(
                             "WorkingSet: refreshed workspace list for \(aliasCopy, privacy: .public)"
                         )
+                        Self.fileLogger.info("working-set refresh ok", metadata: ["alias": aliasCopy])
                     } catch {
                         let code = FPError.classify(error)
                         Self.log.warning(
                             "WorkingSet: workspace refresh failed for \(aliasCopy, privacy: .public): \(error.localizedDescription, privacy: .public)"
                         )
                         if code == .notAuthenticated {
+                            Self.fileLogger.warn("working-set refresh auth failure", metadata: ["alias": aliasCopy])
                             // Auth failure: reset throttle so the next signal
                             // retries immediately after re-auth, then surface
                             // the failure and abort.
@@ -956,6 +967,7 @@ final class OfemWorkingSetEnumerator: NSObject, NSFileProviderEnumerator, @unche
                             obs.value.finishEnumeratingWithError(nsFileProviderError(for: code))
                             return
                         }
+                        Self.fileLogger.warn("working-set refresh failed", error: error, metadata: ["alias": aliasCopy])
                         // Non-auth errors: proceed with the existing cache.
                     }
                 }
