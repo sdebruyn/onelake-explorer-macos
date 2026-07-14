@@ -45,7 +45,7 @@ actor PauseManager {
     /// Fabric REST paths have not been confirmed against a live paused capacity.
     /// Verifying and extending this table with a real paused F-SKU capture is a
     /// follow-up (see open questions in issue #385).
-    private static let pausedErrorCodes: Set<String> = [
+    static let pausedErrorCodes: Set<String> = [
         "capacitypaused",
         "capacitysuspended",
         "capacitynotactive",
@@ -136,10 +136,21 @@ actor PauseManager {
 
     /// Returns `true` when `error` signals a paused / suspended Fabric capacity.
     ///
-    /// Detection order (sync-17):
+    /// Detection order (sync-17, extended):
+    /// 0. Check `x-ms-error-code` response header — fastest path, and the ONLY
+    ///    path for paused-capacity 404s: the HTTP layer discards the 404 body
+    ///    (to preserve delete-idempotency in `SyncEngine+Mutations`), so steps
+    ///    1 and 2 are unreachable for that status code.
     /// 1. Parse `errorCode` from the JSON body — stable and locale-independent.
     /// 2. Fall back to regex over the prose body — catches older API versions.
     nonisolated func isPausedCapacityError(_ error: any Error) -> Bool {
+        // Fast path: header-based check (catches 404 CapacityNotActive with empty body).
+        if let code = extractMsErrorCode(error),
+           Self.pausedErrorCodes.contains(code.lowercased())
+        {
+            return true
+        }
+
         let body = extractAPIErrorBody(error)
         guard let body, !body.isEmpty else { return false }
 
@@ -213,6 +224,30 @@ actor PauseManager {
             return false
         }
     }
+}
+
+// MARK: - APIError header extraction
+
+private func extractMsErrorCode(_ error: any Error) -> String? {
+    switch error {
+    case let onelakeErr as OneLakeError:
+        if case let .httpError(inner) = onelakeErr {
+            return extractMsErrorCode(inner)
+        }
+    case let fabricErr as FabricError:
+        if case let .httpError(inner) = fabricErr {
+            return extractMsErrorCode(inner)
+        }
+    case let httpErr as HTTPClientError:
+        if case let .apiError(api) = httpErr {
+            return api.msErrorCode
+        } else if case let .sentinelWithBody(_, api) = httpErr {
+            return api.msErrorCode
+        }
+    default:
+        break
+    }
+    return nil
 }
 
 // MARK: - APIError body extraction

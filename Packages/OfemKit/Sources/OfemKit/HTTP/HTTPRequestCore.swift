@@ -199,9 +199,10 @@ private final class ResponseSizeGuard: @unchecked Sendable {
 ///     `RetryAfterRetrier.markIdempotent(_:on:)` so a caller can opt a
 ///     request out even though `RetryAfterRetrier.idempotentHTTPMethods`
 ///     would otherwise treat its method as replay-safe.
-///   - onFailure: Invoked with the raw `AFError` before it is mapped, so a
-///     caller can log the pre-classification error (fabric-05). Not invoked
-///     on the nil-response guard path, mirroring the pre-extraction behaviour.
+///   - logger: Used to emit a structured WARN or ERROR for every non-2xx
+///     response. Cancelled requests are silently skipped. Transient failures
+///     (`.throttled`, `.serverError`, `.transport`, `.retriesExhausted`) are
+///     logged at WARN; all others at ERROR.
 ///   - mapError: Converts a mapped ``HTTPClientError`` into the caller's
 ///     domain error — pass ``OneLakeError/from(_:)`` or ``FabricError/from(_:)``.
 func executeDataRequest<DomainError: Error>(
@@ -213,7 +214,7 @@ func executeDataRequest<DomainError: Error>(
     headers: HTTPHeaders,
     body: Data?,
     idempotent: Bool = true,
-    onFailure: ((AFError) -> Void)? = nil,
+    logger: OfemLogger = OfemLogger(),
     mapError: (any Error) -> DomainError
 ) async throws -> (Data, HTTPURLResponse) {
     let session = await sessionPool.session(alias: alias, scope: scope)
@@ -270,13 +271,33 @@ func executeDataRequest<DomainError: Error>(
         }
         return (data, httpResponse)
     case let .failure(afError):
-        onFailure?(afError)
         let mapped = HTTPClientError(
             afError: afError,
             response: dataResponse.response,
             body: dataResponse.data,
             retryCount: req.retryCount
         )
+        var isCancelled = false
+        if case .cancelled = mapped { isCancelled = true }
+        if !isCancelled {
+            let resp = dataResponse.response
+            var meta: [String: String] = [
+                "method": method,
+                "path": url.path,
+                "retries": "\(req.retryCount)",
+                "alias": alias,
+            ]
+            if let status = resp?.statusCode { meta["status"] = "\(status)" }
+            if let code = resp?.value(forHTTPHeaderField: "x-ms-error-code") { meta["msErrorCode"] = code }
+            if let rid = resp?.value(forHTTPHeaderField: "x-ms-request-id") { meta["requestId"] = rid }
+            if let aid = resp?.value(forHTTPHeaderField: "x-ms-activity-id") { meta["activityId"] = aid }
+            switch mapped {
+            case .throttled, .serverError, .transport:
+                logger.warn("http non-2xx", error: mapped, metadata: meta)
+            default:
+                logger.error("http non-2xx", error: mapped, metadata: meta)
+            }
+        }
         throw mapError(mapped)
     }
 }
