@@ -277,19 +277,22 @@ func executeDataRequest<DomainError: Error>(
             body: dataResponse.data,
             retryCount: req.retryCount
         )
-        if case .cancelled = mapped { /* skip logging for cancellations */ } else {
+        var isCancelled = false
+        if case .cancelled = mapped { isCancelled = true }
+        if !isCancelled {
             let resp = dataResponse.response
             var meta: [String: String] = [
                 "method": method,
                 "path": url.path,
                 "retries": "\(req.retryCount)",
+                "alias": alias,
             ]
             if let status = resp?.statusCode { meta["status"] = "\(status)" }
             if let code = resp?.value(forHTTPHeaderField: "x-ms-error-code") { meta["msErrorCode"] = code }
             if let rid = resp?.value(forHTTPHeaderField: "x-ms-request-id") { meta["requestId"] = rid }
             if let aid = resp?.value(forHTTPHeaderField: "x-ms-activity-id") { meta["activityId"] = aid }
             switch mapped {
-            case .throttled, .serverError, .transport, .retriesExhausted:
+            case .throttled, .serverError, .transport:
                 logger.warn("http non-2xx", error: mapped, metadata: meta)
             default:
                 logger.error("http non-2xx", error: mapped, metadata: meta)

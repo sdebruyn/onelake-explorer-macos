@@ -45,7 +45,7 @@ actor PauseManager {
     /// Fabric REST paths have not been confirmed against a live paused capacity.
     /// Verifying and extending this table with a real paused F-SKU capture is a
     /// follow-up (see open questions in issue #385).
-    private static let pausedErrorCodes: Set<String> = [
+    static let pausedErrorCodes: Set<String> = [
         "capacitypaused",
         "capacitysuspended",
         "capacitynotactive",
@@ -137,8 +137,10 @@ actor PauseManager {
     /// Returns `true` when `error` signals a paused / suspended Fabric capacity.
     ///
     /// Detection order (sync-17, extended):
-    /// 0. Check `x-ms-error-code` response header — fastest path, catches
-    ///    paused-capacity 404s whose bodies are empty.
+    /// 0. Check `x-ms-error-code` response header — fastest path, and the ONLY
+    ///    path for paused-capacity 404s: the HTTP layer discards the 404 body
+    ///    (to preserve delete-idempotency in `SyncEngine+Mutations`), so steps
+    ///    1 and 2 are unreachable for that status code.
     /// 1. Parse `errorCode` from the JSON body — stable and locale-independent.
     /// 2. Fall back to regex over the prose body — catches older API versions.
     nonisolated func isPausedCapacityError(_ error: any Error) -> Bool {

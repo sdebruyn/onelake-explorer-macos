@@ -1,16 +1,6 @@
 import Alamofire
 import Foundation
 
-// MARK: - Paused-capacity x-ms-error-code values
-
-private let pausedCapacityMsErrorCodes: Set<String> = [
-    "capacitypaused",
-    "capacitysuspended",
-    "capacitynotactive",
-    "workspacecapacitypaused",
-    "capacityassignmentpaused",
-]
-
 // MARK: - HTTPClientError initialiser from Alamofire errors
 
 extension HTTPClientError {
@@ -88,7 +78,7 @@ extension HTTPClientError {
                 let bodyRelevant = switch sentinel {
                 case .unauthorized, .forbidden, .throttled, .serverError:
                     true
-                case .notFound where msErrorCode.map { pausedCapacityMsErrorCodes.contains($0.lowercased()) } == true:
+                case .notFound where msErrorCode.map { PauseManager.pausedErrorCodes.contains($0.lowercased()) } ?? false:
                     true
                 default:
                     false
