@@ -23,7 +23,7 @@ jobs:
     # is still uploaded even on a slow runner.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Load pinned Xcode version
         # Single source of truth for the Xcode version, shared with ci.yml
@@ -97,7 +97,7 @@ jobs:
         # Xcode projects and produces "No source code was seen" errors.
         # security-and-quality enables the full extended query suite for
         # deeper analysis on every PR and every push to main.
-        uses: github/codeql-action/init@v4.37.0
+        uses: github/codeql-action/init@v4.37.3
         with:
           languages: swift
           build-mode: manual
@@ -124,6 +124,6 @@ jobs:
             build
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v4.37.0
+        uses: github/codeql-action/analyze@v4.37.3
         with:
           category: "/language:swift"
