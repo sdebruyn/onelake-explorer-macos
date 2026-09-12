@@ -1,13 +1,13 @@
 {
-  "originHash" : "14c34bdebb08eb2abbab38ba48718a7f81499658732365c5869fdac508dbdfc4",
+  "originHash" : "60a775482a0a3e6365676d6117caa234410242cc55daa357fdcece48d19b3b1b",
   "pins" : [
     {
       "identity" : "alamofire",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Alamofire/Alamofire.git",
       "state" : {
-        "revision" : "7595cbcf59809f9977c5f6378500de2ad73b7ddb",
-        "version" : "5.12.0"
+        "revision" : "3494b7c1d4e08be98bbb2244fd55ca5a029ff4a2",
+        "version" : "5.12.1"
       }
     },
     {
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/AzureAD/microsoft-authentication-library-for-objc",
       "state" : {
-        "revision" : "444171407f5e0944e7b5cc94c12c6aa37ac39a31",
-        "version" : "2.13.1"
+        "revision" : "d54e9653f94883a896af533133888be1c2ef5c75",
+        "version" : "2.15.0"
       }
     },
     {

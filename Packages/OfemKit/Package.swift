@@ -20,10 +20,10 @@ let package = Package(
         .package(url: "https://github.com/LebJe/TOMLKit.git", exact: "0.6.0"),
         .package(
             url: "https://github.com/AzureAD/microsoft-authentication-library-for-objc",
-            exact: "2.13.1"
+            exact: "2.15.0"
         ),
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1"),
-        .package(url: "https://github.com/Alamofire/Alamofire.git", exact: "5.12.0"),
+        .package(url: "https://github.com/Alamofire/Alamofire.git", exact: "5.12.1"),
     ],
     targets: [
         .target(
